@@ -3,7 +3,11 @@
 # ============================================================
 
 # ------ Build output (MSVC) ------
-build/
+# Anchored to the repo root (leading slash) so it does NOT match vendored
+# source directories named "build", e.g. deps/src/tiff-4.7.1/build/ which is
+# libtiff's own source subdirectory. CMake build output for the vendored deps
+# is ignored explicitly further down (deps/src/.../build/ and .../bld/).
+/build/
 *.obj
 *.exe
 *.pdb

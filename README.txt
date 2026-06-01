@@ -33,7 +33,8 @@ Windows (Visual Studio 2022): build scrollfiesta.sln as Release|x64, e.g.
     msbuild scrollfiesta.sln -p:Configuration=Release -p:Platform=x64 -m
   Binaries land in build\Release\ . The vendored dependencies (libtiff, zlib,
   Clipper2) build from deps\src\ via CMake into deps\lib\win64\Release\ ;
-  Triangle compiles inline. Build those library .libs once before the solution.
+  Triangle compiles inline. Build those library .libs once before the solution
+  -- run build-deps.ps1 (or read it for the exact CMake invocations).
 
 Linux (GCC):
     cd src && make release        # -> src/cube_mesh
