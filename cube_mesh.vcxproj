@@ -1,0 +1,283 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- ============================================================ -->
+  <!-- Configurations                                                -->
+  <!-- ============================================================ -->
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <!-- ============================================================ -->
+  <!-- Global project properties                                     -->
+  <!-- ============================================================ -->
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}</ProjectGuid>
+    <RootNamespace>cubemesh</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <Keyword>Win32Proj</Keyword>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <!-- ============================================================ -->
+  <!-- Configuration type (Application)                              -->
+  <!-- ============================================================ -->
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <!-- ============================================================ -->
+  <!-- Output directories                                            -->
+  <!-- ============================================================ -->
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>$(SolutionDir)build\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)build\obj\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutDir>$(SolutionDir)build\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)build\obj\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <!-- ============================================================ -->
+  <!-- Compiler settings - Debug                                     -->
+  <!-- ============================================================ -->
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <PreprocessorDefinitions>_DEBUG;VESUVIUS_DEBUG;_CRT_SECURE_NO_WARNINGS;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)deps\include;$(SolutionDir)deps\src\tiff-4.7.1\libtiff;$(SolutionDir)deps\src\tiff-4.7.1\bld\libtiff;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+      <OpenMPSupport>true</OpenMPSupport>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <CompileAs>Default</CompileAs>
+      <ObjectFileName>$(IntDir)%(RelativeDir)</ObjectFileName>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(SolutionDir)deps\lib\win64\Debug;$(SolutionDir)deps\lib\win64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>tiff.lib;zs.lib;Clipper2.lib;Clipper2Z.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <!-- ============================================================ -->
+  <!-- Compiler settings - Release                                   -->
+  <!-- ============================================================ -->
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>NDEBUG;_CRT_SECURE_NO_WARNINGS;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)deps\include;$(SolutionDir)deps\src\tiff-4.7.1\libtiff;$(SolutionDir)deps\src\tiff-4.7.1\bld\libtiff;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <OpenMPSupport>true</OpenMPSupport>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <CompileAs>Default</CompileAs>
+      <ObjectFileName>$(IntDir)%(RelativeDir)</ObjectFileName>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(SolutionDir)deps\lib\win64\Release;$(SolutionDir)deps\lib\win64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>tiff.lib;zs.lib;Clipper2.lib;Clipper2Z.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
+    </Link>
+  </ItemDefinitionGroup>
+  <!-- ============================================================ -->
+  <!-- C source files (compiled as C with /TC)                       -->
+  <!-- ============================================================ -->
+  <ItemGroup>
+    <!-- Main -->
+    <ClCompile Include="src\main.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <!-- Common -->
+    <ClCompile Include="src\common\arena.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\except.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\csr.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\kdtree.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\union_find.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\bfs.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\pca.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\mls_project.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\vert_weld.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\tiff_io.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\halo_loader.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\mesh_trim.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\ply_io.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\obj_io.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\dump_obj.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\ves_platform.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\qem.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\raw_snapback.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\snap_cg.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <!-- Step 0: Mesh Extraction (MC + LOP + per-vertex backface cull) -->
+    <ClCompile Include="src\extract\mesh_extract.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <!-- Remesh: Ball-Pivoting Algorithm (Bernardini 1999). -->
+    <ClCompile Include="src\remesh\ball_pivot.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <!-- Remesh: deterministic per-component winding orientation. -->
+    <ClCompile Include="src\remesh\orient_mesh.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <!-- Remesh: dedicated micro-hole / bowtie closer for BPA output. -->
+    <ClCompile Include="src\remesh\pinhole_fill.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <!-- Remesh: Hoppe 1992 consistent normal orientation (pre-BPA). -->
+    <ClCompile Include="src\remesh\normal_orient.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <!-- Step 1: Oracle (UV-grid raycast sheet count) -->
+    <ClCompile Include="src\split\oracle.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <!-- Step 2: Bridge cut (Edmonds-Karp vertex-split min-cut) -->
+    <ClCompile Include="src\split\bridge_cut.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <!-- Step 3: Overlap separator (Limper 2018 lifted multicut) -->
+    <ClCompile Include="src\split\overlap_sep.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <!-- Hole fill: CDT-based interior loop closure -->
+    <ClCompile Include="src\holefill\hole_fill.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\holefill\clipper2_wrap.cpp">
+      <CompileAs>CompileAsCpp</CompileAs>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <!-- Step 3: multicut wrapper over the header-only andres graph library -->
+    <ClCompile Include="src\split\multicut_wrap.cpp">
+      <CompileAs>CompileAsCpp</CompileAs>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level3</WarningLevel>
+      <PreprocessorDefinitions>NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)deps\src\graph\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <!-- Triangle library (CDT, compiled from source for CRT consistency) -->
+    <ClCompile Include="deps\src\triangle\triangle.c">
+      <CompileAs>CompileAsC</CompileAs>
+      <PreprocessorDefinitions>TRILIBRARY;ANSI_DECLARATORS;NO_TIMER;REAL=double;VOID=int;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level1</WarningLevel>
+    </ClCompile>
+    <!-- Pipeline library (per-cube orchestration) -->
+    <ClCompile Include="src\pipeline\pipeline_cube.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+  </ItemGroup>
+  <!-- ============================================================ -->
+  <!-- Header files                                                  -->
+  <!-- ============================================================ -->
+  <ItemGroup>
+    <!-- Common headers -->
+    <ClInclude Include="src\common\arena.h" />
+    <ClInclude Include="src\common\except.h" />
+    <ClInclude Include="src\common\csr.h" />
+    <ClInclude Include="src\common\kdtree.h" />
+    <ClInclude Include="src\common\union_find.h" />
+    <ClInclude Include="src\common\bfs.h" />
+    <ClInclude Include="src\common\pca.h" />
+    <ClInclude Include="src\common\mls_project.h" />
+    <ClInclude Include="src\common\vert_weld.h" />
+    <ClInclude Include="src\common\tiff_io.h" />
+    <ClInclude Include="src\common\halo_loader.h" />
+    <ClInclude Include="src\common\mesh_trim.h" />
+    <ClInclude Include="src\common\ply_io.h" />
+    <ClInclude Include="src\common\obj_io.h" />
+    <ClInclude Include="src\common\obj_colors.h" />
+    <ClInclude Include="src\common\dump_obj.h" />
+    <ClInclude Include="src\common\mesh_types.h" />
+    <ClInclude Include="src\common\pipeline_constants.h" />
+    <ClInclude Include="src\common\ves_platform.h" />
+    <ClInclude Include="src\common\qem.h" />
+    <ClInclude Include="src\common\raw_snapback.h" />
+    <ClInclude Include="src\common\snap_cg.h" />
+    <!-- Step headers -->
+    <ClInclude Include="src\extract\mesh_extract.h" />
+    <ClInclude Include="src\remesh\ball_pivot.h" />
+    <ClInclude Include="src\remesh\orient_mesh.h" />
+    <ClInclude Include="src\remesh\pinhole_fill.h" />
+    <ClInclude Include="src\split\overlap_sep.h" />
+    <ClInclude Include="src\split\multicut_wrap.h" />
+    <ClInclude Include="src\holefill\hole_fill.h" />
+    <ClInclude Include="src\holefill\clipper2_wrap.h" />
+    <ClInclude Include="src\pipeline\pipeline_cube.h" />
+    <ClInclude Include="deps\include\triangle.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>

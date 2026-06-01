@@ -1,0 +1,104 @@
+# ============================================================
+# Vesuvius-C .gitignore
+# ============================================================
+
+# ------ Build output (MSVC) ------
+build/
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.lib
+*.exp
+*.iobj
+*.ipdb
+*.tlog
+*.recipe
+*.lastbuildstate
+*.Build.CppClean.log
+*.FileListAbsolute.txt
+*.log
+
+# ------ Build output (GCC/Linux) ------
+*.o
+*.a
+*.so
+*.d
+
+# ------ Compiled binaries (Linux ELF at repo root) ------
+/tif2mip
+/tif2obj
+/tif2png
+
+# ------ Linux build binaries (src/, from the Makefile) ------
+/src/cube_mesh
+/src/grid_weld
+/src/grid_pipeline
+/src/test_common
+
+# ------ IDE ------
+.vs/
+.vscode/
+*.vcxproj.user
+*.suo
+*.sdf
+*.opensdf
+*.cachefile
+ipch/
+
+# ------ Claude Code ------
+.claude/
+
+# ------ CMake artifacts (anywhere in tree) ------
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+
+# ------ Experiment output & data ------
+output/
+nnunet-preds/
+test_sheets/
+
+# ------ Dependencies: build artifacts ------
+# Pre-built executables (PoissonRecon is 165 MB)
+deps/bin/
+# Windows-built static libs (rebuilt from deps/src/)
+deps/lib/win64/
+# Linux-built static libs (rebuilt from deps/src/)
+deps/lib/*.a
+# CMake build directories within vendored sources
+deps/src/tiff-4.7.1/bld/
+deps/src/Clipper2/CPP/build/
+deps/src/zlib/build/
+
+# ------ Compiled scripts/tools (Linux ELF binaries) ------
+scripts/tif_slices
+scripts/step0.5-2d-trace/gap_fill_2d
+scripts/step0.5-2d-trace/test_optical_flow
+
+# ------ Ground truth data (large binaries) ------
+gt/
+TRAIN_LABELS/
+PHerc0139-4x5x5/
+PHerc0139-4x5x5.zip
+
+# ------ Python cache ------
+__pycache__/
+
+# ------ Metric solver: build artifacts ------
+metric-windows/build/
+metric-windows/topological-metrics-kaggle/external/Betti-Matching-3D/build_py/
+*.pyd
+
+# ------ Backup / temp files ------
+*.bak
+*.bak[0-9]*
+*.backup
+*.orig
+*.swp
+*~
+
+# ------ Sample output meshes (3D OBJ files, NOT MSVC object files) ------
+# Re-include these despite the "*.obj" rule above; stored via Git LFS (.gitattributes)
+!sample_outputs/**/*.obj

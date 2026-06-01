@@ -1,0 +1,327 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <!-- ============================================================ -->
+  <!-- Filter definitions (virtual folders in Solution Explorer)      -->
+  <!-- ============================================================ -->
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>c;cpp</Extensions>
+    </Filter>
+    <Filter Include="Source Files\common">
+      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\step0-mesh-extract">
+      <UniqueIdentifier>{A0000001-0000-0000-0000-000000000000}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\step1-oracle">
+      <UniqueIdentifier>{A0000002-0000-0000-0000-000000000000}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\step2-bridge-cut">
+      <UniqueIdentifier>{A0000003-0000-0000-0000-000000000000}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\step3-raycast-sep">
+      <UniqueIdentifier>{A0000004-0000-0000-0000-000000000000}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\step4-rebuild">
+      <UniqueIdentifier>{A0000005-0000-0000-0000-000000000000}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\step4.5-sheet-merge">
+      <UniqueIdentifier>{A0000006-0000-0000-0000-000000000000}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\step5-poisson">
+      <UniqueIdentifier>{A0000007-0000-0000-0000-000000000000}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\step6-revoxelize">
+      <UniqueIdentifier>{A0000008-0000-0000-0000-000000000000}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\cpp">
+      <UniqueIdentifier>{A0000009-0000-0000-0000-000000000000}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <Extensions>h</Extensions>
+    </Filter>
+    <Filter Include="Header Files\common">
+      <UniqueIdentifier>{B0000001-0000-0000-0000-000000000000}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\step0-mesh-extract">
+      <UniqueIdentifier>{B0000002-0000-0000-0000-000000000000}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\step1-oracle">
+      <UniqueIdentifier>{B0000003-0000-0000-0000-000000000000}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\step2-bridge-cut">
+      <UniqueIdentifier>{B0000004-0000-0000-0000-000000000000}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\step3-raycast-sep">
+      <UniqueIdentifier>{B0000005-0000-0000-0000-000000000000}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\step4-rebuild">
+      <UniqueIdentifier>{B0000006-0000-0000-0000-000000000000}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\step4.5-sheet-merge">
+      <UniqueIdentifier>{B0000007-0000-0000-0000-000000000000}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\step5-poisson">
+      <UniqueIdentifier>{B0000008-0000-0000-0000-000000000000}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\step6-revoxelize">
+      <UniqueIdentifier>{B0000009-0000-0000-0000-000000000000}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\deps">
+      <UniqueIdentifier>{B000000A-0000-0000-0000-000000000000}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\gco">
+      <UniqueIdentifier>{B000000B-0000-0000-0000-000000000000}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+
+  <!-- ============================================================ -->
+  <!-- Source file filter assignments                                 -->
+  <!-- ============================================================ -->
+  <ItemGroup>
+    <!-- Main -->
+    <ClCompile Include="src\main.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+
+    <!-- Common -->
+    <ClCompile Include="src\common\arena.c">
+      <Filter>Source Files\common</Filter>
+    </ClCompile>
+    <ClCompile Include="src\common\except.c">
+      <Filter>Source Files\common</Filter>
+    </ClCompile>
+    <ClCompile Include="src\common\csr.c">
+      <Filter>Source Files\common</Filter>
+    </ClCompile>
+    <ClCompile Include="src\common\kdtree.c">
+      <Filter>Source Files\common</Filter>
+    </ClCompile>
+    <ClCompile Include="src\common\union_find.c">
+      <Filter>Source Files\common</Filter>
+    </ClCompile>
+    <ClCompile Include="src\common\bfs.c">
+      <Filter>Source Files\common</Filter>
+    </ClCompile>
+    <ClCompile Include="src\common\pca.c">
+      <Filter>Source Files\common</Filter>
+    </ClCompile>
+    <ClCompile Include="src\common\tiff_io.c">
+      <Filter>Source Files\common</Filter>
+    </ClCompile>
+    <ClCompile Include="src\common\ply_io.c">
+      <Filter>Source Files\common</Filter>
+    </ClCompile>
+    <ClCompile Include="src\common\obj_io.c">
+      <Filter>Source Files\common</Filter>
+    </ClCompile>
+    <ClCompile Include="src\common\dump_obj.c">
+      <Filter>Source Files\common</Filter>
+    </ClCompile>
+    <ClCompile Include="src\common\ves_platform.c">
+      <Filter>Source Files\common</Filter>
+    </ClCompile>
+
+    <!-- Step 0 -->
+    <ClCompile Include="src\extract\mesh_extract.c">
+      <Filter>Source Files\step0-mesh-extract</Filter>
+    </ClCompile>
+
+    <!-- Step 1 -->
+    <ClCompile Include="src\split\oracle.c">
+      <Filter>Source Files\step1-oracle</Filter>
+    </ClCompile>
+
+    <!-- Step 2 -->
+    <ClCompile Include="src\split\bridge_cut.c">
+      <Filter>Source Files\step2-bridge-cut</Filter>
+    </ClCompile>
+
+    <!-- Step 3 -->
+    <ClCompile Include="src\step3-raycast-sep\raycast_sep.c">
+      <Filter>Source Files\step3-raycast-sep</Filter>
+    </ClCompile>
+
+    <!-- Step 4 -->
+    <ClCompile Include="src\step4-rebuild\rebuild.c">
+      <Filter>Source Files\step4-rebuild</Filter>
+    </ClCompile>
+
+    <!-- Step 4.5 -->
+    <ClCompile Include="src\step4.5-sheet-merge\sheet_merge.c">
+      <Filter>Source Files\step4.5-sheet-merge</Filter>
+    </ClCompile>
+
+    <!-- Step 5 -->
+    <ClCompile Include="src\step5-poisson\poisson.c">
+      <Filter>Source Files\step5-poisson</Filter>
+    </ClCompile>
+    <ClCompile Include="src\step5-poisson\tri_quality.c">
+      <Filter>Source Files\step5-poisson</Filter>
+    </ClCompile>
+    <ClCompile Include="src\step5-poisson\hole_fill.c">
+      <Filter>Source Files\step5-poisson</Filter>
+    </ClCompile>
+    <ClCompile Include="src\step5-poisson\boundary_remesh.c">
+      <Filter>Source Files\step5-poisson</Filter>
+    </ClCompile>
+    <ClCompile Include="src\step5-poisson\exterior_hole_fill.c">
+      <Filter>Source Files\step5-poisson</Filter>
+    </ClCompile>
+    <ClCompile Include="src\step5-poisson\ext_hole_detect.c">
+      <Filter>Source Files\step5-poisson</Filter>
+    </ClCompile>
+
+    <!-- Step 6 -->
+    <ClCompile Include="src\step6-revoxelize\revoxel.c">
+      <Filter>Source Files\step6-revoxelize</Filter>
+    </ClCompile>
+
+    <!-- Triangle library -->
+    <ClCompile Include="deps\src\triangle\triangle.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+
+    <!-- C++ files -->
+    <ClCompile Include="src\step4.5-sheet-merge\gco_wrap.cpp">
+      <Filter>Source Files\cpp</Filter>
+    </ClCompile>
+    <ClCompile Include="src\step5-poisson\clipper2_wrap.cpp">
+      <Filter>Source Files\cpp</Filter>
+    </ClCompile>
+    <ClCompile Include="src\step5-poisson\poisson_recon_wrap.cpp">
+      <Filter>Source Files\cpp</Filter>
+    </ClCompile>
+    <ClCompile Include="docs\research\gco-v3.0\GCoptimization.cpp">
+      <Filter>Source Files\cpp</Filter>
+    </ClCompile>
+    <ClCompile Include="docs\research\gco-v3.0\LinkedBlockList.cpp">
+      <Filter>Source Files\cpp</Filter>
+    </ClCompile>
+  </ItemGroup>
+
+  <!-- ============================================================ -->
+  <!-- Header file filter assignments                                -->
+  <!-- ============================================================ -->
+  <ItemGroup>
+    <!-- Common headers -->
+    <ClInclude Include="src\common\arena.h">
+      <Filter>Header Files\common</Filter>
+    </ClInclude>
+    <ClInclude Include="src\common\except.h">
+      <Filter>Header Files\common</Filter>
+    </ClInclude>
+    <ClInclude Include="src\common\csr.h">
+      <Filter>Header Files\common</Filter>
+    </ClInclude>
+    <ClInclude Include="src\common\kdtree.h">
+      <Filter>Header Files\common</Filter>
+    </ClInclude>
+    <ClInclude Include="src\common\union_find.h">
+      <Filter>Header Files\common</Filter>
+    </ClInclude>
+    <ClInclude Include="src\common\bfs.h">
+      <Filter>Header Files\common</Filter>
+    </ClInclude>
+    <ClInclude Include="src\common\pca.h">
+      <Filter>Header Files\common</Filter>
+    </ClInclude>
+    <ClInclude Include="src\common\tiff_io.h">
+      <Filter>Header Files\common</Filter>
+    </ClInclude>
+    <ClInclude Include="src\common\ply_io.h">
+      <Filter>Header Files\common</Filter>
+    </ClInclude>
+    <ClInclude Include="src\common\obj_io.h">
+      <Filter>Header Files\common</Filter>
+    </ClInclude>
+    <ClInclude Include="src\common\obj_colors.h">
+      <Filter>Header Files\common</Filter>
+    </ClInclude>
+    <ClInclude Include="src\common\dump_obj.h">
+      <Filter>Header Files\common</Filter>
+    </ClInclude>
+    <ClInclude Include="src\common\mesh_types.h">
+      <Filter>Header Files\common</Filter>
+    </ClInclude>
+    <ClInclude Include="src\common\pipeline_constants.h">
+      <Filter>Header Files\common</Filter>
+    </ClInclude>
+    <ClInclude Include="src\common\ves_platform.h">
+      <Filter>Header Files\common</Filter>
+    </ClInclude>
+
+    <!-- Step headers -->
+    <ClInclude Include="src\extract\mesh_extract.h">
+      <Filter>Header Files\step0-mesh-extract</Filter>
+    </ClInclude>
+    <ClInclude Include="src\split\oracle.h">
+      <Filter>Header Files\step1-oracle</Filter>
+    </ClInclude>
+    <ClInclude Include="src\split\bridge_cut.h">
+      <Filter>Header Files\step2-bridge-cut</Filter>
+    </ClInclude>
+    <ClInclude Include="src\step3-raycast-sep\raycast_sep.h">
+      <Filter>Header Files\step3-raycast-sep</Filter>
+    </ClInclude>
+    <ClInclude Include="src\step4-rebuild\rebuild.h">
+      <Filter>Header Files\step4-rebuild</Filter>
+    </ClInclude>
+    <ClInclude Include="src\step4.5-sheet-merge\sheet_merge.h">
+      <Filter>Header Files\step4.5-sheet-merge</Filter>
+    </ClInclude>
+    <ClInclude Include="src\step4.5-sheet-merge\gco_wrap.h">
+      <Filter>Header Files\step4.5-sheet-merge</Filter>
+    </ClInclude>
+    <ClInclude Include="src\step4.5-sheet-merge\sheet_merge_internal.h">
+      <Filter>Header Files\step4.5-sheet-merge</Filter>
+    </ClInclude>
+    <ClInclude Include="src\step5-poisson\poisson.h">
+      <Filter>Header Files\step5-poisson</Filter>
+    </ClInclude>
+    <ClInclude Include="src\step5-poisson\clipper2_wrap.h">
+      <Filter>Header Files\step5-poisson</Filter>
+    </ClInclude>
+    <ClInclude Include="src\step5-poisson\poisson_recon_wrap.h">
+      <Filter>Header Files\step5-poisson</Filter>
+    </ClInclude>
+    <ClInclude Include="src\step5-poisson\boundary_remesh.h">
+      <Filter>Header Files\step5-poisson</Filter>
+    </ClInclude>
+    <ClInclude Include="src\step5-poisson\exterior_hole_fill.h">
+      <Filter>Header Files\step5-poisson</Filter>
+    </ClInclude>
+    <ClInclude Include="src\step5-poisson\ext_hole_detect.h">
+      <Filter>Header Files\step5-poisson</Filter>
+    </ClInclude>
+    <ClInclude Include="src\step6-revoxelize\revoxel.h">
+      <Filter>Header Files\step6-revoxelize</Filter>
+    </ClInclude>
+
+    <!-- External dep headers -->
+    <ClInclude Include="deps\include\triangle.h">
+      <Filter>Header Files\deps</Filter>
+    </ClInclude>
+
+    <!-- GCO headers -->
+    <ClInclude Include="docs\research\gco-v3.0\GCoptimization.h">
+      <Filter>Header Files\gco</Filter>
+    </ClInclude>
+    <ClInclude Include="docs\research\gco-v3.0\energy.h">
+      <Filter>Header Files\gco</Filter>
+    </ClInclude>
+    <ClInclude Include="docs\research\gco-v3.0\graph.h">
+      <Filter>Header Files\gco</Filter>
+    </ClInclude>
+    <ClInclude Include="docs\research\gco-v3.0\LinkedBlockList.h">
+      <Filter>Header Files\gco</Filter>
+    </ClInclude>
+    <ClInclude Include="docs\research\gco-v3.0\block.h">
+      <Filter>Header Files\gco</Filter>
+    </ClInclude>
+  </ItemGroup>
+
+</Project>
