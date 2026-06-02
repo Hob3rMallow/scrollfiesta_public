@@ -1,22 +1,29 @@
 /*
  * main.c -- Vesuvius C Pipeline per-cube driver.
  *
- * Usage: ./cube_mesh input.tif output.tif [--dump-obj dir] [--no-qem]
- *                                          [--no-timeout] [--halo N]
+ * Two input modes:
+ *   1) TIFF:       ./cube_mesh input.tif output.tif [--dump-obj dir] [--no-qem]
+ *                                                    [--no-timeout] [--halo N]
+ *   2) stdin-raw:  ./cube_mesh --stdin-raw <p_size> <oz> <oy> <ox>
+ *                              [--halo N] [--dump-obj dir] [--no-qem] [--no-timeout]
+ *      Reads p_size^3 uint8 bytes (C order z,y,x) from stdin — a padded cube
+ *      whose index (0,0,0) is world voxel (oz-halo, oy-halo, ox-halo), exactly
+ *      like HaloLoader_load. Lets a caller stream a cube straight from a remote
+ *      zarr with no TIFF on disk. (oz,oy,ox) is the owned cube origin, so
+ *      p_size must equal 128 + 2*halo.
  *
  * Body of the per-cube pipeline lives in src/pipeline/pipeline_cube.c.
- * This file is just: arg parsing -> single pipeline_process_cube() call
- * -> exit status. Driven per-cube by the grid_pipeline orchestrator.
  *
  * --dump-obj dir:  write OBJ meshes under dir/<cube_id>/<cube_id>_<stage>/
  * --halo N:        load N voxels of safety boundary from neighbor cubes
  * --no-qem:        skip per-component decimation (raw MC+LOP only)
  * --no-timeout:    disable the hard wall-clock timeout
  *
- * output.tif is a positional placeholder; this binary emits OBJs only.
+ * output.tif (TIFF mode) is a positional placeholder; this binary emits OBJs only.
  */
 #include "common/ves_platform.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,21 +48,42 @@ static int get_thread_count(void)
     return (n > 0) ? n : 2;
 }
 
+static void usage(const char *argv0)
+{
+    fprintf(stderr,
+        "Usage: %s input.tif output.tif [--dump-obj dir] [--no-qem] "
+        "[--no-timeout] [--halo N]\n"
+        "   or: %s --stdin-raw <p_size> <oz> <oy> <ox> [--halo N] "
+        "[--dump-obj dir] [--no-qem] [--no-timeout]\n",
+        argv0, argv0);
+}
+
 int main(int argc, char *argv[])
 {
-    if (argc < 3) {
-        fprintf(stderr, "Usage: %s input.tif output.tif [--dump-obj dir] "
-                "[--no-qem] [--no-timeout] [--halo N]\n", argv[0]);
-        return 1;
-    }
-    const char *input_path  = argv[1];
-    const char *output_path = argv[2];
-    const char *dump_dir    = NULL;
-    int skip_qem            = 0;
-    int no_timeout          = 0;
-    int halo_voxels         = 0;
+    int stdin_raw = (argc >= 2 && strcmp(argv[1], "--stdin-raw") == 0);
 
-    for (int i = 3; i < argc; i++) {
+    const char *input_path  = NULL;
+    const char *output_path = NULL;
+    const char *dump_dir    = NULL;
+    int skip_qem    = 0;
+    int no_timeout  = 0;
+    int halo_voxels = 0;
+    int p_size = 0, oz = 0, oy = 0, ox = 0;
+    int opt_start;
+
+    if (stdin_raw) {
+        if (argc < 6) { usage(argv[0]); return 1; }
+        p_size = atoi(argv[2]);
+        oz = atoi(argv[3]); oy = atoi(argv[4]); ox = atoi(argv[5]);
+        opt_start = 6;
+    } else {
+        if (argc < 3) { usage(argv[0]); return 1; }
+        input_path  = argv[1];
+        output_path = argv[2];
+        opt_start = 3;
+    }
+
+    for (int i = opt_start; i < argc; i++) {
         if (strcmp(argv[i], "--dump-obj") == 0 && i + 1 < argc) {
             dump_dir = argv[++i];
         } else if (strcmp(argv[i], "--no-qem") == 0) {
@@ -76,21 +104,37 @@ int main(int argc, char *argv[])
         }
     }
 
-    if (ves_ensure_parent_dir(output_path) != 0) {
-        fprintf(stderr, "ERROR: cannot create output directory for %s\n",
-                output_path);
-        return 1;
+    if (stdin_raw) {
+        if (p_size <= 0 || oz < 0 || oy < 0 || ox < 0) {
+            fprintf(stderr, "ERROR: bad --stdin-raw args\n");
+            return 1;
+        }
+        if (p_size != 128 + 2 * halo_voxels) {
+            fprintf(stderr, "ERROR: p_size (%d) must equal 128 + 2*halo (%d)\n",
+                    p_size, 128 + 2 * halo_voxels);
+            return 1;
+        }
+    } else {
+        if (ves_ensure_parent_dir(output_path) != 0) {
+            fprintf(stderr, "ERROR: cannot create output directory for %s\n",
+                    output_path);
+            return 1;
+        }
     }
 
     int n_threads = get_thread_count();
 
     char cube_id[128] = {0};
-    DumpObj_extract_cube_id(input_path, cube_id, sizeof(cube_id));
+    if (stdin_raw) {
+        snprintf(cube_id, sizeof(cube_id), "z%05d_y%05d_x%05d", oz, oy, ox);
+    } else {
+        DumpObj_extract_cube_id(input_path, cube_id, sizeof(cube_id));
+    }
 
-    /* Derive pred_dir = directory of input_path. */
+    /* pred_dir = directory of input_path (TIFF+halo neighbor lookup only). */
     char pred_dir_buf[1024] = {0};
     const char *pred_dir = NULL;
-    if (halo_voxels > 0) {
+    if (!stdin_raw && halo_voxels > 0) {
         strncpy(pred_dir_buf, input_path, sizeof(pred_dir_buf) - 1);
         char *last_slash = NULL;
         for (char *p = pred_dir_buf; *p; p++) {
@@ -104,8 +148,8 @@ int main(int argc, char *argv[])
         }
     }
 
-    fprintf(stderr, "cube_mesh: %s -> %s  (threads=%d, halo=%d)\n",
-            input_path, output_path, n_threads, halo_voxels);
+    fprintf(stderr, "cube_mesh: %s (threads=%d, halo=%d)\n",
+            stdin_raw ? cube_id : input_path, n_threads, halo_voxels);
 
     double t_total = ves_clock_sec();
     double hard_timeout = no_timeout ? 1e9 : HARD_TIMEOUT_SEC;
@@ -116,21 +160,40 @@ int main(int argc, char *argv[])
     PipelineOutput out = {0};
 
     TRY
-        PipelineInput in = {
-            .tiff_path        = input_path,
-            .pred_dir         = pred_dir,
-            .cube_id          = cube_id,
-            .halo_voxels      = halo_voxels,
-            .cube_D           = 128,
-            .cube_H           = 128,
-            .cube_W           = 128,
-            .n_threads        = n_threads,
-            .qem_target_ratio = 0.0f,  /* use default */
-            .dump_dir         = dump_dir,
-            .skip_qem         = skip_qem,
-        };
-        int rc = pipeline_process_cube(arena, &in, &out);
-        if (rc == 0) pipeline_ok = 1;
+        uint8_t *raw_buf = NULL;
+        int input_ok = 1;
+        if (stdin_raw) {
+            size_t n = (size_t)p_size * (size_t)p_size * (size_t)p_size;
+            raw_buf = (uint8_t *)ARENA_CALLOC(arena, (long)n, 1L);
+            size_t got = 0, r;
+            while (got < n && (r = fread(raw_buf + got, 1, n - got, stdin)) > 0)
+                got += r;
+            if (got != n) {
+                fprintf(stderr, "stdin-raw: expected %zu bytes, got %zu\n", n, got);
+                input_ok = 0;
+            }
+        }
+
+        if (input_ok) {
+            PipelineInput in = {
+                .tiff_path        = input_path,
+                .pred_dir         = pred_dir,
+                .cube_id          = cube_id,
+                .halo_voxels      = halo_voxels,
+                .cube_D           = 128,
+                .cube_H           = 128,
+                .cube_W           = 128,
+                .n_threads        = n_threads,
+                .qem_target_ratio = 0.0f,  /* use default */
+                .dump_dir         = dump_dir,
+                .skip_qem         = skip_qem,
+                .vol_in           = raw_buf,
+                .p_size_in        = stdin_raw ? p_size : 0,
+                .cube_origin_zyx  = { oz, oy, ox },
+            };
+            int rc = pipeline_process_cube(arena, &in, &out);
+            if (rc == 0) pipeline_ok = 1;
+        }
 
     EXCEPT(Timeout)
         fprintf(stderr, "TIMEOUT after %.1fs\n",

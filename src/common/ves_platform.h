@@ -253,12 +253,12 @@ static inline const char *ves_path_basename(const char *path)
  * posix_fadvise — no-op on Windows
  * ================================================================ */
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__APPLE__)
   #define VES_FADVISE_DONTNEED  0
   static inline int ves_fadvise(int fd, long offset, long len, int advice)
   {
       (void)fd; (void)offset; (void)len; (void)advice;
-      return 0; /* no-op on Windows */
+      return 0; /* no-op on Windows/macOS (no posix_fadvise) */
   }
 #else
   #include <fcntl.h>

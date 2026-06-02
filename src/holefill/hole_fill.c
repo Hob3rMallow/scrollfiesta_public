@@ -28,6 +28,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Forward decl: used before its static definition (clang errors otherwise). */
+static int loop_diag_in_mesh(int32_t va, int32_t vb,
+                             const int32_t *mesh_faces, size_t mesh_nf);
+
 /* Triangle library */
 #define ANSI_DECLARATORS
 #define REAL double

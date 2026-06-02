@@ -51,6 +51,11 @@ int cc_label_3d(Arena_T arena, const uint8_t *vol,
  * On success, *out_meshes points to an arena-allocated array of
  * ComponentMesh structs, and *out_n_meshes is the count.
  */
+/* In-memory input (optional): when vol_in != NULL the TIFF / halo loaders are
+ * bypassed. vol_in is a padded (p_size_in)^3 uint8 buffer whose index (0,0,0)
+ * is world voxel (cube_origin - halo_voxels), exactly like HaloLoader_load's
+ * output; cube_origin_in is the owned cube origin (z,y,x). This lets a caller
+ * stream a cube straight from a remote zarr instead of reading a TIFF. */
 int MeshExtract_run(Arena_T          arena,
                     const char      *tiff_path,
                     const char      *pred_dir,        /* used when halo_voxels > 0 */
@@ -62,6 +67,9 @@ int MeshExtract_run(Arena_T          arena,
                     const char      *dump_cube_dir,
                     const char      *cube_id,
                     int              skip_qem,
+                    const uint8_t   *vol_in,          /* optional in-memory cube */
+                    int              p_size_in,
+                    const int64_t   *cube_origin_in,  /* owned origin (z,y,x) */
                     ComponentMesh  **out_meshes,
                     size_t          *out_n_meshes);
 
