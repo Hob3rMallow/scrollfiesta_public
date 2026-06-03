@@ -48,8 +48,6 @@ class MesherResult:
 def _mesh_one_cube(vol: ZarrVolume, cube: Cube, dump_dir: Path, *, cube_mesh_bin,
                    halo: int, threshold: str | None, skip_qem: bool, size: int,
                    env: dict, timeout: float) -> CubeResult:
-    buf = read_padded_cube(vol, cube.oz, cube.oy, cube.ox, size=size, halo=halo)
-    mask = apply_threshold(buf, threshold)              # uint8 {0,255}, C-contiguous
     p = size + 2 * halo
     cmd = [str(cube_mesh_bin), "--stdin-raw", str(p),
            str(cube.oz), str(cube.oy), str(cube.ox),
@@ -59,13 +57,19 @@ def _mesh_one_cube(vol: ZarrVolume, cube: Cube, dump_dir: Path, *, cube_mesh_bin
     exp = (dump_dir / cube.cube_id / f"{cube.cube_id}_raw_snap"
            / f"{cube.cube_id}_raw_snap_all.obj")
     try:
+        buf = read_padded_cube(vol, cube.oz, cube.oy, cube.ox, size=size, halo=halo)
+        mask = apply_threshold(buf, threshold)          # uint8 {0,255}, C-contiguous
         proc = subprocess.run(cmd, input=mask.tobytes(), capture_output=True,
                               env=env, timeout=timeout)
     except subprocess.TimeoutExpired:
         # A pathologically dense cube can stall the mesher; skip it rather than
         # hang the whole run (try a coarser --level or smaller ROI).
-        return CubeResult(cube.cube_id, -9, exp.exists(),
-                          f"TIMEOUT after {timeout}s")
+        return CubeResult(cube.cube_id, -9, exp.exists(), f"TIMEOUT after {timeout}s")
+    except Exception as e:  # e.g. an S3/credential error (expired STS token)
+        # Skip this cube so the run welds whatever else succeeded instead of
+        # crashing the whole ROI. The message surfaces in run_mesher's report.
+        return CubeResult(cube.cube_id, -1, exp.exists(),
+                          f"{type(e).__name__}: {str(e)[:300]}")
     tail = proc.stderr.decode("utf-8", "replace")[-400:] if proc.stderr else ""
     return CubeResult(cube.cube_id, proc.returncode, exp.exists(), tail)
 

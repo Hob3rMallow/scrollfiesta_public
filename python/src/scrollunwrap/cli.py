@@ -54,6 +54,12 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="per-cube mesher timeout in seconds (default 600); a "
                         "stalled dense cube is skipped, not allowed to hang")
     r.add_argument("--no-qem", action="store_true")
+    r.add_argument("--mesh-only", action="store_true",
+                   help="stop after welding: write welded.obj + report and skip "
+                        "the per-component flatten/tifxyz stage")
+    r.add_argument("--flatboi-timeout", type=float, default=300.0,
+                   help="per-component flatboi timeout (s); a component whose SLIM "
+                        "solve exceeds this is skipped (default 300)")
     r.add_argument("--no-render", action="store_true")
     r.add_argument("--s3-anon", choices=["auto", "yes", "no"], default="auto",
                    help="S3 auth: auto = signed when AWS creds (incl. STS) are in "
@@ -100,7 +106,8 @@ def _process_component(args, comp, cdir: Path, bins: dict) -> dict:
     prepped_obj = cdir / "prepped.obj"
     write_obj_vf(prepped_obj, pp.mesh.vertices, pp.mesh.faces)
     flat = run_flatboi(prepped_obj, binary=bins["flatboi"], iters=args.iters,
-                       energy=args.energy, tol=args.tol, env=_paths.default_env())
+                       energy=args.energy, tol=args.tol, env=_paths.default_env(),
+                       timeout=args.flatboi_timeout)
     _, meta, _ = run_obj2tifxyz(flat, cdir / "tifxyz", binary=bins["obj2tifxyz"],
                                 step_size=args.step_size)
     crep = build_report(prepped_info=pp.info, flat_obj=flat, tifxyz_meta=meta)
@@ -133,18 +140,22 @@ def _process_roi(args, roi: Roi, roi_dir: Path, bins: dict) -> dict:
         cube_timeout=args.cube_timeout)
 
     welded = load_welded_obj(mesh_res.welded_obj)
+    welded_stats = analyze_welded(welded)
+    base = {"roi": asdict(roi), "cubes_planned": len(cubes),
+            "cubes_meshed": mesh_res.n_obj, "weld_report": mesh_res.weld_report,
+            "welded": welded_stats}
+
+    if args.mesh_only:
+        rep = {**base, "mesh_only": True, "components": []}
+        write_report(roi_dir / "report.json", rep)
+        print(f"  mesh-only: {mesh_res.welded_obj} "
+              f"({welded_stats['n_vertices']} verts, {welded_stats['n_faces']} faces, "
+              f"{welded_stats['n_components']} components)")
+        return rep
+
     comps = select_components(welded, min_faces=args.min_faces,
                               max_components=args.max_components, mode=args.components)
-
-    roi_report: dict = {
-        "roi": asdict(roi),
-        "cubes_planned": len(cubes),
-        "cubes_meshed": mesh_res.n_obj,
-        "weld_report": mesh_res.weld_report,
-        "welded": analyze_welded(welded),
-        "n_components_selected": len(comps),
-        "components": [],
-    }
+    roi_report: dict = {**base, "n_components_selected": len(comps), "components": []}
     print(f"  welded: {len(welded.faces)} faces, "
           f"{roi_report['welded']['n_components']} components; "
           f"flattening {len(comps)} (>= {args.min_faces} faces)")
@@ -187,11 +198,19 @@ def main(argv=None) -> int:
         print(f"\n=== ROI {i} bbox(l0)={roi.bbox_l0} density={roi.density:.3f} ===")
         try:
             rep = _process_roi(args, roi, roi_dir, bins)
-            comp_ok = sum(bool(c.get("ok")) for c in rep["components"])
-            summary.append({"roi": i, "ok": comp_ok > 0, "dir": str(roi_dir),
-                            "components_ok": comp_ok,
-                            "components_total": len(rep["components"])})
-            print(f"  done -> {roi_dir} ({comp_ok}/{len(rep['components'])} components)")
+            if rep.get("mesh_only"):
+                w = rep["welded"]
+                ok = w["n_faces"] > 0
+                summary.append({"roi": i, "ok": ok, "dir": str(roi_dir),
+                                "mesh_only": True, "verts": w["n_vertices"],
+                                "faces": w["n_faces"], "components": w["n_components"]})
+                print(f"  mesh -> {roi_dir} ({w['n_vertices']} verts, {w['n_faces']} faces)")
+            else:
+                comp_ok = sum(bool(c.get("ok")) for c in rep["components"])
+                summary.append({"roi": i, "ok": comp_ok > 0, "dir": str(roi_dir),
+                                "components_ok": comp_ok,
+                                "components_total": len(rep["components"])})
+                print(f"  done -> {roi_dir} ({comp_ok}/{len(rep['components'])} components)")
         except Exception as e:
             traceback.print_exc()
             summary.append({"roi": i, "ok": False, "dir": str(roi_dir), "error": str(e)})
@@ -199,9 +218,11 @@ def main(argv=None) -> int:
 
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
     n_ok = sum(s["ok"] for s in summary)
-    total_comps = sum(s.get("components_ok", 0) for s in summary)
-    print(f"\nDone: {n_ok}/{len(rois)} ROIs produced surfaces "
-          f"({total_comps} tifxyz components total) -> {out/'summary.json'}")
+    msg = f"\nDone: {n_ok}/{len(rois)} ROIs OK"
+    if any(not s.get("mesh_only") for s in summary):
+        total_comps = sum(s.get("components_ok", 0) for s in summary)
+        msg += f" ({total_comps} tifxyz components total)"
+    print(msg + f" -> {out/'summary.json'}")
     return 0 if n_ok else 1
 
 
