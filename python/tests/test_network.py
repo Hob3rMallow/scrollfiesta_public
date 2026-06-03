@@ -1,11 +1,14 @@
 """Live S3 tests against the real PHerc0139 surface-prediction zarr (marked
 network; deselect with -m 'not network')."""
 
+import os
+
 import numpy as np
 import pytest
 
 from scrollunwrap.roi_finder import auto_pick_rois
-from scrollunwrap.zarr_source import open_volume, read_padded_cube
+from scrollunwrap.zarr_source import (aws_credentials_available, open_volume,
+                                      read_block, read_padded_cube)
 
 pytestmark = pytest.mark.network
 
@@ -40,3 +43,19 @@ def test_read_padded_cube_real():
     buf = read_padded_cube(v0, z0, y0, x0, size=128, halo=13)
     assert buf.shape == (154, 154, 154) and buf.dtype == np.uint8
     assert int((buf != 0).sum()) > 0     # a dense ROI must contain surface
+
+
+def test_private_s3_signed_access():
+    """Signed access to a PRIVATE OME-Zarr. Skips unless AWS creds (e.g. STS)
+    are in the environment AND SCROLLUNWRAP_PRIVATE_ZARR points at a private
+    store — so this never hardcodes credentials or a private URI."""
+    if not aws_credentials_available():
+        pytest.skip("no AWS credentials in environment")
+    uri = os.environ.get("SCROLLUNWRAP_PRIVATE_ZARR")
+    if not uri:
+        pytest.skip("set SCROLLUNWRAP_PRIVATE_ZARR to a private OME-Zarr URI")
+    v = open_volume(uri, 0)              # anon=None -> auto -> signed
+    assert v.dtype == np.uint8 and len(v.shape) == 3
+    s = min(64, *v.shape)
+    blk = read_block(v, 0, s, 0, s, 0, s)   # exercises a signed data fetch
+    assert blk.size > 0

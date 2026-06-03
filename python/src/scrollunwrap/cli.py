@@ -55,7 +55,12 @@ def _build_parser() -> argparse.ArgumentParser:
                         "stalled dense cube is skipped, not allowed to hang")
     r.add_argument("--no-qem", action="store_true")
     r.add_argument("--no-render", action="store_true")
-    r.add_argument("--no-anon", action="store_true", help="disable anonymous s3 access")
+    r.add_argument("--s3-anon", choices=["auto", "yes", "no"], default="auto",
+                   help="S3 auth: auto = signed when AWS creds (incl. STS) are in "
+                        "the environment else anonymous; yes = force anonymous; "
+                        "no = force signed/private")
+    r.add_argument("--s3-endpoint", default=None,
+                   help="custom S3 endpoint URL for non-AWS/private object stores")
     r.add_argument("--out", required=True, type=Path)
     r.add_argument("--cube-mesh-bin", default=_paths.default_cube_mesh())
     r.add_argument("--grid-weld-bin", default=_paths.default_grid_weld())
@@ -70,13 +75,21 @@ def _require_bin(path, name: str):
     return Path(path)
 
 
+def _s3_opts(args):
+    """Resolve (anon, storage_options) from the S3 auth flags."""
+    anon = {"auto": None, "yes": True, "no": False}[args.s3_anon]
+    so = {"endpoint_url": args.s3_endpoint} if args.s3_endpoint else None
+    return anon, so
+
+
 def _resolve_rois(args) -> list[Roi]:
     if args.bbox is not None:
         return [Roi(bbox_l0=tuple(args.bbox), surface_voxels=-1, density=-1.0,
                     scan_cell=(-1, -1, -1))]
+    anon, so = _s3_opts(args)
     return auto_pick_rois(args.zarr, args.auto_roi, scan_level=args.scan_level,
                           roi_cubes=tuple(args.roi_cubes), target_level=args.level,
-                          anon=not args.no_anon)
+                          anon=anon, storage_options=so)
 
 
 def _process_component(args, comp, cdir: Path, bins: dict) -> dict:
@@ -108,7 +121,8 @@ def _process_component(args, comp, cdir: Path, bins: dict) -> dict:
 
 def _process_roi(args, roi: Roi, roi_dir: Path, bins: dict) -> dict:
     roi_dir.mkdir(parents=True, exist_ok=True)
-    vol = open_volume(args.zarr, args.level, anon=not args.no_anon)
+    anon, so = _s3_opts(args)
+    vol = open_volume(args.zarr, args.level, anon=anon, storage_options=so)
     cubes = plan_cubes(roi.bbox_l0, args.level)
 
     mesh_res = run_mesher(

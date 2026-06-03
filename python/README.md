@@ -17,6 +17,21 @@ scrollunwrap run \
   --obj2tifxyz-bin .../volume-cartographer/build-macos/bin/vc_obj2tifxyz_legacy
 ```
 
+## Private S3
+
+`--s3-anon auto` (default) signs requests when AWS credentials are present in the
+environment, else falls back to anonymous. Credentials are read from the standard
+AWS environment (incl. temporary **STS** sessions) by s3fs/botocore — never from
+code or flags:
+
+```
+export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... AWS_SESSION_TOKEN=...
+scrollunwrap run --zarr s3://volpkgs/.../<...>.zarr --auto-roi 1 --out RUN
+```
+
+Use `--s3-anon no` to force signed access, `--s3-anon yes` to force anonymous, and
+`--s3-endpoint URL` for non-AWS/private object stores (e.g. MinIO).
+
 Dev:
 
 ```

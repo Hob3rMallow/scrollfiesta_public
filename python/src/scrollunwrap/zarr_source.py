@@ -9,11 +9,36 @@ is a single padded cube (``(128+2*halo)**3`` bytes).
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 
 import numpy as np
 import zarr
+
+# Env vars that indicate AWS can supply (possibly temporary/STS) credentials.
+_AWS_CRED_ENV = (
+    "AWS_ACCESS_KEY_ID", "AWS_PROFILE", "AWS_ROLE_ARN",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_WEB_IDENTITY_TOKEN_FILE",
+)
+
+
+def aws_credentials_available() -> bool:
+    """True if the environment looks able to provide AWS credentials (access
+    key / session token / profile / role). Used to auto-decide anonymous vs
+    signed S3 access. Credentials themselves are read from the environment by
+    s3fs/botocore — never passed through code."""
+    return any(os.environ.get(k) for k in _AWS_CRED_ENV)
+
+
+def _s3_storage_options(anon, storage_options) -> dict:
+    """anon: None -> auto (signed iff AWS creds present), else forced bool."""
+    if anon is None:
+        anon = not aws_credentials_available()
+    so: dict = {"anon": bool(anon)}
+    if storage_options:
+        so.update(storage_options)
+    return so
 
 
 @dataclass(frozen=True)
@@ -29,16 +54,21 @@ class ZarrVolume:
     dtype: np.dtype
 
 
-def open_volume(zarr_uri: str, level: int = 0, *, anon: bool = True) -> ZarrVolume:
+def open_volume(zarr_uri: str, level: int = 0, *, anon: bool | None = None,
+                storage_options: dict | None = None) -> ZarrVolume:
     """Open one resolution ``level`` of an OME-Zarr store.
 
-    Works for both ``s3://`` (anonymous by default) and local filesystem URIs,
-    and for both zarr v2-format and v3-format stores.
+    Works for both ``s3://`` and local URIs, and for zarr v2/v3 stores.
+
+    ``anon``: None (default) auto-selects — signed S3 access when AWS
+    credentials (incl. temporary STS) are present in the environment, else
+    anonymous. Pass True/False to force. ``storage_options`` is merged into the
+    s3fs options (e.g. ``{"endpoint_url": ...}`` for non-AWS/private S3).
     """
     uri = str(zarr_uri).rstrip("/")
     if uri.startswith("s3://"):
-        arr = zarr.open(uri, path=str(level), mode="r",
-                        storage_options={"anon": bool(anon)})
+        so = _s3_storage_options(anon, storage_options)
+        arr = zarr.open(uri, path=str(level), mode="r", storage_options=so)
     else:
         arr = zarr.open(uri, path=str(level), mode="r")
     shape = tuple(int(s) for s in arr.shape)

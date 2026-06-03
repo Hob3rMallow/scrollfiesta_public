@@ -63,6 +63,23 @@ def test_read_block_clips_to_bounds(tmp_path):
     assert empty.size == 0
 
 
+def test_s3_auth_auto_detection(monkeypatch):
+    """anon=None auto-selects signed vs anonymous from the AWS env; explicit
+    True/False forces; storage_options merge through (e.g. private endpoints)."""
+    from scrollunwrap.zarr_source import (_AWS_CRED_ENV, _s3_storage_options,
+                                          aws_credentials_available)
+    for k in _AWS_CRED_ENV:
+        monkeypatch.delenv(k, raising=False)
+    assert aws_credentials_available() is False
+    assert _s3_storage_options(None, None) == {"anon": True}        # no creds -> anon
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIA_test")            # incl. STS sets this
+    assert aws_credentials_available() is True
+    assert _s3_storage_options(None, None) == {"anon": False}       # creds -> signed
+    assert _s3_storage_options(True, None) == {"anon": True}        # force anon
+    assert _s3_storage_options(False, {"endpoint_url": "http://minio:9000"}) == \
+        {"anon": False, "endpoint_url": "http://minio:9000"}
+
+
 def test_apply_threshold():
     arr = np.array([[0, 1, 127, 128, 255]], dtype=np.uint8)
     assert (apply_threshold(arr, None) == np.array([[0, 255, 255, 255, 255]])).all()

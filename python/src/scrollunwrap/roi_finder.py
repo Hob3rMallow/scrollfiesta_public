@@ -33,7 +33,8 @@ def auto_pick_rois(zarr_uri: str, n: int = 3, *, scan_level: int = 5,
                    roi_cubes: tuple[int, int, int] = (2, 2, 2),
                    target_level: int = 0, cube: int = 128,
                    min_separation_cells: int = 2, density_min: float = 0.02,
-                   density_max: float = 0.30, anon: bool = True) -> list[Roi]:
+                   density_max: float = 0.30, anon: bool | None = None,
+                   storage_options: dict | None = None) -> list[Roi]:
     """Return up to ``n`` ROIs (level-0 bboxes) with sheet-like surface density.
 
     We rank by surface count but only accept cells whose density falls in
@@ -41,7 +42,7 @@ def auto_pick_rois(zarr_uri: str, n: int = 3, *, scan_level: int = 5,
     dense/noisy blob (many overlapping wraps) that stalls the mesher. Thin
     scroll sheets occupy only a small fraction of a volume, so a moderate band
     selects clean, meshable regions rather than the absolute densest one."""
-    coarse = open_volume(zarr_uri, scan_level, anon=anon)
+    coarse = open_volume(zarr_uri, scan_level, anon=anon, storage_options=storage_options)
     fz, fy, fx = _footprint_scan_voxels(roi_cubes, cube, target_level, scan_level)
     Dc, Hc, Wc = coarse.shape
     nz, ny, nx = Dc // fz, Hc // fy, Wc // fx
