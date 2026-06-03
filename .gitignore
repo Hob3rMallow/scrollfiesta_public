@@ -106,3 +106,12 @@ metric-windows/topological-metrics-kaggle/external/Betti-Matching-3D/build_py/
 # ------ Sample output meshes (3D OBJ files, NOT MSVC object files) ------
 # Re-include these despite the "*.obj" rule above; stored via Git LFS (.gitattributes)
 !sample_outputs/**/*.obj
+
+# ------ scrollunwrap pipeline run outputs (meshes / tifxyz / renders / logs) ------
+# Never commit pipeline output (and it may be derived from private data).
+runs/
+*.tifxyz/
+
+# ------ macOS / editor / local build cruft ------
+.DS_Store
+deps/build-clipper2/
