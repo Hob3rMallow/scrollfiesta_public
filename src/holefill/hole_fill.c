@@ -38,6 +38,17 @@
 
 /* From triangle.c: longjmp guard for triexit() */
 extern jmp_buf triangle_jmpbuf;
+
+/* Per-hole debug tracing is gated behind HOLEFILL_DEBUG (off by default). On the
+ * full-grid weld it fired thousands of times -- each with an fflush(stderr) --
+ * and dominated the hole-fill runtime. Summary/error lines stay unconditional. */
+static int hf_log_on(void) {
+    static int d = -1;
+    if (d < 0) d = getenv("HOLEFILL_DEBUG") ? 1 : 0;
+    return d;
+}
+#define HFLOG(...)   do { if (hf_log_on()) fprintf(stderr, __VA_ARGS__); } while (0)
+#define HFFLUSH()    do { if (hf_log_on()) fflush(stderr); } while (0)
 extern int triangle_jmpbuf_set;
 
 #ifndef _MSC_VER
@@ -63,6 +74,13 @@ static void triangle_segv_handler(int sig) {
 #define CG_MAX_ITER        500     /* CG solver max iterations */
 #define CG_TOL             1e-6    /* CG relative tolerance */
 #define MICRO_HOLE_MAX     6       /* (legacy) */
+/* Degenerate-fill prune (prune_degenerate_fill): the minimal-surface smoother
+ * collapses interior Steiner points of a thin-slit fill into a sub-voxel cluster,
+ * leaving needle triangles. Merge Steiner endpoints of edges shorter than this and
+ * drop faces below the area floor. Well under a real BPA fill edge (~0.5-1.5 vox),
+ * comfortably above the observed 0.05-0.1 vox cluster gaps. */
+#define FILL_DEGEN_EPS_VOX 0.25f
+#define FILL_DEGEN_AREA    1e-4f
 /* No-merger backstop: a 4+ closed loop wider than this (voxels) is skipped.
  * Per-component separation is the primary wrap guard (each sheet is its own
  * component post-split); this catches a pathological loop bridging a sheet
@@ -274,6 +292,16 @@ static size_t chain_into_loops(Arena_T arena,
                                (long)max_chains * (long)sizeof(OpenChain));
     size_t n_open = 0;
 
+    /* Chain-walk scratch: allocate ONCE and reuse every iteration. These are
+     * pure scratch (each chain is copied into its own loop_buf/chain_buf below),
+     * so a single pair of buffers is reused. Allocating fwd+bwd (each n_edges
+     * long) PER seed edge leaked O(n_edges) per chain -> tens of GB and an OOM
+     * (hole_fill.c:293) on the full-grid weld's millions of boundary edges. */
+    int32_t *fwd = (int32_t *)ARENA_ALLOC(arena,
+                      (long)(n_edges + 2) * (long)sizeof(int32_t));
+    int32_t *bwd = (int32_t *)ARENA_ALLOC(arena,
+                      (long)(n_edges + 2) * (long)sizeof(int32_t));
+
     for (size_t ei = 0; ei < n_edges; ei++) {
         if (edge_used[ei]) continue;
 
@@ -281,9 +309,7 @@ static size_t chain_into_loops(Arena_T arena,
         int32_t v1 = edges[ei].v1;
         edge_used[ei] = 1;
 
-        /* Walk forward from v1 (coming from v0) */
-        int32_t *fwd = (int32_t *)ARENA_ALLOC(arena,
-                          (long)(n_edges + 2) * (long)sizeof(int32_t));
+        /* Walk forward from v1 (coming from v0). fwd is reused scratch. */
         size_t fwd_len = 0;
         int32_t fwd_end = walk_chain_forward(v1, v0, adj_off, adj_list,
                                               edges, n_edges, edge_used,
@@ -306,9 +332,7 @@ static size_t chain_into_loops(Arena_T arena,
             continue;
         }
 
-        /* Walk backward from v0 (coming from v1) */
-        int32_t *bwd = (int32_t *)ARENA_ALLOC(arena,
-                          (long)(n_edges + 2) * (long)sizeof(int32_t));
+        /* Walk backward from v0 (coming from v1). bwd is reused scratch. */
         size_t bwd_len = 0;
         walk_chain_forward(v0, v1, adj_off, adj_list,
                            edges, n_edges, edge_used,
@@ -699,7 +723,7 @@ static int triangulate_seh(char *flags, struct triangulateio *in,
     __try {
         triangulate(flags, in, out, NULL);
     } __except(1 /* EXCEPTION_EXECUTE_HANDLER */) {
-        fprintf(stderr, "      [safe_triangulate] SEH exception caught\n");
+        HFLOG("      [safe_triangulate] SEH exception caught\n");
         return -1;
     }
     return 0;
@@ -766,7 +790,7 @@ static int safe_triangulate(char *flags, struct triangulateio *in,
         fprintf(stderr,
             "      [safe_triangulate] *** TIMEOUT after %lu ms -- killed worker, abandoning hole ***\n",
             (unsigned long)ms);
-        fflush(stderr);
+        HFFLUSH();
         return -1;
     }
     CloseHandle((HANDLE)h);
@@ -782,7 +806,7 @@ static int safe_triangulate(char *flags, struct triangulateio *in,
     int jrc = setjmp(triangle_jmpbuf);
     if (jrc != 0) {
         triangle_jmpbuf_set = 0;
-        fprintf(stderr, "      [safe_triangulate] triexit caught (code=%d)\n", jrc);
+        HFLOG("      [safe_triangulate] triexit caught (code=%d)\n", jrc);
         return -1;
     }
 
@@ -803,7 +827,7 @@ static int safe_triangulate(char *flags, struct triangulateio *in,
         alarm(0);
         sigaction(SIGSEGV, &sa_old_segv, NULL);
         sigaction(SIGALRM, &sa_old_alrm, NULL);
-        fprintf(stderr, "      [safe_triangulate] *** SIGSEGV/TIMEOUT caught -- abandoning hole ***\n");
+        HFLOG("      [safe_triangulate] *** SIGSEGV/TIMEOUT caught -- abandoning hole ***\n");
         return -1;
     }
 
@@ -883,7 +907,7 @@ static int triangulate_polygon(const double *pts_2d, size_t n,
      * quality refinement will try to insert Steiner points forever or crash */
     double edge_ratio = (min_edge_len > 0) ? max_edge_len / min_edge_len : 1e6;
     if (edge_ratio > 50.0) {
-        fprintf(stderr, "      [triangulate_polygon] extreme edge ratio %.1f "
+        HFLOG("      [triangulate_polygon] extreme edge ratio %.1f "
                 "(min=%.2e max=%.2e), forcing skip_quality\n",
                 edge_ratio, min_edge_len, max_edge_len);
         skip_quality = 1;
@@ -916,22 +940,22 @@ static int triangulate_polygon(const double *pts_2d, size_t n,
         snprintf(flags, sizeof(flags), "pq20YDa%.6fzQS%d", max_area, steiner_cap);
     }
 
-    fprintf(stderr, "      [triangulate_polygon] n=%zu avg_edge=%.4f skip_quality=%d flags='%s'\n",
+    HFLOG("      [triangulate_polygon] n=%zu avg_edge=%.4f skip_quality=%d flags='%s'\n",
             n, avg_edge, skip_quality, flags);
-    fflush(stderr);
+    HFFLUSH();
 
     /* Run triangulation (crash-guarded) */
     int tri_rc = safe_triangulate(flags, &in_tri, &out_tri);
     if (tri_rc != 0) {
-        fprintf(stderr, "      [triangulate_polygon] Triangle crashed — skipping hole\n");
+        HFLOG("      [triangulate_polygon] Triangle crashed — skipping hole\n");
         free(in_tri.pointlist);
         free(in_tri.segmentlist);
         return -1;
     }
 
-    fprintf(stderr, "      [triangulate_polygon] done: %d pts, %d tris\n",
+    HFLOG("      [triangulate_polygon] done: %d pts, %d tris\n",
             out_tri.numberofpoints, out_tri.numberoftriangles);
-    fflush(stderr);
+    HFFLUSH();
 
     if (out_tri.numberoftriangles == 0) {
         free(in_tri.pointlist);
@@ -1361,6 +1385,151 @@ typedef struct {
 } HoleFillResult;
 
 /* ------------------------------------------------------------------ */
+/* prune_degenerate_fill — drop sliver/duplicate triangles from a fill */
+/* ------------------------------------------------------------------ */
+/* The minimal-surface smoother pins the boundary and relaxes each interior
+ * (Steiner) point to the cotangent-weighted average of its neighbours. For a
+ * thin slit hole that legitimately drives the interior points into a sub-voxel
+ * cluster, so the fill emerges with near-coincident Steiner vertices and needle
+ * triangles between them (observed on the Z=4480 weld seam: 8 tris under 0.02
+ * vox area, a 0.06-vox edge, an exact-duplicate Steiner pair).
+ *
+ * Steiner vertices are FILL-PRIVATE until stitch_fills runs, so collapsing them
+ * changes nothing outside this patch -- topology, the seam, the boundary loop and
+ * bdry_map are all untouched. We union the Steiner endpoints of every triangle
+ * edge shorter than eps_vox (boundary verts [0,nb) are never merged or moved --
+ * they are shared mesh verts), drop faces that collapse to < 3 distinct verts or
+ * below area_eps, and compact the surviving Steiner block. The whole thing is
+ * built into scratch and committed ONLY if it stays manifold -- a residual sliver
+ * is a lesser evil than a non-manifold edge. Returns 1 if it changed the fill, 0
+ * otherwise. Exposed (non-static) for the unit test; no public prototype. */
+static int32_t pf_find(int32_t *uf, int32_t x)
+{ while (uf[x] != x) { uf[x] = uf[uf[x]]; x = uf[x]; } return x; }
+
+static int pf_u64cmp(const void *a, const void *b)
+{ uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+  return x < y ? -1 : (x > y ? 1 : 0); }
+
+static double pf_tri_area(const float *V, int32_t a, int32_t b, int32_t c)
+{
+    double e1x = (double)V[b*3+0]-V[a*3+0], e1y = (double)V[b*3+1]-V[a*3+1], e1z = (double)V[b*3+2]-V[a*3+2];
+    double e2x = (double)V[c*3+0]-V[a*3+0], e2y = (double)V[c*3+1]-V[a*3+1], e2z = (double)V[c*3+2]-V[a*3+2];
+    double cx = e1y*e2z-e1z*e2y, cy = e1z*e2x-e1x*e2z, cz = e1x*e2y-e1y*e2x;
+    return 0.5 * sqrt(cx*cx + cy*cy + cz*cz);
+}
+
+/* every undirected edge incident to <= 2 faces, no repeated-vertex face */
+static int pf_is_manifold(const int32_t *faces, size_t nf)
+{
+    if (nf == 0) return 1;
+    for (size_t f = 0; f < nf; f++) {
+        int32_t a = faces[f*3+0], b = faces[f*3+1], c = faces[f*3+2];
+        if (a == b || b == c || a == c) return 0;
+    }
+    uint64_t *ed = (uint64_t *)malloc(nf * 3 * sizeof(uint64_t));
+    if (!ed) return 1;                       /* can't check -> don't block commit */
+    size_t n = 0;
+    for (size_t f = 0; f < nf; f++) {
+        int32_t v[3] = { faces[f*3+0], faces[f*3+1], faces[f*3+2] };
+        for (int e = 0; e < 3; e++) {
+            uint32_t a = (uint32_t)v[e], b = (uint32_t)v[(e+1)%3];
+            uint32_t lo = a < b ? a : b, hi = a < b ? b : a;
+            ed[n++] = ((uint64_t)lo << 32) | hi;
+        }
+    }
+    qsort(ed, n, sizeof(uint64_t), pf_u64cmp);
+    int ok = 1; size_t i = 0;
+    while (i < n) { size_t j = i + 1; while (j < n && ed[j] == ed[i]) j++;
+                    if (j - i > 2) { ok = 0; break; } i = j; }
+    free(ed);
+    return ok;
+}
+
+int prune_degenerate_fill(float *verts, int32_t *faces,
+                          size_t *p_nv, size_t *p_nf,
+                          size_t n_boundary,
+                          float eps_vox, float area_eps)
+{
+    size_t nv = *p_nv, nf = *p_nf;
+    if (nv <= n_boundary || nf == 0) return 0;        /* no Steiner to prune */
+    const double eps2 = (double)eps_vox * (double)eps_vox;
+
+    int32_t *uf = (int32_t *)malloc(nv * sizeof(int32_t));
+    if (!uf) return 0;
+    for (size_t i = 0; i < nv; i++) uf[i] = (int32_t)i;
+
+    /* union Steiner endpoints of every short triangle edge (original coords) */
+    for (size_t f = 0; f < nf; f++) {
+        for (int e = 0; e < 3; e++) {
+            int32_t a = faces[f*3 + e], b = faces[f*3 + (e+1)%3];
+            int32_t ra = pf_find(uf, a), rb = pf_find(uf, b);
+            if (ra == rb) continue;
+            if ((size_t)ra < n_boundary && (size_t)rb < n_boundary) continue; /* never merge two boundary */
+            double dx = (double)verts[a*3+0]-verts[b*3+0];
+            double dy = (double)verts[a*3+1]-verts[b*3+1];
+            double dz = (double)verts[a*3+2]-verts[b*3+2];
+            if (dx*dx + dy*dy + dz*dz >= eps2) continue;
+            if      ((size_t)ra < n_boundary) uf[rb] = ra;   /* boundary wins */
+            else if ((size_t)rb < n_boundary) uf[ra] = rb;
+            else if (ra < rb)                 uf[rb] = ra;
+            else                              uf[ra] = rb;
+        }
+    }
+
+    /* compacted index per old vertex: boundary identity, Steiner reps repacked */
+    int32_t *nidx = (int32_t *)malloc(nv * sizeof(int32_t));
+    if (!nidx) { free(uf); return 0; }
+    size_t next = n_boundary;
+    int any = 0;
+    for (size_t i = 0; i < n_boundary; i++) nidx[i] = (int32_t)i;
+    for (size_t i = n_boundary; i < nv; i++) {
+        int32_t r = pf_find(uf, (int32_t)i);
+        if (r == (int32_t)i) nidx[i] = (int32_t)next++;      /* surviving rep */
+        else { nidx[i] = -1; any = 1; }                      /* merged away */
+    }
+    if (!any) { free(uf); free(nidx); return 0; }            /* nothing collapsed */
+    for (size_t i = n_boundary; i < nv; i++) {
+        int32_t r = pf_find(uf, (int32_t)i);
+        if (r != (int32_t)i) nidx[i] = ((size_t)r < n_boundary) ? r : nidx[r];
+    }
+    size_t new_nv = next;
+
+    /* scratch verts (boundary verbatim, Steiner reps compacted) */
+    float *sv = (float *)malloc(new_nv * 3 * sizeof(float));
+    int32_t *sf = (int32_t *)malloc(nf * 3 * sizeof(int32_t));
+    if (!sv || !sf) { free(uf); free(nidx); free(sv); free(sf); return 0; }
+    for (size_t i = 0; i < n_boundary; i++)
+        for (int k = 0; k < 3; k++) sv[i*3+k] = verts[i*3+k];
+    for (size_t i = n_boundary; i < nv; i++)
+        if (pf_find(uf, (int32_t)i) == (int32_t)i)
+            for (int k = 0; k < 3; k++) sv[nidx[i]*3+k] = verts[i*3+k];
+
+    /* surviving faces, dropping collapsed / zero-area */
+    size_t out = 0;
+    for (size_t f = 0; f < nf; f++) {
+        int32_t a = nidx[faces[f*3+0]], b = nidx[faces[f*3+1]], c = nidx[faces[f*3+2]];
+        if (a == b || b == c || a == c) continue;
+        if (pf_tri_area(sv, a, b, c) < (double)area_eps) continue;
+        sf[out*3+0] = a; sf[out*3+1] = b; sf[out*3+2] = c; out++;
+    }
+
+    /* commit only if the pruned fill is still manifold and non-empty */
+    int changed = 0;
+    if (out > 0 && pf_is_manifold(sf, out)) {
+        for (size_t i = 0; i < new_nv * 3; i++) verts[i] = sv[i];
+        for (size_t i = 0; i < out * 3; i++)    faces[i] = sf[i];
+        *p_nv = new_nv; *p_nf = out;
+        changed = 1;
+    }
+    free(uf); free(nidx); free(sv); free(sf);
+    return changed;
+}
+
+/* fill_one_hole's manifold pre-check calls this before its definition below */
+static int loop_diag_in_mesh(int32_t va, int32_t vb,
+                             const int32_t *mesh_faces, size_t mesh_nf);
+
+/* ------------------------------------------------------------------ */
 /* fill_one_hole — fill a single boundary loop                         */
 /* ------------------------------------------------------------------ */
 static int fill_one_hole(Arena_T arena,
@@ -1413,7 +1582,7 @@ static int fill_one_hole(Arena_T arena,
     }
     double avg_2d_edge = total_edge_len / (double)n_loop;
 
-    fprintf(stderr, "    [fill_one_hole] n_loop=%zu avg_2d_edge=%.4f, checking short edges...\n",
+    HFLOG("    [fill_one_hole] n_loop=%zu avg_2d_edge=%.4f, checking short edges...\n",
             n_loop, avg_2d_edge);
     /* Track vertex merges from collapse: src[i] -> dst[i] in mesh indices.
      * Allocate worst case (n_loop entries). */
@@ -1447,7 +1616,7 @@ static int fill_one_hole(Arena_T arena,
                 /* Zero-length edge i→j: drop vertex i, merge into j.
                  * Record the merge (mesh vertex i → mesh vertex j) only
                  * when they are distinct mesh vertices. */
-                fprintf(stderr, "    [fill_one_hole] collapsing zero-length edge: "
+                HFLOG("    [fill_one_hole] collapsing zero-length edge: "
                         "v%d -> v%d (2D dist=%.2e)\n",
                         bdry_map[i], bdry_map[j], sqrt(d2));
                 if (bdry_map[i] != bdry_map[j]) {
@@ -1458,12 +1627,12 @@ static int fill_one_hole(Arena_T arena,
             }
         }
         if (dst < n_loop) {
-            fprintf(stderr, "    [fill_one_hole] collapsed %zu -> %zu loop verts\n",
+            HFLOG("    [fill_one_hole] collapsed %zu -> %zu loop verts\n",
                     n_loop, dst);
             n_loop = dst;
         }
         if (n_loop < 3) {
-            fprintf(stderr, "    [fill_one_hole] loop too small after collapse (%zu)\n",
+            HFLOG("    [fill_one_hole] loop too small after collapse (%zu)\n",
                     n_loop);
             Arena_restore(arena, mark);
             return -1;
@@ -1477,7 +1646,7 @@ static int fill_one_hole(Arena_T arena,
         double dx = pts_2d[0] - pts_2d[(n_loop - 1) * 2 + 0];
         double dy = pts_2d[1] - pts_2d[(n_loop - 1) * 2 + 1];
         if (dx * dx + dy * dy < min_dist_sq_wrap) {
-            fprintf(stderr, "    [fill_one_hole] collapsing wrap-around zero-length edge: "
+            HFLOG("    [fill_one_hole] collapsing wrap-around zero-length edge: "
                     "v%d -> v%d\n", bdry_map[n_loop - 1], bdry_map[0]);
             if (bdry_map[n_loop - 1] != bdry_map[0]) {
                 collapse_src[n_collapse] = bdry_map[n_loop - 1];
@@ -1486,7 +1655,7 @@ static int fill_one_hole(Arena_T arena,
             }
             n_loop--;
             if (n_loop < 3) {
-                fprintf(stderr, "    [fill_one_hole] loop too small after wrap collapse (%zu)\n",
+                HFLOG("    [fill_one_hole] loop too small after wrap collapse (%zu)\n",
                         n_loop);
                 Arena_restore(arena, mark);
                 return -1;
@@ -1495,20 +1664,20 @@ static int fill_one_hole(Arena_T arena,
     }
 
     /* Check if simple polygon and valid for CDT */
-    fprintf(stderr, "    [fill_one_hole] checking is_simple_polygon (n=%zu)...\n", n_loop);
-    fflush(stderr);
+    HFLOG("    [fill_one_hole] checking is_simple_polygon (n=%zu)...\n", n_loop);
+    HFFLUSH();
     int is_simple = is_simple_polygon(pts_2d, n_loop);
-    fprintf(stderr, "    [fill_one_hole] is_simple=%d\n", is_simple);
-    fflush(stderr);
+    HFLOG("    [fill_one_hole] is_simple=%d\n", is_simple);
+    HFFLUSH();
     int is_valid = is_valid_for_cdt(pts_2d, n_loop);
-    fprintf(stderr, "    [fill_one_hole] is_valid_for_cdt=%d\n", is_valid);
-    fflush(stderr);
+    HFLOG("    [fill_one_hole] is_valid_for_cdt=%d\n", is_valid);
+    HFFLUSH();
     int good_for_cdt = is_simple && is_valid;
 
     /* If PCA projection fails, try axis-aligned projections (XY, XZ, YZ) */
     if (!good_for_cdt) {
-        fprintf(stderr, "    [fill_one_hole] PCA projection not good for CDT, trying axis-aligned...\n");
-        fflush(stderr);
+        HFLOG("    [fill_one_hole] PCA projection not good for CDT, trying axis-aligned...\n");
+        HFFLUSH();
         for (size_t ap = 0; ap < 3; ap++) {
             size_t d0 = ap < 2 ? 0 : 1;  /* XY->0, XZ->0, YZ->1 */
             size_t d1 = ap == 0 ? 1 : 2;  /* XY->1, XZ->2, YZ->2 */
@@ -1529,12 +1698,12 @@ static int fill_one_hole(Arena_T arena,
                 test_2d[i * 2 + 1] -= mv;
             }
 
-            fprintf(stderr, "    [fill_one_hole] axis %zu: checking is_simple (n=%zu)...\n",
+            HFLOG("    [fill_one_hole] axis %zu: checking is_simple (n=%zu)...\n",
                     ap, n_loop);
-            fflush(stderr);
+            HFFLUSH();
             int ax_simple = is_simple_polygon(test_2d, n_loop);
-            fprintf(stderr, "    [fill_one_hole] axis %zu: is_simple=%d\n", ap, ax_simple);
-            fflush(stderr);
+            HFLOG("    [fill_one_hole] axis %zu: is_simple=%d\n", ap, ax_simple);
+            HFFLUSH();
             if (ax_simple &&
                 is_valid_for_cdt(test_2d, n_loop)) {
                 memcpy(pts_2d, test_2d, n_loop * 2 * sizeof(double));
@@ -1593,16 +1762,16 @@ static int fill_one_hole(Arena_T arena,
          * Collapsed polygons have degenerate geometry that can crash Triangle's
          * quality refinement non-deterministically. */
         int skip_qual = (n_collapse > 0) ? 1 : 0;
-        fprintf(stderr, "    [fill_one_hole] calling triangulate_polygon (direct CDT, n=%zu, skip_quality=%d)...\n",
+        HFLOG("    [fill_one_hole] calling triangulate_polygon (direct CDT, n=%zu, skip_quality=%d)...\n",
                 n_loop, skip_qual);
-        fflush(stderr);
+        HFFLUSH();
         rc = triangulate_polygon(pts_2d, n_loop,
                                  &tri_pts_2d, &tri_nv,
                                  &tri_faces_raw, &tri_nf,
                                  skip_qual);
-        fprintf(stderr, "    [fill_one_hole] triangulate_polygon returned rc=%d nv=%zu nf=%zu\n",
+        HFLOG("    [fill_one_hole] triangulate_polygon returned rc=%d nv=%zu nf=%zu\n",
                 rc, tri_nv, tri_nf);
-        fflush(stderr);
+        HFFLUSH();
     } else {
         /* Self-intersecting boundary: use Clipper2 to resolve, then CDT.
          * After CDT, remap boundary vertices back to original loop via
@@ -1611,13 +1780,13 @@ static int fill_one_hole(Arena_T arena,
         int *clip_counts = NULL;
         int clip_n_polys = 0;
 
-        fprintf(stderr, "    [fill_one_hole] calling Clipper2_union (n=%zu)...\n", n_loop);
-        fflush(stderr);
+        HFLOG("    [fill_one_hole] calling Clipper2_union (n=%zu)...\n", n_loop);
+        HFFLUSH();
         rc = Clipper2_union(pts_2d, n_loop, &clip_pts, &clip_counts,
                             &clip_n_polys);
-        fprintf(stderr, "    [fill_one_hole] Clipper2_union returned rc=%d, n_polys=%d\n",
+        HFLOG("    [fill_one_hole] Clipper2_union returned rc=%d, n_polys=%d\n",
                 rc, clip_n_polys);
-        fflush(stderr);
+        HFFLUSH();
 
         if (rc != 0 || clip_n_polys <= 0 || !clip_pts || !clip_counts) {
             free(clip_pts);
@@ -1676,9 +1845,9 @@ static int fill_one_hole(Arena_T arena,
         int32_t *clip_tri_faces = NULL;
         size_t clip_tri_nv = 0, clip_tri_nf = 0;
 
-        fprintf(stderr, "    [fill_one_hole] CDT on Clipper2 output (clip_n=%zu)...\n",
+        HFLOG("    [fill_one_hole] CDT on Clipper2 output (clip_n=%zu)...\n",
                 clip_n);
-        fflush(stderr);
+        HFFLUSH();
         /* skip_quality=1: the Clipper2 output is a post-boolean fallback polygon
          * (the input loop self-intersected). It commonly has sharp / near-
          * degenerate corners that send Triangle's q20 refinement into the
@@ -1689,9 +1858,9 @@ static int fill_one_hole(Arena_T arena,
                                  &clip_tri_pts, &clip_tri_nv,
                                  &clip_tri_faces, &clip_tri_nf,
                                  1);
-        fprintf(stderr, "    [fill_one_hole] Clipper2 CDT returned rc=%d nv=%zu nf=%zu\n",
+        HFLOG("    [fill_one_hole] Clipper2 CDT returned rc=%d nv=%zu nf=%zu\n",
                 rc, clip_tri_nv, clip_tri_nf);
-        fflush(stderr);
+        HFFLUSH();
         free(clip_pts);
         free(clip_counts);
 
@@ -1827,9 +1996,9 @@ static int fill_one_hole(Arena_T arena,
     }
 
     /* Embed in 3D: boundary verts from mesh, Steiner from PCA plane */
-    fprintf(stderr, "    [fill_one_hole] embedding %zu verts in 3D (%zu boundary, %zu Steiner)...\n",
+    HFLOG("    [fill_one_hole] embedding %zu verts in 3D (%zu boundary, %zu Steiner)...\n",
             tri_nv, n_loop, tri_nv - n_loop);
-    fflush(stderr);
+    HFFLUSH();
     float *fill_3d = (float *)ARENA_ALLOC(arena,
                        (long)tri_nv * 3 * (long)sizeof(float));
     embed_steiner_3d(tri_pts_2d, tri_nv, bdry_3d, n_loop,
@@ -1875,9 +2044,8 @@ static int fill_one_hole(Arena_T arena,
             }
         }
         if (found_bad) {
-            fprintf(stderr,
-                "    [fill_one_hole] manifold pre-check: boundary-to-"
-                "boundary diagonal collides with mesh edge — skip fill\n");
+            HFLOG("    [fill_one_hole] manifold pre-check: boundary-to-"
+                  "boundary diagonal collides with mesh edge — skip fill\n");
             Arena_restore(arena, mark);
             return -1;
         }
@@ -1885,24 +2053,41 @@ static int fill_one_hole(Arena_T arena,
 
     /* Smooth Steiner points with cotangent Laplacian CG solve */
     if (tri_nv > n_loop) {
-        fprintf(stderr, "    [fill_one_hole] smoothing %zu Steiner points...\n",
+        HFLOG("    [fill_one_hole] smoothing %zu Steiner points...\n",
                 tri_nv - n_loop);
-        fflush(stderr);
+        HFFLUSH();
         smooth_fill_cotangent(arena, fill_3d, fill_faces, tri_nf,
                               tri_nv, n_loop);
-        fprintf(stderr, "    [fill_one_hole] smoothing done\n");
-        fflush(stderr);
+        HFLOG("    [fill_one_hole] smoothing done\n");
+        HFFLUSH();
+
+        /* Smoothing can collapse interior Steiner points of a thin-slit fill
+         * into a sub-voxel cluster (needle triangles). Merge the coincident
+         * Steiner verts and drop the slivers -- safe because Steiner verts are
+         * fill-private until stitch_fills runs. Set HOLEFILL_NO_PRUNE=1 to
+         * disable (A/B diagnostics). */
+        static int prune_off = -1;
+        if (prune_off < 0) { const char *e = getenv("HOLEFILL_NO_PRUNE");
+                             prune_off = (e && e[0] && e[0] != '0') ? 1 : 0; }
+        size_t pre_nv = tri_nv, pre_nf = tri_nf;
+        if (!prune_off &&
+            prune_degenerate_fill(fill_3d, fill_faces, &tri_nv, &tri_nf, n_loop,
+                                  FILL_DEGEN_EPS_VOX, FILL_DEGEN_AREA)) {
+            HFLOG("    [fill_one_hole] pruned degenerate fill: "
+                    "%zu->%zu verts, %zu->%zu faces\n",
+                    pre_nv, tri_nv, pre_nf, tri_nf);
+        }
     }
 
     /* Orient fill boundary to oppose mesh boundary half-edges */
-    fprintf(stderr, "    [fill_one_hole] orienting fill faces...\n");
-    fflush(stderr);
+    HFLOG("    [fill_one_hole] orienting fill faces...\n");
+    HFFLUSH();
     orient_fill(fill_faces, tri_nf,
                 mesh_faces, mesh_nf,
                 bdry_map, n_loop);
 
-    fprintf(stderr, "    [fill_one_hole] done: %zu verts, %zu faces\n", tri_nv, tri_nf);
-    fflush(stderr);
+    HFLOG("    [fill_one_hole] done: %zu verts, %zu faces\n", tri_nv, tri_nf);
+    HFFLUSH();
 
     result->verts = fill_3d;
     result->faces = fill_faces;
@@ -2520,7 +2705,7 @@ static void log_loop_geom(const char *tag, size_t loop_idx,
             "ratio=%.1f min_angle=%.2f deg min_nonadj=%.4g\n",
             tag, loop_idx, min_e, max_e,
             (min_e > 1e-12 ? max_e / min_e : 0.0), min_ang, min_pair);
-    fflush(stderr);
+    HFFLUSH();
 }
 
 /* ------------------------------------------------------------------ */
@@ -2838,7 +3023,7 @@ int HoleFill_process_ex(Arena_T arena,
             n_loops, largest_idx, largest_len);
     if (hole_dump_dir)
         fprintf(stderr, "  [hole_fill] per-hole OBJ dumps -> %s\n", hole_dump_dir);
-    fflush(stderr);
+    HFFLUSH();
 
     for (size_t i = 0; i < n_loops; i++) {
         /* Never fill the single largest loop: it is an outer perimeter, not a
@@ -2868,7 +3053,7 @@ int HoleFill_process_ex(Arena_T arena,
                                              *verts, PINCH_EPS,
                                              subs, sublen, MAX_SUBLOOPS);
         if (n_subs > 1)
-            fprintf(stderr, "  [hole_fill] loop %zu: %zu verts -> PINCHED, "
+            HFLOG("  [hole_fill] loop %zu: %zu verts -> PINCHED, "
                     "retopologized into %zu sub-loops\n", i, parent_n, n_subs);
 
         for (size_t s = 0; s < n_subs; s++) {
@@ -2891,7 +3076,7 @@ int HoleFill_process_ex(Arena_T arena,
             if (!interior_only) {
                 /* Skip large holes (vertex-count cap) */
                 if (loop_n > (size_t)MAX_LOOP_VERTS) {
-                    fprintf(stderr, "  [hole_fill] loop %zu.%zu: %zu verts -> SKIP (too large, max=%d)\n",
+                    HFLOG("  [hole_fill] loop %zu.%zu: %zu verts -> SKIP (too large, max=%d)\n",
                             i, s, loop_n, MAX_LOOP_VERTS);
                     continue;
                 }
@@ -2910,7 +3095,7 @@ int HoleFill_process_ex(Arena_T arena,
                         }
                     }
                     if (dmax2 > HOLEFILL_MAX_DIAM_VOX * HOLEFILL_MAX_DIAM_VOX) {
-                        fprintf(stderr, "  [hole_fill] loop %zu.%zu: %zu verts -> SKIP "
+                        HFLOG("  [hole_fill] loop %zu.%zu: %zu verts -> SKIP "
                                 "(diameter %.1f > %.1f)\n", i, s, loop_n,
                                 (double)sqrtf(dmax2), (double)HOLEFILL_MAX_DIAM_VOX);
                         continue;
@@ -2922,7 +3107,7 @@ int HoleFill_process_ex(Arena_T arena,
              * perimeters and still-open bays. Geometric, world-coord agnostic. */
             if (interior_only &&
                 !loop_is_interior(*verts, *faces, bhe, n_bhe, lv, loop_n)) {
-                fprintf(stderr, "  [hole_fill] loop %zu.%zu: %zu verts -> SKIP "
+                HFLOG("  [hole_fill] loop %zu.%zu: %zu verts -> SKIP "
                         "(exterior: perimeter / open bay)\n", i, s, loop_n);
                 continue;
             }
@@ -2938,9 +3123,9 @@ int HoleFill_process_ex(Arena_T arena,
              * PRE-fill OBJ dump are flushed BEFORE the call, so if fill_one_hole
              * still hangs (the watchdog in safe_triangulate bounds it) this log
              * line + the hole's *_in.obj are the LAST artifacts -- the culprit. */
-            fprintf(stderr, "  [hole_fill] loop %zu.%zu: %zu verts -> filling (interior #%zu)...\n",
+            HFLOG("  [hole_fill] loop %zu.%zu: %zu verts -> filling (interior #%zu)...\n",
                     i, s, loop_n, n_interior);
-            fflush(stderr);
+            HFFLUSH();
             dump_hole_obj(hole_dump_dir, hole_dump_prefix, n_interior, i, loop_n,
                           *verts, lv, NULL /* PRE: input boundary */);
             log_loop_geom("geom", i, *verts, lv, loop_n);
@@ -2950,22 +3135,22 @@ int HoleFill_process_ex(Arena_T arena,
             int rc = fill_one_hole(arena, *verts, *faces, *nf, lv, loop_n, &res);
             double t_hole_ms = (ves_clock_sec() - t_hole0) * 1000.0;
             if (rc == 0) {
-                fprintf(stderr, "  [hole_fill] loop %zu.%zu: filled OK (%zu verts, %zu faces) [%.1f ms]\n",
+                HFLOG("  [hole_fill] loop %zu.%zu: filled OK (%zu verts, %zu faces) [%.1f ms]\n",
                         i, s, res.nv, res.nf, t_hole_ms);
-                fflush(stderr);
+                HFFLUSH();
                 dump_hole_obj(hole_dump_dir, hole_dump_prefix, n_interior, i, loop_n,
                               *verts, lv, &res /* POST: filled patch */);
                 fills[n_fills] = res;
                 n_fills++;
             } else {
-                fprintf(stderr, "  [hole_fill] loop %zu.%zu: fill FAILED (%zu verts) [%.1f ms]\n",
+                HFLOG("  [hole_fill] loop %zu.%zu: fill FAILED (%zu verts) [%.1f ms]\n",
                         i, s, loop_n, t_hole_ms);
-                fflush(stderr);
+                HFFLUSH();
             }
             if (t_hole_ms > 250.0) {
-                fprintf(stderr, "  [hole_fill] *** SLOW HOLE: loop %zu.%zu (%zu verts) took %.1f ms ***\n",
+                HFLOG("  [hole_fill] *** SLOW HOLE: loop %zu.%zu (%zu verts) took %.1f ms ***\n",
                         i, s, loop_n, t_hole_ms);
-                fflush(stderr);
+                HFFLUSH();
             }
         }
     }
@@ -2973,7 +3158,7 @@ int HoleFill_process_ex(Arena_T arena,
     fprintf(stderr, "  [hole_fill] %zu loops, %zu interior, %zu micro, "
             "%zu filled in %.2f s\n", n_loops, n_interior, n_micro, n_fills,
             ves_clock_sec() - t_hf0);
-    fflush(stderr);
+    HFFLUSH();
 
     /* 4. Stitch fills */
     if (n_fills > 0) {

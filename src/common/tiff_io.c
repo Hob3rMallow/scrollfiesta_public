@@ -149,3 +149,92 @@ int TiffIO_save(const char *path,
     ves_mutex_unlock(&tiff_lock);
     return 0;
 }
+
+int TiffIO_save_float2d(const char *path, const float *img, int W, int H)
+{
+    assert(path);
+    assert(W >= 0 && H >= 0);
+
+    if (W == 0 || H == 0) {
+        return -1;
+    }
+
+    assert(img);
+
+    ves_mutex_lock(&tiff_lock);
+
+    TIFF *tif = TIFFOpen(path, "w");
+    if (tif == NULL) {
+        ves_mutex_unlock(&tiff_lock);
+        return -1;
+    }
+
+    TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, (uint32_t)W);
+    TIFFSetField(tif, TIFFTAG_IMAGELENGTH, (uint32_t)H);
+    TIFFSetField(tif, TIFFTAG_SAMPLESPERPIXEL, 1);
+    TIFFSetField(tif, TIFFTAG_BITSPERSAMPLE, 32);
+    TIFFSetField(tif, TIFFTAG_SAMPLEFORMAT, SAMPLEFORMAT_IEEEFP);
+    TIFFSetField(tif, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);
+    TIFFSetField(tif, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+    TIFFSetField(tif, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_MINISBLACK);
+    TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP, (uint32_t)H);
+    TIFFSetField(tif, TIFFTAG_COMPRESSION, COMPRESSION_NONE);
+
+    for (int y = 0; y < H; y++) {
+        /* TIFFWriteScanline takes a non-const buffer; the data is not modified. */
+        if (TIFFWriteScanline(tif, (void *)(img + (size_t)y * (size_t)W),
+                              (uint32_t)y, 0) < 0) {
+            TIFFClose(tif);
+            ves_mutex_unlock(&tiff_lock);
+            return -1;
+        }
+    }
+
+    TIFFClose(tif);
+    ves_mutex_unlock(&tiff_lock);
+    return 0;
+}
+
+int TiffIO_load_float2d(Arena_T arena, const char *path,
+                        float **out_img, int *out_W, int *out_H)
+{
+    assert(arena);
+    assert(path);
+    assert(out_img && out_W && out_H);
+
+    ves_mutex_lock(&tiff_lock);
+
+    TIFF *tif = TIFFOpen(path, "r");
+    if (tif == NULL) {
+        ves_mutex_unlock(&tiff_lock);
+        return -1;
+    }
+
+    uint32_t w = 0, h = 0;
+    TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &w);
+    TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &h);
+    if (w == 0 || h == 0) {
+        TIFFClose(tif);
+        ves_mutex_unlock(&tiff_lock);
+        return -1;
+    }
+
+    float *img = (float *)ARENA_ALLOC(arena,
+                    (long)((size_t)w * (size_t)h * sizeof(float)));
+
+    for (uint32_t y = 0; y < h; y++) {
+        if (TIFFReadScanline(tif, img + (size_t)y * (size_t)w, y, 0) < 0) {
+            TIFFClose(tif);
+            ves_mutex_unlock(&tiff_lock);
+            return -1;
+        }
+    }
+
+    TIFFClose(tif);
+    ves_mutex_unlock(&tiff_lock);
+
+    *out_img = img;
+    *out_W = (int)w;
+    *out_H = (int)h;
+    return 0;
+}

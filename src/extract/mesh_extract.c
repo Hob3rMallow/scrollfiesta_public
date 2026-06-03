@@ -564,7 +564,8 @@ int MeshExtract_run(Arena_T          arena,
                     const char      *cube_id,
                     int              skip_qem,
                     ComponentMesh  **out_meshes,
-                    size_t          *out_n_meshes)
+                    size_t          *out_n_meshes,
+                    MeshResplitCloud **out_clouds)
 {
     assert(arena);
     assert(out_meshes && out_n_meshes);
@@ -573,6 +574,7 @@ int MeshExtract_run(Arena_T          arena,
 
     *out_meshes = NULL;
     *out_n_meshes = 0;
+    if (out_clouds) *out_clouds = NULL;
 
     if (halo_voxels < 0) {
         fprintf(stderr, "MeshExtract: halo_voxels=%d must be >= 0\n",
@@ -669,6 +671,15 @@ int MeshExtract_run(Arena_T          arena,
                                                           (long)((size_t)n_valid * sizeof(ComponentMesh)));
     memset(meshes, 0, (size_t)n_valid * sizeof(ComponentMesh));
 
+    /* Optional per-component raw+LOP cloud snapshot for the connectivity
+     * re-split (MeshResplit). Index-aligned with `meshes`; filled at finalize. */
+    MeshResplitCloud *clouds = NULL;
+    if (out_clouds) {
+        clouds = (MeshResplitCloud *)ARENA_ALLOC(arena,
+                     (long)((size_t)n_valid * sizeof(MeshResplitCloud)));
+        memset(clouds, 0, (size_t)n_valid * sizeof(MeshResplitCloud));
+    }
+
     /* Scratch arena for per-component temporaries */
     Arena_T scratch = Arena_new();
     size_t out_count = 0;
@@ -682,6 +693,9 @@ int MeshExtract_run(Arena_T          arena,
     for (int32_t ci = 0; ci < n_valid; ci++) {
         Arena_free(scratch);
         int32_t comp_label = comps[ci].label;
+        /* Connectivity-resplit snapshot (main arena: scratch is reset next iter,
+         * but the resplit runs after all components return). Filled after LOP. */
+        float *snap_orig = NULL, *snap_lop = NULL; size_t snap_n = 0;
 
 #ifdef VESUVIUS_DEBUG
         double t_c0, t_c1;
@@ -801,17 +815,17 @@ int MeshExtract_run(Arena_T          arena,
          * the center of every foreground voxel. This gives a single-layer
          * cloud directly — no double envelope to undo via a cull. Faces
          * are built later by BPA. */
-        float *mc_verts = NULL;
-        int32_t *mc_faces = NULL;
-        size_t mc_nv = 0, mc_nf = 0;
+        float *surf_verts = NULL;
+        int32_t *surf_faces = NULL;
+        size_t surf_nv = 0, surf_nf = 0;
         {
             /* Count FG voxels in padded, then allocate and fill. */
             size_t fg = 0;
             for (size_t pi = 0; pi < pad_size; pi++) if (padded[pi]) fg++;
-            mc_nv = fg;
-            mc_nf = 0;
+            surf_nv = fg;
+            surf_nf = 0;
             if (fg > 0) {
-                mc_verts = (float *)ARENA_ALLOC(scratch,
+                surf_verts = (float *)ARENA_ALLOC(scratch,
                                 (long)(fg * 3 * sizeof(float)));
                 size_t out_idx = 0;
                 for (int pz = 0; pz < pD; pz++) {
@@ -823,9 +837,9 @@ int MeshExtract_run(Arena_T          arena,
                             /* Voxel center at +0.5; the shift block below
                              * applies the cube-local offset so positions
                              * land at (vol_z + 0.5 - halo). */
-                            mc_verts[out_idx * 3 + 0] = (float)pz + 0.5f;
-                            mc_verts[out_idx * 3 + 1] = (float)py + 0.5f;
-                            mc_verts[out_idx * 3 + 2] = (float)px + 0.5f;
+                            surf_verts[out_idx * 3 + 0] = (float)pz + 0.5f;
+                            surf_verts[out_idx * 3 + 1] = (float)py + 0.5f;
+                            surf_verts[out_idx * 3 + 2] = (float)px + 0.5f;
                             out_idx++;
                         }
                     }
@@ -837,20 +851,20 @@ int MeshExtract_run(Arena_T          arena,
         t_c1 = ves_clock_sec();
         fprintf(stderr, "    comp %d: %s -> %zu verts, %zu faces (%.3f s)\n",
                 comp_label, "voxel-centers",
-                mc_nv, mc_nf, t_c1 - t_c0);
+                surf_nv, surf_nf, t_c1 - t_c0);
 #endif
 
-        if (mc_nv < (size_t)MLS_MIN_NEIGHBOURS) continue;
+        if (surf_nv < (size_t)MLS_MIN_NEIGHBOURS) continue;
 
         /* Convert MC vertices from padded-local to cube-local coordinates.
          * Padding added +1 to all coords (subtract 1), then add bounding box
          * origin in vol space (zmin/ymin/xmin), then subtract halo_voxels to
          * shift the cube's owned region to [0, cube_D). When halo == 0 this
          * is identical to the legacy single-cube behavior. */
-        for (size_t v = 0; v < mc_nv; v++) {
-            mc_verts[v * 3 + 0] += (float)(zmin - 1 - halo_voxels);
-            mc_verts[v * 3 + 1] += (float)(ymin - 1 - halo_voxels);
-            mc_verts[v * 3 + 2] += (float)(xmin - 1 - halo_voxels);
+        for (size_t v = 0; v < surf_nv; v++) {
+            surf_verts[v * 3 + 0] += (float)(zmin - 1 - halo_voxels);
+            surf_verts[v * 3 + 1] += (float)(ymin - 1 - halo_voxels);
+            surf_verts[v * 3 + 2] += (float)(xmin - 1 - halo_voxels);
         }
 
         /* Cross-cube MC determinism: in halo mode, drop verts whose
@@ -869,18 +883,18 @@ int MeshExtract_run(Arena_T          arena,
          *   [-halo_voxels, cube_D + halo_voxels) for z, similarly y,x.
          * Verts at z <= -halo_voxels OR z >= cube_D + halo_voxels are
          * dropped (and their incident faces along with them). */
-        if (halo_voxels > 0 && mc_nv > 0) {
+        if (halo_voxels > 0 && surf_nv > 0) {
             float lo = -(float)halo_voxels;
             float hi_z = (float)cube_D + (float)halo_voxels;
             float hi_y = (float)cube_H + (float)halo_voxels;
             float hi_x = (float)cube_W + (float)halo_voxels;
             int32_t *remap = (int32_t *)ARENA_ALLOC(scratch,
-                                (long)mc_nv * (long)sizeof(int32_t));
+                                (long)surf_nv * (long)sizeof(int32_t));
             size_t nv_kept = 0, nv_dropped = 0;
-            for (size_t v = 0; v < mc_nv; v++) {
-                float zc = mc_verts[v * 3 + 0];
-                float yc = mc_verts[v * 3 + 1];
-                float xc = mc_verts[v * 3 + 2];
+            for (size_t v = 0; v < surf_nv; v++) {
+                float zc = surf_verts[v * 3 + 0];
+                float yc = surf_verts[v * 3 + 1];
+                float xc = surf_verts[v * 3 + 2];
                 if (zc <= lo || zc >= hi_z ||
                     yc <= lo || yc >= hi_y ||
                     xc <= lo || xc >= hi_x) {
@@ -889,36 +903,36 @@ int MeshExtract_run(Arena_T          arena,
                 } else {
                     remap[v] = (int32_t)nv_kept;
                     if (nv_kept != v) {
-                        mc_verts[nv_kept * 3 + 0] = zc;
-                        mc_verts[nv_kept * 3 + 1] = yc;
-                        mc_verts[nv_kept * 3 + 2] = xc;
+                        surf_verts[nv_kept * 3 + 0] = zc;
+                        surf_verts[nv_kept * 3 + 1] = yc;
+                        surf_verts[nv_kept * 3 + 2] = xc;
                     }
                     nv_kept++;
                 }
             }
             if (nv_dropped > 0) {
                 size_t nf_kept = 0;
-                for (size_t f = 0; f < mc_nf; f++) {
-                    int32_t v0 = mc_faces[f * 3 + 0];
-                    int32_t v1 = mc_faces[f * 3 + 1];
-                    int32_t v2 = mc_faces[f * 3 + 2];
+                for (size_t f = 0; f < surf_nf; f++) {
+                    int32_t v0 = surf_faces[f * 3 + 0];
+                    int32_t v1 = surf_faces[f * 3 + 1];
+                    int32_t v2 = surf_faces[f * 3 + 2];
                     if (remap[v0] < 0 || remap[v1] < 0 || remap[v2] < 0) continue;
-                    mc_faces[nf_kept * 3 + 0] = remap[v0];
-                    mc_faces[nf_kept * 3 + 1] = remap[v1];
-                    mc_faces[nf_kept * 3 + 2] = remap[v2];
+                    surf_faces[nf_kept * 3 + 0] = remap[v0];
+                    surf_faces[nf_kept * 3 + 1] = remap[v1];
+                    surf_faces[nf_kept * 3 + 2] = remap[v2];
                     nf_kept++;
                 }
 #ifdef VESUVIUS_DEBUG
                 fprintf(stderr,
                         "    comp %d: working-edge filter dropped %zu/%zu v, "
                         "%zu/%zu f\n",
-                        comp_label, nv_dropped, mc_nv,
-                        mc_nf - nf_kept, mc_nf);
+                        comp_label, nv_dropped, surf_nv,
+                        surf_nf - nf_kept, surf_nf);
 #endif
-                mc_nv = nv_kept;
-                mc_nf = nf_kept;
+                surf_nv = nv_kept;
+                surf_nf = nf_kept;
                 /* For voxel-center mode we have no faces; nf==0 is fine. */
-                if (mc_nv == 0) continue;
+                if (surf_nv == 0) continue;
             }
         }
 
@@ -941,9 +955,9 @@ int MeshExtract_run(Arena_T          arena,
          *
          * See plan: the-main-problem-with-composed-badger.md */
         float *mls_verts = (float *)ARENA_ALLOC(scratch,
-                              (long)(mc_nv * 3 * sizeof(float)));
+                              (long)(surf_nv * 3 * sizeof(float)));
         float *mls_normals = (float *)ARENA_ALLOC(scratch,
-                                (long)(mc_nv * 3 * sizeof(float)));
+                                (long)(surf_nv * 3 * sizeof(float)));
         /* Ping-pong buffer for multi-iter LOP. MLS_project_verts reads from
          * `src` and writes to `dst`; if they were the same buffer, the
          * Gauss-Seidel-style read-after-write would make the centroid for
@@ -960,17 +974,17 @@ int MeshExtract_run(Arena_T          arena,
          * counts). The covariance pass roughly doubles per-iter cost
          * vs centroid-only but is essential for non-shrinking iteration. */
         float *mls_scratch_normals = (float *)ARENA_ALLOC(scratch,
-                                        (long)(mc_nv * 3 * sizeof(float)));
+                                        (long)(surf_nv * 3 * sizeof(float)));
         float *mls_scratch = (MLS_PROJECT_ITERS >= 2)
             ? (float *)ARENA_ALLOC(scratch,
-                                   (long)(mc_nv * 3 * sizeof(float)))
+                                   (long)(surf_nv * 3 * sizeof(float)))
             : NULL;
-        const float *src = mc_verts;
+        const float *src = surf_verts;
         float *dst = mls_verts;
         for (int it = 0; it < MLS_PROJECT_ITERS; it++) {
             int is_last = (it == MLS_PROJECT_ITERS - 1);
             float *normals_dst = is_last ? mls_normals : mls_scratch_normals;
-            MLS_project_verts(scratch, src, mc_nv,
+            MLS_project_verts(scratch, src, surf_nv,
                               MLS_PROJECT_RADIUS_VOX,
                               cube_world_origin,
                               dst, normals_dst);
@@ -980,7 +994,19 @@ int MeshExtract_run(Arena_T          arena,
         /* Final result lives in `src` (the last write target). If that
          * isn't mls_verts (even ITERS >= 2), copy it back. */
         if (src != mls_verts) {
-            memcpy(mls_verts, src, mc_nv * 3 * sizeof(float));
+            memcpy(mls_verts, src, surf_nv * 3 * sizeof(float));
+        }
+
+        /* Snapshot the raw voxel-center cloud (surf_verts, preserved as the LOP's
+         * read-only src) and its 1:1 LOP image (mls_verts), BEFORE the weld
+         * renumbers them, for the connectivity re-split. Main arena so it
+         * outlives this component's scratch. */
+        if (clouds) {
+            snap_n = surf_nv;
+            snap_orig = (float *)ARENA_ALLOC(arena, (long)(surf_nv * 3 * sizeof(float)));
+            snap_lop  = (float *)ARENA_ALLOC(arena, (long)(surf_nv * 3 * sizeof(float)));
+            memcpy(snap_orig, surf_verts, surf_nv * 3 * sizeof(float));
+            memcpy(snap_lop,  mls_verts,  surf_nv * 3 * sizeof(float));
         }
 
 #ifdef VESUVIUS_DEBUG
@@ -988,14 +1014,14 @@ int MeshExtract_run(Arena_T          arena,
         fprintf(stderr, "    comp %d: MLS-midpoint (%d iter, R=%.1f vox) "
                 "-> %zu verts (%.3f s)\n",
                 comp_label, MLS_PROJECT_ITERS,
-                (double)MLS_PROJECT_RADIUS_VOX, mc_nv, t_c1 - t_c0);
+                (double)MLS_PROJECT_RADIUS_VOX, surf_nv, t_c1 - t_c0);
 #endif
 
         /* Diagnostic dump: LOP-only (post MLS, BEFORE
          * the backface cull). Useful for tracking where holes are
          * introduced — comparing this against the post-cull dump shows
          * exactly which triangles the cull removed. */
-        if (dump_cube_dir && cube_id) {
+        if (dump_cube_dir && cube_id && getenv("EXTRACT_DIAG")) {
             char sub[1024];
             snprintf(sub, sizeof(sub), "%s/%s_step0_post_lop",
                      dump_cube_dir, cube_id);
@@ -1005,7 +1031,7 @@ int MeshExtract_run(Arena_T          arena,
                      "%s/%s_post_lop_comp%03zu.obj",
                      sub, cube_id, out_count + 1);
             DumpObj_write_one_world(scratch, path, cube_id,
-                                    mls_verts, mc_nv, mc_faces, mc_nf,
+                                    mls_verts, surf_nv, surf_faces, surf_nf,
                                     diag_color);
 
             /* Also dump the pure oriented point cloud (verts + MLS
@@ -1022,10 +1048,10 @@ int MeshExtract_run(Arena_T          arena,
                      "%s/%s_post_lop_points_comp%03zu.obj",
                      psub, cube_id, out_count + 1);
             DumpObj_write_points_world(scratch, ppath, cube_id,
-                                       mls_verts, mls_normals, mc_nv);
+                                       mls_verts, mls_normals, surf_nv);
         }
 
-        /* Triangulate the LOP'd cloud with BPA to produce mc_faces. The
+        /* Triangulate the LOP'd cloud with BPA to produce surf_faces. The
          * input is a single-layer cloud by construction, so there is no
          * double envelope to cull. The output mesh is manifold by the
          * BPA pre-check; downstream hole_fill closes the small holes
@@ -1052,7 +1078,7 @@ int MeshExtract_run(Arena_T          arena,
              * passes; cap at 5 as safety. */
             const float *src_v = mls_verts;
             const float *src_n = mls_normals;
-            size_t src_nv = mc_nv;
+            size_t src_nv = surf_nv;
             welded_verts = NULL; welded_normals = NULL; welded_nv = src_nv;
             for (int iter = 0; iter < 5; iter++) {
                 size_t prev_nv = welded_nv;
@@ -1070,11 +1096,28 @@ int MeshExtract_run(Arena_T          arena,
             fprintf(stderr,
                 "    comp %d: pre-BPA weld %zu -> %zu verts (eps=%.2f, "
                 "iterated)\n",
-                comp_label, mc_nv, welded_nv, (double)weld_eps);
+                comp_label, surf_nv, welded_nv, (double)weld_eps);
 #endif
             mls_verts   = welded_verts;
             mls_normals = welded_normals;
-            mc_nv       = welded_nv;
+            surf_nv       = welded_nv;
+
+            /* Dump the welded cloud BEFORE the owned trim (points only), world
+             * coords. Diff against step0_post_lop_trimmed (AFTER trim) to isolate
+             * EXACTLY what the owned/halo trim removes, with the weld held constant
+             * (so coords match 1:1; no weld-merge confound). */
+            if (dump_cube_dir && cube_id && getenv("EXTRACT_DIAG")) {
+                char wsub[1024];
+                snprintf(wsub, sizeof(wsub), "%s/%s_step0_post_weld",
+                         dump_cube_dir, cube_id);
+                DumpObj_ensure_dir(wsub);
+                char wpath[1024];
+                snprintf(wpath, sizeof(wpath),
+                         "%s/%s_post_weld_comp%03zu.obj",
+                         wsub, cube_id, out_count + 1);
+                DumpObj_write_points_world(scratch, wpath, cube_id,
+                                           mls_verts, mls_normals, surf_nv);
+            }
 
             /* Pre-BPA owned-region trim (halo mode): drop POINTS within
              * BPA_OWNED_TRIM_INSET vox of every cube face so BPA's open boundary
@@ -1085,14 +1128,14 @@ int MeshExtract_run(Arena_T          arena,
              * plane) keeps adjacent cubes' charts from TOUCHING/doubling where a
              * wrap grazes the seam; the 2*INSET gap is spanned by the seam bridge.
              * No faces yet -> compact verts + normals in place. */
-            if (halo_voxels > 0 && mc_nv > 0) {
+            if (halo_voxels > 0 && surf_nv > 0) {
                 float ins  = (float)BPA_OWNED_TRIM_INSET;
                 float lo   = ins;
                 float hi_z = (float)cube_D - ins;
                 float hi_y = (float)cube_H - ins;
                 float hi_x = (float)cube_W - ins;
                 size_t kept = 0;
-                for (size_t v = 0; v < mc_nv; v++) {
+                for (size_t v = 0; v < surf_nv; v++) {
                     float zc = mls_verts[v*3+0];
                     float yc = mls_verts[v*3+1];
                     float xc = mls_verts[v*3+2];
@@ -1112,10 +1155,25 @@ int MeshExtract_run(Arena_T          arena,
 #ifdef VESUVIUS_DEBUG
                 fprintf(stderr,
                     "    comp %d: pre-BPA owned trim (inset=%.2f) %zu -> %zu verts\n",
-                    comp_label, (double)BPA_OWNED_TRIM_INSET, mc_nv, kept);
+                    comp_label, (double)BPA_OWNED_TRIM_INSET, surf_nv, kept);
 #endif
-                mc_nv = kept;
-                if (mc_nv < 3) continue;   /* nothing left to triangulate */
+                surf_nv = kept;
+                /* Dump the LOP cloud AFTER the owned trim (points only, no BPA),
+                 * world coords. Compare against step0_post_lop_points (PRE-trim)
+                 * to see exactly which points the owned/halo trim removed. */
+                if (dump_cube_dir && cube_id && getenv("EXTRACT_DIAG")) {
+                    char tsub[1024];
+                    snprintf(tsub, sizeof(tsub), "%s/%s_step0_post_lop_trimmed",
+                             dump_cube_dir, cube_id);
+                    DumpObj_ensure_dir(tsub);
+                    char tpath[1024];
+                    snprintf(tpath, sizeof(tpath),
+                             "%s/%s_post_lop_trimmed_comp%03zu.obj",
+                             tsub, cube_id, out_count + 1);
+                    DumpObj_write_points_world(scratch, tpath, cube_id,
+                                               mls_verts, mls_normals, surf_nv);
+                }
+                if (surf_nv < 3) continue;   /* nothing left to triangulate */
             }
 
             /* Hoppe 1992 §3.3 globally-consistent orientation before BPA: replace
@@ -1131,16 +1189,16 @@ int MeshExtract_run(Arena_T          arena,
                 if (he) { double t = atof(he); if (t > 0.0) hr = (float)t; }
                 size_t hf = 0;
                 NormalOrient_consistent(scratch, mls_verts, mls_normals,
-                                        mc_nv, hr, &hf);
+                                        surf_nv, hr, &hf);
                 fprintf(stderr,
                     "    comp %d: Hoppe orient flipped %zu/%zu normals (r=%.2f)\n",
-                    comp_label, hf, mc_nv, (double)hr);
+                    comp_label, hf, surf_nv, (double)hr);
             }
 
             int32_t *bpa_faces = NULL;
             size_t   bpa_nf = 0;
             int rc = BallPivot_reconstruct(scratch,
-                                            mls_verts, mls_normals, mc_nv,
+                                            mls_verts, mls_normals, surf_nv,
                                             BPA_RHO_VOX,
                                             &bpa_faces, &bpa_nf);
             if (rc != 0 || bpa_nf == 0) {
@@ -1149,14 +1207,14 @@ int MeshExtract_run(Arena_T          arena,
                     comp_label, rc, bpa_nf);
                 continue;
             }
-            mc_faces = bpa_faces;
-            mc_nf    = bpa_nf;
-            mc_verts = mls_verts;
+            surf_faces = bpa_faces;
+            surf_nf    = bpa_nf;
+            surf_verts = mls_verts;
 #ifdef VESUVIUS_DEBUG
             t_c1 = ves_clock_sec();
             fprintf(stderr,
                 "    comp %d: BPA rho=%.1f -> %zu faces (%zu verts, %.2f s)\n",
-                comp_label, (double)BPA_RHO_VOX, mc_nf, mc_nv, t_c1 - t_c0);
+                comp_label, (double)BPA_RHO_VOX, surf_nf, surf_nv, t_c1 - t_c0);
 #endif
         }
 
@@ -1172,13 +1230,13 @@ int MeshExtract_run(Arena_T          arena,
         size_t n_sign_flips = 0;
         if (getenv("SIGN_PROPAGATE") != NULL) {
             n_sign_flips = propagate_normal_signs(scratch,
-                                                  mls_verts, mc_nv,
-                                                  mc_faces, mc_nf,
+                                                  mls_verts, surf_nv,
+                                                  surf_faces, surf_nf,
                                                   mls_normals);
             fprintf(stderr,
                     "    comp %d: sign-propagate flipped %zu/%zu vert "
                     "normals\n",
-                    comp_label, n_sign_flips, mc_nv);
+                    comp_label, n_sign_flips, surf_nv);
         }
         (void)n_sign_flips;
 
@@ -1198,8 +1256,8 @@ int MeshExtract_run(Arena_T          arena,
         {
             size_t or_flips = 0, or_comps = 0, or_resid = 0;
             OrientMesh_consistent(scratch,
-                                  mls_verts, mc_nv, mls_normals,
-                                  mc_faces, mc_nf,
+                                  mls_verts, surf_nv, mls_normals,
+                                  surf_faces, surf_nf,
                                   &or_flips, &or_comps, &or_resid);
 #ifdef VESUVIUS_DEBUG
             fprintf(stderr,
@@ -1209,30 +1267,30 @@ int MeshExtract_run(Arena_T          arena,
 #endif
         }
 
-        mc_verts = mls_verts;
+        surf_verts = mls_verts;
 
         (void)Weld_verts;             /* kept available for future weld pass */
         (void)spatial_pairing_cull;   /* attempted 2026-05-27, see changelog */
 
-        if (mc_nf == 0 || mc_nv == 0) continue;
+        if (surf_nf == 0 || surf_nv == 0) continue;
 
         /* Mesh cleanup: UF split + remove small fragments */
-        mc_nf = mesh_split_remove_small(scratch, mc_nv,
-                                        mc_faces, mc_nf);
-        if (mc_nf == 0) continue;
+        surf_nf = mesh_split_remove_small(scratch, surf_nv,
+                                        surf_faces, surf_nf);
+        if (surf_nf == 0) continue;
 
         /* Clean unreferenced vertices */
         float *clean_verts = NULL;
         size_t clean_nv = 0;
-        clean_unreferenced(scratch, mc_verts, mc_nv, mc_faces, mc_nf,
+        clean_unreferenced(scratch, surf_verts, surf_nv, surf_faces, surf_nf,
                            &clean_verts, &clean_nv);
-        mc_verts = clean_verts;
-        mc_nv = clean_nv;
+        surf_verts = clean_verts;
+        surf_nv = clean_nv;
 
 #ifdef VESUVIUS_DEBUG
         t_c1 = ves_clock_sec();
         fprintf(stderr, "    comp %d: cleanup -> %zu verts, %zu faces (%.3f s)\n",
-                comp_label, mc_nv, mc_nf,
+                comp_label, surf_nv, surf_nf,
                 t_c1 - t_c0);
 #endif
 
@@ -1245,11 +1303,11 @@ int MeshExtract_run(Arena_T          arena,
 #ifdef VESUVIUS_DEBUG
         t_c1 = ves_clock_sec();
         fprintf(stderr, "    comp %d: post-cleanup -> %zu verts, %zu faces (%.3f s)\n",
-                comp_label, mc_nv, mc_nf,
+                comp_label, surf_nv, surf_nf,
                 t_c1 - t_c0);
 #endif
 
-        if (mc_nf == 0 || mc_nv == 0) continue;
+        if (surf_nf == 0 || surf_nv == 0) continue;
 
         /* Phase B: tighten the EXPORT halo to EXPORT_HALO_VOX (typically 1).
          * The wide read halo (halo_voxels) was needed for MC determinism
@@ -1260,18 +1318,18 @@ int MeshExtract_run(Arena_T          arena,
          * huge and visually hard to read.
          *
          * Same drop pattern as Phase A above, just at a tighter threshold. */
-        if (halo_voxels > EXPORT_HALO_VOX && mc_nv > 0) {
+        if (halo_voxels > EXPORT_HALO_VOX && surf_nv > 0) {
             float export_lo = -(float)EXPORT_HALO_VOX;
             float export_hi_z = (float)cube_D + (float)EXPORT_HALO_VOX;
             float export_hi_y = (float)cube_H + (float)EXPORT_HALO_VOX;
             float export_hi_x = (float)cube_W + (float)EXPORT_HALO_VOX;
             int32_t *remap_e = (int32_t *)ARENA_ALLOC(scratch,
-                                (long)mc_nv * (long)sizeof(int32_t));
+                                (long)surf_nv * (long)sizeof(int32_t));
             size_t nv_kept_e = 0;
-            for (size_t v = 0; v < mc_nv; v++) {
-                float zc = mc_verts[v * 3 + 0];
-                float yc = mc_verts[v * 3 + 1];
-                float xc = mc_verts[v * 3 + 2];
+            for (size_t v = 0; v < surf_nv; v++) {
+                float zc = surf_verts[v * 3 + 0];
+                float yc = surf_verts[v * 3 + 1];
+                float xc = surf_verts[v * 3 + 2];
                 if (zc < export_lo || zc > export_hi_z ||
                     yc < export_lo || yc > export_hi_y ||
                     xc < export_lo || xc > export_hi_x) {
@@ -1279,22 +1337,22 @@ int MeshExtract_run(Arena_T          arena,
                 } else {
                     remap_e[v] = (int32_t)nv_kept_e;
                     if (nv_kept_e != v) {
-                        mc_verts[nv_kept_e * 3 + 0] = zc;
-                        mc_verts[nv_kept_e * 3 + 1] = yc;
-                        mc_verts[nv_kept_e * 3 + 2] = xc;
+                        surf_verts[nv_kept_e * 3 + 0] = zc;
+                        surf_verts[nv_kept_e * 3 + 1] = yc;
+                        surf_verts[nv_kept_e * 3 + 2] = xc;
                     }
                     nv_kept_e++;
                 }
             }
             size_t nf_kept_e = 0;
-            for (size_t f = 0; f < mc_nf; f++) {
-                int32_t v0 = mc_faces[f * 3 + 0];
-                int32_t v1 = mc_faces[f * 3 + 1];
-                int32_t v2 = mc_faces[f * 3 + 2];
+            for (size_t f = 0; f < surf_nf; f++) {
+                int32_t v0 = surf_faces[f * 3 + 0];
+                int32_t v1 = surf_faces[f * 3 + 1];
+                int32_t v2 = surf_faces[f * 3 + 2];
                 if (remap_e[v0] < 0 || remap_e[v1] < 0 || remap_e[v2] < 0) continue;
-                mc_faces[nf_kept_e * 3 + 0] = remap_e[v0];
-                mc_faces[nf_kept_e * 3 + 1] = remap_e[v1];
-                mc_faces[nf_kept_e * 3 + 2] = remap_e[v2];
+                surf_faces[nf_kept_e * 3 + 0] = remap_e[v0];
+                surf_faces[nf_kept_e * 3 + 1] = remap_e[v1];
+                surf_faces[nf_kept_e * 3 + 2] = remap_e[v2];
                 nf_kept_e++;
             }
 #ifdef VESUVIUS_DEBUG
@@ -1302,18 +1360,19 @@ int MeshExtract_run(Arena_T          arena,
                 "    comp %d: export-halo trim (read=%d, export=%d) "
                 "%zu->%zu v, %zu->%zu f\n",
                 comp_label, halo_voxels, EXPORT_HALO_VOX,
-                mc_nv, nv_kept_e, mc_nf, nf_kept_e);
+                surf_nv, nv_kept_e, surf_nf, nf_kept_e);
 #endif
-            mc_nv = nv_kept_e;
-            mc_nf = nf_kept_e;
-            if (mc_nf == 0 || mc_nv == 0) continue;
+            surf_nv = nv_kept_e;
+            surf_nf = nf_kept_e;
+            if (surf_nf == 0 || surf_nv == 0) continue;
         }
 
-        /* Dump MC output (formerly "pre-simplify"; QEM has been moved
+        /* Dump BPA surface output (stage name still "step0_pre_simplify";
+         * QEM has been moved
          * to post-Step-6 in main.c so there is no in-Step-0 QEM call
          * anymore). The `skip_qem` parameter is now ignored here. */
         (void)skip_qem;
-        if (dump_cube_dir && cube_id) {
+        if (dump_cube_dir && cube_id && getenv("EXTRACT_DIAG")) {
             char sub[1024];
             snprintf(sub, sizeof(sub), "%s/%s_step0_pre_simplify",
                      dump_cube_dir, cube_id);
@@ -1322,18 +1381,18 @@ int MeshExtract_run(Arena_T          arena,
             snprintf(path, sizeof(path), "%s/%s_pre_simplify_comp%03zu.obj",
                      sub, cube_id, out_count + 1);
             DumpObj_write_one_world(scratch, path, cube_id,
-                                    mc_verts, mc_nv, mc_faces, mc_nf,
+                                    surf_verts, surf_nv, surf_faces, surf_nf,
                                     diag_color);
         }
 
         /* Copy final results to main arena */
         float *final_verts = (float *)ARENA_ALLOC(arena,
-                                                    (long)(mc_nv * 3 * sizeof(float)));
-        memcpy(final_verts, mc_verts, mc_nv * 3 * sizeof(float));
+                                                    (long)(surf_nv * 3 * sizeof(float)));
+        memcpy(final_verts, surf_verts, surf_nv * 3 * sizeof(float));
 
         int32_t *final_faces = (int32_t *)ARENA_ALLOC(arena,
-                                                        (long)(mc_nf * 3 * sizeof(int32_t)));
-        memcpy(final_faces, mc_faces, mc_nf * 3 * sizeof(int32_t));
+                                                        (long)(surf_nf * 3 * sizeof(int32_t)));
+        memcpy(final_faces, surf_faces, surf_nf * 3 * sizeof(int32_t));
 
         /* TEMP (matches the weld-skipping diagnostic above): we skip the
          * second MLS pass for normals — those are only used by welding
@@ -1348,15 +1407,15 @@ int MeshExtract_run(Arena_T          arena,
          * convention in PCA_normal() gives the same sign as MLS does. */
         float pca_normal[3] = {0, 0, 1};
         float centroid[3] = {0, 0, 0};
-        PCA_normal(final_verts, mc_nv, pca_normal, centroid);
+        PCA_normal(final_verts, surf_nv, pca_normal, centroid);
 
         /* Fill ComponentMesh */
         ComponentMesh *cm = &meshes[out_count];
         cm->verts = final_verts;
         cm->faces = final_faces;
         cm->vert_normals = final_normals;
-        cm->nv = mc_nv;
-        cm->nf = mc_nf;
+        cm->nv = surf_nv;
+        cm->nf = surf_nf;
         cm->comp_id = (int)(out_count + 1);
         cm->pca_normal[0] = pca_normal[0];
         cm->pca_normal[1] = pca_normal[1];
@@ -1372,6 +1431,15 @@ int MeshExtract_run(Arena_T          arena,
          * seam verts deterministic for the bridge; downstream stages no longer
          * read a pin_mask, so leave it NULL. */
         cm->pin_mask = NULL;
+
+        if (clouds) {
+            clouds[out_count].orig_pts = snap_orig;
+            clouds[out_count].lop_pts  = snap_lop;
+            clouds[out_count].cell_origin[0] = cube_world_origin[0];
+            clouds[out_count].cell_origin[1] = cube_world_origin[1];
+            clouds[out_count].cell_origin[2] = cube_world_origin[2];
+            clouds[out_count].n = snap_n;
+        }
 
         assert(ComponentMesh_valid(cm));
         out_count++;
@@ -1397,5 +1465,6 @@ int MeshExtract_run(Arena_T          arena,
 
     *out_meshes = meshes;
     *out_n_meshes = out_count;
+    if (out_clouds) *out_clouds = clouds;
     return 0;
 }

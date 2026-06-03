@@ -38,14 +38,17 @@ COMMON_SRC = common/arena.c common/except.c common/csr.c common/kdtree.c \
              common/vert_weld.c common/tiff_io.c common/halo_loader.c \
              common/mesh_trim.c common/ply_io.c common/obj_io.c common/dump_obj.c \
              common/ves_platform.c common/qem.c common/raw_snapback.c common/snap_cg.c
-EXTRACT_SRC  = extract/mesh_extract.c
+EXTRACT_SRC  = extract/mesh_extract.c extract/mesh_resplit.c
 SPLIT_SRC    = split/oracle.c split/bridge_cut.c split/overlap_sep.c
-REMESH_SRC   = remesh/ball_pivot.c remesh/orient_mesh.c remesh/pinhole_fill.c remesh/normal_orient.c
+REMESH_SRC   = remesh/ball_pivot.c remesh/orient_mesh.c remesh/pinhole_fill.c remesh/normal_orient.c remesh/component_cull.c
 HOLEFILL_SRC = holefill/hole_fill.c
+# Seamster genus reduction + topology, for the per-cube short-handle sever.
+TOPO_SRC     = topology/mesh_topo.c topology/seam_cut.c
 PIPELINE_SRC = pipeline/pipeline_cube.c
 
 CORE_OBJ = $(COMMON_SRC:.c=.o) $(EXTRACT_SRC:.c=.o) $(SPLIT_SRC:.c=.o) \
-           $(REMESH_SRC:.c=.o) $(HOLEFILL_SRC:.c=.o) $(PIPELINE_SRC:.c=.o)
+           $(REMESH_SRC:.c=.o) $(HOLEFILL_SRC:.c=.o) $(TOPO_SRC:.c=.o) \
+           $(PIPELINE_SRC:.c=.o)
 COMMON_OBJ = $(COMMON_SRC:.c=.o)
 
 # C++ wrappers (Clipper2 boolean ops; lifted-multicut graph solver).
@@ -54,7 +57,7 @@ CPP_OBJ = holefill/clipper2_wrap.o split/multicut_wrap.o
 # grid_weld pulls these extra remesh modules (mirror grid_weld.vcxproj).
 WELD_OBJ = remesh/seam_weld.o remesh/fold_cleanup.o remesh/orient_weld.o remesh/weld_cleanup.o
 
-HDR = $(wildcard common/*.h extract/*.h split/*.h remesh/*.h holefill/*.h pipeline/*.h)
+HDR = $(wildcard common/*.h extract/*.h split/*.h remesh/*.h holefill/*.h pipeline/*.h topology/*.h)
 
 .PHONY: all debug release test clean
 all: debug
@@ -99,4 +102,4 @@ test: ../scripts/test_harness.c ../scripts/test_common.c $(COMMON_OBJ)
 
 clean:
 	rm -f common/*.o extract/*.o split/*.o remesh/*.o holefill/*.o pipeline/*.o \
-	      tools/*.o *.o cube_mesh grid_weld grid_pipeline test_common
+	      topology/*.o tools/*.o *.o cube_mesh grid_weld grid_pipeline test_common

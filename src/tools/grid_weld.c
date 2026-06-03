@@ -14,7 +14,7 @@
  *   grid_weld <grid_obj_dir> <output.obj>
  *
  * grid_obj_dir layout (matches DumpObj_write_meshes):
- *   <grid_obj_dir>/<cube_id>/<cube_id>_raw_snap/<cube_id>_raw_snap_all.obj
+ *   <grid_obj_dir>/<cube_id>/<cube_id>_step12_final/<cube_id>_step12_final_all.obj
  *
  * Output:
  *   <output.obj>                  -- welded single OBJ
@@ -33,10 +33,12 @@
 #include "../common/except.h"
 #include "../common/obj_io.h"
 #include "../common/mesh_types.h"
+#include "../common/mesh_manifold.h"
 #include "../common/pipeline_constants.h"
 #include "../remesh/seam_weld.h"
 #include "../remesh/fold_cleanup.h"
 #include "../remesh/pinhole_fill.h"
+#include "../remesh/manifold_guard.h"
 #include "../remesh/orient_mesh.h"
 #include "../remesh/orient_weld.h"
 #include "../remesh/weld_cleanup.h"
@@ -741,8 +743,8 @@ int main(int argc, char **argv)
             "                1-based) instead of the whole grid. Auto-dumps the\n"
             "                BPA init front to <output.obj>.front_{tris,edges}.obj.\n"
             "\n"
-            "--stage <name>: which dump stage to read (default: raw_snap).\n"
-            "                e.g. step0, step0_pre_simplify, raw_snap.\n"
+            "--stage <name>: which dump stage to read (default: step12_final).\n"
+            "                e.g. step1_bpa, step7_cc_bpa, step12_final.\n"
             "\n"
             "--dump-stages <dir>: write each weld stage to its own colored OBJ\n"
             "                <dir>/<prefix>_NN_<stage>.obj (concat..final), plus a\n"
@@ -761,7 +763,7 @@ int main(int argc, char **argv)
     const char *grid_dir = argv[1];
     const char *out_path = argv[2];
     const char *weld_verts_out = NULL;
-    const char *stage = "raw_snap";
+    const char *stage = "step12_final";
     const char *dump_stages_dir = NULL; /* --dump-stages <dir>: one OBJ per weld stage */
     const char *stage_prefix = "weld";  /* --stage-prefix <id>: dump filename prefix */
     float seam_cube = CUBE_SIZE_VOX;    /* seam-plane spacing (voxels) */
@@ -1168,11 +1170,16 @@ int main(int argc, char **argv)
                        vert_cube_idx, cube_palette, cubes.n, color_nv);
 
             size_t splits = 0, filled = 0, added = 0, skipped = 0;
-            /* --no-pinhole / SEAM_NO_PINHOLE: skip the pinhole pass (stage-2
-             * diagnostic -- bridge only, before split/fill). */
+            /* SPLIT-ONLY here. The bridge leaves bowtie VERTICES but no
+             * non-manifold edges; split_pinch_verts resolves them cleanly
+             * (duplicate per fan, monotone -- never makes a >2-face edge). The
+             * old call also FILLED 3-loops, and that fill re-closed the boundary
+             * the split had just opened, minting the seam NM edges (889 bowties
+             * -> 38 NM edges). Tiny-hole filling is left to the outer pinhole
+             * pass (line ~1300), which now runs on a vertex-manifold mesh.
+             * --no-pinhole / SEAM_NO_PINHOLE skips it (bridge-only diagnostic). */
             if (!no_pinhole)
-            PinholeFill_process(arena, &cm, 1, 0,
-                                &splits, &filled, &added, &skipped);
+            PinholeFill_split_pinches(arena, &cm, 1, &splits);
             fprintf(stderr,
                 "  pinhole: splits=%zu filled=%zu tris+=%zu skipped=%zu"
                 " -> %zu faces, %zu verts\n",
@@ -1247,9 +1254,15 @@ int main(int argc, char **argv)
 
         /* Pre-repair audit. */
         ms = manifold_audit(arena, flat_faces, n_unique_faces, NULL, NULL);
-        fprintf(stderr,
-            "Pre-repair audit: unpaired=%zu non_manifold=%zu same_dir=%zu manifold=%zu\n",
-            ms.unpaired, ms.non_manifold, ms.same_dir_pairs, ms.manifold_pairs);
+        {
+            MeshManifoldStats vms0 = MeshManifold_audit(arena, out_nv,
+                                                        flat_faces, n_unique_faces);
+            fprintf(stderr,
+                "Pre-repair audit: unpaired=%zu non_manifold=%zu same_dir=%zu "
+                "manifold=%zu pinch_verts=%zu\n",
+                ms.unpaired, ms.non_manifold, ms.same_dir_pairs,
+                ms.manifold_pairs, vms0.nm_verts);
+        }
 
         /* Final winding pass: OrientMesh_consistent's live-winding BFS drives
          * same_dir to 0 even across the seam (repair_winding's stale-edge cache
@@ -1296,6 +1309,28 @@ int main(int argc, char **argv)
             flat_faces = pcm.faces; n_unique_faces = pcm.nf;
             out_verts = pcm.verts; out_nv = pcm.nv;
         }
+
+        /* Final manifold guard. The strict seam bridge leaves only a handful of
+         * residual non-manifold edges (vs many under the old relaxed zip).
+         * Resolve >2-face edges + split any residual pinch so the welded mesh is
+         * a 2-manifold by construction -- the same guard the per-cube path runs
+         * after trim. reorient=0: the weld's own OrientMesh/OrientWeld already
+         * fixed winding and anchored component signs to spatial neighbours;
+         * resolve+split preserve winding, so re-orienting here would only risk
+         * re-flipping component signs with no manifold benefit. */
+        if (!no_cleanup) {
+            ComponentMesh wcm; memset(&wcm, 0, sizeof wcm);
+            wcm.verts = out_verts; wcm.faces = flat_faces;
+            wcm.nv = out_nv; wcm.nf = n_unique_faces; wcm.comp_id = 1; wcm.self = &wcm;
+            ManifoldGuardStats mg;
+            ManifoldGuard_process(arena, &wcm, 1, 0 /*reorient*/, &mg);
+            fprintf(stderr,
+                "Manifold guard: %zu NM-edge(s) (-%zu faces), %zu pinch split(s)\n",
+                mg.nm_edges_resolved, mg.faces_deleted, mg.pinch_splits);
+            flat_faces = wcm.faces; n_unique_faces = wcm.nf;
+            out_verts = wcm.verts; out_nv = wcm.nv;
+        }
+
         /* Stage 08: final mesh after the last winding pass (== welded.obj). */
         dump_stage(arena, dump_stages_dir, stage_prefix, 8, "final",
                    out_verts, out_nv, flat_faces, n_unique_faces,
@@ -1325,9 +1360,18 @@ int main(int argc, char **argv)
             fprintf(stderr, "Wrote %s (non-manifold neighbourhood)\n",
                     nm_path);
         }
+        /* Vertex-manifold (pinch/bowtie) audit. The edge-multiplicity audit
+         * above is BLIND to a vertex where two triangle fans meet at a single
+         * point with no shared edge -- exactly what the seam-bridge BPA leaves.
+         * Check it explicitly via the shared vertex-fan auditor. */
+        MeshManifoldStats vms = MeshManifold_audit(arena, out_nv,
+                                                   flat_faces, n_unique_faces);
+        size_t pinch_verts = vms.nm_verts;
         fprintf(stderr,
-            "Post-repair audit: unpaired=%zu non_manifold=%zu same_dir=%zu manifold=%zu\n",
-            ms.unpaired, ms.non_manifold, ms.same_dir_pairs, ms.manifold_pairs);
+            "Post-repair audit: unpaired=%zu non_manifold=%zu same_dir=%zu "
+            "manifold=%zu pinch_verts=%zu\n",
+            ms.unpaired, ms.non_manifold, ms.same_dir_pairs, ms.manifold_pairs,
+            pinch_verts);
 
         /* Count weld verts (verts touched by a BPA seam-bridge face).
          * Populated right after SeamWeld_bridge, so only meaningful for the
@@ -1421,13 +1465,14 @@ int main(int argc, char **argv)
                 "    \"unpaired\":     %zu,\n"
                 "    \"non_manifold\": %zu,\n"
                 "    \"same_dir_pairs\": %zu,\n"
-                "    \"manifold_pairs\": %zu\n"
+                "    \"manifold_pairs\": %zu,\n"
+                "    \"pinch_verts\":   %zu\n"
                 "  }\n"
                 "}\n",
                 cubes.n, total_in_verts, out_nv, total_in_faces,
                 n_unique_faces,
                 ms.unpaired, ms.non_manifold,
-                ms.same_dir_pairs, ms.manifold_pairs);
+                ms.same_dir_pairs, ms.manifold_pairs, pinch_verts);
             fclose(rp);
             fprintf(stderr, "Wrote %s\n", report_path);
         }
@@ -1436,10 +1481,11 @@ int main(int argc, char **argv)
          * 2 incident faces, except for edges on the OUTER boundary of the
          * grid (which have 1, the "unpaired" count). Non-manifold (>2) or
          * winding-inversion (same_dir) is a bug -- exit non-zero. */
-        if (ms.non_manifold > 0 || ms.same_dir_pairs > 0) {
+        if (ms.non_manifold > 0 || ms.same_dir_pairs > 0 || pinch_verts > 0) {
             fprintf(stderr,
-                "ERROR: manifold audit failed (non_manifold=%zu same_dir=%zu)\n",
-                ms.non_manifold, ms.same_dir_pairs);
+                "ERROR: manifold audit failed (non_manifold=%zu same_dir=%zu "
+                "pinch_verts=%zu)\n",
+                ms.non_manifold, ms.same_dir_pairs, pinch_verts);
             ok = 0;
         } else {
             ok = 1;

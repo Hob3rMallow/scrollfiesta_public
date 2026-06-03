@@ -20,9 +20,12 @@
  * the pivot which we also do.
  *
  * Determinism: vertex iteration is in index order; seed candidate
- * pairs are tried in nearest-first order; the pivot's smallest-theta
- * winner is unique. Halo-deterministic when verts are bit-identical
- * across cubes (LOP+pin-snap guarantees this for the halo region).
+ * pairs are tried in nearest-first order; the pivot keeps the K
+ * smallest-theta candidates (ties broken by vertex index) and the front
+ * takes the first that passes the manifold / fold / anti-parallel guards
+ * -- a deterministic choice. Halo-deterministic when verts are
+ * bit-identical across cubes (LOP+pin-snap guarantees this for the halo
+ * region).
  *
  * Inputs:
  *   verts[nv*3]    float (z, y, x)

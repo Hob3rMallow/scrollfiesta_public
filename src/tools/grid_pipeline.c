@@ -453,13 +453,13 @@ int main(int argc, char *argv[])
                                      opts.skip_qem);
             if (rc_b != 0) { n_diff++; continue; }
 
-            /* Compare the raw_snap OBJ. */
+            /* Compare the final per-cube OBJ. */
             char path_a[1024], path_b[1024];
             snprintf(path_a, sizeof(path_a),
-                "%s/%s/%s_raw_snap/%s_raw_snap_all.obj",
+                "%s/%s/%s_step12_final/%s_step12_final_all.obj",
                 dump_dir, jobs[j].cube_id, jobs[j].cube_id, jobs[j].cube_id);
             snprintf(path_b, sizeof(path_b),
-                "%s/%s/%s_raw_snap/%s_raw_snap_all.obj",
+                "%s/%s/%s_step12_final/%s_step12_final_all.obj",
                 dump_dir_b, jobs[j].cube_id, jobs[j].cube_id, jobs[j].cube_id);
             FILE *fa = fopen(path_a, "rb");
             FILE *fb = fopen(path_b, "rb");

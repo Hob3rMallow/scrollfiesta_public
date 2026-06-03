@@ -6,13 +6,18 @@
 #include "../common/dump_obj.h"
 #include "../common/pipeline_constants.h"
 #include "../extract/mesh_extract.h"
+#include "../extract/mesh_resplit.h"
 #include "../split/bridge_cut.h"
 #include "../split/overlap_sep.h"
 #include "../holefill/hole_fill.h"
 #include "../remesh/orient_mesh.h"
 #include "../remesh/pinhole_fill.h"
 #include "../remesh/ball_pivot.h"
+#include "../remesh/manifold_guard.h"
+#include "../remesh/component_cull.h"
+#include "../common/mesh_manifold.h"
 #include "../common/mls_project.h"
+#include "../topology/seam_cut.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -41,6 +46,31 @@ static int dump_stage(Arena_T arena,
     return 0;
 }
 
+/* Dump the per-component point clouds (the LOP/MLS images) of a stage as point
+ * OBJs, one per component, into <dump_dir>/<cube_id>/<cube_id>_<stage>/. World-
+ * shifted via cube_id (same convention as dump_stage). */
+static void dump_cloud_stage(Arena_T arena,
+                             const char *dump_dir, const char *cube_id,
+                             const char *stage,
+                             const MeshResplitCloud *clouds, size_t n)
+{
+    if (!dump_dir || !cube_id || !clouds || n == 0) return;
+    char cube_dir[512], stage_dir[1024];
+    snprintf(cube_dir, sizeof cube_dir, "%s/%s", dump_dir, cube_id);
+    snprintf(stage_dir, sizeof stage_dir, "%s/%s_%s", cube_dir, cube_id, stage);
+    DumpObj_ensure_dir(dump_dir);
+    DumpObj_ensure_dir(cube_dir);
+    DumpObj_ensure_dir(stage_dir);
+    for (size_t i = 0; i < n; i++) {
+        if (clouds[i].n == 0 || !clouds[i].lop_pts) continue;
+        char path[1280];
+        snprintf(path, sizeof path, "%s/%s_%s_%03zu.obj",
+                 stage_dir, cube_id, stage, i);
+        DumpObj_write_points_world(arena, path, cube_id,
+                                   clouds[i].lop_pts, NULL, clouds[i].n);
+    }
+}
+
 /* CDT/Liepa fill for the 4+ closed loops HoleFill_meshes leaves after the 3-loop
  * pass. Wraps src/holefill's HoleFill_process — this is the only TU where the
  * pipeline links Triangle/Clipper2. No pin mask: the cross-cube weld is now BPA
@@ -54,47 +84,6 @@ static int pipeline_cdt_fill(Arena_T arena, ComponentMesh *cm, void *user)
     return HoleFill_process(arena, &cm->verts, &cm->faces, &cm->nv, &cm->nf,
                             NULL,
                             &n_loops, &n_interior, &n_filled);
-}
-
-/* Re-LOP + re-BPA a piece that the split stage carved out of a merged
- * multi-wrap component. After a split the verts sit at merged-LOP positions
- * (each was pulled toward the other wrap by the joint LOP) and the cut left a
- * ragged edge; projecting the now-isolated cloud (it sees only its own sheet's
- * neighbours, so it lands on its own surface) and rolling a fresh BPA gives a
- * clean single-sheet manifold. cell_origin {0,0,0}: this is a within-cube
- * re-surface of an interior sheet, so cross-cube hash alignment is moot.
- * Rewrites cm->verts/faces/nf in place and returns 0 on success; on any
- * failure returns -1 and leaves cm untouched (the split mesh is kept as-is). */
-static int resurface_piece(Arena_T arena, ComponentMesh *cm, int n_threads)
-{
-    (void)n_threads;
-    size_t nv = cm->nv;
-    if (nv < 1000) return -1;            /* below the threading/benefit cutoff */
-    const float zero_origin[3] = { 0.0f, 0.0f, 0.0f };
-    float *pv = (float *)ARENA_ALLOC(arena, (long)(nv * 3 * sizeof(float)));
-    float *pn = (float *)ARENA_ALLOC(arena, (long)(nv * 3 * sizeof(float)));
-    float *sn = (float *)ARENA_ALLOC(arena, (long)(nv * 3 * sizeof(float)));
-    float *sv = (MLS_PROJECT_ITERS >= 2)
-        ? (float *)ARENA_ALLOC(arena, (long)(nv * 3 * sizeof(float))) : NULL;
-    const float *src = cm->verts;
-    float *dst = pv;
-    for (int it = 0; it < MLS_PROJECT_ITERS; it++) {
-        int is_last = (it == MLS_PROJECT_ITERS - 1);
-        float *ndst = is_last ? pn : sn;
-        MLS_project_verts(arena, src, nv, MLS_PROJECT_RADIUS_VOX,
-                          zero_origin, dst, ndst);
-        src = dst;
-        dst = (dst == pv) ? sv : pv;
-    }
-    if (src != pv) memcpy(pv, src, nv * 3 * sizeof(float));
-    int32_t *faces = NULL; size_t nf = 0;
-    int brc = BallPivot_reconstruct(arena, pv, pn, nv, BPA_RHO_VOX, &faces, &nf);
-    if (brc != 0 || nf == 0) return -1;  /* keep the split mesh on failure */
-    cm->verts = pv;
-    cm->faces = faces;
-    cm->nf = nf;
-    cm->self = cm;
-    return 0;
 }
 
 int pipeline_process_cube(Arena_T arena,
@@ -120,6 +109,7 @@ int pipeline_process_cube(Arena_T arena,
 
     /* ---- Step 0: MC + LOP + per-vert backface cull. ---- */
     double t0 = now_sec();
+    MeshResplitCloud *clouds = NULL;
     int rc = MeshExtract_run(arena, in->tiff_path,
                              in->pred_dir,
                              in->halo_voxels,
@@ -129,7 +119,7 @@ int pipeline_process_cube(Arena_T arena,
                              (in->halo_voxels > 0 || in->dump_dir)
                                  ? in->cube_id : NULL,
                              in->skip_qem,
-                             &out->meshes, &out->n_meshes);
+                             &out->meshes, &out->n_meshes, &clouds);
     out->t_extract = elapsed_since(t0);
     if (rc != 0 || out->n_meshes == 0) {
         fprintf(stderr, "  pipeline_cube: Step 0 produced no meshes\n");
@@ -137,8 +127,45 @@ int pipeline_process_cube(Arena_T arena,
     }
     fprintf(stderr, "  Extract: %zu components (%.3fs)\n",
             out->n_meshes, out->t_extract);
-    dump_stage(arena, in->dump_dir, in->cube_id, "step0",
+    dump_cloud_stage(arena, in->dump_dir, in->cube_id, "step0_mls",
+                     clouds, out->n_meshes);
+    dump_stage(arena, in->dump_dir, in->cube_id, "step1_bpa",
                out->meshes, out->n_meshes);
+
+    /* ---- Step 1b: connectivity re-split. A voxel-CC can hold several
+     * disconnected surface sheets surfaced together; the merged LOP leaves
+     * cross-sheet artifacts that make Step 2 over-split. Separate each into its
+     * real connectivity-components and re-LOP/re-BPA each from the ORIGINAL
+     * voxel-center points so Step 2 sees clean single sheets. The per-output
+     * labelled point clouds (rclouds, index-aligned with out->meshes) flow into
+     * Step 2 so the bridge-cut/overlap output can be re-LOP'd from originals too
+     * (Step 4). ---- */
+    MeshResplitCloud *rclouds = NULL;
+    {
+        double tr = now_sec();
+        char cube_dump_dir[1024] = {0};
+        MeshResplitDump rdump = {0};
+        if (in->dump_dir && in->cube_id) {
+            snprintf(cube_dump_dir, sizeof cube_dump_dir, "%s/%s",
+                     in->dump_dir, in->cube_id);
+            rdump.dir = cube_dump_dir; rdump.cube_id = in->cube_id;
+            rdump.cc_stage = "step2_cc"; rdump.mls_stage = "step3_mls";
+        }
+        ComponentMesh *rs = NULL; size_t n_rs = 0;
+        if (MeshResplit_run(arena, out->meshes, out->n_meshes, clouds,
+                            in->n_threads, in->dump_dir ? &rdump : NULL,
+                            &rs, &n_rs, &rclouds) == 0 && n_rs > 0) {
+            if (n_rs != out->n_meshes)
+                fprintf(stderr, "  Resplit: %zu -> %zu components (%.3fs)\n",
+                        out->n_meshes, n_rs, elapsed_since(tr));
+            out->meshes = rs;
+            out->n_meshes = n_rs;
+        } else {
+            rclouds = NULL;   /* keep rclouds aligned with out->meshes */
+        }
+        dump_stage(arena, in->dump_dir, in->cube_id, "step4_bpa",
+                   out->meshes, out->n_meshes);
+    }
 
     /* ---- Step 2: Bridge cut (oracle-gated; recursive Edmonds-Karp) ----
      * MC + per-vert-cull can leave two physically distinct sheets joined
@@ -155,10 +182,17 @@ int pipeline_process_cube(Arena_T arena,
         size_t cap = total_in * 8 + 16;
         ComponentMesh *split_meshes = (ComponentMesh *)ARENA_ALLOC(
             arena, (long)(cap * sizeof(ComponentMesh)));
+        size_t *range = (size_t *)ARENA_ALLOC(
+            arena, (long)((total_in + 1) * sizeof(size_t)));
         size_t total_out = 0;
         size_t n_bridge = 0, n_ovl = 0, n_resurf = 0;
+
+        /* Phase A: topological split (oracle-gated bridge-cut + overlap) into
+         * pieces; remember each input component's piece range for the step-4
+         * re-LOP below. */
         for (size_t i = 0; i < total_in; i++) {
             ComponentMesh *cm = &out->meshes[i];
+            range[i] = total_out;
             ComponentMesh *subs = NULL;
             size_t n_subs = 0;
             int brc = BridgeCut_process(arena, cm,
@@ -185,7 +219,6 @@ int pipeline_process_cube(Arena_T arena,
                                              &osub, &n_osub);
                 if (orc != 0 || n_osub == 0) { osub = &subs[j]; n_osub = 1; }
                 if (n_osub > 1) n_ovl++;
-                int piece_split = (n_subs > 1) || (n_osub > 1);
                 for (size_t k = 0; k < n_osub; k++) {
                     if (osub[k].nf < 16) continue;   /* drop cut-zone slivers */
                     if (total_out >= cap) {
@@ -201,26 +234,65 @@ int pipeline_process_cube(Arena_T arena,
                     split_meshes[total_out].comp_id = (int)(total_out + 1);
                     split_meshes[total_out].pin_mask = NULL;
                     split_meshes[total_out].self = &split_meshes[total_out];
-                    /* A split piece was surfaced from a merged point cloud and
-                     * carries a ragged cut edge -- re-LOP + re-BPA it into a
-                     * clean single-sheet surface (see resurface_piece). */
-                    if (piece_split &&
-                        resurface_piece(arena, &split_meshes[total_out],
-                                        in->n_threads) == 0)
-                        n_resurf++;
                     total_out++;
                 }
             }
         }
+        range[total_in] = total_out;
+        dump_stage(arena, in->dump_dir, in->cube_id, "step5_cc",
+                   split_meshes, total_out);
+
+        /* ---- Step 4: re-LOP each split component's pieces from ORIGINAL points.
+         * Each piece was carved from a merged cloud and carries a ragged cut
+         * edge; relabel the parent's original voxel points (rclouds[i]) onto the
+         * pieces and re-LOP + re-BPA each in isolation -> clean single sheets.
+         * The same clean re-mesh Step 1b applies after the connectivity split,
+         * now after the topological split. Only when the component split. ---- */
+        char step4_dir[1024] = {0};
+        MeshResplitDump sdump = {0};
+        if (in->dump_dir && in->cube_id) {
+            snprintf(step4_dir, sizeof step4_dir, "%s/%s", in->dump_dir, in->cube_id);
+            sdump.dir = step4_dir; sdump.cube_id = in->cube_id;
+            sdump.cc_stage = NULL; sdump.mls_stage = "step6_cc_mls";
+        }
+        for (size_t i = 0; i < total_in; i++) {
+            size_t start = range[i], n_cp = range[i + 1] - range[i];
+            if (n_cp <= 1 || !rclouds || rclouds[i].n == 0) continue;
+            char tag[32]; snprintf(tag, sizeof tag, "c%02zu", i);
+            ComponentMesh *ro = NULL; size_t nro = 0;
+            if (MeshResplit_remesh_pieces(arena, &rclouds[i],
+                                          &split_meshes[start], n_cp, tag,
+                                          in->dump_dir ? &sdump : NULL,
+                                          &ro, &nro, NULL) == 0
+                && nro == n_cp) {
+                for (size_t k = 0; k < nro; k++) {
+                    split_meshes[start + k] = ro[k];
+                    split_meshes[start + k].comp_id = (int)(start + k + 1);
+                    split_meshes[start + k].pin_mask = NULL;
+                    split_meshes[start + k].self = &split_meshes[start + k];
+                }
+                n_resurf += nro;
+            }
+        }
+
+        /* The bridge-cut / overlap vertex-splits can momentarily leave a bowtie
+         * at a severed neck (a cut vertex left shared by both pieces). step0 is
+         * already pinch-free, so split those here -- the split stage then emits a
+         * vertex-manifold mesh by itself, keeping EVERY stage manifold rather
+         * than relying on hole-fill's downstream pinch-split. Input is
+         * edge-manifold (cuts only remove faces; re-BPA carries the Case-2
+         * guard), so PinholeFill_split_pinches' precondition holds. */
+        size_t split_pinch = 0;
+        PinholeFill_split_pinches(arena, split_meshes, total_out, &split_pinch);
         out->meshes = split_meshes;
         out->n_meshes = total_out;
         double t_b = elapsed_since(tb);
         fprintf(stderr,
             "  Split: %zu -> %zu components (%zu bridge-cut, %zu overlap, "
-            "%zu re-surfaced, %.3fs)\n",
-            total_in, total_out, n_bridge, n_ovl, n_resurf, t_b);
+            "%zu re-surfaced, %zu pinch-split, %.3fs)\n",
+            total_in, total_out, n_bridge, n_ovl, n_resurf, split_pinch, t_b);
 
-        dump_stage(arena, in->dump_dir, in->cube_id, "step2_bridge_cut",
+        dump_stage(arena, in->dump_dir, in->cube_id, "step7_cc_bpa",
                    out->meshes, out->n_meshes);
     }
 
@@ -255,8 +327,48 @@ int pipeline_process_cube(Arena_T arena,
             "  HoleFill: %zu pinch splits, %zu 3-loop fills (+%zu tris), "
             "%zu loops skipped, %zu comps CDT-filled (%.3fs)\n",
             pinch, tri_filled, tri_added, skipped, cdt_filled, t_f);
-        dump_stage(arena, in->dump_dir, in->cube_id, "holefill",
+        dump_stage(arena, in->dump_dir, in->cube_id, "step8_holefill",
                    out->meshes, out->n_meshes);
+    }
+
+    /* ---- Sever short handles (thin BPA self-bridges) ----
+     * BPA can roll the ball into a thin self-connection, fusing a sheet into a
+     * genus>0 tangle (~4/100 4x5x5 cubes, up to genus 10, all loops < 35 vox).
+     * For each component, open every non-separating loop shorter than
+     * SEVER_MAX_LOOP_VOX (manifold-preserving cut surgery via seam_cut); leave
+     * longer loops. Runs AFTER hole fill so the opened slits are NOT re-closed,
+     * and BEFORE QEM (genus is well defined on the clean filled mesh). These
+     * handles are non-separating, so the Step-2 split (which severs SEPARATING
+     * necks) cannot touch them -- this is the complementary cut. */
+    if (!getenv("VES_SEVER_OFF")) {
+        double ts = now_sec();
+        size_t n_sev_comps = 0;
+        long   total_sev = 0;
+        for (size_t i = 0; i < out->n_meshes; i++) {
+            ComponentMesh *cm = &out->meshes[i];
+            if (cm->nf < 100) continue;
+            float   *sv = NULL; int32_t *sf = NULL;
+            size_t   snv = 0, snf = 0; long cut = 0;
+            int srv_rc = SeamCut_sever_short_handles(arena, cm->verts, cm->nv,
+                                                     cm->faces, cm->nf,
+                                                     SEVER_MAX_LOOP_VOX,
+                                                     &sv, &snv, &sf, &snf, &cut);
+            if (srv_rc == 0 && cut > 0) {
+                cm->verts = sv; cm->nv = snv;
+                cm->faces = sf; cm->nf = snf;
+                cm->vert_normals = NULL;   /* cut duplicated verts; normals stale */
+                cm->nv_pre_fill = 0;
+                cm->self = cm;
+                n_sev_comps++;
+                total_sev += cut;
+            }
+        }
+        fprintf(stderr,
+            "  Sever: %ld short handle(s) cut across %zu/%zu comp(s) (%.3fs)\n",
+            total_sev, n_sev_comps, out->n_meshes, elapsed_since(ts));
+        if (total_sev > 0)
+            dump_stage(arena, in->dump_dir, in->cube_id, "step9_sever",
+                       out->meshes, out->n_meshes);
     }
 
     /* ---- QEM simplification ---- */
@@ -319,7 +431,26 @@ int pipeline_process_cube(Arena_T arena,
             n_simplified, out->n_meshes,
             total_in_nv, total_in_nf,
             total_out_nv, total_out_nf, total_qem_oflips, out->t_qem);
-        dump_stage(arena, in->dump_dir, in->cube_id, "qem",
+        dump_stage(arena, in->dump_dir, in->cube_id, "step10_qem",
+                   out->meshes, out->n_meshes);
+    }
+
+    /* ---- Kibble removal: connectivity pass + surface-area filter ----
+     * After hole-fill/QEM, split into connectivity-components and drop any whose
+     * area is < KIBBLE_AREA_FRAC of the total meshed cube area (stray BPA
+     * islands, cut-zone crumbs). Leaves only the real sheets. ---- */
+    {
+        double tk = now_sec();
+        ComponentMesh *kept = NULL; size_t n_kept = 0, n_cull = 0;
+        if (ComponentCull_by_area(arena, out->meshes, out->n_meshes,
+                                  KIBBLE_AREA_FRAC, &kept, &n_kept, &n_cull) == 0
+            && n_kept > 0) {
+            out->meshes = kept;
+            out->n_meshes = n_kept;
+        }
+        fprintf(stderr, "  Kibble: %zu culled, %zu kept (%.3fs)\n",
+                n_cull, out->n_meshes, elapsed_since(tk));
+        dump_stage(arena, in->dump_dir, in->cube_id, "step11_kibble",
                    out->meshes, out->n_meshes);
     }
 
@@ -327,9 +458,9 @@ int pipeline_process_cube(Arena_T arena,
     if (in->halo_voxels > 0) {
         double tt = now_sec();
         /* Inset the owned box by BPA_OWNED_TRIM_INSET so the FINAL per-cube mesh
-         * (raw_snap = the weld input) never reaches a cube face — regardless of
-         * which path produced it (extract, bridge-cut split, or resurface_piece,
-         * which re-BPAs split pieces WITHOUT the step0 cloud inset). This is the
+         * (step12_final = the weld input) never reaches a cube face — regardless
+         * of which path produced it (extract, or a re-LOP'd split piece, which
+         * re-BPAs WITHOUT the step0 cloud inset). This is the
          * catch-all that guarantees adjacent cubes' charts don't touch: a grazing
          * wrap otherwise lands in both cubes at the shared plane and z-fight-
          * doubles. The 2*INSET gap is spanned by the seam bridge. */
@@ -384,19 +515,47 @@ int pipeline_process_cube(Arena_T arena,
             total_in_nv, total_in_nf,
             total_out_nv, total_out_nf, out->t_trim);
 
-        /* Dump under "raw_snap" stage name so grid_weld scans find the
-         * trimmed output without modification. The raw_snap algorithm
-         * itself is not run; the name is a directory convention. */
-        double td = now_sec();
-        dump_stage(arena, in->dump_dir, in->cube_id, "raw_snap",
-                   trimmed, n_trim_kept);
-        out->t_dump = elapsed_since(td);
     } else {
         /* No halo: trimmed == meshes by reference. */
         out->trimmed = out->meshes;
         out->n_trimmed = out->n_meshes;
         out->t_trim = 0.0;
     }
+
+    /* ---- Final manifold guard (both paths): guarantee 2-manifold per-cube
+     * output. The BPA Case-2 vertex guard prevents almost all pinches at the
+     * source; this mops up trim-orphaned bowties and any residue -- resolve
+     * >2-face edges, split pinch vertices, re-assert consistent winding. ---- */
+    {
+        double tg = now_sec();
+        ManifoldGuardStats mg;
+        ManifoldGuard_process(arena, out->trimmed, out->n_trimmed, 1 /*reorient*/, &mg);
+        fprintf(stderr,
+            "  Guard: %zu NM-edge(s) (-%zu faces), %zu pinch split(s), "
+            "%zu reorient flip(s) (%.3fs)\n",
+            mg.nm_edges_resolved, mg.faces_deleted, mg.pinch_splits,
+            mg.orient_flips, elapsed_since(tg));
+    }
+
+    /* Dump the final per-cube mesh (halo mode -- this is the weld input).
+     * dump_stage no-ops when dump_dir is NULL. */
+    if (in->halo_voxels > 0) {
+        double td = now_sec();
+        dump_stage(arena, in->dump_dir, in->cube_id, "step12_final",
+                   out->trimmed, out->n_trimmed);
+        out->t_dump = elapsed_since(td);
+    }
+
+#ifdef VESUVIUS_DEBUG
+    /* Invariant (CLAUDE.md §17): every emitted component is a 2-manifold. */
+    for (size_t gi = 0; gi < out->n_trimmed; gi++) {
+        ComponentMesh *gcm = &out->trimmed[gi];
+        if (gcm->nf == 0) continue;
+        MeshManifoldStats gms = MeshManifold_audit(arena, gcm->nv,
+                                                   gcm->faces, gcm->nf);
+        assert(MeshManifold_ok(&gms));
+    }
+#endif
 
     return 0;
 }

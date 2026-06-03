@@ -14,6 +14,17 @@ typedef struct {
     int32_t count;
 } CompInfo;
 
+/* Per-output-component snapshot of the raw + LOP'd point cloud, captured by
+ * MeshExtract_run when out_clouds is non-NULL, for the post-extract connectivity
+ * re-split (see src/extract/mesh_resplit.h). The arrays are index-aligned with
+ * the out_meshes array (cloud k describes mesh k). n == 0 means "no snapshot". */
+typedef struct {
+    const float *orig_pts;       /* [n*3] pre-LOP voxel centers (cube-local z,y,x) */
+    const float *lop_pts;        /* [n*3] their 1:1 LOP images (pre-weld)          */
+    float        cell_origin[3]; /* cube_world_origin the LOP used (hash alignment)*/
+    size_t       n;
+} MeshResplitCloud;
+
 /* 3D 6-connected connected components via BFS.
  * Writes labels[D*H*W] (0 = background, 1..n_comps = foreground labels).
  * Allocates and returns *out_comps as a sorted-by-count-desc array of length
@@ -50,6 +61,12 @@ int cc_label_3d(Arena_T arena, const uint8_t *vol,
  * Returns 0 on success, nonzero on failure.
  * On success, *out_meshes points to an arena-allocated array of
  * ComponentMesh structs, and *out_n_meshes is the count.
+ *
+ * out_clouds: optional (pass NULL to skip). If non-NULL, receives an
+ * arena-allocated array of MeshResplitCloud (length *out_n_meshes, index-aligned
+ * with *out_meshes) holding each component's pre-LOP voxel-center points and
+ * their 1:1 LOP images, for the post-extract connectivity re-split. Adds a small
+ * per-component arena snapshot; harmless when NULL.
  */
 int MeshExtract_run(Arena_T          arena,
                     const char      *tiff_path,
@@ -63,6 +80,7 @@ int MeshExtract_run(Arena_T          arena,
                     const char      *cube_id,
                     int              skip_qem,
                     ComponentMesh  **out_meshes,
-                    size_t          *out_n_meshes);
+                    size_t          *out_n_meshes,
+                    MeshResplitCloud **out_clouds);
 
 #endif

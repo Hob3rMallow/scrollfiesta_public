@@ -18,6 +18,12 @@
 #define MAX_COMPONENTS        20    /* keep top N by size */
 #define CLEANUP_MICRO_HOLE_MAX 6   /* max boundary loop verts for fill */
 #define MIN_FRAGMENT_FACES   100    /* discard sub-components smaller */
+#define RESPLIT_MIN_COMP_VERTS 200  /* mesh_resplit: re-mesh a connectivity-component
+                                     * only if it has >= this many verts (smaller
+                                     * disconnected fragments are dropped) */
+#define KIBBLE_AREA_FRAC     0.02f  /* component_cull: drop connectivity-components
+                                     * whose surface area is < this fraction of the
+                                     * total meshed cube area (post hole-fill/QEM) */
 
 /* Step 0 — MLS-midpoint projection (LOP family, μ=0). Collapses the
  * MC double-envelope to its single-sided centerline. Halo-deterministic:
@@ -155,12 +161,29 @@
 #define ORACLE_UV_GRID_SIZE  320    /* UV grid resolution for raycasting */
 #define ORACLE_MIN_GAP        10    /* voxel gap to count as sheet boundary */
 
+/* Flatten -- scroll UV unwrap (depth + winding). See src/flatten/. */
+#define FLATTEN_AXIAL_BINS        256   /* centerline slices along the scroll axis */
+#define FLATTEN_CENTERLINE_SMOOTH   5   /* moving-average half-window over slice centers */
+#define FLATTEN_PX_PER_VOX        1.0f  /* tifxyz cells per voxel, both axes. UVs are
+                                         * length-like (vox), matching vc_obj2tifxyz's
+                                         * metric mode (~1 cell per UV unit). */
+#define FLATTEN_MAX_GRID_DIM     8192   /* cap on either tifxyz grid dimension */
+#define FLATTEN_SPIRAL_MIN_PTS     64   /* min component verts to trust a spiral fit */
+
 /* Step 2 */
 #define SEED_RING             20    /* BFS expansion hops for source/sink */
 #define MAX_FLOW_LIMIT       100    /* Edmonds-Karp early exit */
 #define CUT_GAP_DEPTH       7.0f   /* exclusion zone around cut (voxels) */
 #define BRIDGE_MAX_DEPTH      10    /* max recursion depth */
 #define FLOW_INF       (1 << 30)   /* ~1 billion - never INT_MAX */
+
+/* Short-handle sever (post hole-fill). BPA can roll a thin self-bridge that
+ * fuses a sheet into a genus>0 tangle (seen on ~4/100 4x5x5 cubes, up to
+ * genus 10, every loop < 35 vox). Open every non-separating loop shorter than
+ * this (the thin bridges) and keep longer ones -- a per-cube sheet patch has no
+ * legitimate scroll-scale handle, but the length bound is a safety margin. Set
+ * env VES_SEVER_OFF=1 to disable (for A/B). */
+#define SEVER_MAX_LOOP_VOX   60.0   /* double: max handle-loop length to sever */
 
 /* Step 3 — Overlap separator */
 #define MIN_FRAGMENT_VERTS_S3   30     /* percent threshold for small-comp merge */

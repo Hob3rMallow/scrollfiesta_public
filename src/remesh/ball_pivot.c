@@ -23,6 +23,34 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+/* Anti-parallel front-coherence filter threshold (Part 2: block self-fold /
+ * inter-wrap bridges). Reject a pivot candidate whose per-vertex normal is more
+ * than ~107deg from the FRONT sheet's normal (cos < this). This sits in the dead
+ * zone no single recto sheet occupies: legitimate curvature at rho=1.2 vox is a
+ * few deg per triangle (cos ~ +1), while a self-fold or anti-parallel inter-wrap
+ * touch is cos ~ -1. Not 0.0 (a noisy crease can momentarily exceed 90deg ->
+ * would reopen slits); not -0.7 (per-vertex MLS noise can read a real
+ * anti-parallel touch as only ~120deg). Complements the TRIANGLE-normal fold-back
+ * guard (BRIDGE_FOLD_COS), which only fires once a shared edge already exists.
+ * Tunable via BPA_ANTIPARALLEL_COS; disabled via BPA_NO_ANTIPARALLEL and in the
+ * seam bridge. */
+#define BPA_ANTIPARALLEL_COS (-0.3)
+
+/* Face-coherence guard threshold. Reject a pivot whose NEW triangle's face normal
+ * diverges from the PARENT (front-edge owner) triangle's face normal by more than
+ * ~60deg (dot < this). Unlike the per-vertex anti-parallel filter above, this uses
+ * GEOMETRIC face normals (reliable; MLS per-vertex normals are noisy and let the
+ * wrong-sheet pick through). Measured on z04352_y03456_x02944 comp001: 99.7% of
+ * interior edges sit at adjacent-face dot > 0.9 (a smooth single sheet), while the
+ * wrong-sheet "bridge" triangles -- the front rolling DOWN to a different layer
+ * instead of ACROSS its own slit -- form a near-perpendicular face (dot ~ 0), as
+ * does a fold-back (dot < 0). So 0.5 (60deg) rejects bridges/folds with wide
+ * margin and never touches legitimate curvature. With candidate-retry this means a
+ * rejected down-pick falls through to the across-sheet pivot: the streak fills with
+ * the correct side AND no inter-sheet bridge is laid. Tunable via BPA_FACE_COH_COS;
+ * disabled in the seam bridge (which legitimately spans a gap). */
+#define BPA_FACE_COH_COS 0.5
+
 /* Debug-only per-pivot trace (set from BPA_TRACE in BallPivot_bridge). */
 static int g_bpa_trace = 0;
 /* Diagnostic (BPA_NO_NORMAL_GATE): bypass the per-vertex MLS normal gate to test
@@ -75,6 +103,31 @@ static double g_depth_sum = 0, g_past90_sum = 0, g_absh_sum = 0;
  * little slack, genus stays 0) or genuine normal inconsistency (slack wrecks
  * genus). */
 static double g_normal_tol = 0.0;
+/* Part 2 anti-parallel front-coherence filter (see BPA_ANTIPARALLEL_COS). On by
+ * default in per-cube recon; off in the seam bridge and via BPA_NO_ANTIPARALLEL.
+ * g_dbg_antiparallel tallies candidates it rejected (BPA_DEBUG). */
+static int    g_antiparallel = 1;
+static double g_antiparallel_cos = BPA_ANTIPARALLEL_COS;
+static long   g_dbg_antiparallel = 0;
+/* Face-coherence guard (see BPA_FACE_COH_COS). Reject < g_face_coh_cos; set to a
+ * value <= -1.0 to disable (the seam bridge does this -- a bridge legitimately
+ * spans a gap with a divergent face). g_dbg_facecoh tallies its rejections. */
+static double g_face_coh_cos = BPA_FACE_COH_COS;
+static long   g_dbg_facecoh = 0;
+/* Relax the Bernardini case-2 vertex-manifold guard in per-cube growth: allow a
+ * pivot onto an on-front vertex even when the new triangle glues to neither of
+ * its incident edges. This is the legal BPA "join" that splits the front into two
+ * loops and lets a thin self-pinch fjord FILL instead of being retired as an
+ * interior boundary streak. ON BY DEFAULT (BPA_STRICT_CASE2=1 reverts to the old
+ * strict guard). Measured on z04352_y03072_x02560: comp002 interior-streak
+ * boundary edges 4495->51, full-cube boundary 41573->5783, and the output stays
+ * 2-manifold (edge AND vertex) and genus-0 -- the transient pinch vertices the
+ * join leaves are resolved downstream by PinholeFill_split_pinches +
+ * manifold_guard; the fjords fill rather than amplifying into non-manifold edges.
+ * (case-1 -- a join onto a FULLY-consumed vertex with no front edge -- stays
+ * strict regardless: that is an unfillable pinch, not a fjord.) Scoped to per-cube
+ * reconstruction; the seam bridge keeps the strict guard (see BallPivot_bridge). */
+static int    g_relax_case2 = 1;
 
 typedef struct { float z, y, x; } Vec3;
 
@@ -473,6 +526,19 @@ static int try_seed(const Grid *g, const Vec3 *V, const Vec3 *N,
     double na[3], nb[3], nc[3], n_avg[3];
     vec3_to_d(na,&N[i]); vec3_to_d(nb,&N[j]); vec3_to_d(nc,&N[k]);
     n_avg[0]=na[0]+nb[0]+nc[0]; n_avg[1]=na[1]+nb[1]+nc[1]; n_avg[2]=na[2]+nb[2]+nc[2];
+    /* Part 2: refuse a seed that straddles a fold/wrap. A legitimate seed sits on
+     * one smooth patch (all pairwise normal dots ~ +1); a fold-spanning seed has
+     * one anti-parallel pair, and growing from it plants a bridge. Defer to the
+     * next eligible triple -- never a merger. */
+    if (g_antiparallel) {
+        double la=v_len(na), lb=v_len(nb), lc=v_len(nc);
+        double cab = (la>1e-12 && lb>1e-12) ? v_dot(na,nb)/(la*lb) : 1.0;
+        double cbc = (lb>1e-12 && lc>1e-12) ? v_dot(nb,nc)/(lb*lc) : 1.0;
+        double cac = (la>1e-12 && lc>1e-12) ? v_dot(na,nc)/(la*lc) : 1.0;
+        if (cab < g_antiparallel_cos || cbc < g_antiparallel_cos ||
+            cac < g_antiparallel_cos)
+            return 0;
+    }
     double ab[3], ac[3], tnorm[3];
     v_sub(ab,b,a); v_sub(ac,c,a); v_cross(tnorm,ab,ac);
     int sign = (v_dot(tnorm, n_avg) > 0) ? +1 : -1;
@@ -494,6 +560,13 @@ static int try_seed(const Grid *g, const Vec3 *V, const Vec3 *N,
     return 1;
 }
 
+/* Part 1: keep the K smallest-theta empty-ball pivots, not just the single best,
+ * so bpa_grow can fall through to the next candidate when the topology guards
+ * reject the geometrically-first one (a guard-failing best no longer dooms the
+ * edge to a slit). Candidates that pass the empty-ball test have mutually-empty
+ * balls, so any of them is a geometrically valid pivot. */
+enum { BPA_PIVOT_K = 4 };
+
 typedef struct {
     const Grid *g;
     const Vec3 *V, *N;
@@ -502,15 +575,60 @@ typedef struct {
     int va, vb;
     double O_prev_perp[3];
     double O_prev_perp_len;
-    int best_v;
-    double best_theta;
-    double best_O[3];
+    /* Top-K pivots, ascending by theta. k_v[0] is the classic min-theta winner. */
+    int    n_k;
+    int    k_v[BPA_PIVOT_K];
+    double k_theta[BPA_PIVOT_K];
+    double k_O[BPA_PIVOT_K][3];
+    /* Part 2: front-sheet normals for the anti-parallel filter. n_front is the
+     * geometric parent-triangle normal (immune to per-vertex MLS noise);
+     * n_front_v the averaged endpoint MLS normal. have_front gates the test. */
+    int    have_front;
+    double n_front[3];
+    double n_front_v[3];
     /* dead-end classification (per pivot attempt) */
     int n_sphere;     /* candidates that admitted >=1 ball center           */
     int n_rej_empty;  /* theta-eligible candidates killed by empty-ball test */
     int n_rej_normal; /* theta-eligible candidates killed by normal gate     */
     int n_theta_elig; /* candidates that reached the theta gate              */
 } PivotCtx;
+
+/* Insert (idx, theta, O) into the ascending top-K, capped at BPA_PIVOT_K.
+ * Deterministic tie-break: equal theta -> smaller vertex index first. */
+static void pivot_push(PivotCtx *p, int idx, double theta, const double *O)
+{
+    int K = BPA_PIVOT_K;
+    if (p->n_k == K && theta >= p->k_theta[K-1]) return;   /* worse than all K */
+    int i = (p->n_k < K) ? p->n_k : (K - 1);
+    while (i > 0 && (p->k_theta[i-1] > theta ||
+                    (p->k_theta[i-1] == theta && p->k_v[i-1] > idx))) {
+        p->k_theta[i] = p->k_theta[i-1];
+        p->k_v[i]     = p->k_v[i-1];
+        p->k_O[i][0]  = p->k_O[i-1][0];
+        p->k_O[i][1]  = p->k_O[i-1][1];
+        p->k_O[i][2]  = p->k_O[i-1][2];
+        i--;
+    }
+    p->k_theta[i] = theta;
+    p->k_v[i]     = idx;
+    p->k_O[i][0]  = O[0];
+    p->k_O[i][1]  = O[1];
+    p->k_O[i][2]  = O[2];
+    if (p->n_k < K) p->n_k++;
+}
+
+/* Part 2 anti-parallel filter decision: 1 iff candidate normal nc (need not be
+ * unit) points more than ~107deg (cos < g_antiparallel_cos) from the front
+ * sheet -- compared against BOTH the geometric parent-triangle normal n_front
+ * and the averaged endpoint normal n_front_v; either disagreeing rejects. */
+static int cand_antiparallel(const double *nc, const PivotCtx *p)
+{
+    double nlen = v_len(nc);
+    if (nlen < 1e-12) return 0;
+    double d_par = v_dot(nc, p->n_front)   / nlen;
+    double d_avg = v_dot(nc, p->n_front_v) / nlen;
+    return (d_par < g_antiparallel_cos || d_avg < g_antiparallel_cos);
+}
 
 static int pivot_cb(int idx, void *user)
 {
@@ -542,7 +660,8 @@ static int pivot_cb(int idx, void *user)
         double theta = atan2(sin_t, cos_t);
         if (theta < 0) theta += 2.0 * M_PI;
         if (theta < 1e-3) continue;
-        if (theta < p->best_theta) {
+        /* Consider this candidate if it could enter the ascending top-K. */
+        if (p->n_k < BPA_PIVOT_K || theta < p->k_theta[p->n_k - 1]) {
             p->n_theta_elig++;
             if (!ball_empty(p->g, p->V, O_c, p->rho, p->va, p->vb, idx)) {
                 g_ko_empty++; p->n_rej_empty++;
@@ -571,8 +690,17 @@ static int pivot_cb(int idx, void *user)
                     continue;
                 }
             }
-            p->best_v = idx; p->best_theta = theta;
-            p->best_O[0]=O_c[0]; p->best_O[1]=O_c[1]; p->best_O[2]=O_c[2];
+            /* Part 2: anti-parallel front-coherence filter. Reject a candidate
+             * whose normal points opposite (>107deg) to the front sheet -- a
+             * self-fold / inter-wrap touch the ball-side normal gate misses
+             * (it never compares the candidate to the front we grow FROM).
+             * Runs in SELECTION so retry skips it and falls through to the next
+             * same-sheet candidate. */
+            if (g_antiparallel && p->have_front && cand_antiparallel(nv_, p)) {
+                g_dbg_antiparallel++;
+                continue;
+            }
+            pivot_push(p, idx, theta, O_c);
         }
     }
     return 0;
@@ -580,7 +708,8 @@ static int pivot_cb(int idx, void *user)
 
 static int do_pivot(const Grid *g, const Vec3 *V, const Vec3 *N, double rho,
                      int va, int vb, const double *O_prev,
-                     int *out_v, double *out_O)
+                     int front_t, int front_h, int front_vopp,
+                     int *out_v, double out_O[][3], int *out_n)
 {
     PivotCtx p;
     p.g=g; p.V=V; p.N=N; p.rho=rho;
@@ -594,11 +723,39 @@ static int do_pivot(const Grid *g, const Vec3 *V, const Vec3 *N, double rho,
     double tab[3]; v_scale(tab, p.ab, t);
     v_sub(p.O_prev_perp, dM, tab);
     p.O_prev_perp_len = v_len(p.O_prev_perp);
-    p.best_v = -1; p.best_theta = 2.0 * M_PI + 1;
+    p.n_k = 0;
+    /* Part 2: front-sheet normal for the anti-parallel filter. Prefer the
+     * geometric parent-triangle normal (front_t, front_h, front_vopp); pair it
+     * with the averaged endpoint MLS normal. If geometric and MLS disagree on
+     * sign (the MLS field flipped here), trust the averaged MLS normal alone so
+     * both sides of the comparison share one convention. */
+    p.have_front = 0;
+    if (g_antiparallel && front_t >= 0 && front_h >= 0) {
+        double nt[3], nh[3];
+        vec3_to_d(nt, &N[front_t]); vec3_to_d(nh, &N[front_h]);
+        p.n_front_v[0]=nt[0]+nh[0]; p.n_front_v[1]=nt[1]+nh[1]; p.n_front_v[2]=nt[2]+nh[2];
+        double lv = v_len(p.n_front_v);
+        int have_v = (lv > 1e-12);
+        if (have_v) { p.n_front_v[0]/=lv; p.n_front_v[1]/=lv; p.n_front_v[2]/=lv; }
+        int have_g = (front_vopp >= 0) &&
+                     tri_unit_normal_i(V, front_t, front_h, front_vopp, p.n_front);
+        if (have_g && have_v) {
+            if (v_dot(p.n_front, p.n_front_v) < 0.0) {
+                p.n_front[0]=p.n_front_v[0]; p.n_front[1]=p.n_front_v[1]; p.n_front[2]=p.n_front_v[2];
+            }
+            p.have_front = 1;
+        } else if (have_v) {
+            p.n_front[0]=p.n_front_v[0]; p.n_front[1]=p.n_front_v[1]; p.n_front[2]=p.n_front_v[2];
+            p.have_front = 1;
+        } else if (have_g) {
+            p.n_front_v[0]=p.n_front[0]; p.n_front_v[1]=p.n_front[1]; p.n_front_v[2]=p.n_front[2];
+            p.have_front = 1;
+        }
+    }
     p.n_sphere = p.n_rej_empty = p.n_rej_normal = p.n_theta_elig = 0;
     if (g_dead_measure) { g_n_erec = 0; g_n_nrec = 0; }
     grid_query(g, p.M[0], p.M[1], p.M[2], 2.0*rho, pivot_cb, &p, V);
-    if (p.best_v < 0) {
+    if (p.n_k == 0) {
         /* Dead end -> hole boundary. Classify why no candidate won. */
         if (p.n_theta_elig == 0)
             { if (p.n_sphere == 0) g_dead_gap++; else g_dead_theta++; }
@@ -611,8 +768,11 @@ static int do_pivot(const Grid *g, const Vec3 *V, const Vec3 *N, double rho,
         else                                                  g_dead_theta++;
         return 0;
     }
-    *out_v = p.best_v;
-    out_O[0]=p.best_O[0]; out_O[1]=p.best_O[1]; out_O[2]=p.best_O[2];
+    for (int i = 0; i < p.n_k; i++) {
+        out_v[i] = p.k_v[i];
+        out_O[i][0]=p.k_O[i][0]; out_O[i][1]=p.k_O[i][1]; out_O[i][2]=p.k_O[i][2];
+    }
+    *out_n = p.n_k;
     return 1;
 }
 
@@ -625,8 +785,13 @@ typedef struct {
     int qh, qt;
     int queue_cap;
     /* Debug-only pivot tally (BPA_DEBUG). No effect on behaviour, except
-     * dbg_fold, whose guard DOES reject pivots (see glue_folds_back). */
+     * dbg_fold, whose guard DOES reject pivots (see glue_folds_back). The
+     * guard counters are now per-CANDIDATE (an edge may try up to BPA_PIVOT_K),
+     * not per-edge. dbg_retry_saved = edges saved by a non-first candidate;
+     * dbg_all_cand_failed = edges where every candidate was rejected (true
+     * boundary). */
     int dbg_no_pivot, dbg_bowtie, dbg_orient, dbg_3fan, dbg_bowtie_ok, dbg_fold;
+    int dbg_retry_saved, dbg_all_cand_failed, dbg_facecoh;
 } BpaBuild;
 
 static void bpa_build_init(BpaBuild *b, int n)
@@ -639,6 +804,7 @@ static void bpa_build_init(BpaBuild *b, int n)
     b->qh = 0; b->qt = 0;
     b->dbg_no_pivot = b->dbg_bowtie = b->dbg_orient = b->dbg_3fan = 0;
     b->dbg_bowtie_ok = 0; b->dbg_fold = 0;
+    b->dbg_retry_saved = 0; b->dbg_all_cand_failed = 0; b->dbg_facecoh = 0;
 }
 static void bpa_build_free(BpaBuild *b) { free(b->F); free(b->queue); }
 
@@ -657,6 +823,125 @@ static void bpa_enqueue(BpaBuild *b, int eid)
         b->queue = (int *)realloc(b->queue, (size_t)b->queue_cap * sizeof(int));
     }
     b->queue[b->qt++] = eid;
+}
+
+/* Apply the topology guards to ONE pivot candidate (v_new, O_new) for front edge
+ * ei (directed t->h). On acceptance, commit the triangle + edge bookkeeping and
+ * return 1. On any guard rejection return 0 WITHOUT touching ei's state -- the
+ * caller (bpa_grow) tries the next candidate and marks ES_BOUNDARY only after
+ * every candidate fails. The guard logic is unchanged from the historical inline
+ * version; it was hoisted here so the per-edge retry loop stays readable. */
+static int bpa_try_candidate(const Vec3 *V, EdgeStore *es, uint8_t *used,
+                             int *vfront, BpaBuild *b, int relax_bowtie,
+                             int ei, int t, int h, int v_new, const double *O_new)
+{
+    int va = es->e[ei].va, vb = es->e[ei].vb;   /* for trace messages only */
+    /* Bowtie guard (Bernardini case 1 / reference onFront): a pivot landing on a
+     * USED vertex carrying no incident FRONT edge would make a non-manifold
+     * (bowtie) vertex. Reject. vfront[] makes this O(1). */
+    if (used[v_new] && vfront[v_new] == 0) {
+        if (!relax_bowtie) {
+            b->dbg_bowtie++;
+            if (g_bpa_trace)
+                fprintf(stderr, "  [trace] edge (%.1f,%.1f)-(%.1f,%.1f) -> v(%.1f,%.1f) "
+                        "BOWTIE (used,vfront=0)\n",
+                        V[va].y, V[va].x, V[vb].y, V[vb].x, V[v_new].y, V[v_new].x);
+            return 0;
+        }
+        /* Bridge meeting (relax_bowtie): the opposite front fully consumed this
+         * boundary vertex, so it has no FRONT edge -- but attaching to it is
+         * exactly how the two seam fronts zip together. Allow it; the transient
+         * vertex-touch is resolved as the zip completes (or by the downstream
+         * pinch-split). Edge-manifoldness is still enforced by the 3-fan guard
+         * below, and the pivot's per-vertex normal test already rejected any
+         * opposite-facing wrap, so this cannot fuse wraps. */
+        b->dbg_bowtie_ok++;
+    }
+    /* The new triangle (t, v_new, h) contributes directed half-edges t->v_new and
+     * v_new->h. A coincident edge may be glued only if it runs the REVERSE
+     * direction (Bernardini Fig 7 / findReverseEdgeOnFront). */
+    int rev_tv = 0, rev_vh = 0;
+    int e_tv = edges_find_dir(es, t, v_new, &rev_tv);
+    int e_vh = edges_find_dir(es, v_new, h, &rev_vh);
+    int abort_pivot = 0;
+    /* 3-fan guard: a coincident edge already carrying 2 faces (ES_INTERIOR)
+     * cannot take a third -- the one true non-manifold-edge case. */
+    if (e_tv >= 0 && es->e[e_tv].state == ES_INTERIOR) { abort_pivot = 1; b->dbg_3fan++; }
+    if (e_vh >= 0 && es->e[e_vh].state == ES_INTERIOR) { abort_pivot = 1; b->dbg_3fan++; }
+    /* Vertex-manifold guard (Bernardini 1999 §IV-D "Join and Glue", case 2):
+     * v_new is already used and -- having passed the vfront==0 guard above -- is
+     * on the front. But the new triangle (t,v_new,h) glues to NEITHER of v_new's
+     * incident edges (both e_tv and e_vh are brand new), so instead of extending
+     * v_new's existing fan it hangs a SECOND, edge-disconnected fan off v_new: a
+     * bowtie (non-manifold vertex). Genuine bowtie -> reject; the candidate-retry
+     * recovers any closable edge by trying a DIFFERENT v_new, not by allowing this
+     * one. Relaxed for the seam bridge (relax_bowtie). */
+    if (!abort_pivot && used[v_new] && e_tv < 0 && e_vh < 0 && !relax_bowtie
+        && !g_relax_case2) {
+        abort_pivot = 1; b->dbg_bowtie++;
+        if (g_bpa_trace)
+            fprintf(stderr, "  [trace] edge (%.1f,%.1f)-(%.1f,%.1f) -> v(%.1f,%.1f) "
+                    "BOWTIE (on-front, no glue: e_tv<0 && e_vh<0)\n",
+                    V[va].y, V[va].x, V[vb].y, V[vb].x, V[v_new].y, V[v_new].x);
+    }
+    /* Orientation guard: a coincident still-open edge wound the SAME way is a
+     * non-orientable connection (foldover). Reject. */
+    if (e_tv >= 0 && es->e[e_tv].state != ES_INTERIOR && !rev_tv) { abort_pivot = 1; b->dbg_orient++; }
+    if (e_vh >= 0 && es->e[e_vh].state != ES_INTERIOR && !rev_vh) { abort_pivot = 1; b->dbg_orient++; }
+    /* Fold-back guard: the reverse-coincident edges above are legal glues by
+     * winding, but reject the pivot if the new triangle folds flat back over the
+     * existing triangle across that shared edge (see glue_folds_back). */
+    if (!abort_pivot && e_tv >= 0 && rev_tv &&
+        glue_folds_back(V, t, v_new, h, es->e[e_tv].v_opp)) {
+        abort_pivot = 1; b->dbg_fold++;
+    }
+    if (!abort_pivot && e_vh >= 0 && rev_vh &&
+        glue_folds_back(V, v_new, h, t, es->e[e_vh].v_opp)) {
+        abort_pivot = 1; b->dbg_fold++;
+    }
+    /* Front-edge fold-back: the new triangle is ALSO glued, across the advancing
+     * front edge (t,h), to that edge's originating triangle (apex es->e[ei].v_opp).
+     * The dominant self-fold; the e_tv/e_vh checks above never see it. */
+    if (!abort_pivot &&
+        glue_folds_back(V, t, h, v_new, es->e[ei].v_opp)) {
+        abort_pivot = 1; b->dbg_fold++;
+    }
+    /* Face-coherence guard: reject if the NEW triangle's face normal diverges too
+     * far (> ~60deg) from the PARENT (front-edge owner) triangle's. That is the
+     * wrong-sheet "bridge" -- the front rolling DOWN onto a different layer instead
+     * of ACROSS its own slit -- and any deep fold. Uses geometric face normals, so
+     * it catches what the per-vertex normal gate (fed noisy MLS normals) lets
+     * through. With candidate-retry, the rejected down-pick falls through to the
+     * across-sheet pivot: the streak fills with the correct side and no inter-sheet
+     * bridge is laid. Disabled (g_face_coh_cos <= -1) in the seam bridge. */
+    if (!abort_pivot && g_face_coh_cos > -1.0) {
+        double n_par[3], n_new[3];
+        if (tri_unit_normal_i(V, t, h, es->e[ei].v_opp, n_par) &&
+            tri_unit_normal_i(V, t, v_new, h, n_new) &&
+            v_dot(n_new, n_par) < g_face_coh_cos) {
+            abort_pivot = 1; b->dbg_facecoh++;
+        }
+    }
+    if (abort_pivot) return 0;
+    /* Accept. */
+    bpa_add_face(b, t, v_new, h);
+    used[v_new] = 1;
+    edge_set_state(es, vfront, ei, ES_INTERIOR);
+    /* Only reverse coincidences survive the guards above, so a hit always closes
+     * cleanly to a 2-face manifold edge (FRONT or BOUNDARY -> closed). */
+    if (e_tv >= 0) {
+        edge_set_state(es, vfront, e_tv, ES_INTERIOR);
+    } else {
+        int new_id = edges_insert(es, vfront, t, v_new, h, O_new);
+        bpa_enqueue(b, new_id);
+    }
+    if (e_vh >= 0) {
+        edge_set_state(es, vfront, e_vh, ES_INTERIOR);
+    } else {
+        int new_id = edges_insert(es, vfront, v_new, h, t, O_new);
+        bpa_enqueue(b, new_id);
+    }
+    return 1;
 }
 
 /* Drain the front queue, advancing every ES_FRONT edge by one pivot until
@@ -681,8 +966,9 @@ static void bpa_grow(const Grid *g, const Vec3 *V, const Vec3 *N, double rho,
         int h  = (t == va) ? vb : va;                   /* directed head */
         double O_prev[3] = { es->e[ei].O_prev[0], es->e[ei].O_prev[1],
                              es->e[ei].O_prev[2] };
-        int v_new; double O_new[3];
-        if (!do_pivot(g, V, N, rho, va, vb, O_prev, &v_new, O_new)) {
+        int cand_v[BPA_PIVOT_K]; double cand_O[BPA_PIVOT_K][3]; int n_cand = 0;
+        if (!do_pivot(g, V, N, rho, va, vb, O_prev, t, h, es->e[ei].v_opp,
+                      cand_v, cand_O, &n_cand)) {
             edge_set_state(es, vfront, ei, ES_BOUNDARY);
             b->dbg_no_pivot++;
             if (g_bpa_trace)
@@ -690,86 +976,21 @@ static void bpa_grow(const Grid *g, const Vec3 *V, const Vec3 *N, double rho,
                         V[va].y, V[va].x, V[vb].y, V[vb].x, rho);
             continue;
         }
-        /* Bowtie guard (Bernardini case 1 / reference onFront): a pivot landing
-         * on a USED vertex carrying no incident FRONT edge would make a
-         * non-manifold (bowtie) vertex. Reject. vfront[] makes this O(1). */
-        if (used[v_new] && vfront[v_new] == 0) {
-            if (!relax_bowtie) {
-                edge_set_state(es, vfront, ei, ES_BOUNDARY);
-                b->dbg_bowtie++;
-                if (g_bpa_trace)
-                    fprintf(stderr, "  [trace] edge (%.1f,%.1f)-(%.1f,%.1f) -> v(%.1f,%.1f) "
-                            "BOWTIE (used,vfront=0)\n",
-                            V[va].y, V[va].x, V[vb].y, V[vb].x, V[v_new].y, V[v_new].x);
-                continue;
+        /* Part 1: try the candidates in theta order; a guard rejecting the
+         * geometrically-first one no longer dooms the edge -- fall through to the
+         * next, and mark ES_BOUNDARY only if EVERY candidate fails. */
+        int accepted = 0;
+        for (int ci = 0; ci < n_cand; ci++) {
+            if (bpa_try_candidate(V, es, used, vfront, b, relax_bowtie,
+                                  ei, t, h, cand_v[ci], cand_O[ci])) {
+                if (ci > 0) b->dbg_retry_saved++;
+                accepted = 1;
+                break;
             }
-            /* Bridge meeting (relax_bowtie): the opposite front fully consumed
-             * this boundary vertex, so it has no FRONT edge -- but attaching to
-             * it is exactly how the two seam fronts zip together. Allow it; the
-             * transient vertex-touch is resolved as the zip completes (or by the
-             * downstream pinch-split). Edge-manifoldness is still enforced by the
-             * 3-fan guard below, and the pivot's per-vertex normal test already
-             * rejected any opposite-facing wrap, so this cannot fuse wraps. */
-            b->dbg_bowtie_ok++;
         }
-        /* The new triangle (t, v_new, h) contributes directed half-edges
-         * t->v_new and v_new->h. A coincident edge may be glued only if it runs
-         * the REVERSE direction (Bernardini Fig 7 / findReverseEdgeOnFront). */
-        int rev_tv = 0, rev_vh = 0;
-        int e_tv = edges_find_dir(es, t, v_new, &rev_tv);
-        int e_vh = edges_find_dir(es, v_new, h, &rev_vh);
-        int abort_pivot = 0;
-        /* 3-fan guard: a coincident edge already carrying 2 faces (ES_INTERIOR)
-         * cannot take a third -- the one true non-manifold-edge case. */
-        if (e_tv >= 0 && es->e[e_tv].state == ES_INTERIOR) { abort_pivot = 1; b->dbg_3fan++; }
-        if (e_vh >= 0 && es->e[e_vh].state == ES_INTERIOR) { abort_pivot = 1; b->dbg_3fan++; }
-        /* Orientation guard: a coincident still-open edge wound the SAME way is
-         * a non-orientable connection (foldover). Reject. */
-        if (e_tv >= 0 && es->e[e_tv].state != ES_INTERIOR && !rev_tv) { abort_pivot = 1; b->dbg_orient++; }
-        if (e_vh >= 0 && es->e[e_vh].state != ES_INTERIOR && !rev_vh) { abort_pivot = 1; b->dbg_orient++; }
-        /* Fold-back guard: the reverse-coincident edges above are legal glues by
-         * winding, but reject the pivot if the new triangle folds flat back over
-         * the existing triangle across that shared edge (see glue_folds_back).
-         * This is the seam-bridge self-intersection the orient guard cannot
-         * catch -- the front zipping onto itself at a ~0 dihedral. */
-        if (!abort_pivot && e_tv >= 0 && rev_tv &&
-            glue_folds_back(V, t, v_new, h, es->e[e_tv].v_opp)) {
-            abort_pivot = 1; b->dbg_fold++;
-        }
-        if (!abort_pivot && e_vh >= 0 && rev_vh &&
-            glue_folds_back(V, v_new, h, t, es->e[e_vh].v_opp)) {
-            abort_pivot = 1; b->dbg_fold++;
-        }
-        /* Front-edge fold-back: the new triangle is ALSO glued, across the
-         * advancing front edge (t,h), to that edge's originating triangle (whose
-         * apex is es->e[ei].v_opp). This is the dominant self-fold -- the front
-         * rolling straight back over its own parent -- and the e_tv/e_vh checks
-         * above never see it (they test only the two NEW edges, not the front
-         * edge). Reject if v_new lands on the parent apex's side of (t,h). */
-        if (!abort_pivot &&
-            glue_folds_back(V, t, h, v_new, es->e[ei].v_opp)) {
-            abort_pivot = 1; b->dbg_fold++;
-        }
-        if (abort_pivot) {
+        if (!accepted) {
             edge_set_state(es, vfront, ei, ES_BOUNDARY);
-            continue;
-        }
-        bpa_add_face(b, t, v_new, h);
-        used[v_new] = 1;
-        edge_set_state(es, vfront, ei, ES_INTERIOR);
-        /* Only reverse coincidences survive the guards above, so a hit always
-         * closes cleanly to a 2-face manifold edge (FRONT or BOUNDARY -> closed). */
-        if (e_tv >= 0) {
-            edge_set_state(es, vfront, e_tv, ES_INTERIOR);
-        } else {
-            int new_id = edges_insert(es, vfront, t, v_new, h, O_new);
-            bpa_enqueue(b, new_id);
-        }
-        if (e_vh >= 0) {
-            edge_set_state(es, vfront, e_vh, ES_INTERIOR);
-        } else {
-            int new_id = edges_insert(es, vfront, v_new, h, t, O_new);
-            bpa_enqueue(b, new_id);
+            b->dbg_all_cand_failed++;
         }
     }
 }
@@ -1023,6 +1244,18 @@ int BallPivot_reconstruct(Arena_T arena,
     g_no_normal_gate = (getenv("BPA_NO_NORMAL_GATE") != NULL);
     g_normal_tol = 0.0;
     { const char *e = getenv("BPA_NORMAL_TOL"); if (e) { double t = atof(e); if (t >= 0.0 && t < 1.0) g_normal_tol = t; } }
+    /* Part 2 anti-parallel filter: on by default; BPA_NO_ANTIPARALLEL disables,
+     * BPA_ANTIPARALLEL_COS sweeps the threshold (clamped [-1.0, 0.0]). */
+    g_antiparallel = (getenv("BPA_NO_ANTIPARALLEL") == NULL);
+    g_antiparallel_cos = BPA_ANTIPARALLEL_COS;
+    { const char *e = getenv("BPA_ANTIPARALLEL_COS");
+      if (e) { double c = atof(e); if (c >= -1.0 && c <= 0.0) g_antiparallel_cos = c; } }
+    g_dbg_antiparallel = 0;
+    g_face_coh_cos = BPA_FACE_COH_COS;
+    { const char *e = getenv("BPA_FACE_COH_COS");
+      if (e) { double c = atof(e); if (c >= -1.0 && c <= 1.0) g_face_coh_cos = c; } }
+    g_dbg_facecoh = 0;
+    g_relax_case2 = (getenv("BPA_STRICT_CASE2") == NULL);
     g_ko_empty = 0; g_ko_normal = 0;
     g_dead_gap = g_dead_empty = g_dead_normal = g_dead_mixed = g_dead_theta = 0;
     g_dead_measure = (getenv("BPA_DEBUG") != NULL);
@@ -1106,11 +1339,13 @@ int BallPivot_reconstruct(Arena_T arena,
         }
         fprintf(stderr, "[bpa_recon] nv=%d rho=%.3f faces=%d edges: "
                 "front=%d interior=%d boundary=%d | pivot-fail: "
-                "no_pivot=%d bowtie=%d orient=%d 3fan=%d fold=%d | "
-                "pivot-ko: empty=%ld normal=%ld tol=%.2f%s\n",
+                "no_pivot=%d bowtie=%d orient=%d 3fan=%d fold=%d facecoh=%d "
+                "retry_saved=%d all_cand_failed=%d | "
+                "pivot-ko: empty=%ld normal=%ld antiparallel=%ld tol=%.2f%s\n",
                 n, rho, b.nf, n_front, n_int, n_bnd,
                 b.dbg_no_pivot, b.dbg_bowtie, b.dbg_orient, b.dbg_3fan, b.dbg_fold,
-                g_ko_empty, g_ko_normal, g_normal_tol,
+                b.dbg_facecoh, b.dbg_retry_saved, b.dbg_all_cand_failed,
+                g_ko_empty, g_ko_normal, g_dbg_antiparallel, g_normal_tol,
                 g_no_normal_gate ? " [NORMAL GATE OFF]" : "");
         fprintf(stderr, "[bpa_recon] no_pivot dead-ends by cause: "
                 "gap=%ld empty-ball=%ld normal-gate=%ld mixed=%ld theta-degenerate=%ld\n",
@@ -1176,11 +1411,25 @@ int BallPivot_bridge(Arena_T arena,
     g_bpa_trace = (getenv("BPA_TRACE") != NULL);
     g_no_normal_gate = 0;   /* the seam bridge always honors the normal gate */
     g_normal_tol = 0.0;
+    /* The seam bridge legitimately zips two fronts that may carry opposite local
+     * MLS sign conventions across the seam; front-coherence would starve it
+     * (cf. the rejected "mark primed verts used" experiment above). It relies on
+     * directed-glue + the per-vertex normal gate, not the anti-parallel filter. */
+    g_antiparallel = 0;
+    g_relax_case2 = 0;   /* the bridge governs case-2 via its own relax_bowtie */
+    g_face_coh_cos = -2.0;  /* disable face-coherence guard: a bridge legitimately
+                             * spans a gap with a divergent face across the seam */
 
     Grid *g = grid_build(V, n, 2.0*rho);
     EdgeStore *es = edges_new((int)n_init * 4);
     /* `used` only gates the seed scan, which the bridge never runs; keep
-     * it so bpa_grow's `used[v_new]=1` writes land somewhere valid. */
+     * it so bpa_grow's `used[v_new]=1` writes land somewhere valid.
+     * NB: marking the primed boundary verts used here (so bpa_grow's case-2
+     * guard protects them) was tried and REJECTED -- it cut the bridge to ~40%
+     * coverage (32407->13544 faces, +4k open seam) because legitimate bridging
+     * attaches to those verts via NEW gap-spanning edges, which case-2 then
+     * vetoes. The seam bowties are a front-meets-front gluing problem, not a
+     * missing used-flag; the post-weld manifold_guard resolves the residual. */
     uint8_t *used = (uint8_t *)calloc((size_t)n, 1);
     int *vfront = (int *)calloc((size_t)n, sizeof(int));
     BpaBuild b; bpa_build_init(&b, (int)n_init * 2);
@@ -1232,6 +1481,15 @@ int BallPivot_bridge(Arena_T arena,
             if (r > prev + 1e-6) { radii[n_rho++] = r; prev = r; }
         }
     }
+    /* Bridge relaxation. Default STRICT (=0): the seam bridge obeys the same
+     * Bernardini case-1 + case-2 vertex-manifold guards as per-cube BPA, so
+     * front-meets-front zips WITHOUT minting bowties. Measured on the 4x5x5
+     * blocks this cut post-weld non-manifold edges ~4x (15 -> 4 on the corner
+     * block) versus the old relaxed zip, whose transient bowties the pinhole
+     * split then amplified into >2-face edges. The trade is a few seam edges the
+     * strict guard declines to bridge (left as clean boundary for hole-fill).
+     * SEAM_RELAX_BRIDGE=1 restores the old relaxed zip for comparison. */
+    int bridge_relax = (getenv("SEAM_RELAX_BRIDGE") != NULL) ? 1 : 0;
     for (int lvl = 0; lvl < n_rho; lvl++) {
         double r = radii[lvl];
         for (int pass = 0; pass < 16; pass++) {
@@ -1247,7 +1505,7 @@ int BallPivot_bridge(Arena_T arena,
                 if (rearmed == 0) break;   /* nothing open at this radius */
             }
             int before = b.nf;
-            bpa_grow(g, V, N, r, es, used, vfront, &b, 1 /*relax bowtie: zip fronts*/);
+            bpa_grow(g, V, N, r, es, used, vfront, &b, bridge_relax);
             if (!(lvl == 0 && pass == 0) && b.nf == before) break;
         }
     }
@@ -1261,9 +1519,11 @@ int BallPivot_bridge(Arena_T arena,
         }
         fprintf(stderr, "[bpa_bridge] nv=%d primed_init=%zu faces=%d "
                 "edges: front=%d interior=%d boundary=%d | "
-                "pivot-fail: no_pivot=%d bowtie=%d orient=%d 3fan=%d fold=%d bowtie_ok=%d\n",
+                "pivot-fail: no_pivot=%d bowtie=%d orient=%d 3fan=%d fold=%d bowtie_ok=%d "
+                "facecoh=%d retry_saved=%d all_cand_failed=%d\n",
                 n, primed, b.nf, n_front, n_int, n_bnd,
-                b.dbg_no_pivot, b.dbg_bowtie, b.dbg_orient, b.dbg_3fan, b.dbg_fold, b.dbg_bowtie_ok);
+                b.dbg_no_pivot, b.dbg_bowtie, b.dbg_orient, b.dbg_3fan, b.dbg_fold, b.dbg_bowtie_ok,
+                b.dbg_facecoh, b.dbg_retry_saved, b.dbg_all_cand_failed);
     }
 
     int32_t *out = (int32_t *)ARENA_ALLOC(arena, (long)((size_t)b.nf * 3 * sizeof(int32_t)));

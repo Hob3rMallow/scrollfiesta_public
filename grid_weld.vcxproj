@@ -97,6 +97,7 @@
   <ItemGroup>
     <ClCompile Include="src\tools\grid_weld.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\arena.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\mesh_manifold.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\except.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\obj_io.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\ves_platform.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
@@ -104,6 +105,7 @@
     <ClCompile Include="src\remesh\seam_weld.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\remesh\fold_cleanup.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\remesh\pinhole_fill.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\remesh\manifold_guard.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\remesh\orient_mesh.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\remesh\orient_weld.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\remesh\weld_cleanup.c"><CompileAs>CompileAsC</CompileAs></ClCompile>

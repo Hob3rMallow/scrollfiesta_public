@@ -471,6 +471,24 @@ static size_t split_pinch_verts(Arena_T arena, ComponentMesh *cm,
     return nv_new;
 }
 
+/* Public phase-1-only entry: split pinch vertices across an array of meshes.
+ * Used by the post-trim manifold guard. (split_pinch_verts grows cm->verts from
+ * the arena and repoints faces in place; counts accumulate.) */
+int PinholeFill_split_pinches(Arena_T arena,
+                              ComponentMesh *meshes, size_t n_meshes,
+                              size_t *out_splits) {
+    size_t total = 0;
+    for (size_t i = 0; i < n_meshes; i++) {
+        ComponentMesh *cm = &meshes[i];
+        if (cm->nf == 0) { continue; }
+        size_t sp = 0;
+        split_pinch_verts(arena, cm, &sp);
+        total += sp;
+    }
+    if (out_splits) { *out_splits = total; }
+    return 0;
+}
+
 /* PHASE 2 — fill small boundary loops. */
 static void fill_small_loops(Arena_T arena, ComponentMesh *cm,
                              int respect_pins,

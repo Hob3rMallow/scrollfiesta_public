@@ -54,6 +54,15 @@ int PinholeFill_process(Arena_T arena,
                         size_t *out_tris_added,
                         size_t *out_loops_skipped);
 
+/* Phase-1 only: split pinch (bowtie) vertices in each component, no hole filling.
+ * The vertex-manifold half of PinholeFill, exposed for the post-trim manifold
+ * guard (a trimmed mesh has no pins and needs no 3-loop fills, only de-pinching).
+ * Requires EDGE-manifold input (resolve >2-face edges first). Returns 0 on
+ * success; out_splits (optional) = total vertices duplicated. */
+int PinholeFill_split_pinches(Arena_T arena,
+                              ComponentMesh *meshes, size_t n_meshes,
+                              size_t *out_splits);
+
 /* Per-mesh CDT/Liepa fill for the 4+ loops PinholeFill leaves (returns 0 on
  * success). The pipeline implements it over src/holefill (the only TU that
  * links Triangle/Clipper2); grid_weld passes NULL, so the weld binary stays

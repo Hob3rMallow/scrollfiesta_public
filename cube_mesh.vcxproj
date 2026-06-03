@@ -180,8 +180,15 @@
     <ClCompile Include="src\common\snap_cg.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
+    <!-- Combinatorial 2-manifold audit (shared by guard + debug assert) -->
+    <ClCompile Include="src\common\mesh_manifold.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
     <!-- Step 0: Mesh Extraction (MC + LOP + per-vertex backface cull) -->
     <ClCompile Include="src\extract\mesh_extract.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\extract\mesh_resplit.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <!-- Remesh: Ball-Pivoting Algorithm (Bernardini 1999). -->
@@ -194,6 +201,13 @@
     </ClCompile>
     <!-- Remesh: dedicated micro-hole / bowtie closer for BPA output. -->
     <ClCompile Include="src\remesh\pinhole_fill.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <!-- Remesh: final per-cube manifold guard (NM-edge resolve + pinch split). -->
+    <ClCompile Include="src\remesh\manifold_guard.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\remesh\component_cull.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <!-- Remesh: Hoppe 1992 consistent normal orientation (pre-BPA). -->
@@ -234,6 +248,14 @@
       <PreprocessorDefinitions>TRILIBRARY;ANSI_DECLARATORS;NO_TIMER;REAL=double;VOID=int;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <WarningLevel>Level1</WarningLevel>
     </ClCompile>
+    <!-- Topology + Seamster genus reduction (short-handle sever after hole fill) -->
+    <ClCompile Include="src\topology\mesh_topo.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\topology\seam_cut.c">
+      <CompileAs>CompileAsC</CompileAs>
+      <WarningLevel>Level1</WarningLevel>
+    </ClCompile>
     <!-- Pipeline library (per-cube orchestration) -->
     <ClCompile Include="src\pipeline\pipeline_cube.c">
       <CompileAs>CompileAsC</CompileAs>
@@ -266,15 +288,19 @@
     <ClInclude Include="src\common\qem.h" />
     <ClInclude Include="src\common\raw_snapback.h" />
     <ClInclude Include="src\common\snap_cg.h" />
+    <ClInclude Include="src\common\mesh_manifold.h" />
     <!-- Step headers -->
     <ClInclude Include="src\extract\mesh_extract.h" />
     <ClInclude Include="src\remesh\ball_pivot.h" />
     <ClInclude Include="src\remesh\orient_mesh.h" />
     <ClInclude Include="src\remesh\pinhole_fill.h" />
+    <ClInclude Include="src\remesh\manifold_guard.h" />
     <ClInclude Include="src\split\overlap_sep.h" />
     <ClInclude Include="src\split\multicut_wrap.h" />
     <ClInclude Include="src\holefill\hole_fill.h" />
     <ClInclude Include="src\holefill\clipper2_wrap.h" />
+    <ClInclude Include="src\topology\mesh_topo.h" />
+    <ClInclude Include="src\topology\seam_cut.h" />
     <ClInclude Include="src\pipeline\pipeline_cube.h" />
     <ClInclude Include="deps\include\triangle.h" />
   </ItemGroup>

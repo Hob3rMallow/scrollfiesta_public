@@ -248,6 +248,118 @@ int PCA_normal(const float *points, size_t n,
     return 0;
 }
 
+/* Shared: centroid + ascending eigenvalues + eigenvectors (as columns).
+ * Component order follows the input layout. Returns 0, or -1 if n < 3. */
+static int pca_eigh(const float *points, size_t n,
+                    double centroid[3], double evals[3], double evecs[3][3])
+{
+    if (n < 3) {
+        return -1;
+    }
+    assert(points);
+
+    double cx = 0.0, cy = 0.0, cz = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        cx += (double)points[i * 3 + 0];
+        cy += (double)points[i * 3 + 1];
+        cz += (double)points[i * 3 + 2];
+    }
+    double inv_n = 1.0 / (double)n;
+    centroid[0] = cx * inv_n;
+    centroid[1] = cy * inv_n;
+    centroid[2] = cz * inv_n;
+
+    double cov[3][3];
+    memset(cov, 0, sizeof(cov));
+    for (size_t i = 0; i < n; i++) {
+        double d0 = (double)points[i * 3 + 0] - centroid[0];
+        double d1 = (double)points[i * 3 + 1] - centroid[1];
+        double d2 = (double)points[i * 3 + 2] - centroid[2];
+        cov[0][0] += d0 * d0;
+        cov[0][1] += d0 * d1;
+        cov[0][2] += d0 * d2;
+        cov[1][1] += d1 * d1;
+        cov[1][2] += d1 * d2;
+        cov[2][2] += d2 * d2;
+    }
+    for (int i = 0; i < 3; i++) {
+        for (int j = i; j < 3; j++) {
+            cov[i][j] *= inv_n;
+            cov[j][i] = cov[i][j];
+        }
+    }
+
+    jacobi_3x3(cov, evals, evecs);
+    return 0;
+}
+
+/* Extract eigenvector column `col`, normalize, orient toward (1,1,1). */
+static void axis_from_col(double evecs[3][3], int col, float out_axis[3])
+{
+    double a[3] = { evecs[0][col], evecs[1][col], evecs[2][col] };
+    double len = sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+    if (len > 1e-15) {
+        a[0] /= len; a[1] /= len; a[2] /= len;
+    } else {
+        a[0] = 1.0; a[1] = 0.0; a[2] = 0.0;
+    }
+    if (a[0] + a[1] + a[2] < 0.0) {   /* deterministic sign, matches PCA_normal */
+        a[0] = -a[0]; a[1] = -a[1]; a[2] = -a[2];
+    }
+    out_axis[0] = (float)a[0];
+    out_axis[1] = (float)a[1];
+    out_axis[2] = (float)a[2];
+}
+
+static void axis_degenerate(float out_axis[3], float out_centroid[3])
+{
+    out_axis[0] = 1.0f; out_axis[1] = 0.0f; out_axis[2] = 0.0f;
+    if (out_centroid) {
+        out_centroid[0] = 0.0f; out_centroid[1] = 0.0f; out_centroid[2] = 0.0f;
+    }
+}
+
+int PCA_principal_axis(const float *points, size_t n,
+                       float out_axis[3], float out_centroid[3])
+{
+    assert(out_axis);
+    double cen[3], evals[3], evecs[3][3];
+    if (pca_eigh(points, n, cen, evals, evecs) != 0) {
+        axis_degenerate(out_axis, out_centroid);
+        return -1;
+    }
+    axis_from_col(evecs, 2, out_axis);   /* largest eigenvalue */
+    if (out_centroid) {
+        out_centroid[0] = (float)cen[0];
+        out_centroid[1] = (float)cen[1];
+        out_centroid[2] = (float)cen[2];
+    }
+    return 0;
+}
+
+int PCA_scroll_axis(const float *points, size_t n,
+                    float out_axis[3], float out_centroid[3])
+{
+    assert(out_axis);
+    double cen[3], evals[3], evecs[3][3];
+    if (pca_eigh(points, n, cen, evals, evecs) != 0) {
+        axis_degenerate(out_axis, out_centroid);
+        return -1;
+    }
+    /* evals ascending. The umbilicus is the "odd one out": the eigenvalue
+     * farthest from the median (evals[1]). For a roughly circular wound scroll
+     * the two cross-section axes have similar spread, so the axis is the
+     * outlier -- robust whether the region is taller than the disk or wider. */
+    int col = (evals[2] - evals[1] >= evals[1] - evals[0]) ? 2 : 0;
+    axis_from_col(evecs, col, out_axis);
+    if (out_centroid) {
+        out_centroid[0] = (float)cen[0];
+        out_centroid[1] = (float)cen[1];
+        out_centroid[2] = (float)cen[2];
+    }
+    return 0;
+}
+
 void PCA_project(const float *points, size_t n, const float dir[3],
                  float *out_proj, float *out_min, float *out_max)
 {

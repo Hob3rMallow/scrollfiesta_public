@@ -19,9 +19,10 @@
  *      (skipped if `skip_qem` is set).
  *   3. Mesh_trim_to_owned_box per component (when halo_voxels > 0) to
  *      yield the cube's owned region for grid_weld.
- *   4. Optional OBJ dumps at "step0", "qem", and "raw_snap" stages.
- *      The "raw_snap" stage name matches grid_weld's scan convention,
- *      even though the raw_snap algorithm itself is not currently run.
+ *   4. Optional OBJ dumps, named by operation in pipeline order:
+ *      step0_mls, step1_bpa, step2_cc, step3_mls, step4_bpa, step5_cc,
+ *      step6_cc_mls, step7_cc_bpa, step8_holefill, step9_sever, step10_qem,
+ *      step11_kibble, step12_final. grid_weld consumes step12_final.
  */
 
 typedef struct {
