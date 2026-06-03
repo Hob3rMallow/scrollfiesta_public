@@ -51,8 +51,8 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("--max-concurrent", type=int, default=None)
     r.add_argument("--threads-per-cube", type=int, default=1)
     r.add_argument("--cube-timeout", type=float, default=600.0,
-                   help="per-cube mesher timeout in seconds (default 600); a "
-                        "stalled dense cube is skipped, not allowed to hang")
+                   help="per-cube mesher timeout in seconds (default 600; 0 = no "
+                        "timeout). A cube exceeding it is skipped, not allowed to hang")
     r.add_argument("--no-qem", action="store_true")
     r.add_argument("--mesh-only", action="store_true",
                    help="stop after welding: write welded.obj + report and skip "
@@ -137,7 +137,7 @@ def _process_roi(args, roi: Roi, roi_dir: Path, bins: dict) -> dict:
         cube_mesh_bin=bins["cube_mesh"], grid_weld_bin=bins["grid_weld"],
         halo=args.halo, threshold=args.threshold, skip_qem=args.no_qem,
         max_concurrent=args.max_concurrent, threads_per_cube=args.threads_per_cube,
-        cube_timeout=args.cube_timeout)
+        cube_timeout=(None if args.cube_timeout <= 0 else args.cube_timeout))
 
     welded = load_welded_obj(mesh_res.welded_obj)
     # Viewer-ready copy: (x,y,z) order + per-vertex color (native welded.obj is z,y,x).
