@@ -53,6 +53,33 @@ def write_obj_vf(path, V: np.ndarray, F: np.ndarray) -> None:
             fh.write(f"f {a} {b} {c}\n")
 
 
+def reorder_welded_to_xyz(src_obj, dst_obj) -> None:
+    """Rewrite scrollfiesta's welded OBJ into a standard-viewer OBJ.
+
+    scrollfiesta writes ``v z y x [r g b]`` (its native axis order) and
+    ``f a b c``. Standard viewers read the first three numbers as (x,y,z), so
+    the mesh shows up transposed and inside-out. This emits ``v x y z [r g b]``
+    (axes reversed) with the **per-vertex color preserved**, and flips the face
+    winding (the axis reversal is a reflection, so reordering the triangle keeps
+    normals pointing outward). ``o``/``g``/``usemtl``/``mtllib`` lines pass
+    through.
+    """
+    with open(src_obj) as fi, open(dst_obj, "w") as fo:
+        fo.write("# scrollfiesta welded mesh: (z,y,x)->(x,y,z), winding flipped, "
+                 "per-vertex color preserved\n")
+        for ln in fi:
+            if ln.startswith("v "):
+                t = ln.split()
+                rest = (" " + " ".join(t[4:])) if len(t) > 4 else ""   # keep r g b
+                fo.write(f"v {t[3]} {t[2]} {t[1]}{rest}\n")
+            elif ln.startswith("f "):
+                t = ln.split()
+                a, b, c = (tok.split("/")[0] for tok in t[1:4])
+                fo.write(f"f {a} {c} {b}\n")                            # flip winding
+            elif ln.startswith(("o ", "g ", "usemtl ", "mtllib ")):
+                fo.write(ln)
+
+
 # --------------------------------------------------------------------------- #
 # Topology helpers
 # --------------------------------------------------------------------------- #

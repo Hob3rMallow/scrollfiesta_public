@@ -48,3 +48,20 @@ def test_prep_component_disk_and_level_scaling():
 def test_prep_component_rejects_sphere():
     with pytest.raises(PrepError):
         mp.prep_component(trimesh.creation.icosphere(subdivisions=1))
+
+
+def test_reorder_welded_to_xyz_keeps_color_and_flips_winding(tmp_path):
+    src = tmp_path / "welded.obj"
+    dst = tmp_path / "welded_xyz.obj"
+    src.write_text("o comp_001\n"
+                   "v 10 20 30 0.1 0.2 0.3\n"      # z y x r g b
+                   "v 11 21 31 0.4 0.5 0.6\n"
+                   "v 12 22 32 0.7 0.8 0.9\n"
+                   "f 1 2 3\n")
+    mp.reorder_welded_to_xyz(src, dst)
+    lines = [l for l in dst.read_text().splitlines() if not l.startswith("#")]
+    vs = [l for l in lines if l.startswith("v ")]
+    fs = [l for l in lines if l.startswith("f ")]
+    assert vs[0] == "v 30 20 10 0.1 0.2 0.3"        # (z,y,x)->(x,y,z), color kept
+    assert fs[0] == "f 1 3 2"                        # winding flipped
+    assert "o comp_001" in lines                     # object/group lines pass through

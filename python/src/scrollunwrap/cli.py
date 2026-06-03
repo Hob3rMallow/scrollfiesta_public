@@ -14,8 +14,8 @@ from .cube_planner import plan_cubes
 from .flatten import run_flatboi
 from .geometry_report import analyze_welded, build_report, write_report
 from .mesher import run_mesher
-from .meshprep import (load_welded_obj, prep_component, select_components,
-                       write_obj_vf)
+from .meshprep import (load_welded_obj, prep_component, reorder_welded_to_xyz,
+                       select_components, write_obj_vf)
 from .roi_finder import Roi, auto_pick_rois
 from .tifxyz import run_obj2tifxyz
 from .zarr_source import open_volume
@@ -140,6 +140,9 @@ def _process_roi(args, roi: Roi, roi_dir: Path, bins: dict) -> dict:
         cube_timeout=args.cube_timeout)
 
     welded = load_welded_obj(mesh_res.welded_obj)
+    # Viewer-ready copy: (x,y,z) order + per-vertex color (native welded.obj is z,y,x).
+    welded_xyz = Path(mesh_res.welded_obj).with_name("welded_xyz.obj")
+    reorder_welded_to_xyz(mesh_res.welded_obj, welded_xyz)
     welded_stats = analyze_welded(welded)
     base = {"roi": asdict(roi), "cubes_planned": len(cubes),
             "cubes_meshed": mesh_res.n_obj, "weld_report": mesh_res.weld_report,
