@@ -91,7 +91,8 @@ typedef struct {
  * components and counts vertex pairs within --gap.
  * =================================================================== */
 static Result analyze(const double *V, size_t nv, const int *F, size_t nf,
-                      double gap, double cell, const char *dumppath, int verbose, int want_crease)
+                      double gap, double cell, const char *dumppath,
+                      const char *seppath, int verbose, int want_crease)
 {
     Result R = { 0, INF, -1, -1, 0, 0.0, 0.0, K_SINGLE, -1.0 };
     if (nv == 0 || nf == 0) { if (verbose) printf("  (empty mesh: nv=%zu nf=%zu)\n", nv, nf); return R; }
@@ -404,6 +405,39 @@ static Result analyze(const double *V, size_t nv, const int *F, size_t nf,
         }
     }
 
+    /* ---- optional per-component SEPARATE OBJ files (one file per connectivity
+     * component, vertices remapped/compacted) -> <prefix>_cNNN_NNNNf.obj ---- */
+    if (seppath) {
+        int *remap = malloc(nv * sizeof(int));
+        int nwritten = 0;
+        for (int k = 0; k < C; k++) {
+            int cid = comp[k].id;
+            for (size_t i = 0; i < nv; i++) remap[i] = -1;
+            /* compact verts of this component */
+            int newnv = 0;
+            for (size_t i = 0; i < nv; i++) if (ref[i] && cov[i] == cid) remap[i] = newnv++;
+            char fpath[1280];
+            snprintf(fpath, sizeof(fpath), "%s_c%03d_%ldf.obj", seppath, cid, comp[k].nf);
+            FILE *of = fopen(fpath, "w");
+            if (!of) { printf("  ERROR: cannot write sep dump %s\n", fpath); continue; }
+            for (size_t i = 0; i < nv; i++) if (remap[i] >= 0)
+                fprintf(of, "v %.6f %.6f %.6f\n", V[i*3], V[i*3+1], V[i*3+2]);
+            for (size_t fi = 0; fi < nf; fi++) {
+                int a = F[fi*3];
+                if (cov[a] != cid) continue;   /* faces are intra-component */
+                fprintf(of, "f %d %d %d\n",
+                        remap[F[fi*3]]+1, remap[F[fi*3+1]]+1, remap[F[fi*3+2]]+1);
+            }
+            fclose(of);
+            nwritten++;
+            if (verbose)
+                printf("    sep[%d]: comp %d -> %s  (%d verts, %ld faces)\n",
+                       nwritten, cid, fpath, newnv, comp[k].nf);
+        }
+        free(remap);
+        if (verbose) printf("  wrote %d per-component OBJ file(s) with prefix '%s'\n", nwritten, seppath);
+    }
+
     free(uf); free(ref); free(rootnf); free(rootnv); free(comp); free(root2id); free(cov);
     free(cidx); free(coff); free(cellv); free(pmin2); free(pcnt); free(nn2); free(nnc); free(nn_idx);
     return R;
@@ -422,7 +456,7 @@ static int selftest(void)
         double V[] = { 0,0,0,  0,0,1,  0,1,0,  0,1,1 };
         int    F[] = { 0,1,2,  1,3,2 };
         printf("[case1] connected quad (expect comps=1)\n");
-        Result r = analyze(V, 4, F, 2, 1.5, 4.0, NULL, 1, 0);
+        Result r = analyze(V, 4, F, 2, 1.5, 4.0, NULL, NULL, 1,0);
         if (r.comps != 1) { printf("  FAIL: comps=%d != 1\n", r.comps); fails++; }
         else printf("  ok: comps=1\n");
     }
@@ -431,7 +465,7 @@ static int selftest(void)
         double V[] = { 0,0,0,  0,0,1,  0,1,0,   10,0,0,  10,0,1,  10,1,0 };
         int    F[] = { 0,1,2,  3,4,5 };
         printf("[case2] two far triangles (expect comps=2, separate)\n");
-        Result r = analyze(V, 6, F, 2, 1.5, 4.0, NULL, 1, 0);
+        Result r = analyze(V, 6, F, 2, 1.5, 4.0, NULL, NULL, 1,0);
         if (!(r.comps == 2 && r.closest_a < 0)) {
             printf("  FAIL: comps=%d closest_a=%d (expect 2, -1)\n", r.comps, r.closest_a); fails++;
         } else printf("  ok: comps=2, correctly separate\n");
@@ -441,7 +475,7 @@ static int selftest(void)
         double V[] = { 0,0,0,  0,0,1,  0,1,0,   0.5,0,0,  0.5,0,1,  0.5,1,0 };
         int    F[] = { 0,1,2,  3,4,5 };
         printf("[case3] two near triangles @0.5 vox (expect comps=2, gap~0.5, near>0)\n");
-        Result r = analyze(V, 6, F, 2, 1.5, 4.0, NULL, 1, 0);
+        Result r = analyze(V, 6, F, 2, 1.5, 4.0, NULL, NULL, 1,0);
         if (!(r.comps == 2 && r.closest_a > 0 && r.closest_min < 1.5 && r.closest_near > 0)) {
             printf("  FAIL: comps=%d closest_min=%.3f near=%ld\n", r.comps, r.closest_min, r.closest_near); fails++;
         } else printf("  ok: comps=2 gap=%.3f near=%ld (BPA-miss signature)\n", r.closest_min, r.closest_near);
@@ -452,7 +486,7 @@ static int selftest(void)
         double V[] = { 0,0,0,  0,2,0,  0,0,2,    1,0,0.3,  1,2,0.3,  3,0,0.3 };
         int    F[] = { 0,1,2,  3,4,5 };
         printf("[case4] 90-deg crease (expect crease_deg ~90)\n");
-        Result r = analyze(V, 6, F, 2, 1.5, 4.0, NULL, 1, 1);
+        Result r = analyze(V, 6, F, 2, 1.5, 4.0, NULL, NULL, 1,1);
         if (!(r.comps == 2 && r.crease_deg > 80.0 && r.crease_deg <= 90.0001)) {
             printf("  FAIL: comps=%d crease_deg=%.1f (expect ~90)\n", r.comps, r.crease_deg); fails++;
         } else printf("  ok: crease_deg=%.1f (fold confirmed)\n", r.crease_deg);
@@ -463,10 +497,37 @@ static int selftest(void)
         double V[] = { 0,0,0,  0,2,0,  0,0,2,    0,0,2.3,  0,2,2.3,  0,0,4 };
         int    F[] = { 0,1,2,  3,4,5 };
         printf("[case5] coplanar continuation (expect crease_deg ~0)\n");
-        Result r = analyze(V, 6, F, 2, 1.5, 4.0, NULL, 1, 1);
+        Result r = analyze(V, 6, F, 2, 1.5, 4.0, NULL, NULL, 1,1);
         if (!(r.comps == 2 && r.crease_deg >= 0.0 && r.crease_deg < 10.0)) {
             printf("  FAIL: comps=%d crease_deg=%.1f (expect ~0)\n", r.comps, r.crease_deg); fails++;
         } else printf("  ok: crease_deg=%.1f (coplanar, not a crease)\n", r.crease_deg);
+    }
+
+    /* case 6: --dump-sep writes one OBJ per connectivity component. Two far
+     * triangles -> expect 2 files, each with exactly 1 face and 3 verts. */
+    {
+        double V[] = { 0,0,0,  0,0,1,  0,1,0,   10,0,0,  10,0,1,  10,1,0 };
+        int    F[] = { 0,1,2,  3,4,5 };
+        const char *pre = "obj_components_selftest_sep";
+        printf("[case6] --dump-sep two comps (expect 2 files, 1 face each)\n");
+        Result r = analyze(V, 6, F, 2, 1.5, 4.0, NULL, pre, 0, 0);
+        /* component ids 1 and 2, each 1 face -> "<pre>_c001_1f.obj", "<pre>_c002_1f.obj" */
+        int ok = (r.comps == 2);
+        for (int cid = 1; cid <= 2 && ok; cid++) {
+            char fp[256]; snprintf(fp, sizeof(fp), "%s_c%03d_1f.obj", pre, cid);
+            FILE *t = fopen(fp, "r");
+            if (!t) { ok = 0; break; }
+            int nv6 = 0, nf6 = 0; char ln[256];
+            while (fgets(ln, sizeof(ln), t)) {
+                if (ln[0]=='v' && ln[1]==' ') nv6++;
+                else if (ln[0]=='f' && ln[1]==' ') nf6++;
+            }
+            fclose(t);
+            remove(fp);
+            if (!(nv6 == 3 && nf6 == 1)) ok = 0;
+        }
+        if (!ok) { printf("  FAIL: sep files missing or wrong size\n"); fails++; }
+        else printf("  ok: 2 separate OBJs, 3 verts / 1 face each\n");
     }
 
     printf("=== selftest %s (%d failure%s) ===\n",
@@ -479,18 +540,20 @@ int main(int argc, char **argv)
     if (argc >= 2 && strcmp(argv[1], "--selftest") == 0) return selftest();
     if (argc < 2) {
         fprintf(stderr,
-            "Usage: %s <mesh.obj> [--gap <vox=1.5>] [--cell <vox=4.0>] [--dump <out.obj>] [--brief] [--crease]\n"
+            "Usage: %s <mesh.obj> [--gap <vox=1.5>] [--cell <vox=4.0>] [--dump <out.obj>] [--dump-sep <prefix>] [--brief] [--crease]\n"
             "       %s --selftest\n", argv[0], argv[0]);
         return 2;
     }
     const char *path = argv[1];
     double gap = 1.5, cell = 4.0;
     const char *dump = NULL;
+    const char *dumpsep = NULL;
     int brief = 0, want_crease = 0;
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "--gap")  && i+1 < argc) gap  = atof(argv[++i]);
         else if (!strcmp(argv[i], "--cell") && i+1 < argc) cell = atof(argv[++i]);
         else if (!strcmp(argv[i], "--dump") && i+1 < argc) dump = argv[++i];
+        else if (!strcmp(argv[i], "--dump-sep") && i+1 < argc) dumpsep = argv[++i];
         else if (!strcmp(argv[i], "--brief")) brief = 1;
         else if (!strcmp(argv[i], "--crease")) want_crease = 1;
         else { fprintf(stderr, "unknown arg: %s\n", argv[i]); return 2; }
@@ -526,7 +589,7 @@ int main(int argc, char **argv)
         printf("=== obj_components: %s ===\n", path);
         printf("  V=%zu  F=%zu  gap=%.2f vox  cell=%.2f vox\n", nv, nf, gap, cell);
     }
-    Result r = analyze(V.p, nv, Fc.p, nf, gap, cell, dump, !brief, want_crease);
+    Result r = analyze(V.p, nv, Fc.p, nf, gap, cell, dump, dumpsep, !brief, want_crease);
 
     if (brief) {
         /* one line per file, for scanning a corpus. basename only. */

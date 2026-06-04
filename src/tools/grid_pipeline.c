@@ -32,6 +32,10 @@
 
 #include <omp.h>
 
+#include "../common/arena.h"
+#include "../common/tiff_io.h"
+#include "../extract/pred_reject.h"
+
 #ifdef _WIN32
   #include <windows.h>
 #else
@@ -40,6 +44,11 @@
   #include <unistd.h>
   #include <fcntl.h>
 #endif
+
+/* Sentinel exit code recorded in pipeline_summary.csv for a cube skipped as a
+ * garbage (solid-slab) prediction. Distinct from 0 (ok) and the cube_mesh
+ * failure codes so the CSV stays self-documenting. */
+#define GP_REJECT_CODE (-2)
 
 typedef struct {
     char        cube_id[128];
@@ -63,6 +72,10 @@ typedef struct {
     int         skip_weld;
     int         check_determinism;
     int         skip_qem;
+    int         skip_existing;  /* resume: skip cubes whose step12_final OBJ is already complete */
+    int         dry_run;        /* report skip/run decisions and exit; spawn nothing */
+    int         reject_garbage; /* gate garbage (solid-slab) cubes pre-spawn (default 1) */
+    const char *reject_list;    /* optional: skip cube_ids listed in this file (else detect inline) */
 } GpOptions;
 
 static void usage(const char *prog)
@@ -77,8 +90,16 @@ static void usage(const char *prog)
         "  --weld PATH               grid_weld.exe path (default build/Release/grid_weld.exe)\n"
         "  --max-cubes N             Stop after N cubes (default all)\n"
         "  --skip-weld               Do not run grid_weld at end\n"
+        "  --skip-existing           Resume: skip cubes whose step12_final OBJ\n"
+        "                            already exists and looks complete\n"
+        "  --dry-run                 With --skip-existing: print which cubes would\n"
+        "                            be skipped vs run, then exit (spawns nothing)\n"
         "  --check-determinism       Run each cube twice and cmp OBJs\n"
-        "  --no-qem                  Pass --no-qem to cube_mesh\n",
+        "  --no-qem                  Pass --no-qem to cube_mesh\n"
+        "  --no-reject-garbage       Process all cubes (do not skip solid-slab garbage)\n"
+        "  --reject-list FILE        Skip cube_ids listed in FILE (one per line);\n"
+        "                            default detects garbage inline from each TIFF\n"
+        "  --selftest                Run built-in unit tests and exit\n",
         prog);
 }
 
@@ -92,6 +113,7 @@ static int parse_args(int argc, char *argv[], GpOptions *o)
     o->max_cubes = 0;
     o->exe_path = "build/Release/cube_mesh.exe";
     o->weld_path = "build/Release/grid_weld.exe";
+    o->reject_garbage = 1;  /* gate solid-slab garbage cubes by default */
 
     if (argc < 3) { usage(argv[0]); return -1; }
     o->grid_dir = argv[1];
@@ -112,12 +134,21 @@ static int parse_args(int argc, char *argv[], GpOptions *o)
             o->max_cubes = atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--skip-weld")) {
             o->skip_weld = 1;
+        } else if (!strcmp(argv[i], "--skip-existing") ||
+                   !strcmp(argv[i], "--resume")) {
+            o->skip_existing = 1;
+        } else if (!strcmp(argv[i], "--dry-run")) {
+            o->dry_run = 1;
         } else if (!strcmp(argv[i], "--check-determinism")) {
             o->check_determinism = 1;
         } else if (!strcmp(argv[i], "--no-qem")) {
             o->skip_qem = 1;
         } else if (!strcmp(argv[i], "--qem")) {
             o->skip_qem = 0;
+        } else if (!strcmp(argv[i], "--no-reject-garbage")) {
+            o->reject_garbage = 0;
+        } else if (!strcmp(argv[i], "--reject-list") && i + 1 < argc) {
+            o->reject_list = argv[++i];
         } else {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);
             usage(argv[0]);
@@ -346,15 +377,155 @@ static int ensure_dir(const char *path)
     return ves_ensure_parent_dir(fake_child);
 }
 
+/* Build the path to a cube's final per-cube mesh (the stage grid_weld reads). */
+static void step12_obj_path(char *buf, size_t n,
+                            const char *dump_dir, const char *cube_id)
+{
+    snprintf(buf, n, "%s/%s/%s_step12_final/%s_step12_final_all.obj",
+             dump_dir, cube_id, cube_id, cube_id);
+}
+
+/* A cube counts as "already done" (for --skip-existing resume) iff its final
+ * per-cube OBJ exists and looks complete: a non-trivial size and a clean
+ * trailing newline. A cube_mesh process killed mid-dump leaves either no file
+ * or a truncated tail whose last byte is not '\n', so it is re-run. The size
+ * floor rejects empty/header-only stubs. This is intentionally a cheap O(1)
+ * stat+tail read so a full-grid scan stays fast. */
+static int obj_looks_complete(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return 0; }
+    long sz = ftell(f);
+    if (sz < 128) { fclose(f); return 0; }   /* header + a few verts minimum */
+    if (fseek(f, -1, SEEK_END) != 0) { fclose(f); return 0; }
+    int last = fgetc(f);
+    fclose(f);
+    return last == '\n';
+}
+
+/* ---- Optional reject-list (cube_ids to skip), loaded once before the run. ---- */
+typedef struct {
+    char (*ids)[128];
+    size_t n;
+} IdSet;
+
+static int idset_load(const char *path, IdSet *s)
+{
+    s->ids = NULL; s->n = 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    size_t cap = 64, n = 0;
+    char (*ids)[128] = (char (*)[128])malloc(cap * sizeof(*ids));
+    if (!ids) { fclose(f); return -1; }
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        size_t L = strlen(line);
+        while (L > 0 && (line[L-1] == '\n' || line[L-1] == '\r' ||
+                         line[L-1] == ' '  || line[L-1] == '\t')) line[--L] = '\0';
+        if (L == 0) continue;
+        if (n >= cap) {
+            cap *= 2;
+            char (*g)[128] = (char (*)[128])realloc(ids, cap * sizeof(*ids));
+            if (!g) { free(ids); fclose(f); return -1; }
+            ids = g;
+        }
+        if (L >= sizeof(ids[0])) L = sizeof(ids[0]) - 1;
+        memcpy(ids[n], line, L);
+        ids[n][L] = '\0';
+        n++;
+    }
+    fclose(f);
+    s->ids = ids; s->n = n;
+    return 0;
+}
+
+static int idset_has(const IdSet *s, const char *id)
+{
+    for (size_t i = 0; i < s->n; i++)
+        if (strcmp(s->ids[i], id) == 0) return 1;
+    return 0;
+}
+
+static void idset_free(IdSet *s) { free(s->ids); s->ids = NULL; s->n = 0; }
+
+/* Cheap garbage check: load a cube's OWN 128^3 prediction (no halo -- the
+ * verdict is per-cube) and run the solid-slab detector. Per-call arena so it
+ * is thread-safe inside the OpenMP loop. */
+static int cube_is_garbage(const char *tiff_path)
+{
+    Arena_T a = Arena_new();
+    uint8_t *vol = NULL;
+    int D = 0, H = 0, W = 0;
+    int garbage = 0;
+    if (TiffIO_load(a, tiff_path, &vol, &D, &H, &W) == 0) {
+        PredRejectStats st;
+        garbage = PredReject_is_garbage(a, vol, D, H, W, &st);
+    }
+    Arena_dispose(&a);
+    return garbage;
+}
+
+/* Built-in unit test for the resume completeness check (--selftest). */
+static int run_selftest(void)
+{
+    const char *p_ok    = "gp_selftest_ok.obj";
+    const char *p_trunc = "gp_selftest_trunc.obj";
+    const char *p_tiny  = "gp_selftest_tiny.obj";
+    FILE *f = NULL;
+
+    f = fopen(p_ok, "wb");      /* complete: verts + face + trailing newline */
+    if (f) { for (int i = 0; i < 24; i++) fprintf(f, "v %d.0 %d.0 %d.0\n", i, i, i);
+             fprintf(f, "f 1 2 3\n"); fclose(f); }
+    f = fopen(p_trunc, "wb");   /* same bytes but killed mid-line: no final \n */
+    if (f) { for (int i = 0; i < 24; i++) fprintf(f, "v %d.0 %d.0 %d.0\n", i, i, i);
+             fprintf(f, "f 1 2 3"); fclose(f); }
+    f = fopen(p_tiny, "wb");    /* below the size floor */
+    if (f) { fprintf(f, "v 0 0 0\n"); fclose(f); }
+
+    struct { const char *path; int expect; const char *name; } cases[] = {
+        { p_ok,    1, "complete-obj" },
+        { p_trunc, 0, "truncated-no-newline" },
+        { p_tiny,  0, "below-size-floor" },
+        { "gp_selftest_missing.obj", 0, "missing-file" },
+    };
+    int fails = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        int got = obj_looks_complete(cases[i].path);
+        int ok  = (got == cases[i].expect);
+        fprintf(stderr, "[selftest] %-22s got=%d expect=%d -> %s\n",
+                cases[i].name, got, cases[i].expect, ok ? "ok" : "FAIL");
+        if (!ok) fails++;
+    }
+    remove(p_ok); remove(p_trunc); remove(p_tiny);
+    fprintf(stderr, "=== grid_pipeline selftest %s (%d failure%s) ===\n",
+            fails ? "FAILED" : "PASSED", fails, fails == 1 ? "" : "s");
+    return fails ? 1 : 0;
+}
+
 int main(int argc, char *argv[])
 {
+    if (argc >= 2 && !strcmp(argv[1], "--selftest")) return run_selftest();
+
     GpOptions opts;
     if (parse_args(argc, argv, &opts) != 0) return 1;
 
     fprintf(stderr,
-        "grid_pipeline: grid=%s output=%s halo=%d tpc=%d max_conc=%d\n",
+        "grid_pipeline: grid=%s output=%s halo=%d tpc=%d max_conc=%d reject_garbage=%d\n",
         opts.grid_dir, opts.output_dir, opts.halo,
-        opts.threads_per_cube, opts.max_concurrent);
+        opts.threads_per_cube, opts.max_concurrent, opts.reject_garbage);
+
+    /* Mirror the disable to cube_mesh children (which inherit our environment
+     * with a NULL env block) so the in-process defensive bail in MeshExtract
+     * agrees with the orchestrator's --no-reject-garbage. Set once, before any
+     * subprocess is spawned, so there is no thread race. */
+    if (!opts.reject_garbage) {
+#ifdef _WIN32
+        _putenv_s("VESUVIUS_NO_REJECT_GARBAGE", "1");
+#else
+        setenv("VESUVIUS_NO_REJECT_GARBAGE", "1", 1);
+#endif
+    }
 
     CubeJob *jobs = NULL;
     size_t n_jobs = 0;
@@ -385,6 +556,25 @@ int main(int argc, char *argv[])
                  "%s/%s.log", log_dir, jobs[i].cube_id);
     }
 
+    /* --dry-run: report skip/run decisions without spawning anything. */
+    if (opts.dry_run) {
+        size_t would_skip = 0;
+        for (size_t k = 0; k < n_jobs; k++) {
+            char fp[1024];
+            step12_obj_path(fp, sizeof(fp), dump_dir, jobs[k].cube_id);
+            if (opts.skip_existing && obj_looks_complete(fp)) {
+                would_skip++;
+            } else {
+                fprintf(stderr, "  [dry] RUN  %s\n", jobs[k].cube_id);
+            }
+        }
+        fprintf(stderr,
+                "[dry-run] %zu cubes: %zu SKIP (already done), %zu RUN\n",
+                n_jobs, would_skip, n_jobs - would_skip);
+        free(jobs);
+        return 0;
+    }
+
     /* Open summary CSV. */
     char summary_path[1024];
     snprintf(summary_path, sizeof(summary_path),
@@ -394,17 +584,82 @@ int main(int argc, char *argv[])
         fprintf(summary, "cube_id,exit_code,wall_seconds\n");
     }
 
+    /* Garbage gate: a list of rejected cube_ids to record + a log of them.
+     * With --reject-list we trust a precomputed list; otherwise the detector
+     * runs inline per cube (see cube_is_garbage). */
+    IdSet rejset = {0};
+    int have_rejlist = 0;
+    if (opts.reject_garbage && opts.reject_list) {
+        if (idset_load(opts.reject_list, &rejset) == 0) {
+            have_rejlist = 1;
+            fprintf(stderr, "reject-list: %zu cube_ids from %s\n",
+                    rejset.n, opts.reject_list);
+        } else {
+            fprintf(stderr, "warning: cannot read --reject-list %s; "
+                    "detecting garbage inline instead\n", opts.reject_list);
+        }
+    }
+    char rej_path[1024];
+    snprintf(rej_path, sizeof(rej_path), "%s/rejected_cubes.txt", opts.output_dir);
+    FILE *rejlog = opts.reject_garbage ? fopen(rej_path, "w") : NULL;
+
     /* Run cubes in parallel via OpenMP. MSVC OpenMP 2.0 requires the
      * loop counter declared outside the for-statement. */
     double t_start = ves_clock_sec();
     omp_set_dynamic(0);
     omp_set_num_threads(opts.max_concurrent);
 
-    int n_ok = 0, n_fail = 0;
+    int n_ok = 0, n_fail = 0, n_skip = 0, n_reject = 0;
     int i;
     int n_jobs_i = (int)n_jobs;
-    #pragma omp parallel for schedule(dynamic, 1) reduction(+:n_ok,n_fail)
+    #pragma omp parallel for schedule(dynamic, 1) reduction(+:n_ok,n_fail,n_skip,n_reject)
     for (i = 0; i < n_jobs_i; i++) {
+        /* Resume: a cube with an already-complete final OBJ is left untouched. */
+        if (opts.skip_existing) {
+            char done_path[1024];
+            step12_obj_path(done_path, sizeof(done_path), dump_dir, jobs[i].cube_id);
+            if (obj_looks_complete(done_path)) {
+                jobs[i].exit_code = 0;
+                jobs[i].wall_seconds = 0.0;
+                n_ok++;
+                n_skip++;
+                #pragma omp critical (gp_log)
+                {
+                    if (summary) {
+                        fprintf(summary, "%s,0,0.00\n", jobs[i].cube_id);
+                        fflush(summary);
+                    }
+                }
+                continue;
+            }
+        }
+        /* Garbage gate: skip solid-slab prediction cubes entirely (no
+         * subprocess). Recorded with the GP_REJECT_CODE sentinel and listed in
+         * rejected_cubes.txt. */
+        if (opts.reject_garbage) {
+            int garbage = have_rejlist ? idset_has(&rejset, jobs[i].cube_id)
+                                       : cube_is_garbage(jobs[i].tiff_path);
+            if (garbage) {
+                jobs[i].exit_code = GP_REJECT_CODE;
+                jobs[i].wall_seconds = 0.0;
+                n_reject++;
+                #pragma omp critical (gp_log)
+                {
+                    fprintf(stderr, "  [reject] %s (garbage solid-slab prediction)\n",
+                            jobs[i].cube_id);
+                    if (summary) {
+                        fprintf(summary, "%s,%d,0.00\n",
+                                jobs[i].cube_id, GP_REJECT_CODE);
+                        fflush(summary);
+                    }
+                    if (rejlog) {
+                        fprintf(rejlog, "%s\n", jobs[i].cube_id);
+                        fflush(rejlog);
+                    }
+                }
+                continue;
+            }
+        }
         double cube_start = ves_clock_sec();
         int rc = run_one_cube(opts.exe_path, &jobs[i],
                               opts.output_dir, dump_dir,
@@ -426,10 +681,16 @@ int main(int argc, char *argv[])
         }
     }
     if (summary) fclose(summary);
+    if (rejlog) fclose(rejlog);
+    idset_free(&rejset);
     double t_total = ves_clock_sec() - t_start;
 
-    fprintf(stderr, "Cubes: %d ok, %d fail in %.1fs\n",
-            n_ok, n_fail, t_total);
+    fprintf(stderr,
+            "Cubes: %d ok (%d skipped already-done), %d rejected (garbage), "
+            "%d fail in %.1fs\n",
+            n_ok, n_skip, n_reject, n_fail, t_total);
+    if (n_reject > 0)
+        fprintf(stderr, "  rejected cube list -> %s\n", rej_path);
 
     if (opts.check_determinism && n_ok > 0) {
         char dump_dir_b[1024];

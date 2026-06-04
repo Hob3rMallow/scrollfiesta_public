@@ -38,7 +38,7 @@ COMMON_SRC = common/arena.c common/except.c common/csr.c common/kdtree.c \
              common/vert_weld.c common/tiff_io.c common/halo_loader.c \
              common/mesh_trim.c common/ply_io.c common/obj_io.c common/dump_obj.c \
              common/ves_platform.c common/qem.c common/raw_snapback.c common/snap_cg.c
-EXTRACT_SRC  = extract/mesh_extract.c extract/mesh_resplit.c
+EXTRACT_SRC  = extract/mesh_extract.c extract/mesh_resplit.c extract/pred_reject.c
 SPLIT_SRC    = split/oracle.c split/bridge_cut.c split/overlap_sep.c
 REMESH_SRC   = remesh/ball_pivot.c remesh/orient_mesh.c remesh/pinhole_fill.c remesh/normal_orient.c remesh/component_cull.c
 HOLEFILL_SRC = holefill/hole_fill.c
@@ -90,8 +90,10 @@ grid_weld: tools/grid_weld.o remesh/ball_pivot.o remesh/pinhole_fill.o remesh/or
            common/csr.o common/pca.o
 	$(CC) $(CFLAGS) $(BUILD_FLAGS) $^ -o $@ $(LDFLAGS) $(EXT_LIB)
 
-# Grid orchestrator subprocess (== grid_pipeline.exe).
-grid_pipeline: tools/grid_pipeline.o common/ves_platform.o
+# Grid orchestrator subprocess (== grid_pipeline.exe). Links the garbage-cube
+# detector (extract/pred_reject) + TIFF loader for the pre-spawn reject gate.
+grid_pipeline: tools/grid_pipeline.o common/ves_platform.o common/arena.o \
+               common/except.o common/tiff_io.o extract/pred_reject.o
 	$(CC) $(CFLAGS) $(BUILD_FLAGS) $^ -o $@ $(LDFLAGS)
 
 # Unit tests (shared-infra suite). The full harness lives in the all_tests

@@ -191,6 +191,10 @@
     <ClCompile Include="src\extract\mesh_resplit.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
+    <!-- Pre-Step-0 input validation: reject garbage solid-slab predictions. -->
+    <ClCompile Include="src\extract\pred_reject.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
     <!-- Remesh: Ball-Pivoting Algorithm (Bernardini 1999). -->
     <ClCompile Include="src\remesh\ball_pivot.c">
       <CompileAs>CompileAsC</CompileAs>
@@ -291,6 +295,7 @@
     <ClInclude Include="src\common\mesh_manifold.h" />
     <!-- Step headers -->
     <ClInclude Include="src\extract\mesh_extract.h" />
+    <ClInclude Include="src\extract\pred_reject.h" />
     <ClInclude Include="src\remesh\ball_pivot.h" />
     <ClInclude Include="src\remesh\orient_mesh.h" />
     <ClInclude Include="src\remesh\pinhole_fill.h" />

@@ -1,6 +1,7 @@
 #include "../common/ves_platform.h"
 
 #include "mesh_extract.h"
+#include "pred_reject.h"
 #include "../common/arena.h"
 #include "../common/tiff_io.h"
 #include "../common/halo_loader.h"
@@ -630,6 +631,40 @@ int MeshExtract_run(Arena_T          arena,
     /* Threshold to binary */
     for (size_t i = 0; i < vol_size; i++) {
         vol[i] = (vol[i] > 0) ? 1 : 0;
+    }
+
+    /* Defensive garbage gate: reject solid-slab predictions before any meshing
+     * (the grid orchestrator gates these pre-spawn, but a standalone cube_mesh
+     * run does not). The verdict is made on the cube's OWNED region only -- in
+     * halo mode `vol` is the padded p_size^3 with the owned cube at offset
+     * halo_voxels. Overridable via VESUVIUS_NO_REJECT_GARBAGE. Returns cleanly
+     * with zero meshes (same path as an all-background cube). */
+    if (!getenv("VESUVIUS_NO_REJECT_GARBAGE")) {
+        int off = (halo_voxels > 0) ? halo_voxels : 0;
+        int od = (int)cube_D, oh = (int)cube_H, ow = (int)cube_W;
+        if (off + od <= D && off + oh <= H && off + ow <= W) {
+            Arena_Mark gmark = Arena_save(arena);
+            size_t on = (size_t)od * (size_t)oh * (size_t)ow;
+            uint8_t *owned = (uint8_t *)ARENA_ALLOC(arena, (long)on);
+            size_t vol_HW = (size_t)H * (size_t)W;
+            for (int oz = 0; oz < od; oz++)
+                for (int oy = 0; oy < oh; oy++)
+                    for (int ox = 0; ox < ow; ox++)
+                        owned[(size_t)oz * (size_t)oh * (size_t)ow +
+                              (size_t)oy * (size_t)ow + (size_t)ox] =
+                            vol[(size_t)(oz + off) * vol_HW +
+                                (size_t)(oy + off) * (size_t)W + (size_t)(ox + off)];
+            PredRejectStats prst;
+            int garbage = PredReject_is_garbage(arena, owned, od, oh, ow, &prst);
+            Arena_restore(arena, gmark);
+            if (garbage) {
+                fprintf(stderr, "  Extract: %s rejected as garbage solid-slab "
+                        "(fill=%.2f interior=%.2f rect_run=%d) -> no meshes\n",
+                        cube_id ? cube_id : "(cube)", prst.fill_frac,
+                        prst.interior_frac, prst.max_rect_run);
+                return 0;
+            }
+        }
     }
 
 #ifdef VESUVIUS_DEBUG

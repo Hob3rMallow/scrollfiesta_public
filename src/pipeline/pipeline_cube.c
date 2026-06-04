@@ -17,7 +17,7 @@
 #include "../remesh/component_cull.h"
 #include "../common/mesh_manifold.h"
 #include "../common/mls_project.h"
-#include "../flatten/seam_cut.h"
+#include "../topology/seam_cut.h"
 
 #include <assert.h>
 #include <stdio.h>
