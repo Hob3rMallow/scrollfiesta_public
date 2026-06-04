@@ -13,6 +13,24 @@
 #define GENUS0_MAX_ITERS       200   /* max thinning passes for genus-0 */
 #define GENUS0_MAX_FILLABLE  15000000  /* skip genus0 if >15M fillable voxels */
 
+/* Pre-Step 0 — Garbage prediction rejection (input validation).
+ * Reject cubes whose prediction is a big SOLID slab/rectangle (nnUNet failure)
+ * rather than thin recto-surface sheets. Two AND-combined signals; tuned
+ * conservatively (only reject unambiguous slabs). See src/extract/pred_reject.c.
+ * Calibrated 2026-06-03 on the PHerc0139-4x21x21 grid (4 labelled garbage cubes
+ * vs the real dense tangle z04736_y04608_x03968). */
+#define GARBAGE_ERODE_R          2     /* 3D 6-conn erosion passes (thickness probe) */
+#define GARBAGE_ERODE_MAXPASS   16     /* cap passes when measuring max_thickness */
+#define GARBAGE_INTERIOR_FRAC  0.50f   /* reject needs >= this frac of FG surviving erosion.
+                                        * Calibration found a clean EMPTY gap on the grid:
+                                        * real cubes <=0.32, garbage slabs >=0.68. 0.50 sits
+                                        * dead-centre for maximal margin both ways. */
+#define GARBAGE_INTERIOR_MIN  2000     /* ...and >= this many surviving voxels (abs floor) */
+#define GARBAGE_RECT_AREA_FRAC 0.10f   /* slice's largest comp >= this frac of slice area */
+#define GARBAGE_RECT_FILL      0.75f   /* ...AND fills >= this frac of its bbox (solid rect) */
+#define GARBAGE_RECT_FRAC      0.20f   /* reject needs >= this frac of slices be rect frames */
+#define GARBAGE_RECT_RUN        12     /* ...AND a run of >= this many consecutive rect frames */
+
 /* Step 0 */
 #define MIN_CC_SIZE          500    /* voxels - discard smaller components */
 #define MAX_COMPONENTS        20    /* keep top N by size */
@@ -57,6 +75,25 @@
                                       * a single global pass no longer has to
                                       * over-flatten, and 5 tangent-plane iters
                                       * suffice for BPA -- ~6x faster Step 0. */
+#define MLS_RESPLIT_ITERS      20    /* 2026-06-03: the re-LOP-from-original after a
+                                      * split (mesh_resplit) carries the FINAL per-sheet
+                                      * flatness, so it gets more passes than the
+                                      * speed-sensitive extract LOP. Raised 5->10->20 to
+                                      * smooth residual through-thickness "lumps" left on
+                                      * post-split components (sheets 1/2 of
+                                      * z04736_y04224_x01920 still bumpy at 10). */
+#define MLS_RESPLIT_ASSIGN_MARGIN_VOX 1.5f
+                                     /* 2026-06-03: re-LOP point->piece assignment
+                                      * margin. A parent original point is assigned
+                                      * to its NEAREST split piece only when the
+                                      * next-nearest piece is at least this much
+                                      * farther; otherwise the point straddles the
+                                      * split seam (or belongs to an adjacent
+                                      * close-wrap ~2-3 vox away) and is DROPPED,
+                                      * not vacuumed in. Stops the re-LOP+re-BPA
+                                      * from grabbing the other wrap and folding the
+                                      * sheet (the step7_cc_bpa_003 fold). 0 = old
+                                      * greedy nearest-vertex (no margin). */
 #define MLS_WELD_EPS_VOX        0.25f /* merge verts within this distance
                                        * after MLS projection. raw-snap will
                                        * later pull the merged vert onto the
@@ -213,6 +250,10 @@
 #define QEM_MIN_FACES_FOR_SIMPLIFY 400    /* skip simplification below this */
 #define QEM_DET_THRESHOLD         1e-12   /* 3x3 solve singularity guard */
 #define QEM_NORMAL_DOT_THRESHOLD  0.0f    /* reject collapse if dot(n_v0, n_v1) < this */
+#define QEM_FLIP_COS_THRESHOLD    0.0f    /* fold guard angle as a cosine. 0.0 = the original
+                                           * >90deg reversal-only behaviour (reverted from the
+                                           * 0.5/60deg experiment, which was the wrong lever --
+                                           * the real fault is upstream in the multicut). */
 #define QEM_DISPLACEMENT_CLAMP    1.0f    /* max opt_pos distance = clamp * edge_len (was 2.0) */
 #define QEM_SAFE_RADIUS_FACTOR    0.5f    /* proximity radius = factor * median_edge_len */
 #define QEM_KDTREE_REBUILD_INTERVAL 500   /* rebuild spatial index every N collapses */

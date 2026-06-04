@@ -77,4 +77,20 @@ int MeshResplit_remesh_pieces(Arena_T arena,
                               ComponentMesh         **out, size_t *n_out,
                               MeshResplitCloud      **out_clouds);
 
+/*
+ * Re-LOP + re-BPA one component from its OWN vertices (Wendland
+ * R = MLS_PROJECT_RADIUS_VOX, `iters` passes), then re-triangulate via Ball
+ * Pivoting. Unlike MeshResplit_remesh_pieces this does NOT re-label the parent's
+ * original cloud onto the piece -- it uses ONLY the piece's own verts, which the
+ * split already assigned correctly. So it cannot vacuum in an adjacent close-wrap
+ * and fold (the step7_cc_bpa_003 regression), yet it still re-meshes cleanly
+ * (no sliver/flipped micro-triangles, unlike topology-preserving in-place
+ * smoothing, so QEM can simplify). `*m` is REPLACED with the re-surfaced mesh
+ * (comp_id kept; pin_mask/vert_normals reset since the vertex set is fresh); on
+ * re-LOP/BPA failure `*m` is left unchanged. `cell_origin` may be NULL ({0,0,0}).
+ * nv < 3 or iters <= 0 is a no-op. Returns 0.
+ */
+int MeshResplit_resurface_own(Arena_T arena, ComponentMesh *m,
+                              const float cell_origin[3], int iters);
+
 #endif

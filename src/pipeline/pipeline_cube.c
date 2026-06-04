@@ -17,7 +17,7 @@
 #include "../remesh/component_cull.h"
 #include "../common/mesh_manifold.h"
 #include "../common/mls_project.h"
-#include "../topology/seam_cut.h"
+#include "../flatten/seam_cut.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -242,36 +242,24 @@ int pipeline_process_cube(Arena_T arena,
         dump_stage(arena, in->dump_dir, in->cube_id, "step5_cc",
                    split_meshes, total_out);
 
-        /* ---- Step 4: re-LOP each split component's pieces from ORIGINAL points.
-         * Each piece was carved from a merged cloud and carries a ragged cut
-         * edge; relabel the parent's original voxel points (rclouds[i]) onto the
-         * pieces and re-LOP + re-BPA each in isolation -> clean single sheets.
-         * The same clean re-mesh Step 1b applies after the connectivity split,
-         * now after the topological split. Only when the component split. ---- */
-        char step4_dir[1024] = {0};
-        MeshResplitDump sdump = {0};
-        if (in->dump_dir && in->cube_id) {
-            snprintf(step4_dir, sizeof step4_dir, "%s/%s", in->dump_dir, in->cube_id);
-            sdump.dir = step4_dir; sdump.cube_id = in->cube_id;
-            sdump.cc_stage = NULL; sdump.mls_stage = "step6_cc_mls";
-        }
+        /* ---- Step 4: re-LOP + re-BPA each split piece from its OWN verts.
+         * Each multicut/bridge-cut piece carries residual through-thickness
+         * "lumps". Earlier this re-LOP'd from the parent's ORIGINAL cloud and
+         * re-BPA'd -- but re-labelling the cloud onto a piece vacuums in the
+         * ADJACENT close-wrap (~2-3 vox) and the re-BPA folds the now-thin sheet
+         * (the step7_cc_bpa_003 self-intersection). Re-surfacing from the piece's
+         * OWN verts instead (the split already assigned them correctly) cannot
+         * vacuum/fold, and -- unlike topology-preserving in-place smoothing,
+         * which squishes the kept faces into slivers QEM can't collapse -- it
+         * re-triangulates cleanly. Only components that actually split. ---- */
         for (size_t i = 0; i < total_in; i++) {
             size_t start = range[i], n_cp = range[i + 1] - range[i];
             if (n_cp <= 1 || !rclouds || rclouds[i].n == 0) continue;
-            char tag[32]; snprintf(tag, sizeof tag, "c%02zu", i);
-            ComponentMesh *ro = NULL; size_t nro = 0;
-            if (MeshResplit_remesh_pieces(arena, &rclouds[i],
-                                          &split_meshes[start], n_cp, tag,
-                                          in->dump_dir ? &sdump : NULL,
-                                          &ro, &nro, NULL) == 0
-                && nro == n_cp) {
-                for (size_t k = 0; k < nro; k++) {
-                    split_meshes[start + k] = ro[k];
-                    split_meshes[start + k].comp_id = (int)(start + k + 1);
-                    split_meshes[start + k].pin_mask = NULL;
-                    split_meshes[start + k].self = &split_meshes[start + k];
-                }
-                n_resurf += nro;
+            for (size_t k = 0; k < n_cp; k++) {
+                if (MeshResplit_resurface_own(arena, &split_meshes[start + k],
+                                              rclouds[i].cell_origin,
+                                              MLS_RESPLIT_ITERS) == 0)
+                    n_resurf++;
             }
         }
 

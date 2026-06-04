@@ -24,6 +24,8 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
+#include <float.h>
 
 #ifndef RESPLIT_MIN_COMP_VERTS
 #define RESPLIT_MIN_COMP_VERTS 200   /* drop connectivity-components smaller than this */
@@ -132,18 +134,18 @@ static int extract_submesh(Arena_T arena, const ComponentMesh *src,
 static int relop_rebpa(Arena_T arena, const float *pts, size_t n,
                        const float cell_origin[3],
                        const MeshResplitDump *dump, const char *tag,
-                       ComponentMesh *out)
+                       int lop_iters, ComponentMesh *out)
 {
     if (n < 3) return -1;
     float *pv = (float *)ARENA_ALLOC(arena, (long)(n*3*sizeof(float)));
     float *pn = (float *)ARENA_ALLOC(arena, (long)(n*3*sizeof(float)));
     float *sn = (float *)ARENA_ALLOC(arena, (long)(n*3*sizeof(float)));
-    float *sv = (MLS_PROJECT_ITERS >= 2)
+    float *sv = (lop_iters >= 2)
         ? (float *)ARENA_ALLOC(arena, (long)(n*3*sizeof(float))) : NULL;
     const float *src = pts;
     float *dst = pv;
-    for (int it = 0; it < MLS_PROJECT_ITERS; it++) {
-        float *ndst = (it == MLS_PROJECT_ITERS - 1) ? pn : sn;
+    for (int it = 0; it < lop_iters; it++) {
+        float *ndst = (it == lop_iters - 1) ? pn : sn;
         MLS_project_verts(arena, src, n, MLS_PROJECT_RADIUS_VOX,
                           cell_origin, dst, ndst);
         src = dst;
@@ -216,6 +218,31 @@ static int pass_pieces_through(Arena_T arena,
     return 0;
 }
 
+/* Re-LOP + re-BPA a mesh from its OWN vertices (no cloud relabel, so no
+ * vacuuming/fold) -- the clean re-triangulation QEM needs. See mesh_resplit.h. */
+int MeshResplit_resurface_own(Arena_T arena, ComponentMesh *m,
+                              const float cell_origin[3], int iters)
+{
+    assert(arena && m && m->self == m);
+    if (m->nv < 3 || iters <= 0) return 0;
+    float cori[3] = { 0.0f, 0.0f, 0.0f };
+    if (cell_origin) { cori[0] = cell_origin[0]; cori[1] = cell_origin[1]; cori[2] = cell_origin[2]; }
+
+    /* re-LOP + weld + Hoppe + Ball-Pivot + orient on the piece's OWN verts */
+    ComponentMesh nm;
+    if (relop_rebpa(arena, m->verts, m->nv, cori, NULL, NULL, iters, &nm) != 0)
+        return 0;                       /* keep m unchanged on failure */
+
+    int cid = m->comp_id;
+    nm.comp_id      = cid;
+    nm.pin_mask     = NULL;             /* fresh vertex set -> old per-vert masks invalid */
+    nm.vert_normals = NULL;
+    nm.nv_pre_fill  = 0;
+    *m = nm;
+    m->self = m;
+    return 0;
+}
+
 int MeshResplit_remesh_pieces(Arena_T arena,
                               const MeshResplitCloud *cloud,
                               const ComponentMesh    *pieces, size_t n_pieces,
@@ -234,27 +261,39 @@ int MeshResplit_remesh_pieces(Arena_T arena,
     if (!cloud || cloud->n == 0 || !cloud->orig_pts || !cloud->lop_pts || totv == 0)
         return pass_pieces_through(arena, pieces, n_pieces, out, n_out, out_clouds);
 
-    /* concat all pieces' verts (tagged by piece) into one KD-tree */
-    float   *allv   = (float *)ARENA_ALLOC(arena, (long)(totv*3*sizeof(float)));
-    int32_t *vpiece = (int32_t *)ARENA_ALLOC(arena, (long)(totv*sizeof(int32_t)));
-    size_t off = 0;
-    for (size_t p = 0; p < n_pieces; p++) {
-        memcpy(&allv[off*3], pieces[p].verts, pieces[p].nv*3*sizeof(float));
-        for (size_t k = 0; k < pieces[p].nv; k++) vpiece[off+k] = (int32_t)p;
-        off += pieces[p].nv;
-    }
-    KDTree_T kdt = KDTree_new(arena, allv, totv);
+    /* One KD-tree per piece. Assign each parent original point to the piece its
+     * LOP image is nearest to, but ONLY when that piece is unambiguously closest
+     * -- the next-nearest piece must be at least MLS_RESPLIT_ASSIGN_MARGIN_VOX
+     * farther. Points that straddle the split seam (or sit on an adjacent
+     * close-wrap ~2-3 vox away) are DROPPED instead of vacuumed into the piece;
+     * vacuuming them is what grew the piece ~60% and folded its re-BPA'd sheet
+     * (the step7_cc_bpa fold). margin = 0 reverts to greedy nearest-vertex. */
+    KDTree_T *ptree = (KDTree_T *)ARENA_ALLOC(arena, (long)(n_pieces*sizeof(KDTree_T)));
+    for (size_t p = 0; p < n_pieces; p++)
+        ptree[p] = KDTree_new(arena, pieces[p].verts, pieces[p].nv);
 
-    /* label each original point by the piece of its LOP image's nearest vert */
+    const float margin = MLS_RESPLIT_ASSIGN_MARGIN_VOX;
     size_t  *bsz    = (size_t *)ARENA_CALLOC(arena, (long)n_pieces, (long)sizeof(size_t));
     int32_t *plabel = (int32_t *)ARENA_ALLOC(arena, (long)(cloud->n*sizeof(int32_t)));
+    size_t n_drop = 0;
     for (size_t j = 0; j < cloud->n; j++) {
-        float d2;
-        size_t vi = KDTree_nearest(kdt, &cloud->lop_pts[j*3], &d2);
-        int32_t p = vpiece[vi];
-        plabel[j] = p; bsz[(size_t)p]++;
+        float best = FLT_MAX, second = FLT_MAX;
+        int32_t bp = -1;
+        for (size_t p = 0; p < n_pieces; p++) {
+            float d2 = FLT_MAX;
+            (void)KDTree_nearest(ptree[p], &cloud->lop_pts[j*3], &d2);
+            float d = sqrtf(d2);
+            if (d < best)        { second = best; best = d; bp = (int32_t)p; }
+            else if (d < second) { second = d; }
+        }
+        if (bp >= 0 && (second - best) >= margin) {
+            plabel[j] = bp; bsz[(size_t)bp]++;
+        } else {
+            plabel[j] = -1; n_drop++;   /* seam-ambiguous: drop, don't vacuum */
+        }
     }
-    /* gather each piece's original + LOP point subsets */
+
+    /* gather each piece's original + LOP point subsets (dropped points skipped) */
     float **porig = (float **)ARENA_ALLOC(arena, (long)(n_pieces*sizeof(float*)));
     float **plop  = (float **)ARENA_ALLOC(arena, (long)(n_pieces*sizeof(float*)));
     size_t *bpos  = (size_t *)ARENA_CALLOC(arena, (long)n_pieces, (long)sizeof(size_t));
@@ -264,11 +303,17 @@ int MeshResplit_remesh_pieces(Arena_T arena,
         plop[p]  = (float *)ARENA_ALLOC(arena, (long)(m*3*sizeof(float)));
     }
     for (size_t j = 0; j < cloud->n; j++) {
+        if (plabel[j] < 0) continue;
         size_t p = (size_t)plabel[j];
         memcpy(&porig[p][bpos[p]*3], &cloud->orig_pts[j*3], 3*sizeof(float));
         memcpy(&plop[p][bpos[p]*3],  &cloud->lop_pts[j*3],  3*sizeof(float));
         bpos[p]++;
     }
+    if (n_drop)
+        fprintf(stderr,
+                "    re-LOP assign: %zu pieces, dropped %zu/%zu seam-ambiguous "
+                "points (margin %.2f vox)\n",
+                n_pieces, n_drop, cloud->n, (double)margin);
 
     /* diagnostic: the connectivity/piece split that feeds the re-LOP */
     if (dump && dump->cc_stage) {
@@ -292,13 +337,17 @@ int MeshResplit_remesh_pieces(Arena_T arena,
     MeshResplitCloud *oc = out_clouds
         ? (MeshResplitCloud *)ARENA_ALLOC(arena, (long)(n_pieces*sizeof(MeshResplitCloud)))
         : NULL;
+    /* Only a parent that actually SPLIT (yielded >1 pieces) gets the higher
+     * re-LOP pass count -- a pass-through single piece keeps the lighter extract
+     * count so it is not over-smoothed (which would flatten real curvature). */
+    int lop_iters = (n_pieces > 1) ? MLS_RESPLIT_ITERS : MLS_PROJECT_ITERS;
     size_t cnt = 0;
     for (size_t p = 0; p < n_pieces; p++) {
         char tag[96];
         snprintf(tag, sizeof(tag), "%s_p%02zu", dump_tag ? dump_tag : "x", p);
         ComponentMesh m;
         if (relop_rebpa(arena, porig[p], bsz[p], cloud->cell_origin,
-                        dump, tag, &m) != 0) {
+                        dump, tag, lop_iters, &m) != 0) {
             m = pieces[p];                 /* fall back to the piece unchanged */
             float fpca[3] = {0,0,1}, fcen[3] = {0,0,0};   /* keep centroid/pca valid */
             PCA_normal(m.verts, m.nv, fpca, fcen);

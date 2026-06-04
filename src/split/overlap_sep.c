@@ -606,6 +606,41 @@ int OverlapSep_process(Arena_T              arena,
     fprintf(stderr, "    phase 4 (multicut): rc=%d, clusters=%d, %.3fs\n",
             rc, num_clusters, now_sec() - t_start);
 
+    /* Diagnostic: raw cluster-size distribution (largest first), BEFORE the
+     * phase-5 sliver merge. Distinguishes "multicut separated balanced sheets"
+     * (two+ comparable clusters) from "multicut made one dominant cluster +
+     * slivers" (one huge, rest tiny -> multicut under-separated). */
+    if (rc == 0 && num_clusters > 0) {
+        int32_t *dbg_fc = (int32_t *)ARENA_CALLOC(arena,
+            (long)num_clusters, (long)sizeof(int32_t));
+        for (size_t fi = 0; fi < nf; fi++) {
+            int32_t l = face_labels[fi];
+            if (l >= 0 && l < num_clusters) dbg_fc[l]++;
+        }
+        fprintf(stderr, "    cluster sizes (top): ");
+        for (int t = 0; t < 8; t++) {
+            int32_t bi = -1, bv = 0;
+            for (int32_t l = 0; l < num_clusters; l++)
+                if (dbg_fc[l] > bv) { bv = dbg_fc[l]; bi = l; }
+            if (bi < 0) break;
+            fprintf(stderr, "%d ", bv);
+            dbg_fc[bi] = -1;
+        }
+        fprintf(stderr, "(of %zu faces)\n", nf);
+
+        /* Decisive: of the repulsive (overlap, -1e6) edges, how many are CUT
+         * (endpoints in different clusters = solver acted on them) vs JOINED
+         * (same cluster = solver IGNORED its own -1e6 edge -> stuck/bug)? */
+        size_t ov_cut = 0, ov_joined = 0;
+        for (size_t i = 0; i < n_ovl; i++) {
+            if (face_labels[ovl_fa[i]] != face_labels[ovl_fb[i]]) ov_cut++;
+            else ov_joined++;
+        }
+        fprintf(stderr, "    overlap edges: %zu CUT, %zu JOINED  "
+                "(JOINED = -1e6 edge left within a cluster = solver did not act)\n",
+                ov_cut, ov_joined);
+    }
+
     if (rc != 0 || num_clusters < 2) {
         fprintf(stderr, "    multicut failed or single cluster\n");
         return_unchanged(arena, mesh, out_meshes, out_count);
@@ -649,74 +684,140 @@ int OverlapSep_process(Arena_T              arena,
     /* The multicut already tells us exactly which faces belong together.
      * Just group faces by label, duplicate boundary vertices, extract. */
 
-    /* Merge small clusters into their largest adjacent neighbor */
+    /* Absorb genuinely-isolated slivers into a neighbour -- but NEVER merge two
+     * clusters that have an overlap (repulsive) edge between them. Merging
+     * across an overlap re-joins the faces the multicut just cut and collapses
+     * the separation (the historical bug: a small cluster was merged into its
+     * largest adjacent neighbour by face-count ratio alone, re-joining every
+     * overlap edge). Union-find over clusters with a bitset overlap-guard;
+     * num_clusters is small (tens), so the bitsets are tiny. */
     {
-        /* Count faces per label */
+        int32_t nc = num_clusters;
+        size_t words = ((size_t)nc + 63) / 64;
+        if (words == 0) words = 1;
+
         int32_t *label_fcount = (int32_t *)ARENA_CALLOC(arena,
-            (long)num_clusters, (long)sizeof(int32_t));
+            (long)nc, (long)sizeof(int32_t));
         for (size_t fi = 0; fi < nf; fi++) {
             int32_t l = face_labels[fi];
-            if (l >= 0 && l < num_clusters) label_fcount[l]++;
+            if (l >= 0 && l < nc) label_fcount[l]++;
         }
 
-        /* Find largest label */
-        int32_t max_fcount = 0;
-        for (int32_t l = 0; l < num_clusters; l++) {
-            if (label_fcount[l] > max_fcount) max_fcount = label_fcount[l];
-        }
-
-        /* For each small cluster, find best adjacent cluster to merge into */
-        float ratio = (float)MIN_FRAGMENT_VERTS_S3 / 100.0f;
-        int32_t *merge_to = (int32_t *)ARENA_ALLOC(arena,
-            (long)(num_clusters * sizeof(int32_t)));
-        for (int32_t l = 0; l < num_clusters; l++) merge_to[l] = l;
-
-        /* Use adjacency edges to find neighbors between clusters */
-        int32_t *best_nbr_size = (int32_t *)ARENA_CALLOC(arena,
-            (long)num_clusters, (long)sizeof(int32_t));
-        for (size_t i = 0; i < n_adj; i++) {
-            int32_t la = face_labels[adj_fa[i]];
-            int32_t lb = face_labels[adj_fb[i]];
-            if (la != lb) {
-                if (label_fcount[lb] > best_nbr_size[la]) {
-                    best_nbr_size[la] = label_fcount[lb];
-                    merge_to[la] = lb;
-                }
-                if (label_fcount[la] > best_nbr_size[lb]) {
-                    best_nbr_size[lb] = label_fcount[la];
-                    merge_to[lb] = la;
-                }
-            }
-        }
-
-        /* Apply merges for small clusters */
         size_t n_merged = 0;
-        for (int32_t l = 0; l < num_clusters; l++) {
-            if (merge_to[l] != l &&
-                (float)label_fcount[l] < ratio * (float)best_nbr_size[l]) {
-                /* merge cluster l into merge_to[l] */
-            } else {
-                merge_to[l] = l; /* keep */
+        /* Guard the bitset size; if a mesh ever yields a huge cluster count,
+         * skip the sliver merge (keeping the multicut labels is always safe). */
+        if (nc > 1 && (size_t)nc * words <= (size_t)(64u * 1024u * 1024u)) {
+            /* members[g]: which clusters are in group g. inc[g]: which clusters
+             * group g has an overlap edge to. Both at the group-ROOT index. */
+            uint64_t *members = (uint64_t *)ARENA_CALLOC(arena,
+                (long)((size_t)nc * words), (long)sizeof(uint64_t));
+            uint64_t *inc = (uint64_t *)ARENA_CALLOC(arena,
+                (long)((size_t)nc * words), (long)sizeof(uint64_t));
+            for (int32_t l = 0; l < nc; l++)
+                members[(size_t)l * words + (size_t)l / 64] |=
+                    (uint64_t)1 << ((size_t)l % 64);
+            for (size_t i = 0; i < n_ovl; i++) {
+                int32_t a = face_labels[ovl_fa[i]], b = face_labels[ovl_fb[i]];
+                if (a >= 0 && b >= 0 && a < nc && b < nc && a != b) {
+                    inc[(size_t)a * words + (size_t)b / 64] |= (uint64_t)1 << ((size_t)b % 64);
+                    inc[(size_t)b * words + (size_t)a / 64] |= (uint64_t)1 << ((size_t)a % 64);
+                }
             }
+
+            int32_t *par = (int32_t *)ARENA_ALLOC(arena, (long)((size_t)nc * sizeof(int32_t)));
+            int32_t *gsz = (int32_t *)ARENA_ALLOC(arena, (long)((size_t)nc * sizeof(int32_t)));
+            for (int32_t l = 0; l < nc; l++) { par[l] = l; gsz[l] = label_fcount[l]; }
+            #define OVL_FIND(R, X) do { (R) = (X); \
+                while (par[(R)] != (R)) { par[(R)] = par[par[(R)]]; (R) = par[(R)]; } } while (0)
+
+            /* Unique cross-cluster adjacency pairs (small set). */
+            uint64_t *adjpairs = (n_adj > 0) ? (uint64_t *)ARENA_ALLOC(arena,
+                (long)(n_adj * sizeof(uint64_t))) : NULL;
+            size_t n_ap = 0;
+            for (size_t i = 0; i < n_adj; i++) {
+                int32_t la = face_labels[adj_fa[i]], lb = face_labels[adj_fb[i]];
+                if (la >= 0 && lb >= 0 && la < nc && lb < nc && la != lb) {
+                    int32_t lo = la < lb ? la : lb, hi = la < lb ? lb : la;
+                    adjpairs[n_ap++] = ((uint64_t)(uint32_t)lo << 32) | (uint64_t)(uint32_t)hi;
+                }
+            }
+            if (n_ap > 1) {
+                qsort(adjpairs, n_ap, sizeof(uint64_t), compare_u64);
+                size_t u = 0;
+                for (size_t i = 0; i < n_ap; i++)
+                    if (i == 0 || adjpairs[i] != adjpairs[i - 1]) adjpairs[u++] = adjpairs[i];
+                n_ap = u;
+            }
+
+            float ratio = (float)MIN_FRAGMENT_VERTS_S3 / 100.0f;
+            int changed = 1;
+            while (changed) {
+                changed = 0;
+                for (size_t p = 0; p < n_ap; p++) {
+                    int32_t a = (int32_t)(adjpairs[p] >> 32);
+                    int32_t b = (int32_t)(adjpairs[p] & 0xFFFFFFFFu);
+                    int32_t ra, rb; OVL_FIND(ra, a); OVL_FIND(rb, b);
+                    if (ra == rb) continue;
+                    int32_t small = (gsz[ra] <= gsz[rb]) ? ra : rb;
+                    int32_t big   = (small == ra) ? rb : ra;
+                    if ((float)gsz[small] >= ratio * (float)gsz[big]) continue;  /* not a sliver */
+                    int safe = 1;  /* overlap edge between the two groups? */
+                    for (size_t w = 0; w < words; w++)
+                        if (inc[(size_t)small * words + w] & members[(size_t)big * words + w]) {
+                            safe = 0; break;
+                        }
+                    if (!safe) continue;
+                    par[small] = big;
+                    gsz[big] += gsz[small];
+                    for (size_t w = 0; w < words; w++) {
+                        members[(size_t)big * words + w] |= members[(size_t)small * words + w];
+                        inc[(size_t)big * words + w]     |= inc[(size_t)small * words + w];
+                    }
+                    changed = 1;
+                }
+            }
+
+            /* weld diagnostic: of the cross-group adjacency pairs still present,
+             * how many are size-eligible to weld, and how many of THOSE are
+             * overlap-safe. safe>0 => a weld was missed (bug); safe==0 => the
+             * leftover slivers are genuinely overlap-trapped against every
+             * neighbour (need a different reattachment than size+overlap). */
+            {
+                size_t se = 0, ss = 0;
+                for (size_t p = 0; p < n_ap; p++) {
+                    int32_t a = (int32_t)(adjpairs[p] >> 32);
+                    int32_t b = (int32_t)(adjpairs[p] & 0xFFFFFFFFu);
+                    int32_t ra, rb; OVL_FIND(ra, a); OVL_FIND(rb, b);
+                    if (ra == rb) continue;
+                    int32_t sm = (gsz[ra] <= gsz[rb]) ? ra : rb;
+                    int32_t bg = (sm == ra) ? rb : ra;
+                    if ((float)gsz[sm] >= ratio * (float)gsz[bg]) continue;
+                    se++;
+                    int safe = 1;
+                    for (size_t w = 0; w < words; w++)
+                        if (inc[(size_t)sm * words + w] & members[(size_t)bg * words + w]) { safe = 0; break; }
+                    if (safe) ss++;
+                }
+                fprintf(stderr, "    weld diag: %zu size-eligible leftover pairs, %zu overlap-SAFE\n", se, ss);
+            }
+
+            for (size_t fi = 0; fi < nf; fi++) {
+                int32_t old = face_labels[fi];
+                if (old >= 0 && old < nc) {
+                    int32_t r; OVL_FIND(r, old);
+                    if (r != old) { face_labels[fi] = r; n_merged++; }
+                }
+            }
+            #undef OVL_FIND
         }
 
-        /* Resolve merge chains */
-        for (int32_t l = 0; l < num_clusters; l++) {
-            int32_t target = l;
-            while (merge_to[target] != target) target = merge_to[target];
-            merge_to[l] = target;
-        }
-
-        /* Apply to face_labels */
-        for (size_t fi = 0; fi < nf; fi++) {
-            int32_t old = face_labels[fi];
-            if (old >= 0 && old < num_clusters && merge_to[old] != old) {
-                face_labels[fi] = merge_to[old];
-                n_merged++;
-            }
-        }
-        fprintf(stderr, "    phase 5 (merge small): %zu faces relabeled\n",
+        fprintf(stderr, "    phase 5 (merge small, overlap-safe): %zu faces relabeled\n",
                 n_merged);
+        size_t rejoined = 0;
+        for (size_t i = 0; i < n_ovl; i++)
+            if (face_labels[ovl_fa[i]] == face_labels[ovl_fb[i]]) rejoined++;
+        fprintf(stderr, "    after phase-5 merge: %zu/%zu overlap edges JOINED (must be 0)\n",
+                rejoined, n_ovl);
     }
 
     /* Count distinct labels */

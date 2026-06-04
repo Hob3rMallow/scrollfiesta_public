@@ -151,6 +151,24 @@ static float min_angle(const float *V, int32_t a, int32_t b, int32_t c)
     float m=a1; if (a2<m)m=a2; if (a3<m)m=a3; return m;
 }
 
+/* True if edge (u,w) already exists in the sorted-by-(v0,v1) MHE list. A flip
+ * onto an existing edge gives that edge a 3rd/4th face -> non-manifold. Same
+ * guard as qem.c::maint_edge_exists. */
+static int mhe_edge_exists(const MHE *mhe, size_t n_he, int32_t u, int32_t w)
+{
+    int32_t v0 = (u < w) ? u : w;
+    int32_t v1 = (u < w) ? w : u;
+    size_t lo = 0, hi = n_he;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (mhe[mid].v0 < v0 || (mhe[mid].v0 == v0 && mhe[mid].v1 < v1))
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return (lo < n_he && mhe[lo].v0 == v0 && mhe[lo].v1 == v1) ? 1 : 0;
+}
+
 static size_t flip_pass(Arena_T arena, const float *V, int32_t *faces,
                         size_t nf, size_t nv, const uint8_t *bnd)
 {
@@ -184,6 +202,7 @@ static size_t flip_pass(Arena_T arena, const float *V, int32_t *faces,
             } else { i+=2; continue; }   /* inconsistent winding */
             if (bnd[a] && bnd[b]){ i+=2; continue; }
             if (vused[a]||vused[b]||vused[c]||vused[d]||fused[fc]||fused[fd]){ i+=2; continue; }
+            if (mhe_edge_exists(mhe, n_he, c, d)){ i+=2; continue; }  /* flip target already an edge -> non-manifold */
             cur=min_angle(V,a,b,c); cur2=min_angle(V,b,a,d); if (cur2<cur)cur=cur2;
             flp=min_angle(V,c,d,a); flp2=min_angle(V,d,c,b); if (flp2<flp)flp=flp2;
             if (flp <= cur + 0.001f){ i+=2; continue; }

@@ -346,9 +346,15 @@ static int collapse_would_flip(
             /* Reject if new face collapses to zero area */
             if (new_len_sq < 1e-20f) return 1;
 
-            /* Reject if normal flipped (dot product < 0) */
+            /* Reject if the normal swings past the fold threshold. Normalize the
+             * dot of the (unnormalized) old/new normals to a cosine so the test
+             * is on the ANGLE, not area-weighted -- this catches sub-90deg
+             * fold-starts that accumulate into a self-intersection across LME
+             * rounds, not just a full (>90deg) reversal. */
             float dot = nox * nnx + noy * nny + noz * nnz;
-            if (dot < 0.0f) return 1;
+            float denom = sqrtf(old_len_sq * new_len_sq);
+            if (denom < 1e-20f) return 1;
+            if (dot / denom < QEM_FLIP_COS_THRESHOLD) return 1;
         }
     }
     return 0;
@@ -694,6 +700,27 @@ static int maint_he_cmp(const void *a, const void *b)
     return 0;
 }
 
+/* True if edge (u,w) already exists in the sorted-by-(v0,v1) half-edge list.
+ * An edge flip (a,b)->(c,d) is only manifold-safe if (c,d) is NOT already an
+ * edge: otherwise the two flipped faces give edge (c,d) a third/fourth incident
+ * face -> a non-manifold edge. (The classic Delaunay-flip precondition; missing
+ * here, it was the source of qslim's non-manifold decimation output.) */
+static int maint_edge_exists(const MaintHalfEdge *mhe, size_t n_he,
+                             int32_t u, int32_t w)
+{
+    int32_t v0 = (u < w) ? u : w;
+    int32_t v1 = (u < w) ? w : u;
+    size_t lo = 0, hi = n_he;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (mhe[mid].v0 < v0 || (mhe[mid].v0 == v0 && mhe[mid].v1 < v1))
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return (lo < n_he && mhe[lo].v0 == v0 && mhe[lo].v1 == v1) ? 1 : 0;
+}
+
 /* Detect boundary vertices from face list.
  * Uses existing HalfEdge type and halfedge_cmp from above. */
 static void qem_detect_boundary(Arena_T arena,
@@ -826,6 +853,17 @@ static size_t qem_edge_flip_pass(Arena_T arena,
             /* Skip if already used */
             if (vert_used[a] || vert_used[b] || vert_used[c] || vert_used[d]
                 || face_used[fc] || face_used[fd]) {
+                i += 2;
+                continue;
+            }
+
+            /* Topological guard: never flip onto an edge that already exists.
+             * If (c,d) is already an edge elsewhere, the flip gives it a third
+             * incident face -> non-manifold. The vert_used independence guard
+             * above guarantees no flip performed earlier in THIS pass touched
+             * c or d, so the original sorted half-edge list `mhe` is the
+             * correct edge set to query. */
+            if (maint_edge_exists(mhe, n_he, c, d)) {
                 i += 2;
                 continue;
             }
