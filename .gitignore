@@ -38,6 +38,9 @@
 /src/cube_mesh
 /src/grid_weld
 /src/grid_pipeline
+/src/obj_components
+/src/pinhole_verdict
+/src/seam_audit
 /src/test_common
 
 # ------ IDE ------

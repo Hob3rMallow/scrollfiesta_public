@@ -68,6 +68,7 @@
   #include <time.h>
   #include <signal.h>
   #include <pthread.h>
+  #include <string.h>    /* memcpy (ves_temp_dir); on Windows it comes via <windows.h> */
 #endif
 
 /* ================================================================

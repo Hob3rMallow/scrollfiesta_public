@@ -7,6 +7,7 @@
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
+#include <string.h>   /* memset */
 
 /* ------------------------------------------------------------------ */
 /* extract_surface_voxels                                              */
