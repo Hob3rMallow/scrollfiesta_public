@@ -36,10 +36,16 @@ Windows (Visual Studio 2022): build scrollfiesta.sln as Release|x64, e.g.
   Triangle compiles inline. Build those library .libs once before the solution
   -- run build-deps.ps1 (or read it for the exact CMake invocations).
 
-Linux (GCC):
-    cd src && make release        # -> src/cube_mesh
-  Needs system libtiff + OpenMP + pthread and the deps under ../deps. (The
-  Makefile mirrors the .vcxproj source lists; build it on the deploy box.)
+Linux (GCC 13): stage the vendored static libs once, then build the binaries:
+    ./build-deps.sh                   # Triangle + Clipper2 -> deps/lib/*.a
+    cd src && make release -j$(nproc)  # all six binaries -> src/
+  Needs gcc/g++ 13, cmake, system libtiff (libtiff-dev), OpenMP, and pthread.
+  Unlike the Windows build, libtiff/zlib are NOT vendored here -- the system
+  libtiff is used via -ltiff; build-deps.sh stages only Triangle and Clipper2.
+  "make release" builds cube_mesh, grid_pipeline, grid_weld and the three
+  diagnostic tools (obj_components, pinhole_verdict, seam_audit); plain "make"
+  builds just cube_mesh (debug + AddressSanitizer). The Makefile mirrors the
+  .vcxproj source lists.
 
 
 
