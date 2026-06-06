@@ -112,9 +112,11 @@ pinhole_verdict: tools/pinhole_verdict.o
 seam_audit: tools/seam_audit.o
 	$(CC) $(CFLAGS) $(BUILD_FLAGS) $^ -o $@ -lm
 
-# Unit tests (shared-infra suite). The full harness lives in the all_tests
-# MSBuild project; this covers the common/ asserts on Linux.
-test: ../scripts/test_harness.c ../scripts/test_common.c $(COMMON_OBJ)
+# Unit tests (shared-infra suite). On Linux this builds test_common.c standalone
+# (it provides its own main() when TEST_HARNESS is undefined). test_harness.c is
+# the Windows all_tests dispatcher -- it needs every *_test_main symbol, so it is
+# intentionally NOT compiled here.
+test: ../scripts/test_common.c $(COMMON_OBJ)
 	$(CC) $(CFLAGS) $(DEBUG_FLAGS) $(TEST_INC) $^ -o test_common $(LDFLAGS)
 	./test_common
 
