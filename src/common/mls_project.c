@@ -250,6 +250,7 @@ void MLS_project_verts(Arena_T arena,
      * neighbour-loop cost. */
 
     /* -------- Per-vertex MLS midpoint -------- */
+#pragma omp parallel for schedule(dynamic, 256)
     for (size_t i = 0; i < nv; i++) {
         float vz = verts[i * 3 + 0];
         float vy = verts[i * 3 + 1];
