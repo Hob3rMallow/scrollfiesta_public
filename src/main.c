@@ -36,6 +36,10 @@
 #include "common/dump_obj.h"
 #include "pipeline/pipeline_cube.h"
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 #define HARD_TIMEOUT_SEC   1e9     /* effectively infinite */
 
 static volatile sig_atomic_t g_timeout_flag = 0;
@@ -157,6 +161,13 @@ int main(int argc, char *argv[])
     }
 
     int n_threads = get_thread_count();
+#ifdef _OPENMP
+    /* Bound OpenMP parallel regions (the MLS per-vertex loop) by the same
+     * budget as everything else: VESUVIUS_THREADS. grid orchestrators pass
+     * threads-per-cube (usually 1 -- the fleet fills the cores); a bare
+     * single-cube run gets the whole machine. */
+    omp_set_num_threads(n_threads);
+#endif
 
     char cube_id[128] = {0};
     if (stdin_raw) {

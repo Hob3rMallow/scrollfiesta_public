@@ -3,6 +3,7 @@
 #include "pipeline_constants.h"
 
 #include <assert.h>
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -272,8 +273,20 @@ void MLS_project_verts(Arena_T arena,
      * neighbour-loop cost. */
 
     /* -------- Per-vertex MLS midpoint -------- */
+    /* Each vertex is independent -- all-local accumulators, read-only cell
+     * grid, one write to out_*[i] -- so this parallelizes exactly: output is
+     * byte-identical to serial for any thread count/schedule (community
+     * issue #3, pscamillo: serial MLS was ~83% of single-cube wall; 9.6x on
+     * 16 threads). Signed int index for MSVC OpenMP 2.0 (a per-component
+     * cloud is < 2^31 verts by orders of magnitude). Thread count follows
+     * omp_set_num_threads(n_threads) in the driver, so grid runs with
+     * threads-per-cube=1 stay serial (the fleet already fills the cores). */
+    assert(nv <= (size_t)INT_MAX);
+    int nv_i = (int)nv;
+    int si = 0;   /* declared before the loop: MSVC OpenMP 2.0 form */
 #pragma omp parallel for schedule(dynamic, 256)
-    for (size_t i = 0; i < nv; i++) {
+    for (si = 0; si < nv_i; si++) {
+        size_t i = (size_t)si;
         float vz = verts[i * 3 + 0];
         float vy = verts[i * 3 + 1];
         float vx = verts[i * 3 + 2];
