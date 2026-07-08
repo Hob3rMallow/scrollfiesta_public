@@ -95,7 +95,7 @@ grid_weld: tools/grid_weld.o remesh/ball_pivot.o remesh/pinhole_fill.o remesh/or
            remesh/manifold_guard.o $(WELD_OBJ) holefill/hole_fill.o holefill/clipper2_wrap.o \
            common/arena.o common/except.o common/obj_io.o common/ves_platform.o \
            common/mesh_manifold.o common/csr.o common/pca.o \
-           topology/developability.o common/eig3.o
+           topology/developability.o common/eig3.o common/vert_weld.o
 	$(CC) $(CFLAGS) $(BUILD_FLAGS) $^ -o $@ $(LDFLAGS) $(EXT_LIB)
 
 # Grid orchestrator subprocess (== grid_pipeline.exe). Links the garbage-cube

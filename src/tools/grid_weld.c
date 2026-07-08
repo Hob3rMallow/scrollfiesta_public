@@ -43,6 +43,7 @@
 #include "../remesh/orient_weld.h"
 #include "../remesh/weld_cleanup.h"
 #include "../holefill/hole_fill.h"
+#include "../common/vert_weld.h"
 #include "../topology/developability.h"
 
 #define CUBE_SIZE_VOX 128.0f    /* Cube boundary planes are integer multiples */
@@ -1399,6 +1400,57 @@ int main(int argc, char **argv)
                 " -> %zu faces, %zu verts\n", f_fl, f_ad, f_sk, pcm.nf, pcm.nv);
             flat_faces = pcm.faces; n_unique_faces = pcm.nf;
             out_verts = pcm.verts; out_nv = pcm.nv;
+        }
+
+        /* Micro-weld: post-concat stages (seam bridge, CDT fill) can CREATE a
+         * vertex exactly on an existing vertex's position (observed: 4 such
+         * pairs on a 2-cube weld, each pinching a small boundary loop into a
+         * figure-8 slit that nothing can close -- the CDT path drops its < 4-
+         * vert pinch sub-loops, and PinholeFill sees no 3-cycle because the
+         * coincident pair has two distinct indices). Welding the pair zips the
+         * slit shut with no new faces. eps is far below any legitimate vertex
+         * spacing; the concat-time dedup only catches input duplicates.
+         * SEAM_NO_MICROWELD=1 disables. */
+        if (!getenv("SEAM_NO_MICROWELD")) {
+            size_t w_nf = 0, w_nv = 0;
+            float *w_verts = NULL;
+            Weld_verts(arena, out_verts, out_nv, NULL,
+                       flat_faces, n_unique_faces, &w_nf,
+                       1e-3f, &w_verts, &w_nv, NULL);
+            if (w_nv != out_nv || w_nf != n_unique_faces) {
+                fprintf(stderr, "Micro-weld: %zu -> %zu verts, %zu -> %zu faces "
+                        "(coincident stage-created duplicates)\n",
+                        out_nv, w_nv, n_unique_faces, w_nf);
+            }
+            out_verts = w_verts; out_nv = w_nv; n_unique_faces = w_nf;
+        }
+
+        /* Fill fixpoint. Each fill pass reshapes the boundary structure (a
+         * pinhole fill splits or shrinks a larger loop; an interior fill
+         * exposes fresh 3-loops), and a single pass leaves those orphans open
+         * -- observed as 4-6-edge slots at a grazing seam surviving both the
+         * interior fill AND the final pinhole pass. Re-run interior-fill +
+         * pinhole until neither makes progress (bounded). */
+        if (!no_holefill && !no_pinhole) {
+            for (int round = 1; round <= 3; round++) {
+                size_t r_loops = 0, r_int = 0, r_filled = 0;
+                HoleFill_process_ex(arena, &out_verts, &flat_faces,
+                                    &out_nv, &n_unique_faces,
+                                    NULL, 1 /* interior_only */,
+                                    &r_loops, &r_int, &r_filled);
+                ComponentMesh rcm; memset(&rcm, 0, sizeof rcm);
+                rcm.verts = out_verts; rcm.faces = flat_faces;
+                rcm.nv = out_nv; rcm.nf = n_unique_faces;
+                rcm.comp_id = 1; rcm.self = &rcm;
+                size_t r_sp = 0, r_fl = 0, r_ad = 0, r_sk = 0;
+                PinholeFill_process(arena, &rcm, 1, 0, &r_sp, &r_fl, &r_ad, &r_sk);
+                out_verts = rcm.verts; flat_faces = rcm.faces;
+                out_nv = rcm.nv; n_unique_faces = rcm.nf;
+                if (r_filled + r_fl == 0) break;
+                fprintf(stderr, "Fill fixpoint round %d: interior=%zu pinhole=%zu"
+                        " -> %zu faces, %zu verts\n",
+                        round, r_filled, r_fl, n_unique_faces, out_nv);
+            }
         }
 
         /* Lambda gate -- "don't weld if it produces high lambda". The seam bridge

@@ -2595,7 +2595,27 @@ static int loop_is_interior(const float *verts, const int32_t *faces,
            + (qa[2]*qb[0]-qa[0]*qb[2])*N[1]
            + (qa[0]*qb[1]-qa[1]*qb[0])*N[2];
     }
-    return (dir * S) < 0.0 ? 1 : 0;
+    if ((dir * S) < 0.0) return 1;
+
+    /* Degenerate-projection tie-break. A tiny TWISTED loop (a bowtie quad --
+     * observed as 4-edge slots the seam bridge leaves at a grazing seam) has
+     * its two projected triangles cancel to S ~ 0, landing in the fail-safe
+     * "indeterminate => exterior" arm and never filling. A genuine exterior
+     * loop is a perimeter with hundreds of edges, so for small loops the
+     * fail-safe points the wrong way: fill. eps is relative to the loop's own
+     * scale (S ~ |N| * diam^2). */
+    if (loop_n <= 8) {
+        double nmag = sqrt(N[0]*N[0] + N[1]*N[1] + N[2]*N[2]);
+        double diam2 = 1.0;
+        for (size_t k = 0; k < loop_n; k++) {
+            const float *pa = &verts[(size_t)loop_verts[k]*3];
+            double dz = pa[0]-C[0], dy = pa[1]-C[1], dx = pa[2]-C[2];
+            double d2 = dz*dz + dy*dy + dx*dx;
+            if (d2 > diam2) diam2 = d2;
+        }
+        if (fabs(S) < 1e-6 * nmag * diam2) return 1;
+    }
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */

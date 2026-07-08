@@ -97,6 +97,7 @@
   <ItemGroup>
     <ClCompile Include="src\tools\grid_weld.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\arena.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\vert_weld.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\mesh_manifold.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\except.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\obj_io.c"><CompileAs>CompileAsC</CompileAs></ClCompile>

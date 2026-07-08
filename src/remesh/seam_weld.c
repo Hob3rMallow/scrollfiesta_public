@@ -27,6 +27,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846  /* MSVC math.h omits it without _USE_MATH_DEFINES */
+#endif
+
 /* A detected cube-boundary plane: mesh exists substantially on both sides. */
 typedef struct { int axis; double coord; } SeamPlane;
 
@@ -528,6 +532,147 @@ int SeamWeld_bridge(Arena_T arena,
         i = j;
     }
 
+    /* 3b) Grazing-seam promotion. edge_in_seam_plane's parallel test rejects
+     * boundary edges that RUN ACROSS the plane -- right for grid-perimeter
+     * edges, wrong at a GRAZING seam (the wrap running parallel to the cube
+     * face, e.g. the umbilicus-aligned band of every seam plane): there the
+     * per-cube centroid trim interleaves the two charts' coverage, the open
+     * boundaries wander obliquely off-plane, and since the bridge cloud is
+     * init-edge verts ONLY, an excluded edge's verts are invisible to the
+     * ball at ANY radius -- the gap can never close. Promote an excluded
+     * edge when some boundary edge on the OPPOSITE side of the plane lies
+     * within bridge reach (2*rho_max) of its midpoint: a real grazing seam
+     * has an opposing open boundary; a perimeter edge has nothing across
+     * from it.
+     *
+     * SAME-WRAP guard: at the compacted core, DIFFERENT wraps' boundaries can
+     * also face each other within reach across a plane -- promoting those
+     * re-admits cross-wrap mergers (4x5x5 A/B: handles 7 -> 14). So a pair
+     * only counts as opposing if it is same-wrap by the winding phase
+     * w = r/pitch - theta/2pi about the umbilicus (|dw| <= tol), read from the
+     * same SEAM_UMBILICUS_{Y,X} / SEAM_WRAP_PITCH / SEAM_WIND_TOL env the
+     * bridge gate uses. Without that scroll knowledge the promotion CANNOT
+     * tell wraps apart and stays OFF. SEAM_NO_GRAZING_PROMOTE=1 also disables. */
+    uint8_t *promoted_vert = NULL;  /* marks verts of promoted (grazing) edges;
+                                     * their bridge faces bypass the straddle
+                                     * test in the merge filter below. */
+    double grz_umb_y = 0.0, grz_umb_x = 0.0, grz_pitch = 0.0, grz_tol = 0.0;
+    {
+        const char *e = NULL;
+        if ((e = getenv("SEAM_UMBILICUS_Y"))) grz_umb_y = atof(e);
+        if ((e = getenv("SEAM_UMBILICUS_X"))) grz_umb_x = atof(e);
+        if ((e = getenv("SEAM_WRAP_PITCH"))) { double v = atof(e); if (v > 0) grz_pitch = v; }
+        if (grz_pitch > 0.0 && (grz_umb_y != 0.0 || grz_umb_x != 0.0)) {
+            grz_tol = 0.25;   /* mirrors SEAM_WIND_TOL_DEFAULT_TURNS */
+            if ((e = getenv("SEAM_WIND_TOL"))) { double v = atof(e); if (v > 0) grz_tol = v; }
+        }
+    }
+    if (n_excl > 0 && grz_tol > 0.0 && !getenv("SEAM_NO_GRAZING_PROMOTE")) {
+        double reach = 2.0 * rho_max;
+        size_t n_all = n_init + n_excl;
+        /* midpoints for every run-1 edge (init first, then excl). */
+        float *mid = (float *)malloc(n_all * 3 * sizeof(float));
+        for (size_t i = 0; i < n_all; i++) {
+            const BpaInitEdge *e = (i < n_init) ? &init[i] : &excl[i - n_init];
+            mid[i*3+0] = 0.5f*(verts[(size_t)e->va*3+0] + verts[(size_t)e->vb*3+0]);
+            mid[i*3+1] = 0.5f*(verts[(size_t)e->va*3+1] + verts[(size_t)e->vb*3+1]);
+            mid[i*3+2] = 0.5f*(verts[(size_t)e->va*3+2] + verts[(size_t)e->vb*3+2]);
+        }
+        /* uniform grid hash over midpoints, cell = reach, chained buckets. */
+        size_t hcap = ec_pow2(n_all * 2 + 16);
+        int64_t *hkey = (int64_t *)malloc(hcap * sizeof(int64_t));
+        int32_t *hidx = (int32_t *)malloc(hcap * sizeof(int32_t));
+        int32_t *hchain = (int32_t *)malloc(n_all * sizeof(int32_t));
+        for (size_t i = 0; i < hcap; i++) { hkey[i] = -1; hidx[i] = -1; }
+        size_t hmask = hcap - 1;
+        double inv_cell = 1.0 / reach;
+        #define GRZ_CELL_KEY(cz, cy, cx) \
+            ( (((int64_t)(cz) & 0x1FFFFF) << 42) | (((int64_t)(cy) & 0x1FFFFF) << 21) \
+              | ((int64_t)(cx) & 0x1FFFFF) )
+        for (size_t i = 0; i < n_all; i++) {
+            int64_t cz = (int64_t)floor((double)mid[i*3+0] * inv_cell);
+            int64_t cy = (int64_t)floor((double)mid[i*3+1] * inv_cell);
+            int64_t cx = (int64_t)floor((double)mid[i*3+2] * inv_cell);
+            int64_t key = GRZ_CELL_KEY(cz, cy, cx);
+            size_t s = (size_t)key & hmask;
+            while (hkey[s] != -1 && hkey[s] != key) s = (s + 1) & hmask;
+            hkey[s] = key;
+            hchain[i] = hidx[s];
+            hidx[s] = (int32_t)i;
+        }
+        size_t n_promoted = 0;
+        for (size_t p = 0; p < np; p++) {
+            int ax = planes[p].axis;
+            double co = planes[p].coord;
+            for (size_t x = 0; x < n_excl; x++) {
+                if (excl[x].va < 0) continue;                 /* already promoted */
+                size_t i = n_init + x;   /* mid[] index (excl block is stable) */
+                double mc = (double)mid[i*3+(size_t)ax];
+                if (fabs(mc - co) >= (double)band) continue;  /* not this seam */
+                int side = (mc > co);
+                int found = 0;
+                int64_t bz = (int64_t)floor((double)mid[i*3+0] * inv_cell);
+                int64_t by = (int64_t)floor((double)mid[i*3+1] * inv_cell);
+                int64_t bx = (int64_t)floor((double)mid[i*3+2] * inv_cell);
+                for (int64_t dz = -1; dz <= 1 && !found; dz++)
+                for (int64_t dy = -1; dy <= 1 && !found; dy++)
+                for (int64_t dx = -1; dx <= 1 && !found; dx++) {
+                    int64_t key = GRZ_CELL_KEY(bz+dz, by+dy, bx+dx);
+                    size_t s = (size_t)key & hmask;
+                    while (hkey[s] != -1 && hkey[s] != key) s = (s + 1) & hmask;
+                    if (hkey[s] != key) continue;
+                    for (int32_t k = hidx[s]; k != -1; k = hchain[k]) {
+                        if ((size_t)k == i) continue;
+                        double kc = (double)mid[(size_t)k*3+(size_t)ax];
+                        if (fabs(kc - co) >= (double)band) continue;
+                        if ((kc > co) == side) continue;      /* same side */
+                        double ddz = (double)mid[(size_t)k*3+0] - (double)mid[i*3+0];
+                        double ddy = (double)mid[(size_t)k*3+1] - (double)mid[i*3+1];
+                        double ddx = (double)mid[(size_t)k*3+2] - (double)mid[i*3+2];
+                        if (ddz*ddz + ddy*ddy + ddx*ddx > reach*reach) continue;
+                        /* same-wrap check: winding phase about the umbilicus */
+                        {
+                            double iy = (double)mid[i*3+1] - grz_umb_y;
+                            double ix = (double)mid[i*3+2] - grz_umb_x;
+                            double ky = (double)mid[(size_t)k*3+1] - grz_umb_y;
+                            double kx = (double)mid[(size_t)k*3+2] - grz_umb_x;
+                            double dr  = hypot(ky, kx) - hypot(iy, ix);
+                            double dth = atan2(ky, kx) - atan2(iy, ix);
+                            while (dth >  M_PI) dth -= 2.0*M_PI;
+                            while (dth < -M_PI) dth += 2.0*M_PI;
+                            double dw = dr/grz_pitch - dth/(2.0*M_PI);
+                            if (fabs(dw) > grz_tol) continue; /* different wrap */
+                        }
+                        found = 1; break;
+                    }
+                }
+                if (found) {
+                    /* append to init (hn-sized: n_init+n_excl <= hn). Do NOT
+                     * touch mid[]'s excl block -- indices stay stable. */
+                    if (!promoted_vert)
+                        promoted_vert = (uint8_t *)calloc(nv, 1);
+                    promoted_vert[excl[x].va] = 1;
+                    promoted_vert[excl[x].vb] = 1;
+                    init[n_init + n_promoted] = excl[x];
+                    n_promoted++;
+                    excl[x].va = -1;                          /* mark promoted */
+                }
+            }
+        }
+        #undef GRZ_CELL_KEY
+        if (n_promoted > 0) {
+            n_init += n_promoted;
+            size_t w = 0;                     /* compact excl[] for the dump */
+            for (size_t x = 0; x < n_excl; x++)
+                if (excl[x].va >= 0) excl[w++] = excl[x];
+            n_excl = w;
+            fprintf(stderr, "  [seam] grazing promote: %zu excluded edge(s) "
+                    "with an opposing boundary within %.1f vox joined the front\n",
+                    n_promoted, reach);
+        }
+        free(hchain); free(hidx); free(hkey); free(mid);
+    }
+
     /* Emit the init-front diagnostic BEFORE any early-out, so an empty or
      * under-detected front (n_init == 0) is itself visible in the dump. */
     {
@@ -540,7 +685,7 @@ int SeamWeld_bridge(Arena_T arena,
         memcpy(out, faces, nf*3*sizeof(int32_t));
         *out_faces = out; *out_nf = nf;
         free(normals); free(used_any); free(he); free(init); free(excl);
-        free(sliver_owned);
+        free(sliver_owned); free(promoted_vert);
         return 0;
     }
 
@@ -636,7 +781,21 @@ int SeamWeld_bridge(Arena_T arena,
         int32_t g2 = l2g[bridge_local[f*3+2]];
         if (g0 == g1 || g1 == g2 || g0 == g2) continue;        /* degenerate */
         if (face_seam_plane(verts, g0, g1, g2, planes, np, (double)band) < 0) {
-            rej_fold++; continue;   /* all one side -> fold-back, not a bridge */
+            /* The straddle test assumes the sheet CROSSES the plane; at a
+             * grazing seam legit closure faces can sit entirely on one side.
+             * Bypassing it for faces touching a promoted vert was tried and
+             * REJECTED as a default: on the 4x5x5 it admitted fold-backs
+             * (same_dir 0 -> 34, handles 7 -> 14) for only ~50 fewer open
+             * edges. SEAM_GRAZING_BYPASS=1 re-enables for experiments. */
+            static int grz_bypass = -1;
+            if (grz_bypass < 0)
+                grz_bypass = getenv("SEAM_GRAZING_BYPASS") ? 1 : 0;
+            int grazing = grz_bypass && promoted_vert &&
+                          (promoted_vert[g0] || promoted_vert[g1] ||
+                           promoted_vert[g2]);
+            if (!grazing) {
+                rej_fold++; continue;  /* all one side -> fold-back, not a bridge */
+            }
         }
         double em = edge_len2(verts, g0, g1);
         double e1 = edge_len2(verts, g1, g2); if (e1 > em) em = e1;
@@ -679,7 +838,7 @@ int SeamWeld_bridge(Arena_T arena,
         }
     }
 
-    free(normals); free(used_any); free(he); free(init); free(excl);
+    free(normals); free(used_any); free(he); free(init); free(excl); free(promoted_vert);
     free(g2l); free(want); free(l2g); free(lv); free(lnrm); free(init_local);
     free(sliver_owned);
     return 0;
