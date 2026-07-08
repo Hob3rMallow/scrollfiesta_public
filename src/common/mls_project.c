@@ -476,5 +476,32 @@ void MLS_project_verts(Arena_T arena,
         out_verts[i*3+2] = (float)cx;
     }
 
+    /* Validation knob (MLS_PERTURB_EPS): add a deterministic pseudo-random
+     * offset in [-eps,+eps] to every output coordinate, per call -- so over
+     * the 5-iteration LOP it compounds exactly like a reduced-precision
+     * backend's per-pass error. Used to adjudicate the FP32 CUDA drop-in
+     * from public issue #3 (measured max |delta| 1.5e-3 vox) by injecting
+     * that magnitude into the reference pipeline and measuring what
+     * BPA/guards/weld actually do. NOT for production runs. */
+    {
+        const char *pe = getenv("MLS_PERTURB_EPS");
+        if (pe && *pe) {
+            double eps = atof(pe);
+            for (size_t vi = 0; eps > 0.0 && vi < nv; vi++) {
+                for (int c = 0; c < 3; c++) {
+                    /* splitmix64 of (vi,c): deterministic across runs */
+                    uint64_t h = (uint64_t)vi * 3u + (uint64_t)c
+                               + 0x9E3779B97F4A7C15ULL;
+                    h ^= h >> 30; h *= 0xBF58476D1CE4E5B9ULL;
+                    h ^= h >> 27; h *= 0x94D049BB133111EBULL;
+                    h ^= h >> 31;
+                    double u = ((double)(h >> 11) / 9007199254740992.0)
+                             * 2.0 - 1.0;
+                    out_verts[vi*3 + (size_t)c] += (float)(u * eps);
+                }
+            }
+        }
+    }
+
     Arena_restore(arena, mark);
 }
