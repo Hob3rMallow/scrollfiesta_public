@@ -23,6 +23,10 @@ def _slab_cube(p, halo):
     (owned-local z[62:65], y/x[16:112]) — geometry that survives the pipeline."""
     v = np.zeros((p, p, p), np.uint8)
     v[halo + 62:halo + 65, halo + 16:halo + 112, halo + 16:halo + 112] = 255
+    # Byte values a text-mode stdin would mangle on Windows (Ctrl-Z reads as
+    # EOF, CRLF collapses). Geometry-neutral — any nonzero voxel is foreground
+    # — but stream-hostile, so a missing binary-mode setmode fails loudly.
+    v[halo + 63, halo + 20, halo + 20:halo + 23] = (26, 13, 10)
     return v
 
 
@@ -38,9 +42,9 @@ def test_stdin_raw_world_offset(cube_mesh_bin, tmp_path):
            "--halo", str(halo), "--dump-obj", str(dump)]
     proc = subprocess.run(cmd, input=buf.tobytes(), capture_output=True)
     assert proc.returncode == 0, proc.stderr.decode()[-800:]
-    rs = dump / "z00128_y00128_x00128" / "z00128_y00128_x00128_raw_snap" / \
-        "z00128_y00128_x00128_raw_snap_all.obj"
-    assert rs.exists(), "raw_snap not produced"
+    rs = dump / "z00128_y00128_x00128" / "z00128_y00128_x00128_step12_final" / \
+        "z00128_y00128_x00128_step12_final_all.obj"
+    assert rs.exists(), "step12_final not produced"
     zs = [float(line.split()[1]) for line in open(rs) if line.startswith("v ")]
     assert len(zs) > 0
     # vertex col1 is Z in world voxels = 128 (origin) + owned-local slab z (~63)

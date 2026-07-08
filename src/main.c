@@ -114,6 +114,10 @@ int main(int argc, char *argv[])
                     p_size, 128 + 2 * halo_voxels);
             return 1;
         }
+        if (ves_stdin_set_binary() != 0) {
+            fprintf(stderr, "ERROR: cannot set stdin to binary mode\n");
+            return 1;
+        }
     } else {
         if (ves_ensure_parent_dir(output_path) != 0) {
             fprintf(stderr, "ERROR: cannot create output directory for %s\n",

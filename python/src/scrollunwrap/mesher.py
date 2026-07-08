@@ -54,8 +54,8 @@ def _mesh_one_cube(vol: ZarrVolume, cube: Cube, dump_dir: Path, *, cube_mesh_bin
            "--halo", str(halo), "--dump-obj", str(dump_dir)]
     if skip_qem:
         cmd.append("--no-qem")
-    exp = (dump_dir / cube.cube_id / f"{cube.cube_id}_raw_snap"
-           / f"{cube.cube_id}_raw_snap_all.obj")
+    exp = (dump_dir / cube.cube_id / f"{cube.cube_id}_step12_final"
+           / f"{cube.cube_id}_step12_final_all.obj")
     try:
         buf = read_padded_cube(vol, cube.oz, cube.oy, cube.ox, size=size, halo=halo)
         mask = apply_threshold(buf, threshold)          # uint8 {0,255}, C-contiguous

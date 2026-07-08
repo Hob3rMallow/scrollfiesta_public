@@ -57,7 +57,8 @@
   #endif
   #include <windows.h>
   #include <direct.h>    /* _mkdir */
-  #include <io.h>        /* _unlink, _access */
+  #include <io.h>        /* _unlink, _access, _setmode */
+  #include <fcntl.h>     /* _O_BINARY */
   #include <process.h>   /* _getpid */
   #include <signal.h>    /* sig_atomic_t */
   #include <time.h>      /* time_t, etc. */
@@ -267,6 +268,26 @@ static inline const char *ves_path_basename(const char *path)
   static inline int ves_fadvise(int fd, long offset, long len, int advice)
   {
       return posix_fadvise(fd, offset, len, advice);
+  }
+#endif
+
+/* ================================================================
+ * ves_stdin_set_binary() — put stdin into binary (untranslated) mode.
+ *
+ * On Windows, stdin defaults to text mode: CRLF pairs are collapsed and
+ * a 0x1A byte reads as EOF, silently corrupting raw byte streams (e.g.
+ * cube_mesh --stdin-raw). POSIX has no text/binary distinction.
+ * ================================================================ */
+
+#ifdef _WIN32
+  static inline int ves_stdin_set_binary(void)
+  {
+      return (_setmode(_fileno(stdin), _O_BINARY) == -1) ? -1 : 0;
+  }
+#else
+  static inline int ves_stdin_set_binary(void)
+  {
+      return 0; /* POSIX streams are always binary */
   }
 #endif
 

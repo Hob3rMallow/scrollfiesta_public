@@ -604,11 +604,21 @@ int MeshExtract_run(Arena_T          arena,
          * HaloLoader_load would return for this cube: a (p_size)^3 buffer whose
          * (0,0,0) is world (cube_origin - halo), so cube-local (0,0,0) is at
          * world = cube_origin. */
-        if (p_size_in <= 0) {
-            fprintf(stderr, "MeshExtract: p_size_in=%d must be > 0\n", p_size_in);
+        if (p_size_in <= 0 ||
+            (size_t)p_size_in != cube_D + 2u * (size_t)halo_voxels) {
+            fprintf(stderr, "MeshExtract: p_size_in=%d must equal "
+                    "cube_D + 2*halo (%zu)\n",
+                    p_size_in, cube_D + 2u * (size_t)halo_voxels);
             return -1;
         }
-        vol = (uint8_t *)vol_in;   /* read-only use + in-place threshold copy */
+        /* Copy into the arena: the threshold pass below mutates vol, and the
+         * caller's buffer is const (a library caller may reuse or share it). */
+        {
+            size_t pn = (size_t)p_size_in * (size_t)p_size_in
+                      * (size_t)p_size_in;
+            vol = (uint8_t *)ARENA_ALLOC(arena, (long)pn);
+            memcpy(vol, vol_in, pn);
+        }
         D = H = W = p_size_in;
         if (cube_origin_in) {
             cube_world_origin[0] = (float)cube_origin_in[0];

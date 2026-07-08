@@ -145,12 +145,12 @@ int pipeline_process_cube(Arena_T arena,
     MeshResplitCloud *rclouds = NULL;
     {
         double tr = now_sec();
-        char cube_dump_dir[1024] = {0};
+        char resplit_dump_dir[1024] = {0};
         MeshResplitDump rdump = {0};
         if (in->dump_dir && in->cube_id) {
-            snprintf(cube_dump_dir, sizeof cube_dump_dir, "%s/%s",
+            snprintf(resplit_dump_dir, sizeof resplit_dump_dir, "%s/%s",
                      in->dump_dir, in->cube_id);
-            rdump.dir = cube_dump_dir; rdump.cube_id = in->cube_id;
+            rdump.dir = resplit_dump_dir; rdump.cube_id = in->cube_id;
             rdump.cc_stage = "step2_cc"; rdump.mls_stage = "step3_mls";
         }
         ComponentMesh *rs = NULL; size_t n_rs = 0;
