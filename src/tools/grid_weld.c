@@ -29,6 +29,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846  /* MSVC math.h omits it without _USE_MATH_DEFINES */
+#endif
+
 #include "../common/arena.h"
 #include "../common/except.h"
 #include "../common/obj_io.h"
@@ -1488,6 +1492,160 @@ int main(int argc, char **argv)
                     "Lambda gate: %zu high-lambda seam vert(s) -> %zu weld face(s) "
                     "severed (lambda > %.3f within %.1f vox of a seam)\n",
                     ncut, removed, lmax, (double)zone);
+            }
+        }
+
+        /* Phase-jump sever (fusion-line cutter EXPERIMENT -- default off,
+         * SEAM_PHASE_SEVER=1 arms it; needs the gate's umbilicus/pitch env).
+         * Target: junctions the m7 PREDICTION itself contains (delamination
+         * pairs ~half a pitch apart, the crushed-core web) -- no bridge gate
+         * can touch them; the mesh must be CUT along the contact line.
+         *
+         * STATUS 2026-07-09, measured on the red/pink corner puddle: local
+         * thresholds DO NOT WORK. v1 (edge |dw| > tol AND lambda) and v2
+         * (below: clusters of faces whose own phase span > tol, small +
+         * lambda-hot) both left the junction connected -- the membrane
+         * crosses the 0.5-turn gap through dozens of ~0.025-turn micro-steps
+         * (max face span there: 0.211; median crossing-face span 0.025), so
+         * any per-face/per-edge threshold either misses it or shreds
+         * innocent geometry (659 faces > 0.10 span in that one box alone).
+         * What DOES work (proven offline on the exemplar): PLATEAU
+         * MEMBERSHIP -- the two surfaces are local phase plateaus (w = 28.05
+         * and 28.55 there); cutting the 679 faces whose mid-phase lies
+         * BETWEEN the plateaus disconnects the layers surgically. v3 =
+         * per-vertex plateau assignment from neighborhood phase modes, cut
+         * between-plateau fabric; folds (one shared plateau), grazing sheets
+         * (single mode), and the exempt core are safe by construction.
+         * The v2 code below is retained as the experiment scaffold. Knobs:
+         * SEAM_PHASE_SEVER_TOL (0.25 turn), SEAM_PHASE_SEVER_LAMBDA (0.05),
+         * SEAM_PHASE_SEVER_RMIN_PITCHES (2.0), SEAM_PHASE_SEVER_MAXC (2500). */
+        if (getenv("SEAM_PHASE_SEVER")) {
+            double ps_umb_y = 0.0, ps_umb_x = 0.0, ps_pitch = 0.0;
+            { const char *e = getenv("SEAM_UMBILICUS_Y"); if (e) ps_umb_y = atof(e); }
+            { const char *e = getenv("SEAM_UMBILICUS_X"); if (e) ps_umb_x = atof(e); }
+            { const char *e = getenv("SEAM_WRAP_PITCH"); if (e) { double v = atof(e); if (v > 0) ps_pitch = v; } }
+            double ps_tol = 0.25, ps_lam = 0.05, ps_rmin_p = 2.0;
+            { const char *e = getenv("SEAM_PHASE_SEVER_TOL"); if (e) { double v = atof(e); if (v > 0) ps_tol = v; } }
+            { const char *e = getenv("SEAM_PHASE_SEVER_LAMBDA"); if (e) { double v = atof(e); if (v > 0) ps_lam = v; } }
+            { const char *e = getenv("SEAM_PHASE_SEVER_RMIN_PITCHES"); if (e) { double v = atof(e); if (v > 0) ps_rmin_p = v; } }
+            if (ps_pitch <= 0.0 || (ps_umb_y == 0.0 && ps_umb_x == 0.0)) {
+                fprintf(stderr, "Phase sever: SKIPPED (needs SEAM_UMBILICUS_Y/X "
+                        "+ SEAM_WRAP_PITCH)\n");
+            } else {
+                double *lam = (double *)ARENA_ALLOC(arena,
+                                  (long)(out_nv * sizeof(double)));
+                double *ww = (double *)ARENA_ALLOC(arena,
+                                  (long)(out_nv * sizeof(double)));
+                double *rr = (double *)ARENA_ALLOC(arena,
+                                  (long)(out_nv * sizeof(double)));
+                if (Develop_vertex_energy(arena, out_verts, out_nv, flat_faces,
+                                          n_unique_faces, lam) == 0) {
+                    double rmin = ps_rmin_p * ps_pitch;
+                    size_t ps_maxc = 2500;   /* cluster-size cap: membranes are
+                                              * compact strips; a huge phase-
+                                              * mixing region is real geometry */
+                    { const char *e = getenv("SEAM_PHASE_SEVER_MAXC");
+                      if (e) { long v = atol(e); if (v > 0) ps_maxc = (size_t)v; } }
+                    for (size_t v = 0; v < out_nv; v++) {
+                        double dy = (double)out_verts[v*3+1] - ps_umb_y;
+                        double dx = (double)out_verts[v*3+2] - ps_umb_x;
+                        rr[v] = hypot(dy, dx);
+                        ww[v] = rr[v] / ps_pitch - atan2(dy, dx) / (2.0 * M_PI);
+                    }
+                    /* Candidate faces: own phase span > tol (the crossing strip
+                     * between two surfaces), fully outside the core exemption.
+                     * The span uses the same wrapped-dtheta phase as the gate:
+                     * evaluate all 3 edges, take the max |dw|. */
+                    uint8_t *cand = (uint8_t *)ARENA_CALLOC(arena,
+                                        (long)n_unique_faces, 1L);
+                    for (size_t f = 0; f < n_unique_faces; f++) {
+                        int32_t t[3] = { flat_faces[f*3+0], flat_faces[f*3+1],
+                                         flat_faces[f*3+2] };
+                        if (rr[t[0]] < rmin || rr[t[1]] < rmin || rr[t[2]] < rmin)
+                            continue;
+                        double span = 0.0;
+                        for (int e = 0; e < 3; e++) {
+                            int32_t a = t[e], b = t[(e+1)%3];
+                            double dth = atan2((double)out_verts[a*3+1] - ps_umb_y,
+                                               (double)out_verts[a*3+2] - ps_umb_x)
+                                       - atan2((double)out_verts[b*3+1] - ps_umb_y,
+                                               (double)out_verts[b*3+2] - ps_umb_x);
+                            while (dth >  M_PI) dth -= 2.0*M_PI;
+                            while (dth < -M_PI) dth += 2.0*M_PI;
+                            double dw = fabs((rr[a] - rr[b]) / ps_pitch
+                                             - dth / (2.0 * M_PI));
+                            if (dw > span) span = dw;
+                        }
+                        if (span > ps_tol) cand[f] = 1;
+                    }
+                    /* Cluster candidates via shared verts (union-find over
+                     * faces); cut a cluster iff it is SMALL (<= maxc faces)
+                     * and its vertex set touches high lambda -- the attach
+                     * lines of a junction membrane are non-developable. */
+                    int32_t *fpar = (int32_t *)ARENA_ALLOC(arena,
+                                        (long)(n_unique_faces * sizeof(int32_t)));
+                    for (size_t f = 0; f < n_unique_faces; f++)
+                        fpar[f] = (int32_t)f;
+                    /* map vert -> one candidate face, to union share-a-vert faces */
+                    int32_t *vf = (int32_t *)ARENA_ALLOC(arena,
+                                      (long)(out_nv * sizeof(int32_t)));
+                    for (size_t v = 0; v < out_nv; v++) vf[v] = -1;
+                    for (size_t f = 0; f < n_unique_faces; f++) {
+                        if (!cand[f]) continue;
+                        for (int k = 0; k < 3; k++) {
+                            int32_t v = flat_faces[f*3+k];
+                            if (vf[v] < 0) { vf[v] = (int32_t)f; continue; }
+                            /* union f with vf[v] */
+                            int32_t x = (int32_t)f, y = vf[v];
+                            while (fpar[x] != x) x = fpar[x] = fpar[fpar[x]];
+                            while (fpar[y] != y) y = fpar[y] = fpar[fpar[y]];
+                            if (x != y) fpar[x] = y;
+                        }
+                    }
+                    /* cluster stats */
+                    size_t removed = 0, n_clusters = 0, n_cut_clusters = 0;
+                    /* count sizes + lambda touch per root (two passes) */
+                    int32_t *croot = (int32_t *)ARENA_ALLOC(arena,
+                                         (long)(n_unique_faces * sizeof(int32_t)));
+                    size_t *csize = (size_t *)ARENA_CALLOC(arena,
+                                        (long)n_unique_faces,
+                                        (long)sizeof(size_t));
+                    uint8_t *chot = (uint8_t *)ARENA_CALLOC(arena,
+                                        (long)n_unique_faces, 1L);
+                    for (size_t f = 0; f < n_unique_faces; f++) {
+                        if (!cand[f]) { croot[f] = -1; continue; }
+                        int32_t x = (int32_t)f;
+                        while (fpar[x] != x) x = fpar[x] = fpar[fpar[x]];
+                        croot[f] = x;
+                        if (csize[x]++ == 0) n_clusters++;
+                        for (int k = 0; k < 3; k++)
+                            if (lam[flat_faces[f*3+k]] > ps_lam) chot[x] = 1;
+                    }
+                    size_t w = 0;
+                    for (size_t f = 0; f < n_unique_faces; f++) {
+                        int cutf = 0;
+                        if (croot[f] >= 0) {
+                            size_t sz = csize[croot[f]];
+                            if (sz <= ps_maxc && chot[croot[f]]) cutf = 1;
+                        }
+                        if (cutf) { removed++; continue; }
+                        flat_faces[w*3+0] = flat_faces[f*3+0];
+                        flat_faces[w*3+1] = flat_faces[f*3+1];
+                        flat_faces[w*3+2] = flat_faces[f*3+2];
+                        w++;
+                    }
+                    for (size_t f = 0; f < n_unique_faces; f++)
+                        if (croot[f] >= 0 && csize[croot[f]] <= ps_maxc
+                            && chot[croot[f]] && croot[f] == (int32_t)f)
+                            n_cut_clusters++;
+                    n_unique_faces = w;
+                    fprintf(stderr,
+                        "Phase sever: %zu face(s) in %zu cluster(s) cut "
+                        "(of %zu candidate clusters; span > %.2f turn, "
+                        "cluster <= %zu faces, lambda > %.3f, r > %.0f)\n",
+                        removed, n_cut_clusters, n_clusters, ps_tol,
+                        ps_maxc, ps_lam, rmin);
+                }
             }
         }
 
