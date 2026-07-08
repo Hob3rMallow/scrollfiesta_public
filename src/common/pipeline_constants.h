@@ -104,6 +104,19 @@
  * sub-gate wrap contacts -> need a fusion-line cutter, not a tighter radius
  * (tightening to 1.5 vox only fragments). Env SEAM_WIND_TOL overrides. */
 #define SEAM_WIND_TOL_DEFAULT_TURNS 0.25
+
+/* Winding-gate HARD cap, in turns: reject a seam bridge whose phase gap
+ * exceeds this REGARDLESS of chord direction. The radial-dominance conjunct
+ * exempts lateral chords so grazing-seam closures can weld, but that lane
+ * also re-admitted lateral CROSS-LAYER stitches: at a delaminated sheet
+ * (same sheet, two predicted surfaces ~half a pitch apart -- observed
+ * |dw| = 0.50 at the z4608/y3584/x3072 corner, "red-to-pink puddle") the
+ * bridge laid a flat membrane between the two layers. Same-wrap grazing
+ * offsets stay under ~0.3 turn (seam disagreement <= ~3 vox radial; in-sheet
+ * motion in a grazing zone is radial-free), folds sit at ~0, so 0.4 turn
+ * separates every legitimate closure from the cross-layer/next-wrap step.
+ * Env SEAM_WIND_HARD_TOL overrides. */
+#define SEAM_WIND_HARD_TOL_DEFAULT_TURNS 0.40
 #define MLS_RESPLIT_ASSIGN_MARGIN_VOX 1.5f
                                      /* 2026-06-03: re-LOP point->piece assignment
                                       * margin. A parent original point is assigned

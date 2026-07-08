@@ -143,9 +143,14 @@ static long   g_dbg_wall = 0;
  * reconstruct never sets it). See SEAM_UMBILICUS_{Y,X} / SEAM_WRAP_PITCH / SEAM_WIND_TOL.
  * Default tolerance mirrors SEAM_WIND_TOL_DEFAULT_TURNS in pipeline_constants.h:
  * 0.25 turn = ~2.4 vox radial at PHerc0139's ~9.5 vox true pitch, the 2026-07-08
- * A/B operating point (pin ON: 27 handles ungated -> 4-5; looser 3.5 vox -> 9). */
+ * A/B operating point (pin ON: 27 handles ungated -> 4-5; looser 3.5 vox -> 9).
+ * The HARD cap (mirrors SEAM_WIND_HARD_TOL_DEFAULT_TURNS) applies regardless of
+ * chord direction: the radial-dominance exemption below re-admitted lateral
+ * CROSS-LAYER stitches between delaminated surfaces ~half a pitch apart. */
 #define SEAM_WIND_TOL_DEFAULT_TURNS 0.25
+#define SEAM_WIND_HARD_TOL_DEFAULT_TURNS 0.40
 static double g_wind_tol   = 0.0;   /* tolerance in TURNS (0 = off) */
+static double g_wind_hard  = 0.0;   /* unconditional cap in TURNS (0 = off) */
 static double g_wrap_pitch = 0.0;   /* radius per turn (wrap spacing, vox) */
 static double g_umb_y = 0.0, g_umb_x = 0.0;
 static long   g_dbg_wind = 0;
@@ -1028,10 +1033,17 @@ static int bpa_try_candidate(const Vec3 *V, EdgeStore *es, uint8_t *used,
         while (dth < -M_PI) dth += 2.0*M_PI;
         double dw = dr/g_wrap_pitch - dth/(2.0*M_PI);
         if (fabs(dw) > g_wind_tol) {
+            /* Radial-dominant chord -> cross-wrap hop. Lateral chords are
+             * exempt (grazing-seam closures) UNLESS the phase gap exceeds the
+             * hard cap: past ~0.4 turn the far side is a different SURFACE
+             * (delaminated layer / next wrap), whatever the chord direction. */
             double cy = vy - my, cx = vx - mx;
             double cz = (double)V[v_new].z - mz;
             double chord2 = cy*cy + cx*cx + cz*cz;
-            if (dr*dr > 0.5*chord2) { abort_pivot = 1; g_dbg_wind++; }
+            if (dr*dr > 0.5*chord2 ||
+                (g_wind_hard > 0.0 && fabs(dw) > g_wind_hard)) {
+                abort_pivot = 1; g_dbg_wind++;
+            }
         }
     }
     if (abort_pivot) return 0;
@@ -1376,7 +1388,7 @@ int BallPivot_reconstruct(Arena_T arena,
     { const char *e = getenv("BPA_WALL_MIN_EDGE_VOX");
       if (e) { double m = atof(e); if (m > 0.0) g_wall_min_edge = m; } }
     g_dbg_wall = 0;
-    g_wind_tol = 0.0;   /* winding gate is seam-bridge-only */
+    g_wind_tol = 0.0; g_wind_hard = 0.0;   /* winding gate is seam-bridge-only */
     g_relax_case2 = (getenv("BPA_STRICT_CASE2") == NULL);
     g_ko_empty = 0; g_ko_normal = 0;
     g_dead_gap = g_dead_empty = g_dead_normal = g_dead_mixed = g_dead_theta = 0;
@@ -1549,15 +1561,19 @@ int BallPivot_bridge(Arena_T arena,
      * when the umbilicus (SEAM_UMBILICUS_{Y,X}) AND the wrap pitch (SEAM_WRAP_PITCH,
      * radius per turn) are supplied; SEAM_WIND_TOL overrides the default tolerance
      * (SEAM_WIND_TOL_DEFAULT_TURNS = 0.25 turn). */
-    g_wind_tol = 0.0; g_wrap_pitch = 0.0; g_umb_y = 0.0; g_umb_x = 0.0; g_dbg_wind = 0;
+    g_wind_tol = 0.0; g_wind_hard = 0.0;
+    g_wrap_pitch = 0.0; g_umb_y = 0.0; g_umb_x = 0.0; g_dbg_wind = 0;
     { const char *e = getenv("SEAM_UMBILICUS_Y"); if (e) g_umb_y = atof(e); }
     { const char *e = getenv("SEAM_UMBILICUS_X"); if (e) g_umb_x = atof(e); }
     { const char *e = getenv("SEAM_WRAP_PITCH"); if (e) { double v = atof(e); if (v > 0) g_wrap_pitch = v; } }
     if (g_wrap_pitch > 0.0 && (g_umb_y != 0.0 || g_umb_x != 0.0)) {
         g_wind_tol = SEAM_WIND_TOL_DEFAULT_TURNS;
+        g_wind_hard = SEAM_WIND_HARD_TOL_DEFAULT_TURNS;
         { const char *e = getenv("SEAM_WIND_TOL"); if (e) { double v = atof(e); if (v > 0) g_wind_tol = v; } }
-        fprintf(stderr, "  [bridge] winding gate ON: umbilicus=(y%.1f,x%.1f) pitch=%.1f vox tol=%.2f turn\n",
-                g_umb_y, g_umb_x, g_wrap_pitch, g_wind_tol);
+        { const char *e = getenv("SEAM_WIND_HARD_TOL"); if (e) { double v = atof(e); if (v > 0) g_wind_hard = v; } }
+        fprintf(stderr, "  [bridge] winding gate ON: umbilicus=(y%.1f,x%.1f) pitch=%.1f vox "
+                "tol=%.2f turn (hard cap %.2f)\n",
+                g_umb_y, g_umb_x, g_wrap_pitch, g_wind_tol, g_wind_hard);
     }
 
     Grid *g = grid_build(V, n, 2.0*rho);
