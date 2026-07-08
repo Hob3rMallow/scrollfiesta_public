@@ -5,14 +5,17 @@
  *   1) TIFF:       ./cube_mesh input.tif output.tif [--dump-obj dir] [--no-qem]
  *                                                    [--no-timeout] [--halo N]
  *   2) stdin-raw:  ./cube_mesh --stdin-raw <p_size> <oz> <oy> <ox>
- *                              [--halo N] [--dump-obj dir] [--no-qem] [--no-timeout]
- *      Reads p_size^3 uint8 bytes (C order z,y,x) from stdin — a padded cube
+ *                              --dump-obj dir [--halo N] [--no-qem] [--no-timeout]
+ *      Reads p_size^3 uint8 bytes (C order z,y,x) from stdin -- a padded cube
  *      whose index (0,0,0) is world voxel (oz-halo, oy-halo, ox-halo), exactly
  *      like HaloLoader_load. Lets a caller stream a cube straight from a remote
  *      zarr with no TIFF on disk. (oz,oy,ox) is the owned cube origin, so
- *      p_size must equal 128 + 2*halo.
+ *      p_size must equal 128 + 2*halo. --dump-obj is required: the per-stage
+ *      dumps are this mode's only output.
  *
  * Body of the per-cube pipeline lives in src/pipeline/pipeline_cube.c.
+ * This file is just: arg parsing -> single pipeline_process_cube() call
+ * -> exit status. Driven per-cube by the grid_pipeline orchestrator.
  *
  * --dump-obj dir:  write OBJ meshes under dir/<cube_id>/<cube_id>_<stage>/
  * --halo N:        load N voxels of safety boundary from neighbor cubes
@@ -53,8 +56,8 @@ static void usage(const char *argv0)
     fprintf(stderr,
         "Usage: %s input.tif output.tif [--dump-obj dir] [--no-qem] "
         "[--no-timeout] [--halo N]\n"
-        "   or: %s --stdin-raw <p_size> <oz> <oy> <ox> [--halo N] "
-        "[--dump-obj dir] [--no-qem] [--no-timeout]\n",
+        "   or: %s --stdin-raw <p_size> <oz> <oy> <ox> --dump-obj dir "
+        "[--halo N] [--no-qem] [--no-timeout]\n",
         argv0, argv0);
 }
 
@@ -69,7 +72,7 @@ int main(int argc, char *argv[])
     int no_timeout  = 0;
     int halo_voxels = 0;
     int p_size = 0, oz = 0, oy = 0, ox = 0;
-    int opt_start;
+    int opt_start = 0;
 
     if (stdin_raw) {
         if (argc < 6) { usage(argv[0]); return 1; }
@@ -114,6 +117,12 @@ int main(int argc, char *argv[])
                     p_size, 128 + 2 * halo_voxels);
             return 1;
         }
+        if (!dump_dir) {
+            /* Stage dumps are stdin mode's only output; a run without them
+             * would leave nothing to inspect (house rule: always dump). */
+            fprintf(stderr, "ERROR: --stdin-raw requires --dump-obj\n");
+            return 1;
+        }
         if (ves_stdin_set_binary() != 0) {
             fprintf(stderr, "ERROR: cannot set stdin to binary mode\n");
             return 1;
@@ -124,6 +133,27 @@ int main(int argc, char *argv[])
                     output_path);
             return 1;
         }
+    }
+
+    /* ALWAYS dump per-stage OBJs. A run with no --dump-obj would otherwise leave
+     * no geometry to inspect (the output-path arg alone writes nothing) -- so if
+     * --dump-obj was not given, default the dump dir to the output file's own
+     * directory. Every cube_mesh run therefore emits its stage OBJs under
+     * <out_dir>/<cube_id>/<cube_id>_<stage>/. grid_pipeline passes --dump-obj
+     * explicitly, so this only changes bare cube_mesh invocations. (stdin-raw
+     * mode has no output path to derive from; it requires --dump-obj above.) */
+    char default_dump[1024] = {0};
+    if (!dump_dir) {
+        strncpy(default_dump, output_path, sizeof(default_dump) - 1);
+        char *ls = NULL;
+        for (char *p = default_dump; *p; p++)
+            if (*p == '/' || *p == '\\') ls = p;
+        if (ls) *ls = '\0';
+        else strcpy(default_dump, ".");
+        dump_dir = default_dump;
+        fprintf(stderr,
+            "  note: no --dump-obj given; defaulting per-stage dumps to %s\n",
+            dump_dir);
     }
 
     int n_threads = get_thread_count();
@@ -169,7 +199,7 @@ int main(int argc, char *argv[])
         if (stdin_raw) {
             size_t n = (size_t)p_size * (size_t)p_size * (size_t)p_size;
             raw_buf = (uint8_t *)ARENA_CALLOC(arena, (long)n, 1L);
-            size_t got = 0, r;
+            size_t got = 0, r = 0;
             while (got < n && (r = fread(raw_buf + got, 1, n - got, stdin)) > 0)
                 got += r;
             if (got != n) {

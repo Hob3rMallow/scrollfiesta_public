@@ -58,6 +58,7 @@ typedef struct {
     double         t_qem;
     double         t_trim;
     double         t_dump;
+    size_t         n_bad_sheets;  /* components flagged by the developability gate */
 } PipelineOutput;
 
 int pipeline_process_cube(Arena_T arena,

@@ -43,11 +43,24 @@
 #include "../remesh/orient_weld.h"
 #include "../remesh/weld_cleanup.h"
 #include "../holefill/hole_fill.h"
+#include "../topology/developability.h"
 
 #define CUBE_SIZE_VOX 128.0f    /* Cube boundary planes are integer multiples */
 #define SEAM_AXIS_EPS 0.6f      /* vert is "on" a cube-boundary plane if any
                                  * coord is within this distance of an
                                  * integer multiple of CUBE_SIZE_VOX */
+
+/* 1 if any coordinate is within `zone` vox of a cube-boundary plane (a multiple
+ * of CUBE_SIZE_VOX) -- i.e. the vertex sits in the cross-cube seam/weld zone, as
+ * opposed to a per-cube interior. Used by the lambda gate to target welds. */
+static int near_cube_boundary(const float *v, float zone)
+{
+    for (int k = 0; k < 3; k++) {
+        float m = v[k] - CUBE_SIZE_VOX * floorf(v[k] / CUBE_SIZE_VOX);
+        if (m < zone || m > CUBE_SIZE_VOX - zone) return 1;
+    }
+    return 0;
+}
 
 /* "Nice" palette: 16 saturated but distinguishable hues (avoids mud and
  * pure green which is reserved for seam lines). Hand-picked rather than
@@ -1386,6 +1399,44 @@ int main(int argc, char **argv)
                 " -> %zu faces, %zu verts\n", f_fl, f_ad, f_sk, pcm.nf, pcm.nv);
             flat_faces = pcm.faces; n_unique_faces = pcm.nf;
             out_verts = pcm.verts; out_nv = pcm.nv;
+        }
+
+        /* Lambda gate -- "don't weld if it produces high lambda". The seam bridge
+         * can fuse two DIFFERENT wraps where they pass within ~rho at the core; the
+         * bridge faces then carry high Crane energy lambda (a crease a single
+         * developable wrap never makes). Sever them: drop faces touching a high-
+         * lambda vert that sits in the cross-cube SEAM zone, reopening the wrong
+         * merger. A correct same-wrap weld is developable (lambda ~ 0) and is kept.
+         * OFF by default (2026-07-08 A/B: weak on real mergers -- cut 2 of 9 handles
+         * as an add-on, left 7 of 8 alone -- and a same-wrap FOLD crossing a seam
+         * also carries high lambda, so it risks intra-sheet splits, the worse
+         * failure). Enable with SEAM_LAMBDA_GATE=1 for diagnostics/experiments;
+         * SEAM_LAMBDA_MAX / SEAM_LAMBDA_ZONE tune. */
+        if (getenv("SEAM_LAMBDA_GATE")) {
+            double lmax = 0.05f; float zone = 4.0f;
+            { const char *e = getenv("SEAM_LAMBDA_MAX");  if (e) { double v=atof(e); if (v>0) lmax=v; } }
+            { const char *e = getenv("SEAM_LAMBDA_ZONE"); if (e) { double v=atof(e); if (v>0) zone=(float)v; } }
+            double *lam = (double *)ARENA_ALLOC(arena, (long)(out_nv*sizeof(double)));
+            if (Develop_vertex_energy(arena, out_verts, out_nv, flat_faces,
+                                      n_unique_faces, lam) == 0) {
+                unsigned char *cut = (unsigned char *)ARENA_CALLOC(arena, (long)out_nv, 1L);
+                size_t ncut = 0;
+                for (size_t v = 0; v < out_nv; v++)
+                    if (lam[v] > lmax && near_cube_boundary(&out_verts[v*3], zone)) {
+                        cut[v] = 1; ncut++;
+                    }
+                size_t w = 0, removed = 0;
+                for (size_t f = 0; f < n_unique_faces; f++) {
+                    int32_t a = flat_faces[f*3+0], b = flat_faces[f*3+1], c = flat_faces[f*3+2];
+                    if (cut[a] || cut[b] || cut[c]) { removed++; continue; }
+                    flat_faces[w*3+0]=a; flat_faces[w*3+1]=b; flat_faces[w*3+2]=c; w++;
+                }
+                n_unique_faces = w;
+                fprintf(stderr,
+                    "Lambda gate: %zu high-lambda seam vert(s) -> %zu weld face(s) "
+                    "severed (lambda > %.3f within %.1f vox of a seam)\n",
+                    ncut, removed, lmax, (double)zone);
+            }
         }
 
         /* Final manifold guard. The strict seam bridge leaves only a handful of

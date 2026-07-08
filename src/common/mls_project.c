@@ -4,6 +4,7 @@
 
 #include <assert.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -198,6 +199,27 @@ void MLS_project_verts(Arena_T arena,
     assert(verts);
     assert(out_verts);
     assert(radius_vox > 0.0f);
+
+    /* Experiment knob (MLS_RADIUS_VOX): override the LOP/MLS kernel radius at
+     * runtime so a smaller radius can be swept without rebuilding. At a tight
+     * scroll fold two wraps sit ~1-2 vox apart; the default R=12 spans both and
+     * fuses them. Default = the caller's compiled radius. */
+    {
+        const char *r_env = getenv("MLS_RADIUS_VOX");
+        if (r_env && *r_env) {
+            double v = atof(r_env);
+            if (v > 0.0) {
+                radius_vox = (float)v;
+                static int mls_r_logged = 0;
+                if (!mls_r_logged) {
+                    mls_r_logged = 1;
+                    fprintf(stderr,
+                        "[MLS] kernel radius override -> %.2f vox (MLS_RADIUS_VOX)\n",
+                        (double)radius_vox);
+                }
+            }
+        }
+    }
 
     if (nv == 0) return;
 

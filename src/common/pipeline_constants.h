@@ -82,6 +82,28 @@
                                       * smooth residual through-thickness "lumps" left on
                                       * post-split components (sheets 1/2 of
                                       * z04736_y04224_x01920 still bumpy at 10). */
+
+/* Seam-band pin (cross-cube convergence). Extract MLS-projects owned verts within
+ * MLS_PROJECT_RADIUS_VOX of the cube boundary with HALO (two-sided) support, so
+ * adjacent cubes agree on the seam geometry. The post-split re-LOP passes
+ * (resurface_own, remesh_pieces) re-MLS the seam WITHOUT the halo and drift it
+ * independently per cube, breaking that agreement (the welded "offset" / high-
+ * lambda good-join). Pin verts within this band of the owned-box boundary at their
+ * extract positions through every re-LOP. Env VES_SEAM_PIN_OFF disables;
+ * SEAM_PIN_BAND_VOX overrides the width. */
+#define SEAM_PIN_BAND_VOX  MLS_PROJECT_RADIUS_VOX
+
+/* Winding-gate default tolerance, in TURNS about the umbilicus. The seam-bridge
+ * winding gate rejects a bridge whose winding phase w = r/pitch - theta/2pi
+ * differs by more than this between front edge and candidate. At seam-bridge
+ * scale (1-3 vox chords) this is effectively a radial gate of tol*pitch vox.
+ * 2026-07-08 A/B on the core-containing 4x5x5 (true pitch ~9.5 vox): with the
+ * seam pin ON, ungated = 27 cross-wrap handles; effective 2.0-2.5 vox (this
+ * tol at the swept pitches) = 4-5 handles, +0.3-1.3k unpaired; looser 3.5 vox
+ * = 9. On non-core dumps 2.0 vox zeroes all handles. Residual core handles are
+ * sub-gate wrap contacts -> need a fusion-line cutter, not a tighter radius
+ * (tightening to 1.5 vox only fragments). Env SEAM_WIND_TOL overrides. */
+#define SEAM_WIND_TOL_DEFAULT_TURNS 0.25
 #define MLS_RESPLIT_ASSIGN_MARGIN_VOX 1.5f
                                      /* 2026-06-03: re-LOP point->piece assignment
                                       * margin. A parent original point is assigned
@@ -124,6 +146,23 @@
  * band). Per-cube quality is unchanged; downstream PinholeFill/HoleFill close
  * the boundary loops either way. */
 #define BPA_RHO_VOX             1.2f
+
+/* Step 0 — BPA wall-guard (anti-fusion). Ball-Pivoting at rho=1.2 with no
+ * inter-wrap clearance can bridge two papyrus wraps that sit only ~2-3 vox apart,
+ * fusing a stack of near-parallel sheets into ONE component (the downstream
+ * stacked-wrap "monster"). A fusion bridge is a "wall" triangle: it stands nearly
+ * PERPENDICULAR to the local surface (MLS) normal -- |dot(face_n, mean_vertex_n)|
+ * ~ 0 -- and reaches across the gap with a LONG edge. A true surface triangle has
+ * its face normal ~PARALLEL to the vertex normals (|dot| ~ 1) and short edges.
+ * Reject a candidate that is BOTH steep (|dot| < COS) AND long (spanning edge >
+ * MIN_EDGE); the long-edge conjunct spares sharp folds/rims (short edges) so this
+ * fires only on through-thickness bridges. Distinct from the face-coherence guard
+ * (which compares to a neighbour FACE and is fooled by a tilted neighbour on a
+ * curved stack). Env: BPA_WALL_GUARD_COS / BPA_WALL_MIN_EDGE_VOX sweep,
+ * BPA_NO_WALL_GUARD disables; disabled in the seam bridge (it legitimately spans
+ * gaps). The downstream depth-peel splitter separates any stack this misses. */
+#define BPA_WALL_GUARD_COS      0.34f   /* reject faces tilted > ~70 deg from the surface normal */
+#define BPA_WALL_MIN_EDGE_VOX   2.0f    /* ...but only if the spanning edge is at least this long (vox) */
 
 /* Step 0 — pre-BPA owned-region cloud trim (halo mode). The READ halo + LOP give
  * near-boundary owned verts full two-sided support (denoised, cross-cube-stable
@@ -206,6 +245,60 @@
                                          * metric mode (~1 cell per UV unit). */
 #define FLATTEN_MAX_GRID_DIM     8192   /* cap on either tifxyz grid dimension */
 #define FLATTEN_SPIRAL_MIN_PTS     64   /* min component verts to trust a spiral fit */
+
+/* Step 1c -- Developability cut (Stein/Grinspun/Crane 2018, sec 4.4). The FIRST
+ * splitter: compute per-vertex Crane energy lambda_v = lambda_min(A_v) on the raw
+ * BPA mesh (no optimization), mark seam vertices (lambda > EPS), remove the seam
+ * band (+ geometric dilation) and keep the connected pieces -- a cut THROUGH the
+ * non-developable ridge, i.e. exactly where the papyrus stops being one
+ * developable sheet. A clean wrap has no spanning seam, so nothing disconnects
+ * (self-gates: NO intra-sheet split). The piece set is accepted only if it is
+ * measurably MORE developable than the parent (lambda-energy gate); else the
+ * component falls through to bridge-cut/overlap unchanged. All env-overridable
+ * (read in pipeline_cube.c) so they sweep without a rebuild; calibrate EPS on a
+ * known merged-wrap vs clean cube. See src/split/dev_cut.c. */
+#define DEV_CUT_EPS            0.05  /* lambda_min above which an interior vertex is
+                                      * a seam (rad-weighted, scale/tessellation-
+                                      * invariant). PROVISIONAL -- calibrate in the
+                                      * bimodal gap between body and seam. Env:
+                                      * DEV_CUT_EPS. */
+#define DEV_CUT_GAP_DEPTH     3.5f   /* exclusion zone around seam verts (voxels),
+                                      * half of CUT_GAP_DEPTH so the dev-cut barrier
+                                      * is narrower than the bridge cut. Env:
+                                      * DEV_CUT_GAP_DEPTH. */
+#define DEV_CUT_MIN_COMP_VERTS 200   /* a survivor piece needs >= this many verts to
+                                      * count as a real sheet (== RESPLIT_MIN_COMP_
+                                      * VERTS). Smaller crumbs are ignored. */
+#define DEV_CUT_GATE_MARGIN   0.02   /* accept the split only if every piece's
+                                      * non-developable interior fraction is at
+                                      * least this much BELOW the parent's. Env:
+                                      * DEV_CUT_GATE_MARGIN. */
+#define DEV_CUT_GATE_ABS_CEIL 0.05   /* ...AND below this absolute fraction, so a
+                                      * still-tangled "piece" can't be accepted just
+                                      * because it is marginally better than a very
+                                      * bad parent. Env: DEV_CUT_GATE_ABS_CEIL. */
+
+/* Step 1b-peel — stacked-wrap separator (src/split/depth_peel.c). BPA (rho=1.2,
+ * no inter-wrap clearance) can fuse papyrus wraps ~2-3 vox apart into ONE
+ * component; depth_peel projects verts onto the component PCA normal and cuts mesh
+ * edges whose endpoints JUMP in depth by more than MIN_GAP -- the inter-wrap bridge
+ * edges -- then returns the connected layers. A single sheet (however folded) has
+ * only short edges, so no large jump: it self-gates to one piece (the "NO
+ * intra-sheet split" guarantee). Runs ahead of dev-cut/bridge/overlap; whatever it
+ * can't cleanly separate (a strongly curved stack) falls through to overlap-sep.
+ * Env: DEPTH_PEEL_MIN_GAP_VOX / DEPTH_PEEL_GAP_DEPTH; VES_DEPTHPEEL_OFF disables. */
+#define DEPTH_PEEL_MIN_GAP_VOX  1.5  /* depth jump (vox) across a triangle edge that
+                                      * marks an inter-wrap bridge: above the intra-
+                                      * sheet edge length (~0.6-1.0 vox), below the
+                                      * 2-3 vox inter-wrap spacing. THE key knob;
+                                      * calibrate on a stacked vs a clean cube. */
+#define DEPTH_PEEL_GAP_DEPTH    1.0f /* exclusion zone (vox) dilated around the cut
+                                      * (KD-tree, like CUT_GAP_DEPTH) so a slightly
+                                      * ragged bridge band still severs cleanly.
+                                      * Env: DEPTH_PEEL_GAP_DEPTH. */
+#define DEPTH_PEEL_MIN_COMP_VERTS 200 /* a peeled layer needs >= this many verts to be
+                                      * kept: a fold flap is small and dropped, a real
+                                      * wrap is large (== RESPLIT_MIN_COMP_VERTS). */
 
 /* Step 2 */
 #define SEED_RING             20    /* BFS expansion hops for source/sink */

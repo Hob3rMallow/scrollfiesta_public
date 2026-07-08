@@ -51,6 +51,17 @@
  * disabled in the seam bridge (which legitimately spans a gap). */
 #define BPA_FACE_COH_COS 0.5
 
+/* Wall-guard thresholds (anti-fusion). A through-thickness "wall" bridge between
+ * two stacked near-parallel wraps has a face normal nearly PERPENDICULAR to the
+ * local MLS surface normal (|dot| < COS; a true surface triangle has |dot| ~ 1)
+ * AND a long edge reaching across the gap (> MIN_EDGE vox). The long-edge conjunct
+ * spares sharp folds/rims (short edges) so this fires only on inter-wrap bridges.
+ * Mirrors pipeline_constants.h (ball_pivot.c keeps local copies, like the two
+ * guards above). Tunable via BPA_WALL_GUARD_COS / BPA_WALL_MIN_EDGE_VOX; disabled
+ * via BPA_NO_WALL_GUARD and in the seam bridge. */
+#define BPA_WALL_GUARD_COS 0.34
+#define BPA_WALL_MIN_EDGE_VOX 2.0
+
 /* Debug-only per-pivot trace (set from BPA_TRACE in BallPivot_bridge). */
 static int g_bpa_trace = 0;
 /* Diagnostic (BPA_NO_NORMAL_GATE): bypass the per-vertex MLS normal gate to test
@@ -114,6 +125,30 @@ static long   g_dbg_antiparallel = 0;
  * spans a gap with a divergent face). g_dbg_facecoh tallies its rejections. */
 static double g_face_coh_cos = BPA_FACE_COH_COS;
 static long   g_dbg_facecoh = 0;
+/* Wall-guard (see BPA_WALL_GUARD_COS). Reject a candidate triangle that stands
+ * ~perpendicular to the local MLS surface normal AND spans a long edge -- a
+ * through-thickness inter-wrap bridge fusing two stacked wraps. Set COS <= -1.0 to
+ * disable (the seam bridge does). g_dbg_wall tallies its rejections. */
+static double g_wall_guard_cos = BPA_WALL_GUARD_COS;
+static double g_wall_min_edge  = BPA_WALL_MIN_EDGE_VOX;
+static long   g_dbg_wall = 0;
+/* Winding gate (seam bridge only): reject a bridge connecting two DIFFERENT wraps,
+ * by WINDING about the scroll umbilicus -- NOT raw radius. Radius alone fails: it
+ * drifts tangentially along a wrap (the spiral) and across a seam, so it cannot
+ * separate "same wrap at a different angle" from "the next wrap". The winding phase
+ *   w = r/pitch - theta/(2pi)   (r,theta about the umbilicus in the y-x plane)
+ * is INVARIANT to tangential motion (dr and dtheta track together via the spiral)
+ * and steps by ~1 between adjacent wraps. Reject when |dw| between the front edge
+ * and the candidate exceeds g_wind_tol turns. g_wind_tol <= 0 disables it (per-cube
+ * reconstruct never sets it). See SEAM_UMBILICUS_{Y,X} / SEAM_WRAP_PITCH / SEAM_WIND_TOL.
+ * Default tolerance mirrors SEAM_WIND_TOL_DEFAULT_TURNS in pipeline_constants.h:
+ * 0.25 turn = ~2.4 vox radial at PHerc0139's ~9.5 vox true pitch, the 2026-07-08
+ * A/B operating point (pin ON: 27 handles ungated -> 4-5; looser 3.5 vox -> 9). */
+#define SEAM_WIND_TOL_DEFAULT_TURNS 0.25
+static double g_wind_tol   = 0.0;   /* tolerance in TURNS (0 = off) */
+static double g_wrap_pitch = 0.0;   /* radius per turn (wrap spacing, vox) */
+static double g_umb_y = 0.0, g_umb_x = 0.0;
+static long   g_dbg_wind = 0;
 /* Relax the Bernardini case-2 vertex-manifold guard in per-cube growth: allow a
  * pivot onto an on-front vertex even when the new triangle glues to neither of
  * its incident edges. This is the legal BPA "join" that splits the front into two
@@ -182,6 +217,39 @@ static int glue_folds_back(const Vec3 *V, int sa, int sb, int new_apex, int old_
     if (!tri_unit_normal_i(V, sa, sb, new_apex, nn)) return 0;
     if (!tri_unit_normal_i(V, sa, sb, old_apex, no)) return 0;
     return v_dot(nn, no) > BRIDGE_FOLD_COS;
+}
+
+/* 1 iff the candidate triangle (t, v_new, h) is a through-thickness "wall" bridge
+ * fusing two stacked near-parallel wraps: its face normal stands nearly
+ * PERPENDICULAR to the mean per-vertex MLS surface normal (|dot| < cos_thr -- a
+ * true surface triangle has |dot| ~ 1) AND it reaches across the gap with a long
+ * edge to v_new (> min_edge). Comparing to the SURFACE normal (not a neighbour
+ * face, as face-coherence does) fires even on a curved/spiraling stack; the
+ * long-edge conjunct spares sharp folds/rims (short edges). N may be NULL (then
+ * never a wall -- a no-op). The mean normal vanishes for an ANTI-parallel touch,
+ * which is the anti-parallel guard's job, so a degenerate mean returns 0. */
+static int glue_is_wall(const Vec3 *V, const Vec3 *N, int t, int h, int v_new,
+                        double cos_thr, double min_edge)
+{
+    if (!N) return 0;
+    double n_new[3];
+    if (!tri_unit_normal_i(V, t, v_new, h, n_new)) return 0;
+    double mn[3], nh[3], nvn[3];
+    vec3_to_d(mn,  &N[t]);
+    vec3_to_d(nh,  &N[h]);
+    vec3_to_d(nvn, &N[v_new]);
+    mn[0] += nh[0] + nvn[0];
+    mn[1] += nh[1] + nvn[1];
+    mn[2] += nh[2] + nvn[2];
+    double ml = v_len(mn);
+    if (ml < 1e-9) return 0;            /* anti-parallel mean -> anti-parallel guard */
+    mn[0] /= ml; mn[1] /= ml; mn[2] /= ml;
+    double pt[3], ph[3], pv[3], e1[3], e2[3];
+    vec3_to_d(pt, &V[t]); vec3_to_d(ph, &V[h]); vec3_to_d(pv, &V[v_new]);
+    v_sub(e1, pv, pt); v_sub(e2, pv, ph);
+    double span = v_len(e1), s2 = v_len(e2);
+    if (s2 > span) span = s2;
+    return (fabs(v_dot(n_new, mn)) < cos_thr) && (span > min_edge);
 }
 
 typedef struct {
@@ -791,7 +859,8 @@ typedef struct {
      * dbg_all_cand_failed = edges where every candidate was rejected (true
      * boundary). */
     int dbg_no_pivot, dbg_bowtie, dbg_orient, dbg_3fan, dbg_bowtie_ok, dbg_fold;
-    int dbg_retry_saved, dbg_all_cand_failed, dbg_facecoh;
+    int dbg_retry_saved, dbg_all_cand_failed, dbg_facecoh, dbg_wall;
+    const Vec3 *normals;   /* per-vertex MLS normals, for the wall-guard (may be NULL) */
 } BpaBuild;
 
 static void bpa_build_init(BpaBuild *b, int n)
@@ -805,6 +874,7 @@ static void bpa_build_init(BpaBuild *b, int n)
     b->dbg_no_pivot = b->dbg_bowtie = b->dbg_orient = b->dbg_3fan = 0;
     b->dbg_bowtie_ok = 0; b->dbg_fold = 0;
     b->dbg_retry_saved = 0; b->dbg_all_cand_failed = 0; b->dbg_facecoh = 0;
+    b->dbg_wall = 0; b->normals = NULL;
 }
 static void bpa_build_free(BpaBuild *b) { free(b->F); free(b->queue); }
 
@@ -921,6 +991,32 @@ static int bpa_try_candidate(const Vec3 *V, EdgeStore *es, uint8_t *used,
             v_dot(n_new, n_par) < g_face_coh_cos) {
             abort_pivot = 1; b->dbg_facecoh++;
         }
+    }
+    /* Wall-guard: reject a through-thickness "wall" bridge between two stacked
+     * near-parallel wraps (see glue_is_wall / BPA_WALL_GUARD_COS). Compares the new
+     * face normal to the SURFACE (MLS) normal -- not a neighbour face like
+     * face-coherence -- so it fires even on a curved/spiraling stack; the long-edge
+     * conjunct spares sharp folds/rims. Disabled (cos <= -1) in the seam bridge. */
+    if (!abort_pivot && g_wall_guard_cos > -1.0 &&
+        glue_is_wall(V, b->normals, t, h, v_new, g_wall_guard_cos, g_wall_min_edge)) {
+        abort_pivot = 1; b->dbg_wall++;
+    }
+    /* Winding gate (seam bridge): glue the front edge (t,h) to the candidate v_new
+     * only if they are the SAME wrap -- same winding about the umbilicus. The phase
+     * w = r/pitch - theta/(2pi) is tangentially invariant, so a same-wrap weld (even
+     * offset, even sharply curved, even joining verts at different y along the seam)
+     * has |dw| ~ 0, while a next-wrap merger steps |dw| ~ 1. */
+    if (!abort_pivot && g_wind_tol > 0.0 && g_wrap_pitch > 0.0) {
+        double my = 0.5*((double)V[t].y + (double)V[h].y) - g_umb_y;
+        double mx = 0.5*((double)V[t].x + (double)V[h].x) - g_umb_x;
+        double vy = (double)V[v_new].y - g_umb_y;
+        double vx = (double)V[v_new].x - g_umb_x;
+        double dr  = hypot(vy, vx) - hypot(my, mx);
+        double dth = atan2(vy, vx) - atan2(my, mx);
+        while (dth >  M_PI) dth -= 2.0*M_PI;     /* shortest angular difference */
+        while (dth < -M_PI) dth += 2.0*M_PI;
+        double dw = dr/g_wrap_pitch - dth/(2.0*M_PI);
+        if (fabs(dw) > g_wind_tol) { abort_pivot = 1; g_dbg_wind++; }
     }
     if (abort_pivot) return 0;
     /* Accept. */
@@ -1255,6 +1351,16 @@ int BallPivot_reconstruct(Arena_T arena,
     { const char *e = getenv("BPA_FACE_COH_COS");
       if (e) { double c = atof(e); if (c >= -1.0 && c <= 1.0) g_face_coh_cos = c; } }
     g_dbg_facecoh = 0;
+    /* Wall-guard (anti-fusion): on by default; BPA_NO_WALL_GUARD disables;
+     * BPA_WALL_GUARD_COS / BPA_WALL_MIN_EDGE_VOX sweep the thresholds. */
+    g_wall_guard_cos = (getenv("BPA_NO_WALL_GUARD") != NULL) ? -2.0 : BPA_WALL_GUARD_COS;
+    { const char *e = getenv("BPA_WALL_GUARD_COS");
+      if (e) { double c = atof(e); if (c >= -1.0 && c <= 1.0) g_wall_guard_cos = c; } }
+    g_wall_min_edge = BPA_WALL_MIN_EDGE_VOX;
+    { const char *e = getenv("BPA_WALL_MIN_EDGE_VOX");
+      if (e) { double m = atof(e); if (m > 0.0) g_wall_min_edge = m; } }
+    g_dbg_wall = 0;
+    g_wind_tol = 0.0;   /* winding gate is seam-bridge-only */
     g_relax_case2 = (getenv("BPA_STRICT_CASE2") == NULL);
     g_ko_empty = 0; g_ko_normal = 0;
     g_dead_gap = g_dead_empty = g_dead_normal = g_dead_mixed = g_dead_theta = 0;
@@ -1274,6 +1380,7 @@ int BallPivot_reconstruct(Arena_T arena,
     uint8_t *used = (uint8_t *)calloc((size_t)n, 1);
     int *vfront = (int *)calloc((size_t)n, sizeof(int));
     BpaBuild b; bpa_build_init(&b, n);
+    b.normals = N;   /* enable the wall-guard (per-vertex MLS normals) */
 
     int seed_scan = 0;
     while (seed_scan < n) {
@@ -1339,12 +1446,12 @@ int BallPivot_reconstruct(Arena_T arena,
         }
         fprintf(stderr, "[bpa_recon] nv=%d rho=%.3f faces=%d edges: "
                 "front=%d interior=%d boundary=%d | pivot-fail: "
-                "no_pivot=%d bowtie=%d orient=%d 3fan=%d fold=%d facecoh=%d "
+                "no_pivot=%d bowtie=%d orient=%d 3fan=%d fold=%d facecoh=%d wall=%d "
                 "retry_saved=%d all_cand_failed=%d | "
                 "pivot-ko: empty=%ld normal=%ld antiparallel=%ld tol=%.2f%s\n",
                 n, rho, b.nf, n_front, n_int, n_bnd,
                 b.dbg_no_pivot, b.dbg_bowtie, b.dbg_orient, b.dbg_3fan, b.dbg_fold,
-                b.dbg_facecoh, b.dbg_retry_saved, b.dbg_all_cand_failed,
+                b.dbg_facecoh, b.dbg_wall, b.dbg_retry_saved, b.dbg_all_cand_failed,
                 g_ko_empty, g_ko_normal, g_dbg_antiparallel, g_normal_tol,
                 g_no_normal_gate ? " [NORMAL GATE OFF]" : "");
         fprintf(stderr, "[bpa_recon] no_pivot dead-ends by cause: "
@@ -1419,6 +1526,23 @@ int BallPivot_bridge(Arena_T arena,
     g_relax_case2 = 0;   /* the bridge governs case-2 via its own relax_bowtie */
     g_face_coh_cos = -2.0;  /* disable face-coherence guard: a bridge legitimately
                              * spans a gap with a divergent face across the seam */
+    g_wall_guard_cos = -2.0; /* ditto the wall-guard: the seam bridge spans the
+                              * inter-cube gap with a near-normal "wall" by design */
+    /* Winding gate -- the inter-sheet weld gate. Reject bridging two DIFFERENT wraps
+     * by comparing WINDING about the umbilicus (phase = r/pitch - theta/2pi). ON only
+     * when the umbilicus (SEAM_UMBILICUS_{Y,X}) AND the wrap pitch (SEAM_WRAP_PITCH,
+     * radius per turn) are supplied; SEAM_WIND_TOL overrides the default tolerance
+     * (SEAM_WIND_TOL_DEFAULT_TURNS = 0.25 turn). */
+    g_wind_tol = 0.0; g_wrap_pitch = 0.0; g_umb_y = 0.0; g_umb_x = 0.0; g_dbg_wind = 0;
+    { const char *e = getenv("SEAM_UMBILICUS_Y"); if (e) g_umb_y = atof(e); }
+    { const char *e = getenv("SEAM_UMBILICUS_X"); if (e) g_umb_x = atof(e); }
+    { const char *e = getenv("SEAM_WRAP_PITCH"); if (e) { double v = atof(e); if (v > 0) g_wrap_pitch = v; } }
+    if (g_wrap_pitch > 0.0 && (g_umb_y != 0.0 || g_umb_x != 0.0)) {
+        g_wind_tol = SEAM_WIND_TOL_DEFAULT_TURNS;
+        { const char *e = getenv("SEAM_WIND_TOL"); if (e) { double v = atof(e); if (v > 0) g_wind_tol = v; } }
+        fprintf(stderr, "  [bridge] winding gate ON: umbilicus=(y%.1f,x%.1f) pitch=%.1f vox tol=%.2f turn\n",
+                g_umb_y, g_umb_x, g_wrap_pitch, g_wind_tol);
+    }
 
     Grid *g = grid_build(V, n, 2.0*rho);
     EdgeStore *es = edges_new((int)n_init * 4);
@@ -1509,6 +1633,10 @@ int BallPivot_bridge(Arena_T arena,
             if (!(lvl == 0 && pass == 0) && b.nf == before) break;
         }
     }
+
+    if (g_wind_tol > 0.0)
+        fprintf(stderr, "  [bridge] winding gate: %ld cross-wrap weld candidate(s) "
+                "rejected (tol %.2f turn)\n", g_dbg_wind, g_wind_tol);
 
     if (getenv("BPA_DEBUG")) {
         int n_front = 0, n_int = 0, n_bnd = 0;

@@ -113,6 +113,9 @@
          stack: csr, pca, Triangle (from source), Clipper2 wrapper. -->
     <ClCompile Include="src\common\csr.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\pca.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <!-- Lambda gate: Crane developability energy + 3x3 eigensolver. -->
+    <ClCompile Include="src\topology\developability.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\eig3.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\holefill\hole_fill.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\holefill\clipper2_wrap.cpp">
       <CompileAs>CompileAsCpp</CompileAs>

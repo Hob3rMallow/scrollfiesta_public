@@ -230,6 +230,28 @@
     <ClCompile Include="src\split\overlap_sep.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
+    <!-- Step 1b-peel: stacked-wrap separator -->
+    <ClCompile Include="src\split\depth_peel.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <!-- Step 1c: Developability cut (Stein/Grinspun/Crane 2018, sec 4.4) -->
+    <ClCompile Include="src\split\dev_cut.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <!-- Developability "bad sheet" gate + its shared angle-defect metric. -->
+    <ClCompile Include="src\remesh\dev_gate.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\dev_metric.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <!-- Crane developability energy (the dev-cut seam detector) + shared 3x3 eigensolver -->
+    <ClCompile Include="src\topology\developability.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\eig3.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
     <!-- Hole fill: CDT-based interior loop closure -->
     <ClCompile Include="src\holefill\hole_fill.c">
       <CompileAs>CompileAsC</CompileAs>
@@ -300,7 +322,13 @@
     <ClInclude Include="src\remesh\orient_mesh.h" />
     <ClInclude Include="src\remesh\pinhole_fill.h" />
     <ClInclude Include="src\remesh\manifold_guard.h" />
+    <ClInclude Include="src\remesh\dev_gate.h" />
     <ClInclude Include="src\split\overlap_sep.h" />
+    <ClInclude Include="src\split\depth_peel.h" />
+    <ClInclude Include="src\split\dev_cut.h" />
+    <ClInclude Include="src\topology\developability.h" />
+    <ClInclude Include="src\common\eig3.h" />
+    <ClInclude Include="src\common\dev_metric.h" />
     <ClInclude Include="src\split\multicut_wrap.h" />
     <ClInclude Include="src\holefill\hole_fill.h" />
     <ClInclude Include="src\holefill\clipper2_wrap.h" />

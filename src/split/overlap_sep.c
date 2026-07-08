@@ -674,11 +674,15 @@ int OverlapSep_process(Arena_T              arena,
         fprintf(stderr, "    debug: wrote %s (%d clusters)\n", path, num_clusters);
     }
 
-    if (now_sec() > t_deadline) {
-        fprintf(stderr, "    timeout after multicut\n");
-        return_unchanged(arena, mesh, out_meshes, out_count);
-        return -1;
-    }
+    /* A COMPLETED multicut is ALWAYS applied. The deadline gates STARTING the
+     * solve (the pre-multicut check after overlap detection, above) -- it must
+     * never discard a finished cut. The old post-solve "timeout after multicut ->
+     * return_unchanged" here threw away a valid separation: on a fused stacked-wrap
+     * clump the lifted multicut runs ~50-70s, overran the 30s deadline, and the
+     * whole stack was handed back UNCUT despite a correct ~6-cluster answer (the
+     * "5-sheet monster" bug -- z04480_y02304_x02176). The KL solve is bounded by
+     * problem size and terminates; once it has, its result is the cheapest correct
+     * separation we will get, so we keep it regardless of the clock. */
 
     /* ---- Phase 5: Partition faces by label, extract sub-meshes ---- */
     /* The multicut already tells us exactly which faces belong together.

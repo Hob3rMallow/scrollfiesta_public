@@ -31,6 +31,45 @@
 #define RESPLIT_MIN_COMP_VERTS 200   /* drop connectivity-components smaller than this */
 #endif
 
+/* ---- Seam-band pin (cross-cube convergence) -------------------------------
+ * The extract MLS-projects owned verts within MLS_PROJECT_RADIUS_VOX of the cube
+ * boundary using HALO (two-sided) support, so adjacent cubes converge to identical
+ * seam geometry there. The re-LOP passes below re-MLS WITHOUT the halo (owned-only
+ * support) and drift the seam independently per cube -- the welded "offset" / high-
+ * lambda good-join. Pin verts within SEAM_PIN_BAND_VOX of the owned-box boundary
+ * [0, RESPLIT_CUBE_D) at their extract positions through the re-LOP so the seam
+ * stays where the halo put it. See SEAM_PIN_BAND_VOX in pipeline_constants.h. */
+#define RESPLIT_CUBE_D 128.0   /* owned cube dimension (chunk_size, fixed) */
+static double seam_pin_band(void)
+{
+    if (getenv("VES_SEAM_PIN_OFF")) return 0.0;
+    const char *e = getenv("SEAM_PIN_BAND_VOX");
+    if (e) { double v = atof(e); if (v >= 0.0) return v; }
+    return (double)SEAM_PIN_BAND_VOX;
+}
+static int in_seam_band(const float *v, double band)
+{
+    return v[0] < band || v[0] > RESPLIT_CUBE_D - band ||
+           v[1] < band || v[1] > RESPLIT_CUBE_D - band ||
+           v[2] < band || v[2] > RESPLIT_CUBE_D - band;
+}
+/* Tapered pin weight: 1 at the cube face (full freeze), smoothstep down to 0 at
+ * the band edge. A HARD freeze (1 inside the band, 0 outside) left a non-
+ * developable CREASE at the band boundary -- 54% of the post-pin high-lambda verts
+ * sat exactly there. Tapering blends the frozen seam into the re-LOP'd interior,
+ * killing the crease while still holding the actual seam edge (weight ~1). */
+static float seam_pin_weight(const float *v, double band)
+{
+    double dz = v[0] < RESPLIT_CUBE_D - v[0] ? v[0] : RESPLIT_CUBE_D - v[0];
+    double dy = v[1] < RESPLIT_CUBE_D - v[1] ? v[1] : RESPLIT_CUBE_D - v[1];
+    double dx = v[2] < RESPLIT_CUBE_D - v[2] ? v[2] : RESPLIT_CUBE_D - v[2];
+    double d = dz; if (dy < d) d = dy; if (dx < d) d = dx;
+    if (d >= band) return 0.0f;
+    if (d < 0.0)   d = 0.0;
+    double t = d / band;                       /* 0 at face, 1 at band edge */
+    return (float)(1.0 - t*t*(3.0 - 2.0*t));   /* smoothstep: 1 -> 0 */
+}
+
 /* Diagnostic dump: materialize the stage dir "<dir>/<cube_id>_<stage>" and
  * return it in `out` (created on demand). Returns 0 if dumping is enabled. */
 static int resplit_stage_dir(const MeshResplitDump *d, const char *stage,
@@ -134,7 +173,7 @@ static int extract_submesh(Arena_T arena, const ComponentMesh *src,
 static int relop_rebpa(Arena_T arena, const float *pts, size_t n,
                        const float cell_origin[3],
                        const MeshResplitDump *dump, const char *tag,
-                       int lop_iters, ComponentMesh *out)
+                       int lop_iters, const float *pin_w, ComponentMesh *out)
 {
     if (n < 3) return -1;
     float *pv = (float *)ARENA_ALLOC(arena, (long)(n*3*sizeof(float)));
@@ -148,6 +187,22 @@ static int relop_rebpa(Arena_T arena, const float *pts, size_t n,
         float *ndst = (it == lop_iters - 1) ? pn : sn;
         MLS_project_verts(arena, src, n, MLS_PROJECT_RADIUS_VOX,
                           cell_origin, dst, ndst);
+        /* Blend pinned (seam-band) points back toward their extract positions --
+         * they were MLS'd with halo support this re-LOP lacks, so re-projecting
+         * them freely drifts the cross-cube seam. The weight tapers from 1 at the
+         * cube face to 0 at the band edge (no hard crease). They still serve as MLS
+         * support for the (free) interior points being projected. */
+        if (pin_w) {
+            for (size_t i = 0; i < n; i++) {
+                float w = pin_w[i];
+                if (w > 0.0f) {
+                    float iw = 1.0f - w;
+                    dst[i*3+0] = w*pts[i*3+0] + iw*dst[i*3+0];
+                    dst[i*3+1] = w*pts[i*3+1] + iw*dst[i*3+1];
+                    dst[i*3+2] = w*pts[i*3+2] + iw*dst[i*3+2];
+                }
+            }
+        }
         src = dst;
         dst = (dst == pv) ? sv : pv;
     }
@@ -175,6 +230,11 @@ static int relop_rebpa(Arena_T arena, const float *pts, size_t n,
             snprintf(path, sizeof path, "%s/%s_%s_%s.obj",
                      sd, dump->cube_id, dump->mls_stage, tag ? tag : "x");
             DumpObj_write_points_world(arena, path, dump->cube_id, wv, NULL, wnv);
+            /* pre-MLS: the raw input points fed to this re-LOP (pre-projection,
+             * pre-weld), as a sibling _pre file. */
+            snprintf(path, sizeof path, "%s/%s_%s_%s_pre.obj",
+                     sd, dump->cube_id, dump->mls_stage, tag ? tag : "x");
+            DumpObj_write_points_world(arena, path, dump->cube_id, pts, NULL, n);
         }
     }
 
@@ -228,9 +288,20 @@ int MeshResplit_resurface_own(Arena_T arena, ComponentMesh *m,
     float cori[3] = { 0.0f, 0.0f, 0.0f };
     if (cell_origin) { cori[0] = cell_origin[0]; cori[1] = cell_origin[1]; cori[2] = cell_origin[2]; }
 
+    /* Pin the seam band: these owned verts were placed with halo two-sided support
+     * at extract, and re-LOPing them from this piece's owned-only verts would drift
+     * the cross-cube seam. Keep them fixed; the interior still re-LOPs cleanly. */
+    float *pinw = NULL;
+    double band = seam_pin_band();
+    if (band > 0.0) {
+        pinw = (float *)ARENA_CALLOC(arena, (long)m->nv, (long)sizeof(float));
+        for (size_t i = 0; i < m->nv; i++)
+            pinw[i] = seam_pin_weight(&m->verts[i*3], band);
+    }
+
     /* re-LOP + weld + Hoppe + Ball-Pivot + orient on the piece's OWN verts */
     ComponentMesh nm;
-    if (relop_rebpa(arena, m->verts, m->nv, cori, NULL, NULL, iters, &nm) != 0)
+    if (relop_rebpa(arena, m->verts, m->nv, cori, NULL, NULL, iters, pinw, &nm) != 0)
         return 0;                       /* keep m unchanged on failure */
 
     int cid = m->comp_id;
@@ -341,13 +412,56 @@ int MeshResplit_remesh_pieces(Arena_T arena,
      * re-LOP pass count -- a pass-through single piece keeps the lighter extract
      * count so it is not over-smoothed (which would flatten real curvature). */
     int lop_iters = (n_pieces > 1) ? MLS_RESPLIT_ITERS : MLS_PROJECT_ITERS;
+    double band = seam_pin_band();
     size_t cnt = 0;
     for (size_t p = 0; p < n_pieces; p++) {
         char tag[96];
         snprintf(tag, sizeof(tag), "%s_p%02zu", dump_tag ? dump_tag : "x", p);
+
+        /* Re-LOP input = the labelled cloud points PLUS this piece's extract
+         * seam-band verts, PINNED. The seam-ambiguous-point drop above shed the
+         * halo support exactly at the seam; re-adding the extract seam verts as
+         * fixed anchors keeps the cross-cube seam at its halo-converged positions
+         * while the (non-pinned) cloud points re-LOP the interior. */
+        const float *rpts = porig[p];
+        size_t rn = bsz[p];
+        const float *rpin = NULL;
+        if (band > 0.0 && bsz[p] > 0) {
+            size_t ns = 0;
+            for (size_t v = 0; v < pieces[p].nv; v++)
+                if (in_seam_band(&pieces[p].verts[v*3], band)) ns++;
+            if (ns > 0) {
+                size_t ncomb = ns + bsz[p];
+                float *comb = (float *)ARENA_ALLOC(arena, (long)(ncomb*3*sizeof(float)));
+                float *pinc = (float *)ARENA_CALLOC(arena, (long)ncomb, (long)sizeof(float));
+                size_t w = 0;
+                for (size_t v = 0; v < pieces[p].nv; v++)
+                    if (in_seam_band(&pieces[p].verts[v*3], band)) {
+                        comb[w*3+0] = pieces[p].verts[v*3+0];
+                        comb[w*3+1] = pieces[p].verts[v*3+1];
+                        comb[w*3+2] = pieces[p].verts[v*3+2];
+                        pinc[w] = seam_pin_weight(&pieces[p].verts[v*3], band);
+                        w++;
+                    }
+                /* re-LOP only the INTERIOR cloud points; the seam band is owned by
+                 * the pinned extract verts above. Including band cloud points too
+                 * would lay a second, drifting layer over the pinned seam (a
+                 * through-thickness double sheet that raises lambda), so drop them. */
+                size_t w2 = ns;
+                for (size_t j = 0; j < bsz[p]; j++)
+                    if (!in_seam_band(&porig[p][j*3], band)) {
+                        comb[w2*3+0] = porig[p][j*3+0];
+                        comb[w2*3+1] = porig[p][j*3+1];
+                        comb[w2*3+2] = porig[p][j*3+2];
+                        w2++;
+                    }
+                rpts = comb; rn = w2; rpin = pinc;
+            }
+        }
+
         ComponentMesh m;
-        if (relop_rebpa(arena, porig[p], bsz[p], cloud->cell_origin,
-                        dump, tag, lop_iters, &m) != 0) {
+        if (relop_rebpa(arena, rpts, rn, cloud->cell_origin,
+                        dump, tag, lop_iters, rpin, &m) != 0) {
             m = pieces[p];                 /* fall back to the piece unchanged */
             float fpca[3] = {0,0,1}, fcen[3] = {0,0,0};   /* keep centroid/pca valid */
             PCA_normal(m.verts, m.nv, fpca, fcen);
