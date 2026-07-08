@@ -1005,10 +1005,21 @@ static int bpa_try_candidate(const Vec3 *V, EdgeStore *es, uint8_t *used,
      * only if they are the SAME wrap -- same winding about the umbilicus. The phase
      * w = r/pitch - theta/(2pi) is tangentially invariant, so a same-wrap weld (even
      * offset, even sharply curved, even joining verts at different y along the seam)
-     * has |dw| ~ 0, while a next-wrap merger steps |dw| ~ 1. */
+     * has |dw| ~ 0, while a next-wrap merger steps |dw| ~ 1.
+     *
+     * Radial-dominance conjunct (2026-07-08): only reject when the bridge
+     * displacement is DOMINANTLY radial. A true cross-wrap hop is radial by
+     * construction (stacked wraps, bridge ~ perpendicular to both sheets). At a
+     * GRAZING seam -- the wrap running parallel to the cube face, e.g. the
+     * x-plane at the umbilicus' y -- the per-cube trim leaves interleaved
+     * coverage bites, and the legit closures are long OBLIQUE bridges whose
+     * radial component can exceed tol*pitch while being mostly lateral
+     * (z/tangential). Those must weld: dr^2 must dominate the full 3D chord
+     * (dr^2 > 0.5*|chord|^2) before the phase test can reject. */
     if (!abort_pivot && g_wind_tol > 0.0 && g_wrap_pitch > 0.0) {
         double my = 0.5*((double)V[t].y + (double)V[h].y) - g_umb_y;
         double mx = 0.5*((double)V[t].x + (double)V[h].x) - g_umb_x;
+        double mz = 0.5*((double)V[t].z + (double)V[h].z);
         double vy = (double)V[v_new].y - g_umb_y;
         double vx = (double)V[v_new].x - g_umb_x;
         double dr  = hypot(vy, vx) - hypot(my, mx);
@@ -1016,7 +1027,12 @@ static int bpa_try_candidate(const Vec3 *V, EdgeStore *es, uint8_t *used,
         while (dth >  M_PI) dth -= 2.0*M_PI;     /* shortest angular difference */
         while (dth < -M_PI) dth += 2.0*M_PI;
         double dw = dr/g_wrap_pitch - dth/(2.0*M_PI);
-        if (fabs(dw) > g_wind_tol) { abort_pivot = 1; g_dbg_wind++; }
+        if (fabs(dw) > g_wind_tol) {
+            double cy = vy - my, cx = vx - mx;
+            double cz = (double)V[v_new].z - mz;
+            double chord2 = cy*cy + cx*cx + cz*cz;
+            if (dr*dr > 0.5*chord2) { abort_pivot = 1; g_dbg_wind++; }
+        }
     }
     if (abort_pivot) return 0;
     /* Accept. */
