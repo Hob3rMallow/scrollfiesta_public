@@ -564,6 +564,9 @@ int MeshExtract_run(Arena_T          arena,
                     const char      *dump_cube_dir,
                     const char      *cube_id,
                     int              skip_qem,
+                    const uint8_t   *vol_in,
+                    int              p_size_in,
+                    const int64_t   *cube_origin_in,
                     ComponentMesh  **out_meshes,
                     size_t          *out_n_meshes,
                     MeshResplitCloud **out_clouds)
@@ -596,7 +599,23 @@ int MeshExtract_run(Arena_T          arena,
      * across adjacent cubes (same physical point gets the same cell key in
      * cube A and cube B). Zero for non-halo mode. */
     float cube_world_origin[3] = {0.0f, 0.0f, 0.0f};
-    if (halo_voxels > 0) {
+    if (vol_in != NULL) {
+        /* In-memory padded cube (streamed from zarr). Reproduces exactly what
+         * HaloLoader_load would return for this cube: a (p_size)^3 buffer whose
+         * (0,0,0) is world (cube_origin - halo), so cube-local (0,0,0) is at
+         * world = cube_origin. */
+        if (p_size_in <= 0) {
+            fprintf(stderr, "MeshExtract: p_size_in=%d must be > 0\n", p_size_in);
+            return -1;
+        }
+        vol = (uint8_t *)vol_in;   /* read-only use + in-place threshold copy */
+        D = H = W = p_size_in;
+        if (cube_origin_in) {
+            cube_world_origin[0] = (float)cube_origin_in[0];
+            cube_world_origin[1] = (float)cube_origin_in[1];
+            cube_world_origin[2] = (float)cube_origin_in[2];
+        }
+    } else if (halo_voxels > 0) {
         if (!pred_dir || !cube_id) {
             fprintf(stderr, "MeshExtract: halo requires pred_dir and cube_id\n");
             return -1;

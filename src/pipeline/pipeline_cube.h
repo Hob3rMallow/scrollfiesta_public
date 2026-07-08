@@ -2,6 +2,7 @@
 #define PIPELINE_CUBE_INCLUDED
 
 #include <stddef.h>
+#include <stdint.h>
 #include "../common/arena.h"
 #include "../common/mesh_types.h"
 
@@ -36,6 +37,15 @@ typedef struct {
     const char *dump_dir;        /* if non-NULL, writes per-stage OBJs under
                                   * <dump_dir>/<cube_id>/<cube_id>_<stage>/ */
     int         skip_qem;
+
+    /* Optional in-memory input. When vol_in != NULL the TIFF/halo loaders are
+     * bypassed: vol_in is a padded (p_size_in)^3 uint8 buffer whose (0,0,0) is
+     * world (cube_origin - halo_voxels), exactly like HaloLoader_load.
+     * cube_origin_zyx is the owned cube origin (z,y,x). Used to stream a cube
+     * directly from a remote zarr instead of reading per-cube TIFFs. */
+    const uint8_t *vol_in;
+    int            p_size_in;
+    int64_t        cube_origin_zyx[3];
 } PipelineInput;
 
 typedef struct {

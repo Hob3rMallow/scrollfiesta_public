@@ -119,6 +119,8 @@ int pipeline_process_cube(Arena_T arena,
                              (in->halo_voxels > 0 || in->dump_dir)
                                  ? in->cube_id : NULL,
                              in->skip_qem,
+                             in->vol_in, in->p_size_in,
+                             in->vol_in ? in->cube_origin_zyx : NULL,
                              &out->meshes, &out->n_meshes, &clouds);
     out->t_extract = elapsed_since(t0);
     if (rc != 0 || out->n_meshes == 0) {
