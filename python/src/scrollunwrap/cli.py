@@ -183,9 +183,12 @@ def main(argv=None) -> int:
     bins = {
         "cube_mesh": _require_bin(args.cube_mesh_bin, "cube_mesh"),
         "grid_weld": _require_bin(args.grid_weld_bin, "grid_weld"),
-        "flatboi": _require_bin(args.flatboi_bin, "flatboi"),
-        "obj2tifxyz": _require_bin(args.obj2tifxyz_bin, "vc_obj2tifxyz_legacy"),
     }
+    if not args.mesh_only:
+        # flatten/tifxyz binaries are only exercised past the weld stage
+        bins["flatboi"] = _require_bin(args.flatboi_bin, "flatboi")
+        bins["obj2tifxyz"] = _require_bin(args.obj2tifxyz_bin,
+                                          "vc_obj2tifxyz_legacy")
     out = args.out
     out.mkdir(parents=True, exist_ok=True)
 
