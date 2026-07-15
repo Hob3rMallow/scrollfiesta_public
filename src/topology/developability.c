@@ -1,5 +1,6 @@
 #define _USE_MATH_DEFINES
 #include "developability.h"
+#include "../common/run_ctx.h"
 #include "../common/eig3.h"
 
 #include <assert.h>
@@ -217,6 +218,7 @@ int Develop_optimize(Arena_T arena, float *verts, size_t nv,
     double e_init = E;
     int iter = 0, converged = 0;
     for (iter = 0; iter < max_iters; iter++) {
+        RunCtx_check();   /* descent can run for minutes on big sheets */
         for (size_t i = 0; i < nv*3; i++) grad[i] = 0.0;
         accumulate_grad(X, nv, faces, nf, interior, uvec, grad);
         /* zero non-movable, measure */

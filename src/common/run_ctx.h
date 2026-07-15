@@ -31,6 +31,10 @@
  * degrades to a no-op / plain getenv.
  */
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef int  (*SfRunProgressFn)(void *user, const char *stage, double fraction);
 typedef void (*SfRunLogFn)(void *user, const char *line);
 
@@ -79,5 +83,9 @@ void RunCtx_log(const char *fmt, ...);
  * call this instead of getenv so API callers can pass knobs per call without
  * touching the process environment. */
 const char *sf_env(const char *name);
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
 
 #endif /* RUN_CTX_INCLUDED */

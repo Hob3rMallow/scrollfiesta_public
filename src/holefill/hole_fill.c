@@ -3051,6 +3051,7 @@ int HoleFill_process_ex(Arena_T arena,
     HFFLUSH();
 
     for (size_t i = 0; i < n_loops; i++) {
+        RunCtx_check();   /* one poll per hole (CDT fills can be slow) */
         /* Never fill the single largest loop: it is an outer perimeter, not a
          * hole (the giant loop is "most likely the outer one"). This applies in
          * BOTH modes. In interior_only mode the signed-area winding test (below)

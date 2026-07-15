@@ -319,6 +319,18 @@ if(SCROLLFIESTA_BUILD_TESTS)
     endif()
     add_test(NAME sf_test_common COMMAND sf_test_common)
 
+    # Direct-link smoke test of the public API (broad op coverage).
+    add_executable(sf_api_smoke ${CMAKE_CURRENT_SOURCE_DIR}/tests/api_smoke.c)
+    target_link_libraries(sf_api_smoke PRIVATE scrollfiesta)
+    set_target_properties(sf_api_smoke PROPERTIES C_STANDARD 17 C_EXTENSIONS ON)
+    if(WIN32)
+        target_compile_definitions(sf_api_smoke PRIVATE _CRT_SECURE_NO_WARNINGS)
+    else()
+        target_compile_definitions(sf_api_smoke PRIVATE _GNU_SOURCE)
+        target_link_libraries(sf_api_smoke PRIVATE m)
+    endif()
+    add_test(NAME sf_api_smoke COMMAND sf_api_smoke)
+
     # The canonical consumer test: links NOTHING from scrollfiesta, loads the
     # shared library at runtime and drives it through sf_get_api — exactly
     # what an embedding host (VC3D) does. Only meaningful for shared builds.

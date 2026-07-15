@@ -32,6 +32,7 @@
 #include "../topology/mesh_topo.h"
 #include "../topology/seam_cut.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -91,6 +92,18 @@ void sf_op_end(SfOpGuard *g)
 static sf_status validate_in(const sf_mesh *in)
 {
     return sf_mesh_validate(in, NULL, 0);
+}
+
+/* Raw point arrays (BPA/MLS inputs) get the same finiteness guarantee as
+ * meshes: a single garbage coordinate would otherwise blow up the spatial
+ * grids downstream instead of failing cleanly. */
+static int points_finite(const float *xyz, size_t n)
+{
+    for (size_t i = 0; i < n * 3; i++) {
+        if (!isfinite(xyz[i]))
+            return 0;
+    }
+    return 1;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -1620,6 +1633,9 @@ SF_API sf_status sf_reconstruct_bpa(const float *points_xyz,
 
     if (!points_xyz || !normals_xyz || n_points < 3 || !out)
         return SF_ERROR_BAD_ARG;
+    if (!points_finite(points_xyz, n_points) ||
+        !points_finite(normals_xyz, n_points))
+        return SF_ERROR_BAD_ARG;
     memset(out, 0, sizeof *out);
     if (rep) memset(rep, 0, sizeof *rep);
     if (!cfg) { def = sf_bpa_config_default(); cfg = &def; }
@@ -1664,6 +1680,8 @@ SF_API sf_status sf_mls_project(const float *points_xyz, size_t n_points,
 
     if (!points_xyz || n_points == 0 || !out_points_xyz)
         return SF_ERROR_BAD_ARG;
+    if (!points_finite(points_xyz, n_points))
+        return SF_ERROR_BAD_ARG;
     *out_points_xyz = NULL;
     if (out_normals_xyz) *out_normals_xyz = NULL;
     if (radius_vox <= 0.0f)
@@ -1682,6 +1700,8 @@ SF_API sf_status sf_mls_project(const float *points_xyz, size_t n_points,
         const float origin[3] = { 0.0f, 0.0f, 0.0f };
 
         MLS_project_verts(g.arena, verts, n_points, radius_vox, origin, pv, pn);
+        /* The OMP loop inside flag-skips on cancel; raise here (serial). */
+        RunCtx_check();
 
         float *op = sf_malloc(n_points * 3 * sizeof *op);
         float *on = out_normals_xyz ? sf_malloc(n_points * 3 * sizeof *on)

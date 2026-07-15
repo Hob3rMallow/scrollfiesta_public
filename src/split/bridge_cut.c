@@ -1,4 +1,5 @@
 #include "../common/ves_platform.h"
+#include "../common/run_ctx.h"
 
 #include "bridge_cut.h"
 #include "../common/csr.h"
@@ -819,6 +820,9 @@ static void process_recursive(Arena_T arena, const ComponentMesh *mesh,
         add_to_results(results, mesh);
         return;
     }
+
+    /* Cancellation (API callers) piggybacks on the timeout poll site. */
+    RunCtx_check();
 
     /* Timeout check */
     if (timeout_at_sec) {

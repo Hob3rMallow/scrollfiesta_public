@@ -1,4 +1,5 @@
 #include "ves_platform.h"
+#include "run_ctx.h"
 #include "qem.h"
 #include "kdtree.h"
 #include "csr.h"
@@ -1557,6 +1558,7 @@ static int qem_collapse_pass(Arena_T arena,
     int    round_idx = 0;
 
     while (current_nf > target_nf && round_idx < QEM_LME_MAX_ROUNDS) {
+        RunCtx_check();   /* one poll per LME round */
 
         /* (1) Per-vertex best (lowest-cost) incident edge. */
         {

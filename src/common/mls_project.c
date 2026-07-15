@@ -285,9 +285,19 @@ void MLS_project_verts(Arena_T arena,
     assert(nv <= (size_t)INT_MAX);
     int nv_i = (int)nv;
     int si = 0;   /* declared before the loop: MSVC OpenMP 2.0 form */
+    /* Cancellation: NEVER longjmp out of a parallel region. Poll cheaply
+     * (every 1024th index), flag-skip the remaining iterations, and let the
+     * caller-side RunCtx_check raise back to the API boundary. */
+    volatile int mls_stop = 0;
 #pragma omp parallel for schedule(dynamic, 256)
     for (si = 0; si < nv_i; si++) {
         size_t i = (size_t)si;
+        if (mls_stop)
+            continue;
+        if ((si & 1023) == 0 && RunCtx_should_stop()) {
+            mls_stop = 1;
+            continue;
+        }
         float vz = verts[i * 3 + 0];
         float vy = verts[i * 3 + 1];
         float vx = verts[i * 3 + 2];

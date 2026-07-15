@@ -1082,7 +1082,10 @@ static void bpa_grow(const Grid *g, const Vec3 *V, const Vec3 *N, double rho,
                      EdgeStore *es, uint8_t *used, int *vfront, BpaBuild *b,
                      int relax_bowtie)
 {
+    unsigned poll_tick = 0;
     while (b->qh < b->qt) {
+        if (((++poll_tick) & 1023u) == 0)
+            RunCtx_check();   /* front drain is the BPA hot loop */
         int ei = b->queue[b->qh++];
         if (es->e[ei].state != ES_FRONT) continue;
         int va = es->e[ei].va, vb = es->e[ei].vb;       /* sorted: pivot geometry */

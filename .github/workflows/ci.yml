@@ -1,0 +1,103 @@
+# ScrollFiesta CI — keeps every consumption path green:
+#   linux-gcc      full build (tools + system TIFF + tests), Release and ASan/UBSan
+#   windows-msvc   library + tests (the VC3D-embedded configuration), MSVC
+#   windows-mingw  same, MSYS2/UCRT64 gcc (VC3D's Windows CI toolchain)
+#   embed-consumer the hostile-host simulation: fake OpenMP:: aliases + a
+#                  C++-only stub omp.h installed first, then FetchContent +
+#                  dlopen — exactly what VC3D does.
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+jobs:
+  linux-gcc:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitize: [none, asan]
+    steps:
+      - uses: actions/checkout@v4
+      - name: deps
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libtiff-dev
+      - name: configure
+        run: |
+          SAN_FLAGS=""
+          if [ "${{ matrix.sanitize }}" = "asan" ]; then
+            SAN_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          fi
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_C_FLAGS="$SAN_FLAGS" \
+            -DCMAKE_CXX_FLAGS="$SAN_FLAGS" \
+            -DCMAKE_EXE_LINKER_FLAGS="$SAN_FLAGS" \
+            -DCMAKE_SHARED_LINKER_FLAGS="$SAN_FLAGS"
+      - name: build
+        run: cmake --build build
+      - name: test
+        run: ctest --test-dir build --output-on-failure
+      - name: no library TU includes <omp.h>
+        run: |
+          ! grep -rn '#include *<omp\.h>' src/ --include='*.c' --include='*.cpp' --include='*.h'
+
+  windows-msvc:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: configure (library + tests, VC3D-embedded shape)
+        run: >
+          cmake -S . -B build -A x64
+          -DSCROLLFIESTA_BUILD_TOOLS=OFF
+          -DSCROLLFIESTA_WITH_TIFF=OFF
+          -DSCROLLFIESTA_BUILD_TESTS=ON
+      - name: build
+        run: cmake --build build --config Release
+      - name: test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  windows-mingw:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+      - name: configure (library + tests)
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DSCROLLFIESTA_BUILD_TOOLS=OFF
+          -DSCROLLFIESTA_WITH_TIFF=OFF
+          -DSCROLLFIESTA_BUILD_TESTS=ON
+      - name: build
+        run: cmake --build build
+      - name: test
+        run: ctest --test-dir build --output-on-failure
+
+  embed-consumer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: deps
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: configure
+        run: >
+          cmake -S tests/embed_consumer -B build-embed -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DSCROLLFIESTA_CHECKOUT=${{ github.workspace }}
+      - name: build
+        run: cmake --build build-embed
+      - name: test
+        run: ctest --test-dir build-embed --output-on-failure
