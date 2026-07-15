@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include "arena.h"
 
 /*
@@ -26,6 +27,15 @@
  *                      compacted to drop degenerate triangles.
  *                      Capacity must be at least `nf*3` int32_t.
  *   eps              : merge tolerance (Euclidean voxels).
+ *   guard_orient     : when true AND nf>0, refuse to merge a coincident
+ *                      pair whose area-weighted winding normals oppose
+ *                      (dot < 0) — i.e. fusing opposite-facing (recto vs
+ *                      verso) surfaces, which would create a non-orientable
+ *                      `same_dir` edge that a winding-repair BFS cannot fix.
+ *                      Assumes the input is consistently wound (so an
+ *                      opposing dot is exactly a would-be same_dir fusion);
+ *                      a degenerate/near-zero normal fails OPEN (merges).
+ *                      Ignored on the pure point-dedup path (nf==0).
  *
  *   *out_verts       : newly arena-allocated [out_nv*3] floats
  *                      (centroid of each weld group, in input order
@@ -40,6 +50,7 @@ void Weld_verts(Arena_T arena,
                 const float *in_normals,
                 int32_t *faces, size_t nf, size_t *out_nf,
                 float eps,
+                bool guard_orient,
                 float **out_verts, size_t *out_nv,
                 float **out_normals);
 

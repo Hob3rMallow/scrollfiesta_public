@@ -40,6 +40,7 @@
 #include "../common/mesh_manifold.h"
 #include "../common/pipeline_constants.h"
 #include "../remesh/seam_weld.h"
+#include "../remesh/seam_hole_fill.h"
 #include "../remesh/fold_cleanup.h"
 #include "../remesh/pinhole_fill.h"
 #include "../remesh/manifold_guard.h"
@@ -1420,7 +1421,7 @@ int main(int argc, char **argv)
             float *w_verts = NULL;
             Weld_verts(arena, out_verts, out_nv, NULL,
                        flat_faces, n_unique_faces, &w_nf,
-                       1e-3f, &w_verts, &w_nv, NULL);
+                       1e-3f, /*guard_orient=*/true, &w_verts, &w_nv, NULL);
             if (w_nv != out_nv || w_nf != n_unique_faces) {
                 fprintf(stderr, "Micro-weld: %zu -> %zu verts, %zu -> %zu faces "
                         "(coincident stage-created duplicates)\n",
@@ -1649,6 +1650,40 @@ int main(int argc, char **argv)
             }
         }
 
+        /* Seam-hole fill: the BPA bridge zips most of each grazing seam but
+         * leaves a dotted line of tiny straddling punctures; pinhole's 4.5-vox
+         * diameter gate and interior-only hole-fill leave many open. Close them
+         * here, AFTER every other closer, with three merger-safe gates: near-seam
+         * + straddle, small extent, and winding-phase coherence (armed by the same
+         * umbilicus/pitch as the seam gate -- so it can never fill across the
+         * sub-clearance core wraps). The final manifold guard below re-verifies
+         * the result. SEAM_NO_SEAMFILL disables. */
+        if (!getenv("SEAM_NO_SEAMFILL")) {
+            ComponentMesh scm; memset(&scm, 0, sizeof scm);
+            scm.verts = out_verts; scm.faces = flat_faces;
+            scm.nv = out_nv; scm.nf = n_unique_faces; scm.comp_id = 1; scm.self = &scm;
+            SeamHoleFillParams shp; SeamHoleFill_default_params(&shp);
+            shp.cube = seam_cube;
+            const char *e;
+            if ((e = getenv("SEAM_UMBILICUS_Y"))) shp.umb_y = atof(e);
+            if ((e = getenv("SEAM_UMBILICUS_X"))) shp.umb_x = atof(e);
+            if ((e = getenv("SEAM_WRAP_PITCH"))) { double v = atof(e); if (v > 0) shp.pitch = v; }
+            if ((e = getenv("SEAM_WIND_TOL"))) { double v = atof(e); if (v > 0) shp.wind_tol_turns = v; }
+            if ((e = getenv("SEAM_SEAMFILL_MAXLOOP"))) { int v = atoi(e); if (v >= 3) shp.max_loop = v; }
+            if ((e = getenv("SEAM_SEAMFILL_EXTENT"))) { double v = atof(e); if (v > 0) shp.max_extent = v; }
+            SeamHoleFillStats shs;
+            SeamHoleFill_process(arena, &scm, &shp, &shs);
+            fprintf(stderr,
+                "Seam-hole fill: %zu candidate(s), %zu filled (+%zu tris); "
+                "skip[phase=%zu extent=%zu geom=%zu manifold=%zu bubble=%zu]%s\n",
+                shs.seam_candidates, shs.filled, shs.tris_added,
+                shs.skip_phase, shs.skip_extent, shs.skip_geom,
+                shs.skip_manifold, shs.skip_bubble,
+                shp.pitch > 0.0 ? "" : "  (phase gate OFF -- no umbilicus/pitch)");
+            flat_faces = scm.faces; n_unique_faces = scm.nf;
+            out_verts = scm.verts; out_nv = scm.nv;
+        }
+
         /* Final manifold guard. The strict seam bridge leaves only a handful of
          * residual non-manifold edges (vs many under the old relaxed zip).
          * Resolve >2-face edges + split any residual pinch so the welded mesh is
@@ -1668,6 +1703,61 @@ int main(int argc, char **argv)
                 mg.nm_edges_resolved, mg.faces_deleted, mg.pinch_splits);
             flat_faces = wcm.faces; n_unique_faces = wcm.nf;
             out_verts = wcm.verts; out_nv = wcm.nv;
+        }
+
+        /* Post-guard convergence. The manifold guard drops faces to resolve NM
+         * edges, which OPENS small boundary notches that every earlier closer
+         * (all of which ran before it) never sees -- observed as residual len-3/4
+         * seam gaps in the 4x5x5 audit. Re-run the merger-safe closers (pinhole
+         * 3-loop + bowtie, seam-hole ear-clip) and the guard until none makes
+         * progress (bounded 3 rounds). Every closer is already merger-safe
+         * (phase-gated / a 3-loop adds no new edge); the guard runs LAST each
+         * round so the mesh stays a 2-manifold by construction. SEAM_NO_POSTGUARD
+         * disables. */
+        if (!no_cleanup && !getenv("SEAM_NO_POSTGUARD")) {
+            SeamHoleFillParams pgp; SeamHoleFill_default_params(&pgp);
+            pgp.cube = seam_cube;
+            { const char *e;
+              if ((e = getenv("SEAM_UMBILICUS_Y"))) pgp.umb_y = atof(e);
+              if ((e = getenv("SEAM_UMBILICUS_X"))) pgp.umb_x = atof(e);
+              if ((e = getenv("SEAM_WRAP_PITCH")))  { double v = atof(e); if (v > 0) pgp.pitch = v; }
+              if ((e = getenv("SEAM_WIND_TOL")))    { double v = atof(e); if (v > 0) pgp.wind_tol_turns = v; }
+              if ((e = getenv("SEAM_SEAMFILL_EXTENT"))) { double v = atof(e); if (v > 0) pgp.max_extent = v; } }
+            for (int gr = 1; gr <= 3; gr++) {
+                ComponentMesh pg; memset(&pg, 0, sizeof pg);
+                pg.verts = out_verts; pg.faces = flat_faces;
+                pg.nv = out_nv; pg.nf = n_unique_faces; pg.comp_id = 1; pg.self = &pg;
+                size_t g_sp=0, g_fl=0, g_ad=0, g_sk=0;
+                PinholeFill_process(arena, &pg, 1, 0, &g_sp, &g_fl, &g_ad, &g_sk);
+                SeamHoleFillStats pgs; SeamHoleFill_process(arena, &pg, &pgp, &pgs);
+                ManifoldGuardStats pmg; ManifoldGuard_process(arena, &pg, 1, 0, &pmg);
+                out_verts = pg.verts; flat_faces = pg.faces;
+                out_nv = pg.nv; n_unique_faces = pg.nf;
+                fprintf(stderr,
+                    "Post-guard round %d: pinhole=%zu seamfill=%zu guard(-%zu f, "
+                    "%zu split) -> %zu faces, %zu verts\n",
+                    gr, g_fl, pgs.filled, pmg.faces_deleted, pmg.pinch_splits,
+                    n_unique_faces, out_nv);
+                if (g_fl == 0 && pgs.filled == 0 &&
+                    pmg.faces_deleted == 0 && pmg.pinch_splits == 0) break;
+            }
+        }
+
+        /* Post-fill winding repair: re-run the intra-component winding BFS after
+         * the late closers. The final pinhole pass and the micro-weld append faces
+         * AFTER the main OrientMesh pass above, and a fill wound to its loop's own
+         * Newell normal can disagree with the sheet it patches -> same_dir edges;
+         * the final manifold guard likewise drops/splits faces. OrientMesh_consistent's
+         * live-winding BFS drives same_dir back to 0 without changing topology -- it
+         * only flips face winding, preserving component structure (so it cannot mask
+         * a merger: the component COUNT is unchanged). */
+        if (!no_cleanup) {
+            size_t ro_comp = 0, ro_flip = 0, ro_resid = 0;
+            OrientMesh_consistent(arena, out_verts, out_nv, NULL,
+                                  flat_faces, n_unique_faces,
+                                  &ro_flip, &ro_comp, &ro_resid);
+            fprintf(stderr, "Post-fill winding repair: %zu components, %zu "
+                    "flipped, %zu residual same_dir\n", ro_comp, ro_flip, ro_resid);
         }
 
         /* Stage 08: final mesh after the last winding pass (== welded.obj). */

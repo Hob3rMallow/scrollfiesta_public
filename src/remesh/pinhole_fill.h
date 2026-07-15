@@ -92,6 +92,18 @@ int HoleFill_meshes(Arena_T arena,
  * never bridge two wraps, regardless of how few vertices the loop has. */
 #define PINHOLE_MAX_DIAM_VOX 4.5f
 
+/* Diameter cap for the SINGLE-triangle (3-loop) case only. A 3-loop's three
+ * boundary edges all already exist (it is a lone missing triangle), so its three
+ * verts are already mutually adjacent -- one connected component, i.e. one wrap.
+ * Capping the fill adds NO new edge, so it can never create a cross-wrap merger
+ * regardless of diameter; the cap here is only geometric sanity (a 3-loop wider
+ * than the ~7-vox inter-wrap clearance is a real opening, not a missing tri).
+ * The 4.5 general cap was over-conservative for 3-loops: it left genuine
+ * same-sheet single-triangle seam holes (~6 vox across, where a coarse boundary
+ * edge sits at the bridge ball's 2*rho_max=6 reach) permanently open -- a dead
+ * zone between 4.5 and the 7-vox clearance. Kept strictly under the clearance. */
+#define PINHOLE_TRI_DIAM_VOX 6.5f
+
 /* A single-triangle (3-loop) fill is rejected if its min altitude (2*area /
  * longest edge, voxels) is below this — i.e. the triangle is a near-collinear
  * zero-area sliver. The "chewed" ragged boundary along a cube face is a row of
@@ -112,5 +124,19 @@ int HoleFill_meshes(Arena_T arena,
  * fail the gap test and fall through to the split. */
 #define BOWTIE_COHERENCE_COS 0.2f
 #define BOWTIE_GAP_MAX_VOX   2.0f
+
+/* Wider gap cap used ONLY when the weld arms it (SEAM_UMBILICUS_Y/X +
+ * SEAM_WRAP_PITCH) AND the ORIENTATION GATE passes. A wide bowtie is two triangle
+ * fans meeting at one point; closing the gap fans a triangle across it. The gap
+ * is safe to close IFF the fan is WINDING-CONSISTENT with both fans -- i.e. it
+ * reverses the boundary half-edge each fan owns at v. A benign same-sheet pinch
+ * (both fans wound the same way) permits exactly one such winding; a FOLD (front
+ * meets back, the two fans wound oppositely) permits NONE, so it is skipped and
+ * left to split. This is why the earlier normal-coherence gate was insufficient
+ * (two fans can share a normal but be wound oppositely -> a folded flap): it
+ * closed folds and drove same_dir 43->415 across the 4x5x5 grid. The winding gate
+ * closes the benign pinches (recovering the "second missing triangle" at a
+ * grazing seam) WITHOUT touching folds. Kept strictly below the 7-vox clearance. */
+#define BOWTIE_GAP_MAX_ARMED_VOX  6.5f
 
 #endif

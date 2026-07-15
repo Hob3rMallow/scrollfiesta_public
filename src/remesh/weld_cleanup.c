@@ -204,14 +204,18 @@ static size_t flip_pass(Arena_T arena, const float *V, int32_t *faces,
             if (vused[a]||vused[b]||vused[c]||vused[d]||fused[fc]||fused[fd]){ i+=2; continue; }
             if (mhe_edge_exists(mhe, n_he, c, d)){ i+=2; continue; }  /* flip target already an edge -> non-manifold */
             cur=min_angle(V,a,b,c); cur2=min_angle(V,b,a,d); if (cur2<cur)cur=cur2;
-            flp=min_angle(V,c,d,a); flp2=min_angle(V,d,c,b); if (flp2<flp)flp=flp2;
+            flp=min_angle(V,c,a,d); flp2=min_angle(V,d,b,c); if (flp2<flp)flp=flp2;
             if (flp <= cur + 0.001f){ i+=2; continue; }
-            face_normal(V,a,b,c,n_orig); face_normal(V,c,d,a,n1); face_normal(V,d,c,b,n2);
+            /* Orientation-preserving flip: (c,a,d)+(d,b,c) keeps the quad
+             * a->d->b->c boundary directions. Guard and write must match -- a
+             * reversed (c,d,a)+(d,c,b) write injects same_dir on folds (see
+             * qem.c::qem_edge_flip_pass). */
+            face_normal(V,a,b,c,n_orig); face_normal(V,c,a,d,n1); face_normal(V,d,b,c,n2);
             dot1=n_orig[0]*n1[0]+n_orig[1]*n1[1]+n_orig[2]*n1[2];
             dot2=n_orig[0]*n2[0]+n_orig[1]*n2[1]+n_orig[2]*n2[2];
             if (dot1<=0.0f || dot2<=0.0f){ i+=2; continue; }
-            faces[fc*3+0]=c; faces[fc*3+1]=d; faces[fc*3+2]=a;
-            faces[fd*3+0]=d; faces[fd*3+1]=c; faces[fd*3+2]=b;
+            faces[fc*3+0]=c; faces[fc*3+1]=a; faces[fc*3+2]=d;
+            faces[fd*3+0]=d; faces[fd*3+1]=b; faces[fd*3+2]=c;
             vused[a]=vused[b]=vused[c]=vused[d]=1; fused[fc]=fused[fd]=1;
             n_flipped++; i+=2;
         } else i++;

@@ -67,6 +67,7 @@ void Weld_verts(Arena_T arena,
                 const float *in_normals,
                 int32_t *faces, size_t nf, size_t *out_nf,
                 float eps,
+                bool guard_orient,
                 float **out_verts, size_t *out_nv,
                 float **out_normals)
 {
@@ -116,6 +117,35 @@ void Weld_verts(Arena_T arena,
                          (long)nv * (long)sizeof(int32_t));
     for (size_t i = 0; i < nv; i++) parent[i] = (int32_t)i;
 
+    /* Orientation guard (guard_orient && nf>0): a coincident pair is fused
+     * only when its area-weighted winding normals agree. Merging two
+     * opposite-facing (recto vs verso) verts fuses the sheet to its own back
+     * = a non-orientable knot (a `same_dir` edge no winding-repair BFS can
+     * fix). The mesh is consistently wound here (the caller runs OrientMesh
+     * first), so an opposing normal dot is exactly a would-be same_dir fusion.
+     * Per-vertex normal = normalized sum of un-normalized incident-face cross
+     * products (flip-sensitive by construction); see orient_weld.c. */
+    int do_guard = (guard_orient && nf > 0) ? 1 : 0;
+    double *vn = NULL;
+    if (do_guard) {
+        vn = (double *)ARENA_CALLOC(arena, (long)nv * 3L, (long)sizeof(double));
+        for (size_t f = 0; f < nf; f++) {
+            int32_t i0 = faces[f*3+0], i1 = faces[f*3+1], i2 = faces[f*3+2];
+            const float *p0 = &verts[(size_t)i0*3];
+            const float *p1 = &verts[(size_t)i1*3];
+            const float *p2 = &verts[(size_t)i2*3];
+            double a0 = p1[0]-p0[0], a1 = p1[1]-p0[1], a2 = p1[2]-p0[2];
+            double b0 = p2[0]-p0[0], b1 = p2[1]-p0[1], b2 = p2[2]-p0[2];
+            double c0 = a1*b2 - a2*b1, c1 = a2*b0 - a0*b2, c2 = a0*b1 - a1*b0;
+            int32_t idx[3] = { i0, i1, i2 };
+            for (int t = 0; t < 3; t++) {
+                vn[(size_t)idx[t]*3+0] += c0;
+                vn[(size_t)idx[t]*3+1] += c1;
+                vn[(size_t)idx[t]*3+2] += c2;
+            }
+        }
+    }
+
     /* For each vert (in original index order), look at all neighbours
      * within eps in the 27-cell box and union with them. Visiting in
      * original index order makes the union pattern stable. */
@@ -145,6 +175,15 @@ void Weld_verts(Arena_T arena,
                         double dvx = (double)verts[j*3+2] - (double)vx;
                         double r2 = dvz*dvz + dvy*dvy + dvx*dvx;
                         if (r2 <= E2) {
+                            if (do_guard) {
+                                const double *ni = &vn[i*3];
+                                const double *nj = &vn[(size_t)j*3];
+                                /* Opposing winding normals => recto vs verso.
+                                 * Fusing them makes a non-orientable knot; skip
+                                 * this pair (leave the slit for the hole-fill). */
+                                if (ni[0]*nj[0] + ni[1]*nj[1] + ni[2]*nj[2] < 0.0)
+                                    continue;
+                            }
                             uf_union(parent, (int32_t)i, j);
                         }
                     }

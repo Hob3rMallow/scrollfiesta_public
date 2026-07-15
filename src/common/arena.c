@@ -1,5 +1,7 @@
 #include "arena.h"
+#include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <assert.h>
 
@@ -14,7 +16,7 @@ union align {
 #define ALIGNMENT (sizeof(union align))
 
 /* 64 MB default chunk size [common.md §1] */
-#define CHUNK_SIZE ((long)(64 * 1024 * 1024))
+#define CHUNK_SIZE ((size_t)(64 * 1024 * 1024))
 
 /* Max free list length */
 #define MAX_FREE_CHUNKS 10
@@ -32,21 +34,23 @@ struct Arena_T {
     int                 free_count;
 };
 
-static long roundup(long nbytes)
+/* Round a byte count up to ALIGNMENT. size_t throughout so >2 GB requests do
+ * not truncate on LLP64 (Win64). */
+static size_t roundup(size_t nbytes)
 {
-    long rem = nbytes % (long)ALIGNMENT;
+    size_t rem = nbytes % ALIGNMENT;
     if (rem != 0) {
-        nbytes += (long)ALIGNMENT - rem;
+        nbytes += ALIGNMENT - rem;
     }
     return nbytes;
 }
 
-static struct Arena_chunk *chunk_new(long min_bytes)
+static struct Arena_chunk *chunk_new(size_t min_bytes)
 {
-    long header_size = roundup((long)sizeof(struct Arena_chunk));
-    long data_size = min_bytes > CHUNK_SIZE ? min_bytes : CHUNK_SIZE;
-    long total = header_size + data_size;
-    struct Arena_chunk *c = malloc((size_t)total);
+    size_t header_size = roundup(sizeof(struct Arena_chunk));
+    size_t data_size = min_bytes > CHUNK_SIZE ? min_bytes : CHUNK_SIZE;
+    size_t total = header_size + data_size;
+    struct Arena_chunk *c = malloc(total);
     if (c == NULL) {
         return NULL;
     }
@@ -95,7 +99,7 @@ void Arena_free(Arena_T arena)
         struct Arena_chunk *prev = c->prev;
         if (arena->free_count < MAX_FREE_CHUNKS) {
             /* Reset chunk for reuse */
-            long header_size = roundup((long)sizeof(struct Arena_chunk));
+            size_t header_size = roundup(sizeof(struct Arena_chunk));
             c->avail = (char *)c + header_size;
             c->prev  = arena->freelist;
             arena->freelist = c;
@@ -108,16 +112,20 @@ void Arena_free(Arena_T arena)
     arena->current = NULL;
 }
 
-void *Arena_alloc(Arena_T arena, long nbytes, const char *file, int line)
+void *Arena_alloc(Arena_T arena, size_t nbytes, const char *file, int line)
 {
     assert(arena);
-    assert(nbytes > 0);
+    /* Empty/degenerate input (e.g. a CSR with 0 adjacency entries, an isolated-
+     * face mesh) legitimately asks for 0 bytes; hand back a valid, unique,
+     * minimally-sized pointer instead of aborting -- a 0-length array is never
+     * dereferenced. Rule 18: handle empty input gracefully, never crash. */
+    if (nbytes == 0) { nbytes = 1; }
 
     nbytes = roundup(nbytes);
 
-    /* Try current chunk */
+    /* Try current chunk (avail <= limit always, so the diff is non-negative) */
     struct Arena_chunk *c = arena->current;
-    if (c != NULL && c->limit - c->avail >= nbytes) {
+    if (c != NULL && (size_t)(c->limit - c->avail) >= nbytes) {
         void *ptr = c->avail;
         c->avail += nbytes;
         return ptr;
@@ -127,7 +135,7 @@ void *Arena_alloc(Arena_T arena, long nbytes, const char *file, int line)
     struct Arena_chunk **pp = &arena->freelist;
     while (*pp != NULL) {
         struct Arena_chunk *fc = *pp;
-        if (fc->limit - fc->avail >= nbytes) {
+        if ((size_t)(fc->limit - fc->avail) >= nbytes) {
             /* Unlink from free list */
             *pp = fc->prev;
             arena->free_count--;
@@ -145,7 +153,7 @@ void *Arena_alloc(Arena_T arena, long nbytes, const char *file, int line)
     struct Arena_chunk *nc = chunk_new(nbytes);
     if (nc == NULL) {
         if (file) {
-            fprintf(stderr, "Arena_alloc: OOM at %s:%d (%ld bytes)\n",
+            fprintf(stderr, "Arena_alloc: OOM at %s:%d (%zu bytes)\n",
                     file, line, nbytes);
         }
         RAISE(Arena_Failed);
@@ -158,13 +166,23 @@ void *Arena_alloc(Arena_T arena, long nbytes, const char *file, int line)
     return ptr;
 }
 
-void *Arena_calloc(Arena_T arena, long count, long size,
+void *Arena_calloc(Arena_T arena, size_t count, size_t size,
                    const char *file, int line)
 {
-    assert(count > 0 && size > 0);
-    long nbytes = count * size;
+    /* A zero count or size flows through to Arena_alloc (which returns a valid
+     * pointer for a 0-byte request); memset of 0 bytes is a no-op. Guard
+     * count*size overflow BEFORE it wraps (size_t is unsigned). */
+    if (size != 0 && count > SIZE_MAX / size) {
+        if (file) {
+            fprintf(stderr, "Arena_calloc: size overflow at %s:%d "
+                    "(%zu * %zu)\n", file, line, count, size);
+        }
+        RAISE(Arena_Failed);
+        return NULL; /* unreachable */
+    }
+    size_t nbytes = count * size;
     void *ptr = Arena_alloc(arena, nbytes, file, line);
-    memset(ptr, 0, (size_t)nbytes);
+    memset(ptr, 0, nbytes);
     return ptr;
 }
 
@@ -196,7 +214,7 @@ void Arena_restore(Arena_T arena, Arena_Mark mark)
         arena->current = c->prev;
         /* Move to free list or free */
         if (arena->free_count < MAX_FREE_CHUNKS) {
-            long header_size = roundup((long)sizeof(struct Arena_chunk));
+            size_t header_size = roundup(sizeof(struct Arena_chunk));
             c->avail = (char *)c + header_size;
             c->prev  = arena->freelist;
             arena->freelist = c;

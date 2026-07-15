@@ -1012,15 +1012,17 @@ static int bpa_try_candidate(const Vec3 *V, EdgeStore *es, uint8_t *used,
      * offset, even sharply curved, even joining verts at different y along the seam)
      * has |dw| ~ 0, while a next-wrap merger steps |dw| ~ 1.
      *
-     * Radial-dominance conjunct (2026-07-08): only reject when the bridge
-     * displacement is DOMINANTLY radial. A true cross-wrap hop is radial by
-     * construction (stacked wraps, bridge ~ perpendicular to both sheets). At a
-     * GRAZING seam -- the wrap running parallel to the cube face, e.g. the
-     * x-plane at the umbilicus' y -- the per-cube trim leaves interleaved
-     * coverage bites, and the legit closures are long OBLIQUE bridges whose
-     * radial component can exceed tol*pitch while being mostly lateral
-     * (z/tangential). Those must weld: dr^2 must dominate the full 3D chord
-     * (dr^2 > 0.5*|chord|^2) before the phase test can reject. */
+     * Tangential-dominance exemption (2026-07-08, refined 2026-07-09): bypass
+     * the phase test ONLY for a genuinely TANGENTIAL chord -- a grazing-seam
+     * closure that runs ALONG the wrap in the y-x plane, where dw is a
+     * seam-disagreement artifact (the per-cube trim leaves interleaved coverage
+     * bites, and the legit closure is a long oblique bridge). A chord dominated
+     * by its RADIAL component (a cross-wrap hop, perpendicular to stacked
+     * sheets) OR its AXIAL/z component (a Z-SEAM bridge rolling a divot UP to
+     * the next wrap -- the original radial-only exemption exempted these because
+     * a z-axis chord is not radially dominant) is gated on phase. Decompose the
+     * 3D chord into radial (dr), axial (cz) and tangential (the rest); exempt
+     * only when tangential dominates, i.e. dr^2 + cz^2 < 0.5*|chord|^2. */
     if (!abort_pivot && g_wind_tol > 0.0 && g_wrap_pitch > 0.0) {
         double my = 0.5*((double)V[t].y + (double)V[h].y) - g_umb_y;
         double mx = 0.5*((double)V[t].x + (double)V[h].x) - g_umb_x;
@@ -1033,14 +1035,11 @@ static int bpa_try_candidate(const Vec3 *V, EdgeStore *es, uint8_t *used,
         while (dth < -M_PI) dth += 2.0*M_PI;
         double dw = dr/g_wrap_pitch - dth/(2.0*M_PI);
         if (fabs(dw) > g_wind_tol) {
-            /* Radial-dominant chord -> cross-wrap hop. Lateral chords are
-             * exempt (grazing-seam closures) UNLESS the phase gap exceeds the
-             * hard cap: past ~0.4 turn the far side is a different SURFACE
-             * (delaminated layer / next wrap), whatever the chord direction. */
             double cy = vy - my, cx = vx - mx;
             double cz = (double)V[v_new].z - mz;
             double chord2 = cy*cy + cx*cx + cz*cz;
-            if (dr*dr > 0.5*chord2 ||
+            double non_tang2 = dr*dr + cz*cz;   /* radial + axial */
+            if (non_tang2 > 0.5*chord2 ||       /* not tangentially dominant */
                 (g_wind_hard > 0.0 && fabs(dw) > g_wind_hard)) {
                 abort_pivot = 1; g_dbg_wind++;
             }
@@ -1522,6 +1521,29 @@ int BallPivot_reconstruct(Arena_T arena,
     return 0;
 }
 
+/* Winding-phase edge test for the FINAL bridge-face filter (below). Returns 1
+ * if edge (a,b) is a cross-wrap jump -- non-tangential-dominant chord with
+ * |dw| > tol, or over the hard cap. Mirrors the per-glue winding gate, but the
+ * per-glue gate checks only mid(t,h)->v_new; a bridge face built over several
+ * glue steps can accumulate a cross-wrap span on an edge the gate never saw
+ * (the divot "wall" that connects a sheet UP to the next wrap at a Z-seam). */
+static int bpa_edge_cross_wrap(const Vec3 *V, int32_t a, int32_t b)
+{
+    double ay = (double)V[a].y - g_umb_y, ax = (double)V[a].x - g_umb_x;
+    double by = (double)V[b].y - g_umb_y, bx = (double)V[b].x - g_umb_x;
+    double ra = hypot(ay, ax), rb = hypot(by, bx);
+    double dr = rb - ra;
+    double dth = atan2(by, bx) - atan2(ay, ax);
+    while (dth >  M_PI) dth -= 2.0*M_PI;
+    while (dth < -M_PI) dth += 2.0*M_PI;
+    double dw = dr/g_wrap_pitch - dth/(2.0*M_PI);
+    if (fabs(dw) <= g_wind_tol) return 0;
+    double cy = by - ay, cx = bx - ax, cz = (double)V[b].z - (double)V[a].z;
+    double chord2 = cy*cy + cx*cx + cz*cz;
+    double non_tang2 = dr*dr + cz*cz;             /* radial + axial */
+    return (non_tang2 > 0.5*chord2) || (g_wind_hard > 0.0 && fabs(dw) > g_wind_hard);
+}
+
 int BallPivot_bridge(Arena_T arena,
                      const float *verts,
                      const float *normals,
@@ -1687,9 +1709,26 @@ int BallPivot_bridge(Arena_T arena,
     }
 
     int32_t *out = (int32_t *)ARENA_ALLOC(arena, (long)((size_t)b.nf * 3 * sizeof(int32_t)));
-    for (int i = 0; i < b.nf*3; i++) out[i] = (int32_t)b.F[i];
+    /* Final winding filter: drop any completed bridge face carrying a cross-wrap
+     * edge the per-glue gate missed (span accumulated over several glue steps --
+     * the divot "wall" that connects a sheet UP to the next wrap at a Z-seam).
+     * Active only when the gate is armed (umbilicus + pitch supplied). */
+    size_t out_n = 0, n_wall = 0;
+    for (int f = 0; f < b.nf; f++) {
+        int32_t a = (int32_t)b.F[f*3+0], c = (int32_t)b.F[f*3+1], d = (int32_t)b.F[f*3+2];
+        if (g_wind_tol > 0.0 && g_wrap_pitch > 0.0 &&
+            (bpa_edge_cross_wrap(V, a, c) || bpa_edge_cross_wrap(V, c, d) ||
+             bpa_edge_cross_wrap(V, a, d))) {
+            n_wall++;
+            continue;
+        }
+        out[out_n*3+0] = a; out[out_n*3+1] = c; out[out_n*3+2] = d; out_n++;
+    }
+    if (n_wall > 0)
+        fprintf(stderr, "  [bridge] winding filter: %zu completed cross-wrap "
+                "face(s) dropped\n", n_wall);
     *out_faces = out;
-    *out_nf = (size_t)b.nf;
+    *out_nf = out_n;
 
     bpa_build_free(&b); free(used); free(vfront);
     edges_free(es); grid_free(g);

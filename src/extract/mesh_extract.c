@@ -1149,7 +1149,7 @@ int MeshExtract_run(Arena_T          arena,
                 Weld_verts(scratch,
                            src_v, src_nv, src_n,
                            &dummy_face, 0, &dummy_out_nf,
-                           weld_eps,
+                           weld_eps, /*guard_orient=*/false,
                            &welded_verts, &welded_nv, &welded_normals);
                 if (welded_nv == prev_nv && iter > 0) break;
                 src_v = welded_verts;

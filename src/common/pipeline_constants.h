@@ -32,7 +32,12 @@
 #define GARBAGE_RECT_RUN        12     /* ...AND a run of >= this many consecutive rect frames */
 
 /* Step 0 */
-#define MIN_CC_SIZE          500    /* voxels - discard smaller components */
+#define MIN_CC_SIZE          500    /* voxels - discard smaller components. Also
+                                     * the "empty garbage" floor: a cube whose
+                                     * LARGEST 6-conn component is below this can
+                                     * never mesh, so pred_reject rejects it
+                                     * pre-spawn (sibling of the solid-slab reject)
+                                     * rather than mesh to a guaranteed empty FAIL. */
 #define MAX_COMPONENTS        20    /* keep top N by size */
 #define CLEANUP_MICRO_HOLE_MAX 6   /* max boundary loop verts for fill */
 #define MIN_FRAGMENT_FACES   100    /* discard sub-components smaller */

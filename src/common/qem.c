@@ -875,8 +875,8 @@ static size_t qem_edge_flip_pass(Arena_T arena,
             cur_min2 = qem_maint_min_angle(verts, b, a, d);
             if (cur_min2 < cur_min) cur_min = cur_min2;
 
-            flip_min = qem_maint_min_angle(verts, c, d, a);
-            flip_min2 = qem_maint_min_angle(verts, d, c, b);
+            flip_min = qem_maint_min_angle(verts, c, a, d);
+            flip_min2 = qem_maint_min_angle(verts, d, b, c);
             if (flip_min2 < flip_min) flip_min = flip_min2;
 
             if (flip_min <= cur_min + 0.001f) {
@@ -885,10 +885,14 @@ static size_t qem_edge_flip_pass(Arena_T arena,
             }
 
             /* Convexity: reference normal from fwd face (a,b,c).
-             * New faces (c,d,a) and (d,c,b) must agree. */
+             * The orientation-preserving flip of the quad a->d->b->c->a across
+             * the new diagonal c-d yields faces (c,a,d) and (d,b,c) -- both keep
+             * the quad's boundary-edge directions, so their normals must agree
+             * with n_orig. (A reversed write here would negate them and inject a
+             * same_dir edge on every quad boundary edge.) */
             qem_maint_face_normal(verts, a, b, c, n_orig);
-            qem_maint_face_normal(verts, c, d, a, n1);
-            qem_maint_face_normal(verts, d, c, b, n2);
+            qem_maint_face_normal(verts, c, a, d, n1);
+            qem_maint_face_normal(verts, d, b, c, n2);
             dot1 = n_orig[0]*n1[0] + n_orig[1]*n1[1] + n_orig[2]*n1[2];
             dot2 = n_orig[0]*n2[0] + n_orig[1]*n2[1] + n_orig[2]*n2[2];
             if (dot1 <= 0.0f || dot2 <= 0.0f) {
@@ -896,15 +900,16 @@ static size_t qem_edge_flip_pass(Arena_T arena,
                 continue;
             }
 
-            /* Perform flip: (a,b,c) + (b,a,d) -> (c,d,a) + (d,c,b)
-             * fc is the face that had (a,b,c), fd had (b,a,d). */
+            /* Perform flip: (a,b,c) + (b,a,d) -> (c,a,d) + (d,b,c)
+             * fc is the face that had (a,b,c), fd had (b,a,d). Winding is
+             * preserved: both new tris keep the quad boundary a->d->b->c. */
             faces[fc * 3 + 0] = c;
-            faces[fc * 3 + 1] = d;
-            faces[fc * 3 + 2] = a;
+            faces[fc * 3 + 1] = a;
+            faces[fc * 3 + 2] = d;
 
             faces[fd * 3 + 0] = d;
-            faces[fd * 3 + 1] = c;
-            faces[fd * 3 + 2] = b;
+            faces[fd * 3 + 1] = b;
+            faces[fd * 3 + 2] = c;
 
             vert_used[a] = vert_used[b] = vert_used[c] = vert_used[d] = 1;
             face_used[fc] = face_used[fd] = 1;

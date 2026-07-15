@@ -156,6 +156,41 @@ static void axis_rect_scan(const uint8_t *bin, int D, int H, int W, int axis,
     *out_max_run = max_run;
 }
 
+/* ---- Largest 6-connected foreground component size (voxels). `bin` is 0/1.
+ * Iterative flood fill; caller scratch: `visited` (>= n uint8) and `stack`
+ * (>= n int32). n = D*H*W fits int32 for any cube up to ~1290^3, far beyond
+ * the 128^3 / halo sizes used here. ---- */
+static size_t largest_cc6(const uint8_t *bin, int D, int H, int W,
+                          uint8_t *visited, int32_t *stack)
+{
+    size_t HW = (size_t)H * (size_t)W;
+    size_t n  = (size_t)D * HW;
+    memset(visited, 0, n);
+    size_t best = 0;
+    for (size_t s = 0; s < n; s++) {
+        if (!bin[s] || visited[s]) continue;
+        size_t sp = 0, count = 0;
+        stack[sp++] = (int32_t)s;
+        visited[s] = 1;
+        while (sp > 0) {
+            size_t i = (size_t)stack[--sp];
+            count++;
+            int z = (int)(i / HW);
+            int rem = (int)(i % HW);
+            int y = rem / W, x = rem % W;
+            size_t j;
+            if (z > 0)     { j = i - HW; if (bin[j] && !visited[j]) { visited[j] = 1; stack[sp++] = (int32_t)j; } }
+            if (z < D - 1) { j = i + HW; if (bin[j] && !visited[j]) { visited[j] = 1; stack[sp++] = (int32_t)j; } }
+            if (y > 0)     { j = i - (size_t)W; if (bin[j] && !visited[j]) { visited[j] = 1; stack[sp++] = (int32_t)j; } }
+            if (y < H - 1) { j = i + (size_t)W; if (bin[j] && !visited[j]) { visited[j] = 1; stack[sp++] = (int32_t)j; } }
+            if (x > 0)     { j = i - 1; if (bin[j] && !visited[j]) { visited[j] = 1; stack[sp++] = (int32_t)j; } }
+            if (x < W - 1) { j = i + 1; if (bin[j] && !visited[j]) { visited[j] = 1; stack[sp++] = (int32_t)j; } }
+        }
+        if (count > best) best = count;
+    }
+    return best;
+}
+
 int PredReject_is_garbage(Arena_T arena, const uint8_t *vol,
                           int D, int H, int W, PredRejectStats *out)
 {
@@ -164,7 +199,7 @@ int PredReject_is_garbage(Arena_T arena, const uint8_t *vol,
     PredRejectStats st;
     memset(&st, 0, sizeof(st));
     st.n_vox = (size_t)D * (size_t)H * (size_t)W;
-    st.reason = "keep: empty";
+    st.reason = "keep";
 
     Arena_Mark mark = Arena_save(arena);
 
@@ -179,10 +214,28 @@ int PredReject_is_garbage(Arena_T arena, const uint8_t *vol,
     st.fg_count = fg;
     st.fill_frac = (st.n_vox > 0) ? (double)fg / (double)st.n_vox : 0.0;
 
-    if (fg == 0) {
+    /* ---- EMPTY garbage: no 6-connected component big enough to mesh. Step 0
+     * keeps only components with >= MIN_CC_SIZE voxels, so if the LARGEST
+     * component is below that floor, Step 0 produces nothing and meshing is a
+     * certain empty FAIL. Reject pre-spawn as a sibling of the solid-slab
+     * reject. This is the exact Step-0 criterion -- stricter than a total-FG
+     * test, since sub-threshold scatter can sum past MIN_CC_SIZE while no single
+     * component is meshable -- so it never drops a real sheet (a genuine patch
+     * forms one component well above the floor). ---- */
+    {
+        Arena_Mark cc_mark = Arena_save(arena);
+        uint8_t *cc_vis = (uint8_t *)ARENA_ALLOC(arena, (long)st.n_vox);
+        int32_t *cc_stk = (int32_t *)ARENA_ALLOC(arena, (long)(st.n_vox * sizeof(int32_t)));
+        st.largest_cc = largest_cc6(bin, D, H, W, cc_vis, cc_stk);
+        Arena_restore(arena, cc_mark);
+    }
+    if (st.largest_cc < (size_t)MIN_CC_SIZE) {
+        st.verdict = 1;
+        st.empty = 1;
+        st.reason = "reject: empty (no meshable component)";
         if (out) *out = st;
         Arena_restore(arena, mark);
-        return 0;
+        return 1;
     }
 
     /* ---- Signal 1: 3D erosion-survival (thickness). ---- */
@@ -322,13 +375,53 @@ int PredReject_selftest(void)
         if (r != 1) { printf("  FAIL: expected REJECT\n"); fails++; }
     }
 
-    /* case 5: empty volume -> KEEP */
+    /* case 5: empty volume -> REJECT (empty garbage) */
     {
         memset(v, 0, nv);
         PredRejectStats s;
         int r = PredReject_is_garbage(arena, v, N, N, N, &s);
-        printf("[case5] empty: verdict=%d (%s)\n", r, s.reason);
+        printf("[case5] empty: verdict=%d empty=%d (%s)\n", r, s.empty, s.reason);
+        if (r != 1 || s.empty != 1) { printf("  FAIL: expected REJECT-empty\n"); fails++; }
+    }
+
+    /* case 6: a tiny speck (7^3 = 343 FG < MIN_CC_SIZE) -> REJECT (empty) */
+    {
+        memset(v, 0, nv);
+        fill_block(v, N, N, N, 20, 27, 20, 27, 20, 27);
+        PredRejectStats s;
+        int r = PredReject_is_garbage(arena, v, N, N, N, &s);
+        printf("[case6] tiny speck fg=%zu: verdict=%d empty=%d (%s)\n",
+               s.fg_count, r, s.empty, s.reason);
+        if (r != 1 || s.empty != 1) { printf("  FAIL: expected REJECT-empty\n"); fails++; }
+    }
+
+    /* case 7: a small 1-vox-thick sheet just above the floor (25x25 = 625 FG
+     * >= MIN_CC_SIZE) -> KEEP. Guards the empty floor from over-rejecting a
+     * genuine, if small, thin sheet. */
+    {
+        memset(v, 0, nv);
+        fill_block(v, N, N, N, 30, 31, 10, 35, 10, 35);
+        PredRejectStats s;
+        int r = PredReject_is_garbage(arena, v, N, N, N, &s);
+        printf("[case7] small sheet fg=%zu cc=%zu: verdict=%d empty=%d (%s)\n",
+               s.fg_count, s.largest_cc, r, s.empty, s.reason);
         if (r != 0) { printf("  FAIL: expected KEEP\n"); fails++; }
+    }
+
+    /* case 8: scattered sub-threshold specks -- total FG (3x343 = 1029) exceeds
+     * MIN_CC_SIZE but every 6-conn component (343) is below it, so Step 0 meshes
+     * nothing. REJECT (empty). This is the real z04352_y04480_x02816 case and
+     * guards against a total-FG-only test passing it through to a mesh FAIL. */
+    {
+        memset(v, 0, nv);
+        fill_block(v, N, N, N,  4, 11,  4, 11,  4, 11);
+        fill_block(v, N, N, N,  4, 11,  4, 11, 40, 47);
+        fill_block(v, N, N, N, 40, 47, 40, 47, 40, 47);
+        PredRejectStats s;
+        int r = PredReject_is_garbage(arena, v, N, N, N, &s);
+        printf("[case8] scatter fg=%zu cc=%zu: verdict=%d empty=%d (%s)\n",
+               s.fg_count, s.largest_cc, r, s.empty, s.reason);
+        if (r != 1 || s.empty != 1) { printf("  FAIL: expected REJECT-empty\n"); fails++; }
     }
 
     free(v);

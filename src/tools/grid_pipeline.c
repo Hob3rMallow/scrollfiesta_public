@@ -450,20 +450,22 @@ static int idset_has(const IdSet *s, const char *id)
 static void idset_free(IdSet *s) { free(s->ids); s->ids = NULL; s->n = 0; }
 
 /* Cheap garbage check: load a cube's OWN 128^3 prediction (no halo -- the
- * verdict is per-cube) and run the solid-slab detector. Per-call arena so it
- * is thread-safe inside the OpenMP loop. */
-static int cube_is_garbage(const char *tiff_path)
+ * verdict is per-cube) and run the garbage detector. Per-call arena so it is
+ * thread-safe inside the OpenMP loop. Returns the reject KIND:
+ *   0 = keep, 1 = solid-slab garbage, 2 = empty garbage (no meshable component). */
+static int cube_reject_kind(const char *tiff_path)
 {
     Arena_T a = Arena_new();
     uint8_t *vol = NULL;
     int D = 0, H = 0, W = 0;
-    int garbage = 0;
+    int kind = 0;
     if (TiffIO_load(a, tiff_path, &vol, &D, &H, &W) == 0) {
         PredRejectStats st;
-        garbage = PredReject_is_garbage(a, vol, D, H, W, &st);
+        if (PredReject_is_garbage(a, vol, D, H, W, &st))
+            kind = st.empty ? 2 : 1;
     }
     Arena_dispose(&a);
-    return garbage;
+    return kind;
 }
 
 /* Built-in unit test for the resume completeness check (--selftest). */
@@ -609,10 +611,10 @@ int main(int argc, char *argv[])
     omp_set_dynamic(0);
     omp_set_num_threads(opts.max_concurrent);
 
-    int n_ok = 0, n_fail = 0, n_skip = 0, n_reject = 0;
+    int n_ok = 0, n_fail = 0, n_skip = 0, n_reject = 0, n_reject_empty = 0;
     int i;
     int n_jobs_i = (int)n_jobs;
-    #pragma omp parallel for schedule(dynamic, 1) reduction(+:n_ok,n_fail,n_skip,n_reject)
+    #pragma omp parallel for schedule(dynamic, 1) reduction(+:n_ok,n_fail,n_skip,n_reject,n_reject_empty)
     for (i = 0; i < n_jobs_i; i++) {
         /* Resume: a cube with an already-complete final OBJ is left untouched. */
         if (opts.skip_existing) {
@@ -633,20 +635,25 @@ int main(int argc, char *argv[])
                 continue;
             }
         }
-        /* Garbage gate: skip solid-slab prediction cubes entirely (no
-         * subprocess). Recorded with the GP_REJECT_CODE sentinel and listed in
-         * rejected_cubes.txt. */
+        /* Garbage gate: skip garbage prediction cubes entirely (no subprocess).
+         * Two kinds: solid-slab (thick filled box) and empty (too little FG to
+         * form one meshable component -- would otherwise mesh to a guaranteed
+         * empty FAIL). Both recorded with the GP_REJECT_CODE sentinel and listed
+         * in rejected_cubes.txt. A supplied --reject-list is treated as slab. */
         if (opts.reject_garbage) {
-            int garbage = have_rejlist ? idset_has(&rejset, jobs[i].cube_id)
-                                       : cube_is_garbage(jobs[i].tiff_path);
-            if (garbage) {
+            int kind = have_rejlist
+                         ? (idset_has(&rejset, jobs[i].cube_id) ? 1 : 0)
+                         : cube_reject_kind(jobs[i].tiff_path);
+            if (kind) {
                 jobs[i].exit_code = GP_REJECT_CODE;
                 jobs[i].wall_seconds = 0.0;
                 n_reject++;
+                if (kind == 2) n_reject_empty++;
                 #pragma omp critical (gp_log)
                 {
-                    fprintf(stderr, "  [reject] %s (garbage solid-slab prediction)\n",
-                            jobs[i].cube_id);
+                    fprintf(stderr, "  [reject] %s (%s)\n", jobs[i].cube_id,
+                            kind == 2 ? "empty prediction -- no meshable component"
+                                      : "garbage solid-slab prediction");
                     if (summary) {
                         fprintf(summary, "%s,%d,0.00\n",
                                 jobs[i].cube_id, GP_REJECT_CODE);
@@ -686,9 +693,10 @@ int main(int argc, char *argv[])
     double t_total = ves_clock_sec() - t_start;
 
     fprintf(stderr,
-            "Cubes: %d ok (%d skipped already-done), %d rejected (garbage), "
-            "%d fail in %.1fs\n",
-            n_ok, n_skip, n_reject, n_fail, t_total);
+            "Cubes: %d ok (%d skipped already-done), %d rejected "
+            "(%d solid-slab, %d empty), %d fail in %.1fs\n",
+            n_ok, n_skip, n_reject, n_reject - n_reject_empty, n_reject_empty,
+            n_fail, t_total);
     if (n_reject > 0)
         fprintf(stderr, "  rejected cube list -> %s\n", rej_path);
 

@@ -60,7 +60,7 @@ COMMON_OBJ = $(COMMON_SRC:.c=.o)
 CPP_OBJ = holefill/clipper2_wrap.o split/multicut_wrap.o
 
 # grid_weld pulls these extra remesh modules (mirror grid_weld.vcxproj).
-WELD_OBJ = remesh/seam_weld.o remesh/fold_cleanup.o remesh/orient_weld.o remesh/weld_cleanup.o
+WELD_OBJ = remesh/seam_weld.o remesh/seam_hole_fill.o remesh/fold_cleanup.o remesh/orient_weld.o remesh/weld_cleanup.o
 
 HDR = $(wildcard common/*.h extract/*.h split/*.h remesh/*.h holefill/*.h pipeline/*.h topology/*.h)
 

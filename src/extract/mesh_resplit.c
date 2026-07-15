@@ -216,7 +216,7 @@ static int relop_rebpa(Arena_T arena, const float *pts, size_t n,
         for (int iter = 0; iter < 5; iter++) {
             size_t prev = wnv;
             Weld_verts(arena, sv2, snv, sn2, &dummy_face, 0, &dummy_nf,
-                       MLS_WELD_EPS_VOX, &wv, &wnv, &wn);
+                       MLS_WELD_EPS_VOX, /*guard_orient=*/false, &wv, &wnv, &wn);
             if (wnv == prev && iter > 0) break;
             sv2 = wv; sn2 = wn; snv = wnv;
         }

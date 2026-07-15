@@ -139,6 +139,20 @@ static void build_vert_faces(Arena_T arena, const int32_t *faces, size_t nf,
     *out_off = off; *out_inc = inc;
 }
 
+/* Direction face fi (its 3 verts) traverses undirected edge (v,w) in its winding:
+ * +1 if it goes v->w, -1 if w->v, 0 if the edge is not in the face. Used by the
+ * bowtie orientation gate to decide whether a gap-filling fan can reverse both
+ * fans' boundary half-edges (benign pinch) or cannot (a fold). */
+static int face_edge_dir(const int32_t *faces, int fi, int32_t v, int32_t w)
+{
+    for (int k = 0; k < 3; k++) {
+        int32_t x = faces[fi*3+k], y = faces[fi*3+(k+1)%3];
+        if (x == v && y == w) return +1;
+        if (x == w && y == v) return -1;
+    }
+    return 0;
+}
+
 /* PHASE 0 — close bowtie pinches IN PLACE (keep the vertex).
  *
  * A non-manifold "bowtie" vertex has incident faces forming >=2 fans that share
@@ -170,6 +184,14 @@ static void close_bowtie_gaps(Arena_T arena, ComponentMesh *cm,
                         (long)((off[nv] ? off[nv] : 1) * 3 * sizeof(int32_t)));
     size_t nfill = 0, closed = 0;
     int dbg = (getenv("PINHOLE_DEBUG") != NULL);
+
+    /* The weld arms a wider gap cap (via SEAM_WRAP_PITCH); wide gaps are then
+     * gated by the ORIENTATION test below, not size. Per-cube (unarmed) keeps the
+     * conservative 2.0 cap. */
+    int bt_armed = 0;
+    { const char *e = getenv("SEAM_WRAP_PITCH"); if (e && atof(e) > 0.0) bt_armed = 1; }
+    double bt_gapmax = bt_armed ? (double)BOWTIE_GAP_MAX_ARMED_VOX
+                                : (double)BOWTIE_GAP_MAX_VOX;
 
     enum { NBR_CAP = 128 };
     for (size_t v = 0; v < nv; v++) {
@@ -257,16 +279,25 @@ static void close_bowtie_gaps(Arena_T arena, ComponentMesh *cm,
             continue;
         }
 
-        /* boundary edges at v = neighbours used by exactly ONE incident face. */
-        int bn[NBR_CAP], bfan[NBR_CAP]; double bang[NBR_CAP]; int nb = 0;
+        /* boundary edges at v = neighbours used by exactly ONE incident face.
+         * bdir = the direction that owning face traverses (v,w): +1 v->w, -1 w->v.
+         * The orientation gate uses it to tell a benign pinch from a fold. */
+        int bn[NBR_CAP], bfan[NBR_CAP], bdir[NBR_CAP]; double bang[NBR_CAP]; int nb = 0;
         for (int q = 0; q < nn; q++) {
             if (ncnt[q] != 1) { continue; }
             int32_t w = nbr[q];
+            int owner = -1;
+            for (size_t j = s; j < e; j++) {
+                int fi = inc[j];
+                if (faces[fi*3+0]==w || faces[fi*3+1]==w || faces[fi*3+2]==w) { owner = fi; break; }
+            }
             double dz=vp[(size_t)w*3+0]-vp[v*3+0];
             double dy=vp[(size_t)w*3+1]-vp[v*3+1];
             double dx=vp[(size_t)w*3+2]-vp[v*3+2];
             double pu=dz*u[0]+dy*u[1]+dx*u[2], pw=dz*wv3[0]+dy*wv3[1]+dx*wv3[2];
-            bn[nb]=w; bfan[nb]=nfan[q]; bang[nb]=atan2(pw,pu); nb++;
+            bn[nb]=w; bfan[nb]=nfan[q]; bang[nb]=atan2(pw,pu);
+            bdir[nb]= owner>=0 ? face_edge_dir(faces, owner, (int32_t)v, w) : 0;
+            nb++;
         }
         if (nb < 2) {
             if (dbg) fprintf(stderr, "  [bowtie] v%zu (%.2f %.2f %.2f) fans=%zu SKIP nb=%d<2\n",
@@ -274,9 +305,9 @@ static void close_bowtie_gaps(Arena_T arena, ComponentMesh *cm,
             continue;
         }
         for (int i = 1; i < nb; i++) {        /* insertion sort by angle */
-            int kn=bn[i], kf=bfan[i]; double ka=bang[i]; int jj=i-1;
-            while (jj>=0 && bang[jj]>ka) { bn[jj+1]=bn[jj]; bfan[jj+1]=bfan[jj]; bang[jj+1]=bang[jj]; jj--; }
-            bn[jj+1]=kn; bfan[jj+1]=kf; bang[jj+1]=ka;
+            int kn=bn[i], kf=bfan[i], kd=bdir[i]; double ka=bang[i]; int jj=i-1;
+            while (jj>=0 && bang[jj]>ka) { bn[jj+1]=bn[jj]; bfan[jj+1]=bfan[jj]; bdir[jj+1]=bdir[jj]; bang[jj+1]=bang[jj]; jj--; }
+            bn[jj+1]=kn; bfan[jj+1]=kf; bdir[jj+1]=kd; bang[jj+1]=ka;
         }
 
         /* fill each cyclically-adjacent boundary pair in DIFFERENT fans (a gap);
@@ -286,21 +317,37 @@ static void close_bowtie_gaps(Arena_T arena, ComponentMesh *cm,
         int ngap = 0; double abort_gap = -1.0; const char *abort_why = NULL;
         for (int i = 0; i < nb; i++) {
             int a = bn[i], b = bn[(i+1)%nb];
+            int da = bdir[i], db = bdir[(i+1)%nb];
             if (bfan[i] == bfan[(i+1)%nb]) { continue; }
             ngap++;
             double dz=vp[(size_t)a*3+0]-vp[(size_t)b*3+0];
             double dy=vp[(size_t)a*3+1]-vp[(size_t)b*3+1];
             double dx=vp[(size_t)a*3+2]-vp[(size_t)b*3+2];
             double glen = sqrt(dz*dz+dy*dy+dx*dx);
-            if (glen > (double)BOWTIE_GAP_MAX_VOX) { abort_v=1; abort_gap=glen; abort_why="wide-gap"; break; }
+            if (glen > bt_gapmax) { abort_v=1; abort_gap=glen; abort_why="wide-gap"; break; }
             if (coincident_v(vp, a, b)) { abort_v=1; abort_gap=glen; abort_why="coincident"; break; }
             if (tri_min_altitude(vp, (int)v, a, b) < HOLEFILL_MIN_ALT_VOX) { abort_v=1; abort_gap=glen; abort_why="sliver"; break; }
-            /* wind (v,a,b) so its normal agrees with n */
-            double e1[3]={vp[(size_t)a*3+0]-vp[v*3+0], vp[(size_t)a*3+1]-vp[v*3+1], vp[(size_t)a*3+2]-vp[v*3+2]};
-            double e2[3]={vp[(size_t)b*3+0]-vp[v*3+0], vp[(size_t)b*3+1]-vp[v*3+1], vp[(size_t)b*3+2]-vp[v*3+2]};
-            double cr[3]={e1[1]*e2[2]-e1[2]*e2[1], e1[2]*e2[0]-e1[0]*e2[2], e1[0]*e2[1]-e1[1]*e2[0]};
-            int va = a, vb = b;
-            if (cr[0]*n[0]+cr[1]*n[1]+cr[2]*n[2] < 0) { va = b; vb = a; }
+            int va, vb;
+            if (glen > (double)BOWTIE_GAP_MAX_VOX) {
+                /* WIDE (armed) gap: orientation gate. The fan must reverse both
+                 * fans' boundary half-edges (v,a) and (v,b). That is possible iff
+                 * the two owning faces traverse them in OPPOSITE senses at v
+                 * (da != db) -- a benign same-sheet pinch. Equal senses (or an
+                 * unknown dir) is a FOLD (fans wound oppositely); abort to split.
+                 * The winding is then fixed by the reversal, NOT by the normal. */
+                if (da == 0 || db == 0 || da == db) {
+                    abort_v=1; abort_gap=glen; abort_why="fold"; break;
+                }
+                if (da == -1) { va = a; vb = b; }   /* (v,a,b): v->a, b->v */
+                else          { va = b; vb = a; }   /* (v,b,a): a->v, v->b */
+            } else {
+                /* NARROW gap: unchanged -- wind (v,a,b) so its normal agrees with n. */
+                double e1[3]={vp[(size_t)a*3+0]-vp[v*3+0], vp[(size_t)a*3+1]-vp[v*3+1], vp[(size_t)a*3+2]-vp[v*3+2]};
+                double e2[3]={vp[(size_t)b*3+0]-vp[v*3+0], vp[(size_t)b*3+1]-vp[v*3+1], vp[(size_t)b*3+2]-vp[v*3+2]};
+                double cr[3]={e1[1]*e2[2]-e1[2]*e2[1], e1[2]*e2[0]-e1[0]*e2[2], e1[0]*e2[1]-e1[1]*e2[0]};
+                va = a; vb = b;
+                if (cr[0]*n[0]+cr[1]*n[1]+cr[2]*n[2] < 0) { va = b; vb = a; }
+            }
             fill[nfill*3+0]=(int32_t)v; fill[nfill*3+1]=va; fill[nfill*3+2]=vb; nfill++;
         }
         if (abort_v) {                               /* roll back this vertex */
@@ -662,7 +709,10 @@ static void fill_small_loops(Arena_T arena, ComponentMesh *cm,
         /* No-merger diameter gate: a genuine pinhole is a few missing triangles
          * spanning a couple of voxels; a wider loop is a real opening (possibly
          * the gap between two wraps) and MUST stay open — filling it could weld
-         * two sheets. Refuse anything that does not fit in the diameter ball. */
+         * two sheets. Refuse anything that does not fit in the diameter ball.
+         * A 3-loop is exempt to the wider PINHOLE_TRI_DIAM_VOX cap: its three
+         * edges already exist, so capping it adds no new edge and cannot merge
+         * two wraps at any diameter (see PINHOLE_TRI_DIAM_VOX). */
         {
             const float *vp = cm->verts;
             float diam2 = 0.0f;
@@ -675,11 +725,13 @@ static void fill_small_loops(Arena_T arena, ComponentMesh *cm,
                     if (d2 > diam2) { diam2 = d2; }
                 }
             }
-            if (diam2 > PINHOLE_MAX_DIAM_VOX * PINHOLE_MAX_DIAM_VOX) {
+            float cap = (len == 3) ? PINHOLE_TRI_DIAM_VOX : PINHOLE_MAX_DIAM_VOX;
+            if (diam2 > cap * cap) {
                 skipped++;
 #ifdef PINHOLE_DEBUG
                 fprintf(stderr, "  [pinhole] skip DIAMETER len=%d diam=%.2f "
-                        "v0=%d\n", len, (double)sqrtf(diam2), loop[0]);
+                        "cap=%.2f v0=%d\n", len, (double)sqrtf(diam2),
+                        (double)cap, loop[0]);
 #endif
                 continue;
             }

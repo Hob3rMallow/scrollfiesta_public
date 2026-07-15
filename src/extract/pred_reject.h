@@ -6,10 +6,19 @@
 #include "../common/arena.h"
 
 /*
- * PredReject -- pre-Step-0 input validation: detect garbage nnUNet prediction
- * cubes (a big solid white rectangle / slab) so they are never meshed.
+ * PredReject -- pre-Step-0 input validation: detect GARBAGE nnUNet prediction
+ * cubes so they are never meshed. Two disjoint garbage modes, both "not a real
+ * thin sheet" but at opposite extremes:
+ *   SOLID-SLAB -- a big solid white rectangle / thick filled box (detected by
+ *                 the thickness + rectangle signals below).
+ *   EMPTY      -- no 6-connected component big enough to mesh (largest CC <
+ *                 MIN_CC_SIZE, the exact Step-0 component filter). Total FG can
+ *                 exceed MIN_CC_SIZE while every component is sub-threshold
+ *                 scatter, so this is stricter than a fill test. Step 0 is then
+ *                 guaranteed to produce no surface, so it is rejected pre-spawn
+ *                 rather than meshed to a certain empty FAIL. Flagged st.empty=1.
  *
- * Motivation: some cubes in a grid are not surface predictions at all -- the
+ * Motivation (solid-slab): some cubes in a grid are not surface predictions at all -- the
  * nnUNet output is a solid filled box, which the mesh pipeline turns into piles
  * of junk fragments that pollute the weld. Gross fill fraction CANNOT separate
  * these from real cubes (a 27.7%-filled garbage slab looks identical to a
@@ -32,6 +41,7 @@
 typedef struct {
     size_t  n_vox;            /* total voxels D*H*W                          */
     size_t  fg_count;         /* foreground voxels                           */
+    size_t  largest_cc;       /* largest 6-connected FG component (voxels)   */
     double  fill_frac;        /* fg_count / n_vox                            */
 
     /* 3D thickness (erosion-survival) signal */
@@ -45,6 +55,9 @@ typedef struct {
     int     max_rect_run;     /* longest run of consecutive rectangle frames */
 
     int     verdict;          /* 1 = reject (garbage), 0 = keep              */
+    int     empty;            /* when verdict==1: 1 = EMPTY garbage (too      */
+                              /*   little FG to form one meshable component), */
+                              /*   0 = SOLID-SLAB garbage                     */
     const char *reason;       /* short human-readable verdict reason         */
 } PredRejectStats;
 
