@@ -171,6 +171,9 @@
     <ClCompile Include="src\common\ves_platform.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
+    <ClCompile Include="src\common\run_ctx.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
     <ClCompile Include="src\common\qem.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>

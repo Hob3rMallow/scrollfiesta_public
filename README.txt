@@ -128,6 +128,62 @@ shelf surface parameterizer (e.g. ABF++) to flatten it for ink reading -- that
 flattening step is outside this toolkit.
 
 
+USING SCROLLFIESTA AS A LIBRARY (C API)
+---------------------------------------
+Everything the pipeline can do is also exposed as a C library behind ONE
+header, include/scrollfiesta.h: mesh cleanup (manifold repair, pinhole/hole
+fill, sliver cleanup, component cull), the detangle/split family (depth peel,
+developability cut, bridge cut, overlap separation), QEM decimation,
+developability fairing, orientation, Seamster cut-to-disk / handle severing,
+BPA reconstruction, MLS/LOP projection, and the full in-memory volume->mesh
+pipeline. See the header for the full reference; the important conventions:
+
+  - Coordinates at the API boundary are (x,y,z) voxel units. (Internally the
+    code is (z,y,x), and OBJ files written by the CLI TOOLS are "v z y x" --
+    those are NOT interchangeable with the true-xyz OBJs of the API.)
+  - Everything returns sf_status; no exception/longjmp/signal crosses the
+    boundary. Long operations take a progress callback; returning nonzero
+    from it cancels the call (SF_CANCELLED, outputs untouched).
+  - Outputs carry per-vertex provenance (sf_mesh.vmap: output vertex ->
+    input vertex, -1 for newly created) wherever the operation permits.
+  - Library-filled buffers are released with sf_mesh_free / sf_mesh_list_free
+    / sf_free -- never with your own allocator.
+
+Two ways to consume it:
+
+1) Runtime loading (recommended for applications -- how VC3D binds):
+       h = LoadLibrary/dlopen("scrollfiesta.dll" / "libscrollfiesta.so");
+       sf_get_api_fn get_api = (sf_get_api_fn)GetProcAddress/dlsym(h, "sf_get_api");
+       const sf_api *sf = get_api(SCROLLFIESTA_ABI_VERSION);   /* NULL = incompatible */
+       ... call everything through the sf-> function-pointer table ...
+   The table is append-only within an ABI version, and all memory crosses
+   the boundary through the table's malloc/free -- so the library and the
+   host can be built with different compilers/CRTs, and upgrading is
+   "swap the DLL, restart". tests/api_dlopen.c is a complete example.
+
+2) Build-time linking via CMake:
+       FetchContent_Declare(scrollfiesta GIT_REPOSITORY <this repo> GIT_TAG vX.Y.Z)
+       set(SCROLLFIESTA_BUILD_TOOLS OFF)
+       set(SCROLLFIESTA_WITH_TIFF   OFF)   # library core needs no TIFF
+       FetchContent_MakeAvailable(scrollfiesta)
+       target_link_libraries(your_app PRIVATE scrollfiesta::scrollfiesta)
+   Options (defaults: everything ON when top-level, library-only when
+   embedded): SCROLLFIESTA_BUILD_TOOLS, SCROLLFIESTA_BUILD_TESTS,
+   SCROLLFIESTA_WITH_TIFF, SCROLLFIESTA_OPENMP, SCROLLFIESTA_INSTALL.
+   The vendored deps (Triangle, Clipper2) build from deps/src/ automatically;
+   no system packages are required for the library core. NB: the project
+   never calls find_package(OpenMP) and no library TU includes <omp.h>, so
+   hosts that stub OpenMP (VC3D) embed cleanly.
+
+Threading: any single operation may be called from any thread, but at most
+one ScrollFiesta operation runs at a time per process (internal mutex);
+operations parallelize internally per sf_common_opts.n_threads.
+
+Licensing: ScrollFiesta's own code is MIT; the vendored dependencies keep
+their own licenses -- notably Shewchuk's Triangle (hole filling) restricts
+commercial distribution. See THIRD_PARTY_LICENSES.md.
+
+
 NOTES
 -----
 - CPU-only: no GPU is used. The U-Net that produces the input predictions is a

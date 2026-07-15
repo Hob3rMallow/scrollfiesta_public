@@ -12,6 +12,7 @@
  */
 #define _USE_MATH_DEFINES
 #include "ball_pivot.h"
+#include "../common/run_ctx.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -1363,35 +1364,35 @@ int BallPivot_reconstruct(Arena_T arena,
      * recompiling, to test whether a larger ball reduces front-collision
      * pinholes. Falls back to the caller's rho. Caller still owns the
      * inter-wrap-clearance guarantee — do not set this above the safe cap. */
-    { const char *e = getenv("BPA_RHO"); if (e) { double r = atof(e); if (r > 0.0) rho = r; } }
-    g_no_normal_gate = (getenv("BPA_NO_NORMAL_GATE") != NULL);
+    { const char *e = sf_env("BPA_RHO"); if (e) { double r = atof(e); if (r > 0.0) rho = r; } }
+    g_no_normal_gate = (sf_env("BPA_NO_NORMAL_GATE") != NULL);
     g_normal_tol = 0.0;
-    { const char *e = getenv("BPA_NORMAL_TOL"); if (e) { double t = atof(e); if (t >= 0.0 && t < 1.0) g_normal_tol = t; } }
+    { const char *e = sf_env("BPA_NORMAL_TOL"); if (e) { double t = atof(e); if (t >= 0.0 && t < 1.0) g_normal_tol = t; } }
     /* Part 2 anti-parallel filter: on by default; BPA_NO_ANTIPARALLEL disables,
      * BPA_ANTIPARALLEL_COS sweeps the threshold (clamped [-1.0, 0.0]). */
-    g_antiparallel = (getenv("BPA_NO_ANTIPARALLEL") == NULL);
+    g_antiparallel = (sf_env("BPA_NO_ANTIPARALLEL") == NULL);
     g_antiparallel_cos = BPA_ANTIPARALLEL_COS;
-    { const char *e = getenv("BPA_ANTIPARALLEL_COS");
+    { const char *e = sf_env("BPA_ANTIPARALLEL_COS");
       if (e) { double c = atof(e); if (c >= -1.0 && c <= 0.0) g_antiparallel_cos = c; } }
     g_dbg_antiparallel = 0;
     g_face_coh_cos = BPA_FACE_COH_COS;
-    { const char *e = getenv("BPA_FACE_COH_COS");
+    { const char *e = sf_env("BPA_FACE_COH_COS");
       if (e) { double c = atof(e); if (c >= -1.0 && c <= 1.0) g_face_coh_cos = c; } }
     g_dbg_facecoh = 0;
     /* Wall-guard (anti-fusion): on by default; BPA_NO_WALL_GUARD disables;
      * BPA_WALL_GUARD_COS / BPA_WALL_MIN_EDGE_VOX sweep the thresholds. */
-    g_wall_guard_cos = (getenv("BPA_NO_WALL_GUARD") != NULL) ? -2.0 : BPA_WALL_GUARD_COS;
-    { const char *e = getenv("BPA_WALL_GUARD_COS");
+    g_wall_guard_cos = (sf_env("BPA_NO_WALL_GUARD") != NULL) ? -2.0 : BPA_WALL_GUARD_COS;
+    { const char *e = sf_env("BPA_WALL_GUARD_COS");
       if (e) { double c = atof(e); if (c >= -1.0 && c <= 1.0) g_wall_guard_cos = c; } }
     g_wall_min_edge = BPA_WALL_MIN_EDGE_VOX;
-    { const char *e = getenv("BPA_WALL_MIN_EDGE_VOX");
+    { const char *e = sf_env("BPA_WALL_MIN_EDGE_VOX");
       if (e) { double m = atof(e); if (m > 0.0) g_wall_min_edge = m; } }
     g_dbg_wall = 0;
     g_wind_tol = 0.0; g_wind_hard = 0.0;   /* winding gate is seam-bridge-only */
-    g_relax_case2 = (getenv("BPA_STRICT_CASE2") == NULL);
+    g_relax_case2 = (sf_env("BPA_STRICT_CASE2") == NULL);
     g_ko_empty = 0; g_ko_normal = 0;
     g_dead_gap = g_dead_empty = g_dead_normal = g_dead_mixed = g_dead_theta = 0;
-    g_dead_measure = (getenv("BPA_DEBUG") != NULL);
+    g_dead_measure = (sf_env("BPA_DEBUG") != NULL);
     g_mix_erej = g_mix_anti = g_mix_nrej = 0;
     g_depth_sum = g_past90_sum = 0; g_absh_sum = 0;
     for (int i = 0; i < NBD; i++) { g_hd_all[i] = 0; g_hd_anti[i] = 0; }
@@ -1458,13 +1459,13 @@ int BallPivot_reconstruct(Arena_T arena,
      * float empty-ball test mis-rejects). Topology-safe: empty ball on a single
      * layer => no inter-wrap bridge; each filled edge goes boundary->interior.
      * Disable with BPA_NO_REARM. */
-    if (!getenv("BPA_NO_REARM")) {
+    if (!sf_env("BPA_NO_REARM")) {
         int pf = fill_pinholes(es, g, V, N, rho, &b, vfront, n);
-        if (getenv("BPA_DEBUG"))
+        if (sf_env("BPA_DEBUG"))
             fprintf(stderr, "[bpa_recon] pinhole-fill: closed %d single-triangle holes\n", pf);
     }
 
-    if (getenv("BPA_DEBUG")) {
+    if (sf_env("BPA_DEBUG")) {
         int n_front = 0, n_int = 0, n_bnd = 0;
         for (int i = 0; i < es->n; i++) {
             if (es->e[i].state == ES_FRONT) n_front++;
@@ -1565,7 +1566,7 @@ int BallPivot_bridge(Arena_T arena,
     const Vec3 *V = (const Vec3 *)verts;
     const Vec3 *N = (const Vec3 *)normals;
     int n = (int)nv;
-    g_bpa_trace = (getenv("BPA_TRACE") != NULL);
+    g_bpa_trace = (sf_env("BPA_TRACE") != NULL);
     g_no_normal_gate = 0;   /* the seam bridge always honors the normal gate */
     g_normal_tol = 0.0;
     /* The seam bridge legitimately zips two fronts that may carry opposite local
@@ -1585,14 +1586,14 @@ int BallPivot_bridge(Arena_T arena,
      * (SEAM_WIND_TOL_DEFAULT_TURNS = 0.25 turn). */
     g_wind_tol = 0.0; g_wind_hard = 0.0;
     g_wrap_pitch = 0.0; g_umb_y = 0.0; g_umb_x = 0.0; g_dbg_wind = 0;
-    { const char *e = getenv("SEAM_UMBILICUS_Y"); if (e) g_umb_y = atof(e); }
-    { const char *e = getenv("SEAM_UMBILICUS_X"); if (e) g_umb_x = atof(e); }
-    { const char *e = getenv("SEAM_WRAP_PITCH"); if (e) { double v = atof(e); if (v > 0) g_wrap_pitch = v; } }
+    { const char *e = sf_env("SEAM_UMBILICUS_Y"); if (e) g_umb_y = atof(e); }
+    { const char *e = sf_env("SEAM_UMBILICUS_X"); if (e) g_umb_x = atof(e); }
+    { const char *e = sf_env("SEAM_WRAP_PITCH"); if (e) { double v = atof(e); if (v > 0) g_wrap_pitch = v; } }
     if (g_wrap_pitch > 0.0 && (g_umb_y != 0.0 || g_umb_x != 0.0)) {
         g_wind_tol = SEAM_WIND_TOL_DEFAULT_TURNS;
         g_wind_hard = SEAM_WIND_HARD_TOL_DEFAULT_TURNS;
-        { const char *e = getenv("SEAM_WIND_TOL"); if (e) { double v = atof(e); if (v > 0) g_wind_tol = v; } }
-        { const char *e = getenv("SEAM_WIND_HARD_TOL"); if (e) { double v = atof(e); if (v > 0) g_wind_hard = v; } }
+        { const char *e = sf_env("SEAM_WIND_TOL"); if (e) { double v = atof(e); if (v > 0) g_wind_tol = v; } }
+        { const char *e = sf_env("SEAM_WIND_HARD_TOL"); if (e) { double v = atof(e); if (v > 0) g_wind_hard = v; } }
         fprintf(stderr, "  [bridge] winding gate ON: umbilicus=(y%.1f,x%.1f) pitch=%.1f vox "
                 "tol=%.2f turn (hard cap %.2f)\n",
                 g_umb_y, g_umb_x, g_wrap_pitch, g_wind_tol, g_wind_hard);
@@ -1667,7 +1668,7 @@ int BallPivot_bridge(Arena_T arena,
      * split then amplified into >2-face edges. The trade is a few seam edges the
      * strict guard declines to bridge (left as clean boundary for hole-fill).
      * SEAM_RELAX_BRIDGE=1 restores the old relaxed zip for comparison. */
-    int bridge_relax = (getenv("SEAM_RELAX_BRIDGE") != NULL) ? 1 : 0;
+    int bridge_relax = (sf_env("SEAM_RELAX_BRIDGE") != NULL) ? 1 : 0;
     for (int lvl = 0; lvl < n_rho; lvl++) {
         double r = radii[lvl];
         for (int pass = 0; pass < 16; pass++) {
@@ -1692,7 +1693,7 @@ int BallPivot_bridge(Arena_T arena,
         fprintf(stderr, "  [bridge] winding gate: %ld cross-wrap weld candidate(s) "
                 "rejected (tol %.2f turn)\n", g_dbg_wind, g_wind_tol);
 
-    if (getenv("BPA_DEBUG")) {
+    if (sf_env("BPA_DEBUG")) {
         int n_front = 0, n_int = 0, n_bnd = 0;
         for (int i = 0; i < es->n; i++) {
             if (es->e[i].state == ES_FRONT) n_front++;

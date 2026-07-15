@@ -1,4 +1,5 @@
 #include "../common/ves_platform.h"
+#include "../common/run_ctx.h"
 
 #include "mesh_extract.h"
 #include "pred_reject.h"
@@ -668,7 +669,7 @@ int MeshExtract_run(Arena_T          arena,
      * halo mode `vol` is the padded p_size^3 with the owned cube at offset
      * halo_voxels. Overridable via VESUVIUS_NO_REJECT_GARBAGE. Returns cleanly
      * with zero meshes (same path as an all-background cube). */
-    if (!getenv("VESUVIUS_NO_REJECT_GARBAGE")) {
+    if (!sf_env("VESUVIUS_NO_REJECT_GARBAGE")) {
         int off = (halo_voxels > 0) ? halo_voxels : 0;
         int od = (int)cube_D, oh = (int)cube_H, ow = (int)cube_W;
         if (off + od <= D && off + oh <= H && off + ow <= W) {
@@ -1085,7 +1086,7 @@ int MeshExtract_run(Arena_T          arena,
          * the backface cull). Useful for tracking where holes are
          * introduced — comparing this against the post-cull dump shows
          * exactly which triangles the cull removed. */
-        if (dump_cube_dir && cube_id && getenv("EXTRACT_DIAG")) {
+        if (dump_cube_dir && cube_id && sf_env("EXTRACT_DIAG")) {
             char sub[1024];
             snprintf(sub, sizeof(sub), "%s/%s_step0_post_lop",
                      dump_cube_dir, cube_id);
@@ -1170,7 +1171,7 @@ int MeshExtract_run(Arena_T          arena,
              * coords. Diff against step0_post_lop_trimmed (AFTER trim) to isolate
              * EXACTLY what the owned/halo trim removes, with the weld held constant
              * (so coords match 1:1; no weld-merge confound). */
-            if (dump_cube_dir && cube_id && getenv("EXTRACT_DIAG")) {
+            if (dump_cube_dir && cube_id && sf_env("EXTRACT_DIAG")) {
                 char wsub[1024];
                 snprintf(wsub, sizeof(wsub), "%s/%s_step0_post_weld",
                          dump_cube_dir, cube_id);
@@ -1225,7 +1226,7 @@ int MeshExtract_run(Arena_T          arena,
                 /* Dump the LOP cloud AFTER the owned trim (points only, no BPA),
                  * world coords. Compare against step0_post_lop_points (PRE-trim)
                  * to see exactly which points the owned/halo trim removed. */
-                if (dump_cube_dir && cube_id && getenv("EXTRACT_DIAG")) {
+                if (dump_cube_dir && cube_id && sf_env("EXTRACT_DIAG")) {
                     char tsub[1024];
                     snprintf(tsub, sizeof(tsub), "%s/%s_step0_post_lop_trimmed",
                              dump_cube_dir, cube_id);
@@ -1247,9 +1248,9 @@ int MeshExtract_run(Arena_T          arena,
              * components). DEFAULT ON (validated: fixes the splits, no within-cube
              * regression); set HOPPE_NO_ORIENT to disable. HOPPE_RADIUS overrides
              * the neighbour radius. */
-            if (!getenv("HOPPE_NO_ORIENT")) {
+            if (!sf_env("HOPPE_NO_ORIENT")) {
                 float hr = 1.2f;
-                const char *he = getenv("HOPPE_RADIUS");
+                const char *he = sf_env("HOPPE_RADIUS");
                 if (he) { double t = atof(he); if (t > 0.0) hr = (float)t; }
                 size_t hf = 0;
                 NormalOrient_consistent(scratch, mls_verts, mls_normals,
@@ -1292,7 +1293,7 @@ int MeshExtract_run(Arena_T          arena,
          * with no measurable tear reduction. Set SIGN_PROPAGATE=1 to
          * re-enable for further experimentation. See changelog. */
         size_t n_sign_flips = 0;
-        if (getenv("SIGN_PROPAGATE") != NULL) {
+        if (sf_env("SIGN_PROPAGATE") != NULL) {
             n_sign_flips = propagate_normal_signs(scratch,
                                                   mls_verts, surf_nv,
                                                   surf_faces, surf_nf,
@@ -1436,7 +1437,7 @@ int MeshExtract_run(Arena_T          arena,
          * to post-Step-6 in main.c so there is no in-Step-0 QEM call
          * anymore). The `skip_qem` parameter is now ignored here. */
         (void)skip_qem;
-        if (dump_cube_dir && cube_id && getenv("EXTRACT_DIAG")) {
+        if (dump_cube_dir && cube_id && sf_env("EXTRACT_DIAG")) {
             char sub[1024];
             snprintf(sub, sizeof(sub), "%s/%s_step0_pre_simplify",
                      dump_cube_dir, cube_id);

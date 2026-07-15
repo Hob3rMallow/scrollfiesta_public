@@ -1,4 +1,5 @@
 #include "mls_project.h"
+#include "run_ctx.h"
 
 #include "pipeline_constants.h"
 
@@ -206,7 +207,7 @@ void MLS_project_verts(Arena_T arena,
      * scroll fold two wraps sit ~1-2 vox apart; the default R=12 spans both and
      * fuses them. Default = the caller's compiled radius. */
     {
-        const char *r_env = getenv("MLS_RADIUS_VOX");
+        const char *r_env = sf_env("MLS_RADIUS_VOX");
         if (r_env && *r_env) {
             double v = atof(r_env);
             if (v > 0.0) {
@@ -484,7 +485,7 @@ void MLS_project_verts(Arena_T arena,
      * that magnitude into the reference pipeline and measuring what
      * BPA/guards/weld actually do. NOT for production runs. */
     {
-        const char *pe = getenv("MLS_PERTURB_EPS");
+        const char *pe = sf_env("MLS_PERTURB_EPS");
         if (pe && *pe) {
             double eps = atof(pe);
             for (size_t vi = 0; eps > 0.0 && vi < nv; vi++) {

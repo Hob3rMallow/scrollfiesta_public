@@ -335,4 +335,18 @@ int ves_run_subprocess(const char *exe, const char *const *argv,
 void ves_hard_timeout_start(double seconds, volatile sig_atomic_t *flag);
 void ves_hard_timeout_cancel(void);
 
+/* ================================================================
+ * OpenMP thread budget: ves_omp_set_threads()
+ *
+ * Sets the OpenMP thread count for subsequent parallel regions; n <= 0
+ * leaves the runtime default. No-op when compiled without OpenMP.
+ *
+ * Implemented in ves_platform.c with a self-declared prototype rather
+ * than #include <omp.h>: embedding hosts (VC3D) inject a C++-only stub
+ * omp.h into the include path, so no library TU may include the real
+ * header by name.
+ * ================================================================ */
+
+void ves_omp_set_threads(int n);
+
 #endif /* VES_PLATFORM_H */

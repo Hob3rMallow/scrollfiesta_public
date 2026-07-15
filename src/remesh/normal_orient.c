@@ -8,6 +8,7 @@
  * restored on exit.
  */
 #include "normal_orient.h"
+#include "../common/run_ctx.h"
 
 #include "../common/kdtree.h"
 #include "../common/union_find.h"
@@ -77,7 +78,7 @@ int NormalOrient_consistent(Arena_T arena,
     if (out_flips) *out_flips = 0;
     if (nv < 2) return 0;
     int n = (int)nv;
-    int dbg = getenv("NORMAL_ORIENT_DEBUG") != NULL;
+    int dbg = sf_env("NORMAL_ORIENT_DEBUG") != NULL;
 
     Arena_Mark mark = Arena_save(arena);
     KDTree_T tree = KDTree_new(arena, verts, nv);

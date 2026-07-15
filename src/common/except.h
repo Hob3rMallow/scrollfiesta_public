@@ -13,6 +13,7 @@ typedef struct {
 extern const Except_T Arena_Failed;
 extern const Except_T IO_Failed;
 extern const Except_T Timeout;
+extern const Except_T Sf_Cancelled;   /* raised by run_ctx cancel/deadline polls */
 
 /* Exception frame - linked stack */
 typedef struct Except_Frame {
@@ -31,7 +32,18 @@ enum {
     Except_finalized = 3
 };
 
-extern Except_Frame *Except_stack;
+/* The frame stack is thread-local so independent threads (e.g. an embedding
+ * application calling the library from a worker thread while its own code
+ * runs elsewhere) cannot corrupt each other's TRY chains. __thread /
+ * __declspec(thread) rather than C11 _Thread_local because the Linux build
+ * is -std=c99. */
+#if defined(_MSC_VER)
+  #define EXCEPT_THREAD_LOCAL __declspec(thread)
+#else
+  #define EXCEPT_THREAD_LOCAL __thread
+#endif
+
+extern EXCEPT_THREAD_LOCAL Except_Frame *Except_stack;
 
 void Except_raise(const Except_T *e, const char *file, int line);
 

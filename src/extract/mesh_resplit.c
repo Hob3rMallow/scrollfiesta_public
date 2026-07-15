@@ -8,6 +8,7 @@
  * (step 2); pipeline_cube applies it again after bridge-cut/overlap (step 4).
  */
 #include "mesh_resplit.h"
+#include "../common/run_ctx.h"
 
 #include "../common/union_find.h"
 #include "../common/kdtree.h"
@@ -42,8 +43,8 @@
 #define RESPLIT_CUBE_D 128.0   /* owned cube dimension (chunk_size, fixed) */
 static double seam_pin_band(void)
 {
-    if (getenv("VES_SEAM_PIN_OFF")) return 0.0;
-    const char *e = getenv("SEAM_PIN_BAND_VOX");
+    if (sf_env("VES_SEAM_PIN_OFF")) return 0.0;
+    const char *e = sf_env("SEAM_PIN_BAND_VOX");
     if (e) { double v = atof(e); if (v >= 0.0) return v; }
     return (double)SEAM_PIN_BAND_VOX;
 }

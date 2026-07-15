@@ -1,4 +1,5 @@
 #include "pipeline_cube.h"
+#include "../common/run_ctx.h"
 
 #include "../common/ves_platform.h"
 #include "../common/qem.h"
@@ -34,7 +35,7 @@ static double elapsed_since(double t0) { return now_sec() - t0; }
  * Lets the Step 1c developability-cut knobs be swept without a rebuild. */
 static double env_d(const char *name, double dflt)
 {
-    const char *s = getenv(name);
+    const char *s = sf_env(name);
     if (!s || !*s) return dflt;
     char *end = NULL;
     double v = strtod(s, &end);
@@ -207,7 +208,7 @@ int pipeline_process_cube(Arena_T arena,
      * stack) falls through to Step 2's overlap-sep unchanged. The wall-guard in BPA
      * prevents many fusions upstream; this catches the compacted ones it can't.
      * Env-overridable; VES_DEPTHPEEL_OFF disables the stage. ---- */
-    if (!getenv("VES_DEPTHPEEL_OFF")) {
+    if (!sf_env("VES_DEPTHPEEL_OFF")) {
         double tdp = now_sec();
         double dp_gap = env_d("DEPTH_PEEL_MIN_GAP_VOX", DEPTH_PEEL_MIN_GAP_VOX);
         double dp_dil = env_d("DEPTH_PEEL_GAP_DEPTH",   DEPTH_PEEL_GAP_DEPTH);
@@ -287,7 +288,7 @@ int pipeline_process_cube(Arena_T arena,
      * through to Step 2's bridge-cut/overlap unchanged -- which also run on the
      * accepted pieces (they self-gate to no-ops on clean sheets). Knobs are
      * env-overridable for calibration; VES_DEVCUT_OFF disables the stage. */
-    if (!getenv("VES_DEVCUT_OFF")) {
+    if (!sf_env("VES_DEVCUT_OFF")) {
         double tdc = now_sec();
         double dc_eps    = env_d("DEV_CUT_EPS",           DEV_CUT_EPS);
         double dc_gap    = env_d("DEV_CUT_GAP_DEPTH",     DEV_CUT_GAP_DEPTH);
@@ -307,7 +308,7 @@ int pipeline_process_cube(Arena_T arena,
          * ALL input components (not just those that form a cuttable seam), so a
          * sweep shows whether a region is genuinely non-developable and how many
          * components clear the gate margin. Env DEV_CUT_CAL=1. */
-        if (getenv("DEV_CUT_CAL")) {
+        if (sf_env("DEV_CUT_CAL")) {
             double mx = 0.0, sm = 0.0; size_t nge = 0;
             for (size_t i = 0; i < n_in; i++) {
                 double pf = DevCut_nondev_fraction(arena, &out->meshes[i], dc_eps, NULL);
@@ -580,7 +581,7 @@ int pipeline_process_cube(Arena_T arena,
      * and BEFORE QEM (genus is well defined on the clean filled mesh). These
      * handles are non-separating, so the Step-2 split (which severs SEPARATING
      * necks) cannot touch them -- this is the complementary cut. */
-    if (!getenv("VES_SEVER_OFF")) {
+    if (!sf_env("VES_SEVER_OFF")) {
         double ts = now_sec();
         size_t n_sev_comps = 0;
         long   total_sev = 0;

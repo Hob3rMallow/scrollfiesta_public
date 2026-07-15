@@ -300,3 +300,28 @@ void ves_hard_timeout_cancel(void)
 }
 
 #endif /* _WIN32 */
+
+/* ================================================================
+ * OpenMP thread budget: ves_omp_set_threads()
+ *
+ * The prototype is declared by hand instead of #include <omp.h>:
+ * embedding hosts (VC3D) put a C++-only stub omp.h on the include
+ * path for their own builds, so the real header must never be named
+ * in library code. _OPENMP is only defined when the compiler was
+ * invoked with -fopenmp / /openmp, in which case the runtime that
+ * provides omp_set_num_threads is linked by that same flag.
+ * ================================================================ */
+
+#ifdef _OPENMP
+extern void omp_set_num_threads(int n);
+#endif
+
+void ves_omp_set_threads(int n)
+{
+#ifdef _OPENMP
+    if (n > 0)
+        omp_set_num_threads(n);
+#else
+    (void)n;
+#endif
+}

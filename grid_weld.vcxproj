@@ -102,6 +102,7 @@
     <ClCompile Include="src\common\except.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\obj_io.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\ves_platform.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\run_ctx.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\remesh\ball_pivot.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\remesh\seam_weld.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\remesh\seam_hole_fill.c"><CompileAs>CompileAsC</CompileAs></ClCompile>

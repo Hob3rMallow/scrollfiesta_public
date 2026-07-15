@@ -1,5 +1,6 @@
 #define _USE_MATH_DEFINES
 #include "seam_cut.h"
+#include "../common/run_ctx.h"
 #include "mesh_topo.h"
 #include "../common/ves_platform.h"   /* ves_clock_sec for phase timing */
 
@@ -582,7 +583,7 @@ static void genus_reduce(Arena_T arena, const float **pv, size_t *pnv,
     int32_t *accum=NULL;                 /* current-vertex -> original-vertex */
     long cut=0, cap=genus0*4+16;         /* safety bound on the loop count */
 
-    int dbg = (getenv("SEAMCUT_DEBUG") != NULL);
+    int dbg = (sf_env("SEAMCUT_DEBUG") != NULL);
     for (;;){
         double t_it = ves_clock_sec();
         MeshTopoInfo ti; MeshTopo_analyze(arena, NULL, cnv, cf, cnf, &ti);
@@ -907,7 +908,7 @@ int SeamCut_run(Arena_T arena, const float *verts, size_t nv,
     out->loops_before = ti0.n_boundary_loops;
     out->genus_before = lround(ti0.genus);
 
-    int dbg = (getenv("SEAMCUT_DEBUG") != NULL);
+    int dbg = (sf_env("SEAMCUT_DEBUG") != NULL);
 
     /* Section 6.3: genus reduction -> genus-0 (multi-boundary) mesh. The new
      * banks become ordinary boundary that the Steiner step below joins. */

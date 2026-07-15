@@ -13,6 +13,7 @@
  * 5. Stitch fills into mesh
  */
 #include "../common/ves_platform.h"
+#include "../common/run_ctx.h"
 
 #include "../common/arena.h"
 #include "../common/csr.h"
@@ -48,7 +49,7 @@ extern jmp_buf triangle_jmpbuf;
  * and dominated the hole-fill runtime. Summary/error lines stay unconditional. */
 static int hf_log_on(void) {
     static int d = -1;
-    if (d < 0) d = getenv("HOLEFILL_DEBUG") ? 1 : 0;
+    if (d < 0) d = sf_env("HOLEFILL_DEBUG") ? 1 : 0;
     return d;
 }
 #define HFLOG(...)   do { if (hf_log_on()) fprintf(stderr, __VA_ARGS__); } while (0)
@@ -711,7 +712,7 @@ static int is_valid_for_cdt(const double *pts_2d, size_t n)
  * which is fine for a tiny interior hole) and carry on. Override via env. */
 static int tri_timeout_ms(void)
 {
-    const char *e = getenv("SEAM_TRI_TIMEOUT_MS");
+    const char *e = sf_env("SEAM_TRI_TIMEOUT_MS");
     int ms = e ? atoi(e) : 10000;   /* 10 s: a legit large hole CDT is < ~3.5 s */
     if (ms < 100) ms = 100;
     return ms;
@@ -2071,7 +2072,7 @@ static int fill_one_hole(Arena_T arena,
          * fill-private until stitch_fills runs. Set HOLEFILL_NO_PRUNE=1 to
          * disable (A/B diagnostics). */
         static int prune_off = -1;
-        if (prune_off < 0) { const char *e = getenv("HOLEFILL_NO_PRUNE");
+        if (prune_off < 0) { const char *e = sf_env("HOLEFILL_NO_PRUNE");
                              prune_off = (e && e[0] && e[0] != '0') ? 1 : 0; }
         size_t pre_nv = tri_nv, pre_nf = tri_nf;
         if (!prune_off &&
@@ -3035,8 +3036,8 @@ int HoleFill_process_ex(Arena_T arena,
     /* Per-hole OBJ dumps (debug). grid_weld --dump-stages sets these so each
      * hole's input boundary is dumped before the fill and its patch after --
      * a hang leaves the culprit's polygon as the last *_in.obj on disk. */
-    const char *hole_dump_dir = getenv("SEAM_HOLE_DUMP_DIR");
-    const char *hole_dump_prefix = getenv("SEAM_HOLE_DUMP_PREFIX");
+    const char *hole_dump_dir = sf_env("SEAM_HOLE_DUMP_DIR");
+    const char *hole_dump_prefix = sf_env("SEAM_HOLE_DUMP_PREFIX");
     if (!hole_dump_prefix) hole_dump_prefix = "weld";
 
     /* interior_only: directed boundary half-edges for the signed-area test. */

@@ -42,7 +42,7 @@ COMMON_SRC = common/arena.c common/except.c common/csr.c common/kdtree.c \
              common/vert_weld.c common/tiff_io.c common/halo_loader.c \
              common/mesh_manifold.c common/mesh_trim.c common/ply_io.c common/obj_io.c common/dump_obj.c \
              common/ves_platform.c common/qem.c common/raw_snapback.c common/snap_cg.c \
-             common/eig3.c common/dev_metric.c
+             common/eig3.c common/dev_metric.c common/run_ctx.c
 EXTRACT_SRC  = extract/mesh_extract.c extract/mesh_resplit.c extract/pred_reject.c
 SPLIT_SRC    = split/oracle.c split/bridge_cut.c split/overlap_sep.c split/depth_peel.c split/dev_cut.c
 REMESH_SRC   = remesh/ball_pivot.c remesh/orient_mesh.c remesh/pinhole_fill.c remesh/normal_orient.c remesh/component_cull.c remesh/manifold_guard.c remesh/dev_gate.c
@@ -94,7 +94,7 @@ cube_mesh: main.o $(CORE_OBJ) $(CPP_OBJ)
 grid_weld: tools/grid_weld.o remesh/ball_pivot.o remesh/pinhole_fill.o remesh/orient_mesh.o \
            remesh/manifold_guard.o $(WELD_OBJ) holefill/hole_fill.o holefill/clipper2_wrap.o \
            common/arena.o common/except.o common/obj_io.o common/ves_platform.o \
-           common/mesh_manifold.o common/csr.o common/pca.o \
+           common/mesh_manifold.o common/csr.o common/pca.o common/run_ctx.o \
            topology/developability.o common/eig3.o common/vert_weld.o
 	$(CC) $(CFLAGS) $(BUILD_FLAGS) $^ -o $@ $(LDFLAGS) $(EXT_LIB)
 

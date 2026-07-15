@@ -1,4 +1,5 @@
 #include "pinhole_fill.h"
+#include "../common/run_ctx.h"
 
 #include <string.h>
 #include <stdint.h>
@@ -183,13 +184,13 @@ static void close_bowtie_gaps(Arena_T arena, ComponentMesh *cm,
     int32_t *fill = (int32_t *)ARENA_ALLOC(arena,
                         (long)((off[nv] ? off[nv] : 1) * 3 * sizeof(int32_t)));
     size_t nfill = 0, closed = 0;
-    int dbg = (getenv("PINHOLE_DEBUG") != NULL);
+    int dbg = (sf_env("PINHOLE_DEBUG") != NULL);
 
     /* The weld arms a wider gap cap (via SEAM_WRAP_PITCH); wide gaps are then
      * gated by the ORIENTATION test below, not size. Per-cube (unarmed) keeps the
      * conservative 2.0 cap. */
     int bt_armed = 0;
-    { const char *e = getenv("SEAM_WRAP_PITCH"); if (e && atof(e) > 0.0) bt_armed = 1; }
+    { const char *e = sf_env("SEAM_WRAP_PITCH"); if (e && atof(e) > 0.0) bt_armed = 1; }
     double bt_gapmax = bt_armed ? (double)BOWTIE_GAP_MAX_ARMED_VOX
                                 : (double)BOWTIE_GAP_MAX_VOX;
 
@@ -375,7 +376,7 @@ static void close_bowtie_gaps(Arena_T arena, ComponentMesh *cm,
         memcpy(nff + nf * 3, fill, nfill * 3 * sizeof(int32_t));
         cm->faces = nff; cm->nf = nf_new;
     }
-    if (closed && getenv("PINHOLE_DEBUG")) {
+    if (closed && sf_env("PINHOLE_DEBUG")) {
         fprintf(stderr, "  [pinhole] close_bowtie_gaps: closed %zu bowtie(s) "
                 "in place, +%zu fill tris (no vertex split)\n", closed, nfill);
     }
