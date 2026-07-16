@@ -370,7 +370,8 @@ typedef struct sf_pipeline_report {
 } sf_pipeline_report;
 
 /* ══════════════════════════════════════════════════════════════════════════
- * Weld (experimental — table entry may be NULL in v0.9)
+ * Weld (experimental — probe the table entry for NULL before calling; a
+ * build may ship without it)
  * ════════════════════════════════════════════════════════════════════════ */
 
 typedef struct sf_weld_config {
@@ -380,6 +381,7 @@ typedef struct sf_weld_config {
     float weld_eps;         /* duplicate-vertex merge tolerance (1e-4)       */
     int   fill_holes;       /* interior hole fill after bridging (default 1) */
     int   cleanup;          /* sliver cleanup + manifold guard (default 1)   */
+    float band;             /* seam-edge selection half-width, vox (6.0)     */
 } sf_weld_config;
 
 typedef struct sf_weld_report {
@@ -482,8 +484,12 @@ SF_API sf_status sf_pipeline_run(const sf_volume *vol, const sf_pipeline_config 
                                  sf_mesh_list *out_trimmed,
                                  sf_pipeline_report *rep);
 
-/* Weld (experimental; may be unimplemented — then returns SF_ERROR_UNSUPPORTED
- * and the table entry is NULL). meshes are in world coordinates. */
+/* Weld adjacent per-cube meshes (world coordinates, each consistently wound
+ * — pipeline outputs are) into one mesh: duplicate-vertex merge + face dedup
+ * across the halo overlap, BPA seam bridging across cube-boundary planes,
+ * pinhole + interior hole fill, cross-component orientation, sliver cleanup,
+ * manifold guard. Composes the library weld modules; the grid_weld TOOL has
+ * additional env-gated experimental stages this call does not run. */
 SF_API sf_status sf_weld(const sf_mesh *meshes, size_t n_meshes,
                          const sf_weld_config *cfg,
                          sf_mesh *out, sf_weld_report *rep);

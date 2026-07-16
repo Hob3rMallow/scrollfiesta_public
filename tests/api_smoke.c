@@ -322,6 +322,71 @@ int main(void)
         free(vol);
     }
 
+    fprintf(stderr, "== stage weld ==\n"); fflush(stderr);
+    /* ── weld: two sheets astride the x=128 cube boundary bridge into one
+     *    component ─────────────────────────────────────────────────────── */
+    {
+        /* Pipeline-like sheets: 0.77 vox spacing, gentle z curve, ending
+         * ~0.5 vox short of the seam plane on each side (gap ~1 vox, well
+         * inside the bridge ball's reach). */
+        const int n = 20;
+        const float step = 0.77f;
+        sf_mesh sides[2];
+        for (int sidx = 0; sidx < 2; sidx++) {
+            const float x0 = sidx == 0 ? 128.f - 0.5f - (n - 1) * step
+                                       : 128.f + 0.5f;
+            sf_mesh *m = &sides[sidx];
+            make_sheet(n, step, 0.f, m);
+            for (size_t v = 0; v < m->n_vertices; v++) {
+                m->vertices[v * 3 + 0] += x0;
+                m->vertices[v * 3 + 1] += 100.f;
+                m->vertices[v * 3 + 2] =
+                    40.f + 0.2f * sinf(m->vertices[v * 3 + 0] * 0.3f);
+            }
+        }
+
+        sf_topology_report t_pre;
+        {
+            /* Sanity: concatenated but unwelded = 2 components. */
+            sf_mesh cat;
+            memset(&cat, 0, sizeof cat);
+            cat.n_vertices = sides[0].n_vertices + sides[1].n_vertices;
+            cat.n_faces = sides[0].n_faces + sides[1].n_faces;
+            cat.vertices = malloc(cat.n_vertices * 3 * sizeof(float));
+            cat.faces = malloc(cat.n_faces * 3 * sizeof(int32_t));
+            memcpy(cat.vertices, sides[0].vertices,
+                   sides[0].n_vertices * 3 * sizeof(float));
+            memcpy(cat.vertices + sides[0].n_vertices * 3, sides[1].vertices,
+                   sides[1].n_vertices * 3 * sizeof(float));
+            memcpy(cat.faces, sides[0].faces,
+                   sides[0].n_faces * 3 * sizeof(int32_t));
+            for (size_t f = 0; f < sides[1].n_faces * 3; f++)
+                cat.faces[sides[0].n_faces * 3 + f] =
+                    sides[1].faces[f] + (int32_t)sides[0].n_vertices;
+            CHECK(sf_topology_audit(&cat, NULL, &t_pre) == SF_OK,
+                  "pre-weld audit");
+            CHECK(t_pre.n_components == 2, "two components before weld");
+            free_mesh_caller(&cat);
+        }
+
+        sf_weld_config wcfg = sf_weld_config_default();
+        sf_mesh welded;
+        sf_weld_report wrep;
+        sf_status wrc = sf_weld(sides, 2, &wcfg, &welded, &wrep);
+        CHECK(wrc == SF_OK, "weld rc");
+        if (wrc == SF_OK) {
+            CHECK(wrep.bridge_faces > 0, "weld bridged the seam");
+            sf_topology_report t_post;
+            CHECK(sf_topology_audit(&welded, NULL, &t_post) == SF_OK,
+                  "post-weld audit");
+            CHECK(t_post.n_components == 1, "one component after weld");
+            CHECK(t_post.n_nonmanifold_edges == 0, "weld stays manifold");
+            sf_mesh_free(&welded);
+        }
+        free_mesh_caller(&sides[0]);
+        free_mesh_caller(&sides[1]);
+    }
+
     fprintf(stderr, "== stage cancel ==\n"); fflush(stderr);
     /* ── cancellation + timeout ────────────────────────────────────────── */
     {

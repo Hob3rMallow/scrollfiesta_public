@@ -186,9 +186,11 @@ int main(int argc, char **argv)
         CHECK(cm2.vertices == NULL, "cancelled op leaves output empty");
     }
 
-    /* ── weld is experimental: table entry may be NULL — probe pattern ─ */
-    if (sf->weld == NULL)
-        printf("weld: not available in this build (expected for 0.9)\n");
+    /* ── weld: probe before use (a build may ship without it) ────────── */
+    if (sf->weld)
+        printf("weld: available\n");
+    else
+        printf("weld: not available in this build\n");
 
     /* ── error-string sanity ──────────────────────────────────────────── */
     CHECK(strcmp(sf->status_str(SF_OK), "ok") == 0, "status_str(SF_OK)");

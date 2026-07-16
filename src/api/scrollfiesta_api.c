@@ -293,6 +293,7 @@ SF_API sf_weld_config sf_weld_config_default(void)
     c.weld_eps   = 1e-4f;
     c.fill_holes = 1;
     c.cleanup    = 1;
+    c.band       = 6.0f;
     return c;
 }
 
@@ -1826,8 +1827,7 @@ static const sf_api g_sf_api = {
 
     sf_pipeline_run,
 
-    /* weld: experimental, unimplemented in 0.9 — NULL by contract. */
-    NULL,
+    sf_weld,
 
     sf_selftest,
 };

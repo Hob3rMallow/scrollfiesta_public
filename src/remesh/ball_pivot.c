@@ -264,9 +264,13 @@ typedef struct {
     int *head, *next;
 } Grid;
 
+/* Returns NULL when the cloud's extents demand an absurd cell table (a
+ * degenerate/garbage input) or an allocation fails -- callers fail cleanly
+ * instead of dereferencing a failed malloc. */
 static Grid *grid_build(const Vec3 *V, int nv, double cell_size)
 {
     Grid *g = (Grid *)calloc(1, sizeof(*g));
+    if (!g) return NULL;
     g->cell_size = cell_size;
     if (nv <= 0) return g;
     double zmin=V[0].z, zmax=V[0].z, ymin=V[0].y, ymax=V[0].y, xmin=V[0].x, xmax=V[0].x;
@@ -279,9 +283,26 @@ static Grid *grid_build(const Vec3 *V, int nv, double cell_size)
     g->gz = (int)ceil((zmax-zmin)/cell_size)+1;
     g->gy = (int)ceil((ymax-ymin)/cell_size)+1;
     g->gx = (int)ceil((xmax-xmin)/cell_size)+1;
+    if (g->gz <= 0 || g->gy <= 0 || g->gx <= 0) {
+        free(g);
+        return NULL;
+    }
     size_t nc = (size_t)g->gz*g->gy*g->gx;
+    /* Overflow / sanity cap: > 2^31 cells (8 GB of heads) is never a real
+     * cloud; it means the coordinates are garbage. */
+    if (nc / (size_t)g->gz / (size_t)g->gy != (size_t)g->gx ||
+        nc > ((size_t)1 << 31)) {
+        free(g);
+        return NULL;
+    }
     g->head = (int *)malloc(nc * sizeof(int));
     g->next = (int *)malloc((size_t)nv * sizeof(int));
+    if (!g->head || !g->next) {
+        free(g->head);
+        free(g->next);
+        free(g);
+        return NULL;
+    }
     for (size_t i = 0; i < nc; i++) g->head[i] = -1;
     for (int i = 0; i < nv; i++) {
         int cz = (int)floor((V[i].z-zmin)/cell_size);
@@ -1407,6 +1428,10 @@ int BallPivot_reconstruct(Arena_T arena,
     int n = (int)nv;
 
     Grid *g = grid_build(V, n, 2.0*rho);
+    if (!g) {
+        fprintf(stderr, "BPA: degenerate point cloud (spatial grid failed)\n");
+        return 1;
+    }
     EdgeStore *es = edges_new(n*3);
     uint8_t *used = (uint8_t *)calloc((size_t)n, 1);
     int *vfront = (int *)calloc((size_t)n, sizeof(int));
@@ -1603,6 +1628,10 @@ int BallPivot_bridge(Arena_T arena,
     }
 
     Grid *g = grid_build(V, n, 2.0*rho);
+    if (!g) {
+        fprintf(stderr, "BPA bridge: degenerate point cloud (spatial grid failed)\n");
+        return 1;
+    }
     EdgeStore *es = edges_new((int)n_init * 4);
     /* `used` only gates the seed scan, which the bridge never runs; keep
      * it so bpa_grow's `used[v_new]=1` writes land somewhere valid.
