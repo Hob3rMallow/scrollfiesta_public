@@ -126,3 +126,29 @@ clean:
 	rm -f common/*.o extract/*.o split/*.o remesh/*.o holefill/*.o pipeline/*.o \
 	      topology/*.o tools/*.o *.o cube_mesh grid_weld grid_pipeline \
 	      obj_components pinhole_verdict seam_audit test_common
+
+# ==== HIP (AMD ROCm) MLS backend (added by the HIP port) ==================
+# Drop-in GPU MLS: replaces common/mls_project.o with a validated HIP kernel.
+# Requires ROCm hipcc. Override HIP_ARCH for your GPU (default gfx1201).
+#   make cube_mesh_hip HIP_ARCH=gfx1201
+HIPCC    ?= hipcc
+OBJCOPY  ?= objcopy
+HIP_ARCH ?= gfx1201
+HIPFLAGS  = -O3 -std=c++17 -fPIC --offload-arch=$(HIP_ARCH)
+
+hip/impl/mls_project_hip.o: hip/impl/mls_project_hip.hip hip/impl/mls_project_clean.h
+	$(HIPCC) $(HIPFLAGS) -x hip -c $< -o $@
+# Kernel exports MLS_project_verts; rename so the ScrollFiesta-ABI adapter owns
+# that symbol (validated kernel object otherwise untouched).
+hip/impl/mls_project_hip_renamed.o: hip/impl/mls_project_hip.o
+	$(OBJCOPY) --redefine-sym MLS_project_verts=mls_clean_project_verts $< $@
+hip/adapter/mls_scrollfiesta_adapter.o: hip/adapter/mls_scrollfiesta_adapter.cpp hip/adapter/mls_scrollfiesta_adapter.h hip/impl/mls_project_clean.h
+	$(HIPCC) $(HIPFLAGS) -c $< -o $@
+
+CORE_OBJ_HIP = $(filter-out common/mls_project.o,$(CORE_OBJ)) \
+               hip/impl/mls_project_hip_renamed.o hip/adapter/mls_scrollfiesta_adapter.o
+
+cube_mesh_hip: BUILD_FLAGS = $(RELEASE_FLAGS)
+cube_mesh_hip: main.o $(CORE_OBJ_HIP) $(CPP_OBJ)
+	$(HIPCC) $^ -o $@ $(LDFLAGS) $(EXT_LIB)
+# ==========================================================================
