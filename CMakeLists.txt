@@ -202,7 +202,7 @@ target_include_directories(scrollfiesta_core PUBLIC
     ${SF_DEPS}/include
     ${SF_DEPS}/src/graph/include)
 target_link_libraries(scrollfiesta_core PRIVATE
-    sf_triangle Clipper2 Clipper2Z ${SF_TIFF_LIBS})
+    sf_triangle Clipper2Z ${SF_TIFF_LIBS})
 set_target_properties(scrollfiesta_core PROPERTIES
     POSITION_INDEPENDENT_CODE ON
     C_STANDARD 17
