@@ -16,6 +16,7 @@
 #include "../remesh/weld_cleanup.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Emit a ComponentMesh array as a malloc'd sf_mesh_list without provenance
