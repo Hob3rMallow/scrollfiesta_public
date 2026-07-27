@@ -1,0 +1,13 @@
+{
+  "cubes_processed": 100,
+  "total_input_verts": 1569640,
+  "total_unique_verts": 1628178,
+  "total_input_faces": 2774654,
+  "total_unique_faces": 3022017,
+  "manifold_audit": {
+    "unpaired":     91260,
+    "non_manifold": 133,
+    "same_dir_pairs": 76,
+    "manifold_pairs": 4487120
+  }
+}

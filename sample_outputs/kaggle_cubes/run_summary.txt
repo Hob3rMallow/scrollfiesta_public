@@ -1,0 +1,17 @@
+==== train_individual summary (train_individual_20260531) ====
+cubes: 7   ok: 7   failed: 0
+wall: 2340.5s   sum-of-per-cube: 9028.8s   (concurrency win = sum/wall)
+halo=0  threads/cube=4  maxconc=8  qem=True  exe=build/Release/vesuvius-c.exe
+
+cube       exit     sec comps
+----       ----     --- -----
+86701140      0 1322.80 14
+118632705     0 1053.30 11
+1006462223    0 2340.40 22
+1013184726    0 1468.60 21
+3290306825    0  908.10 23
+3294954456    0 1265.40 18
+3394433588    0  670.20 15
+
+
+artifacts: D:\work\vesuvius-c\output\train_individual_20260531  (per-cube dumps under <id>/, logs under logs/)

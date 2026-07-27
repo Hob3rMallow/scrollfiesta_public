@@ -1,0 +1,12 @@
+/target
+*.so
+*.dll
+*.dylib
+*.a
+*.o
+/cache
+logs/*
+!logs/gfx1201-test-20260723T005731Z.log
+!logs/real-equivalence-20260723T024844Z.log
+!logs/real-equivalence-20260723T024942Z.log
+!logs/final-gfx1201-gate.log
