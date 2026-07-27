@@ -126,3 +126,23 @@ clean:
 	rm -f common/*.o extract/*.o split/*.o remesh/*.o holefill/*.o pipeline/*.o \
 	      topology/*.o tools/*.o *.o cube_mesh grid_weld grid_pipeline \
 	      obj_components pinhole_verdict seam_audit test_common
+
+# ==== CubeCL (portable AMD/NVIDIA MLS backend) ============================
+# One Rust/CubeCL MLS kernel builds a .so exporting this repo's
+# MLS_project_verts ABI directly, replacing common/mls_project.o.
+# Requires a Rust toolchain + the target GPU toolkit (CUDA or ROCm).
+#   make cube_mesh_cubecl CUBECL_FEATURES=cubecl-cuda   # NVIDIA
+#   make cube_mesh_cubecl CUBECL_FEATURES=cubecl-hip    # AMD
+CUBECL_DIR      ?= cubecl
+CUBECL_FEATURES ?= cubecl-cuda
+CUBECL_LIB       = $(CUBECL_DIR)/target/release/libherculaneum_mls_cubecl.so
+
+$(CUBECL_LIB):
+	cd $(CUBECL_DIR) && cargo build --release --no-default-features --features rust-cpu,$(CUBECL_FEATURES)
+
+CORE_OBJ_CUBECL = $(filter-out common/mls_project.o,$(CORE_OBJ))
+
+cube_mesh_cubecl: BUILD_FLAGS = $(RELEASE_FLAGS)
+cube_mesh_cubecl: main.o $(CORE_OBJ_CUBECL) $(CPP_OBJ) $(CUBECL_LIB)
+	$(CC) $(CFLAGS) $(BUILD_FLAGS) main.o $(CORE_OBJ_CUBECL) $(CPP_OBJ) -o $@ $(LDFLAGS) $(EXT_LIB) $(CUBECL_LIB) -Wl,-rpath,$$ORIGIN/$(CUBECL_DIR)/target/release
+# =========================================================================
