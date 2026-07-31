@@ -342,11 +342,14 @@ void ves_hard_timeout_cancel(void);
  * leaves the runtime default. No-op when compiled without OpenMP.
  *
  * Implemented in ves_platform.c with a self-declared prototype rather
- * than #include <omp.h>: embedding hosts (VC3D) inject a C++-only stub
+ * than including omp.h by name: embedding hosts (VC3D) inject a C++-only stub
  * omp.h into the include path, so no library TU may include the real
  * header by name.
  * ================================================================ */
 
 void ves_omp_set_threads(int n);
+
+/* omp_set_dynamic(flag), same self-declared-prototype rule as above. */
+void ves_omp_set_dynamic(int flag);
 
 #endif /* VES_PLATFORM_H */

@@ -7,9 +7,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 #include "../common/csr.h"
 #include "../common/kdtree.h"
@@ -268,7 +265,7 @@ int RectoRefine_run(Arena_T arena,
     slope_hit = (uint8_t *)ARENA_CALLOC(arena, (long)nv, 1);
 
 #ifdef _OPENMP
-    omp_set_num_threads(nthreads);
+    ves_omp_set_threads(nthreads);
 #else
     (void)nthreads;
 #endif

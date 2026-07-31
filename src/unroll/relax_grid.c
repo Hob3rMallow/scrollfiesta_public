@@ -7,9 +7,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 #include "../common/tiff_io.h"
 #include "../common/ves_platform.h"
@@ -259,7 +256,7 @@ int RelaxGrid_run(Arena_T arena, PieceSet *ps, const char *rawtex_tif,
 
     RgBandStat *bst = (RgBandStat *)rg_xcalloc(n_bands, sizeof(RgBandStat));
 #ifdef _OPENMP
-    omp_set_num_threads(o->threads > 0 ? o->threads : 16);
+    ves_omp_set_threads(o->threads > 0 ? o->threads : 16);
 #endif
     for (int round = 0; round < (o->rounds > 0 ? o->rounds : 1); round++) {
         for (int parity = 0; parity < 2; parity++) {

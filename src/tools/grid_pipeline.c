@@ -32,7 +32,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <omp.h>
 
 #include "../common/arena.h"
 #include "../common/tiff_io.h"
@@ -861,8 +860,8 @@ int main(int argc, char *argv[])
     /* Run cubes in parallel via OpenMP. MSVC OpenMP 2.0 requires the
      * loop counter declared outside the for-statement. */
     double t_start = ves_clock_sec();
-    omp_set_dynamic(0);
-    omp_set_num_threads(opts.max_concurrent);
+    ves_omp_set_dynamic(0);
+    ves_omp_set_threads(opts.max_concurrent);
 
 #ifdef _WIN32
     /* Enforce --threads-per-cube on Windows children. Set ONCE here,

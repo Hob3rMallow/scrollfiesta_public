@@ -13,9 +13,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 #include "../common/csr.h"
 #include "../common/kdtree.h"
@@ -461,7 +458,7 @@ int SnapGrid_run(Arena_T arena, PieceSet *ps, CubeTable *ct,
         int n = (int)ps->nv;
         int i = 0;
 #ifdef _OPENMP
-        omp_set_num_threads(o->threads > 0 ? o->threads : 32);
+        ves_omp_set_threads(o->threads > 0 ? o->threads : 32);
 #pragma omp parallel for schedule(static)
 #endif
         for (i = 0; i < n; i++) {

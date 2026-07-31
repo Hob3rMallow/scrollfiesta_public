@@ -41,9 +41,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 #ifdef _MSC_VER
 #include <windows.h>     /* audit's *_skin.f32 scan */
@@ -327,7 +324,7 @@ static void pass_b(const WholeCfg *cfg, const WholeCal *cal,
     int nthreads = cfg->max_concurrent;
 #ifdef _OPENMP
     if (nthreads > (int)n) nthreads = (int)n > 0 ? (int)n : 1;
-    omp_set_num_threads(nthreads);
+    ves_omp_set_threads(nthreads);
 #endif
     long done = 0, skipped = 0, failed = 0;
     double t0 = ves_clock_sec();
@@ -1555,7 +1552,7 @@ static int run_reregister(const WholeCfg *cfg_in)
         long failed = 0;
         int i = 0;
 #ifdef _OPENMP
-        omp_set_num_threads(cfg.max_concurrent > 0 ? cfg.max_concurrent : 32);
+        ves_omp_set_threads(cfg.max_concurrent > 0 ? cfg.max_concurrent : 32);
 #pragma omp parallel for schedule(dynamic, 1)
 #endif
         for (i = 0; i < (int)n; i++) {

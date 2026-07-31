@@ -20,6 +20,13 @@
 #include <math.h>
 #include <assert.h>
 
+/* Set by CMake to 0 when the library is built with the TIFF stub
+ * (SCROLLFIESTA_WITH_TIFF=OFF); TIFF-backed cases are skipped then.
+ * Non-CMake builds (src/Makefile) always have TIFF. */
+#ifndef SF_TEST_WITH_TIFF
+#define SF_TEST_WITH_TIFF 1
+#endif
+
 static int tests_run = 0;
 static int tests_passed = 0;
 
@@ -830,12 +837,17 @@ int main(void)
     printf("\n[BFS]\n");
     test_bfs_kring();
 
+#if SF_TEST_WITH_TIFF
     printf("\n[TIFF I/O]\n");
     test_tiff_round_trip();
 
     printf("\n[HaloLoader]\n");
     test_halo_loader_basic();
     test_halo_loader_zero_halo();
+#else
+    printf("\n[TIFF I/O]\n  skipped (built without TIFF)\n");
+    printf("\n[HaloLoader]\n  skipped (built without TIFF)\n");
+#endif
 
     printf("\n[OBJ I/O]\n");
     test_obj_round_trip();

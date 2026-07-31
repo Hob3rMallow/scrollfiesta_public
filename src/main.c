@@ -37,9 +37,6 @@
 #include "common/mls_project.h"
 #include "pipeline/pipeline_cube.h"
 
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 #define HARD_TIMEOUT_SEC   1e9     /* effectively infinite */
 
@@ -189,7 +186,7 @@ int main(int argc, char *argv[])
      * budget as everything else: VESUVIUS_THREADS. grid orchestrators pass
      * threads-per-cube (usually 1 -- the fleet fills the cores); a bare
      * single-cube run gets the whole machine. */
-    omp_set_num_threads(n_threads);
+    ves_omp_set_threads(n_threads);
 #endif
 
     char cube_id[128] = {0};

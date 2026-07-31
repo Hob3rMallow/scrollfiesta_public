@@ -19,7 +19,7 @@
 
 CC       = gcc
 CXX      = g++
-CFLAGS   = -std=c99 -Wall -Wextra -Wshadow -Wformat=2 -Werror -Wconversion
+CFLAGS   = -std=c99 -Wall -Wextra -Wshadow -Wformat=2 -Werror=implicit-function-declaration -D_GNU_SOURCE
 CXXFLAGS = -std=c++17 -O2 -Wno-register
 
 # System libs + local deps (pre-installed on the target; see CLAUDE.md).

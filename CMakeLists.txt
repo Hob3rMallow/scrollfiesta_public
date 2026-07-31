@@ -242,8 +242,11 @@ if(WIN32)
 else()
     target_compile_definitions(scrollfiesta_core PRIVATE _GNU_SOURCE)
     target_link_libraries(scrollfiesta_core PUBLIC m)
-    # The two C++ wrappers are folded in; consumers of the static core need
-    # the C++ runtime at final link.
+endif()
+if(NOT MSVC)
+    # The folded-in C++ wrappers need the C++ runtime at the final link of C
+    # consumers. MSVC objects self-describe their runtime; gcc-family linkers
+    # (including MinGW, which is WIN32 but not MSVC) do not.
     target_link_libraries(scrollfiesta_core PRIVATE stdc++)
 endif()
 
@@ -259,6 +262,12 @@ else()
     # GCC 13's libstdc++ no longer provides it transitively (see src/Makefile).
     set_source_files_properties(${SF_SRC}/split/multicut_wrap.cpp
                                 PROPERTIES COMPILE_OPTIONS "-include;limits")
+    # GCO v3.0 calls memset/memcpy/strcpy without <cstring> (its TU also
+    # inlines graph.cpp/maxflow.cpp); MSVC's headers provide it transitively,
+    # GCC 13's do not.
+    set_source_files_properties(
+        ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/gco-v3.0/GCoptimization.cpp
+        PROPERTIES COMPILE_OPTIONS "-include;cstring")
 endif()
 
 # OpenMP: raw flags only. Never find_package(OpenMP); no TU includes <omp.h>.
@@ -473,6 +482,9 @@ if(SCROLLFIESTA_BUILD_TESTS)
     add_executable(sf_test_common ${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_common.c)
     target_link_libraries(sf_test_common PRIVATE scrollfiesta_core)
     set_target_properties(sf_test_common PROPERTIES C_STANDARD 17 C_EXTENSIONS ON)
+    # TIFF-backed cases self-skip when the library is built with the stub.
+    target_compile_definitions(sf_test_common PRIVATE
+        SF_TEST_WITH_TIFF=$<BOOL:${SCROLLFIESTA_WITH_TIFF}>)
     if(WIN32)
         target_compile_definitions(sf_test_common PRIVATE _CRT_SECURE_NO_WARNINGS)
     else()
