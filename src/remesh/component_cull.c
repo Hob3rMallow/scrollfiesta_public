@@ -87,7 +87,9 @@ int ComponentCull_by_area(Arena_T arena,
     size_t cap = n_in + 8, cnt = 0;
     ComponentMesh *ccs   = (ComponentMesh *)ARENA_ALLOC(arena, (long)(cap*sizeof(ComponentMesh)));
     double        *areas = (double *)ARENA_ALLOC(arena, (long)(cap*sizeof(double)));
-    double total = 0.0;
+    size_t        *parent = (size_t *)ARENA_ALLOC(arena, (long)(cap*sizeof(size_t)));
+    double *parent_total = (double *)ARENA_CALLOC(arena, (long)n_in,
+                                                   (long)sizeof(double));
 
     for (size_t i = 0; i < n_in; i++) {
         const ComponentMesh *cm = &in[i];
@@ -111,22 +113,48 @@ int ComponentCull_by_area(Arena_T arena,
                 for (size_t _i=0;_i<cnt;_i++) na[_i].self = &na[_i];
                 double *naa = (double *)ARENA_ALLOC(arena, (long)(nc*sizeof(double)));
                 memcpy(naa, areas, cnt*sizeof(double));
-                ccs = na; areas = naa; cap = nc;
+                size_t *npa = (size_t *)ARENA_ALLOC(arena, (long)(nc*sizeof(size_t)));
+                memcpy(npa, parent, cnt*sizeof(size_t));
+                ccs = na; areas = naa; parent = npa; cap = nc;
             }
             double a = 0.0;
             if (extract_cc(arena, cm, &uf, (int32_t)r, &ccs[cnt], &a) == 0) {
-                areas[cnt] = a; total += a; cnt++;
+                areas[cnt] = a; parent[cnt] = i; parent_total[i] += a; cnt++;
             }
         }
     }
     if (cnt == 0) return 0;
 
-    /* keep components with area >= min_frac of the total meshed area */
-    double thresh = (double)min_frac * total;
+    /* Cull relative to the component's UPSTREAM input sheet, not the whole cube.
+     * A wrapped cube can legitimately contain dozens of similarly-sized sheets;
+     * comparing each with the cube total deletes all of them once the sheet count
+     * exceeds 1/min_frac. The input array already carries the semantic split, so
+     * this pass should only remove disconnected crumbs within each input. */
+    uint8_t *take = (uint8_t *)ARENA_CALLOC(arena, (long)cnt,
+                                             (long)sizeof(uint8_t));
+    uint8_t *parent_has = (uint8_t *)ARENA_CALLOC(arena, (long)n_in,
+                                                   (long)sizeof(uint8_t));
+    size_t *best = (size_t *)ARENA_ALLOC(arena, (long)(n_in*sizeof(size_t)));
+    double *best_area = (double *)ARENA_CALLOC(arena, (long)n_in,
+                                                (long)sizeof(double));
+    for (size_t i = 0; i < n_in; i++) best[i] = (size_t)-1;
+    for (size_t c = 0; c < cnt; c++) {
+        size_t p = parent[c];
+        double thresh = (double)min_frac * parent_total[p];
+        if (areas[c] >= thresh) { take[c] = 1; parent_has[p] = 1; }
+        if (best[p] == (size_t)-1 || areas[c] > best_area[p]) {
+            best[p] = c; best_area[p] = areas[c];
+        }
+    }
+    /* Never erase an upstream sheet entirely, even if it fragmented into more
+     * than 1/min_frac equal pieces. Retain that parent's largest component. */
+    for (size_t i = 0; i < n_in; i++)
+        if (!parent_has[i] && best[i] != (size_t)-1) take[best[i]] = 1;
+
     ComponentMesh *keep = (ComponentMesh *)ARENA_ALLOC(arena, (long)(cnt*sizeof(ComponentMesh)));
     size_t nk = 0, dropped = 0;
     for (size_t c = 0; c < cnt; c++) {
-        if (areas[c] >= thresh) {
+        if (take[c]) {
             keep[nk] = ccs[c];
             keep[nk].self = &keep[nk];
             keep[nk].comp_id = (int)(nk + 1);
@@ -134,11 +162,6 @@ int ComponentCull_by_area(Arena_T arena,
         } else {
             dropped++;
         }
-    }
-    /* never cull everything (degenerate min_frac / single tiny mesh) */
-    if (nk == 0) {
-        keep[0] = ccs[0]; keep[0].self = &keep[0]; keep[0].comp_id = 1;
-        nk = 1; dropped = cnt - 1;
     }
 
     *out = keep; *n_out = nk;

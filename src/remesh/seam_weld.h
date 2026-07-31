@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "../common/arena.h"
+#include "ball_pivot.h"   /* BpaBridgeGate */
 
 /*
  * Seam-weld a concatenated multi-cube mesh by re-running BPA across each
@@ -36,7 +37,15 @@
  * faces[nf*3]  int32, 0-based
  * cube_size    voxels per cube edge (e.g. 128)
  * rho          BPA pivot radius floor (voxels; e.g. 1.5)
+ * rho_max      escalating-ball cap (voxels); pass <=0 for the BRIDGE_RHO_MAX
+ *              default. A restricted-cloud permissive re-weld passes a WIDER
+ *              cap to span divots.
  * band         half-width (vox) for selecting seam boundary edges
+ * want_mask    optional [nv] mask; when non-NULL the BPA sub-cloud is
+ *              restricted to verts with want_mask[v]!=0 (the two confirmed
+ *              sheets of a phase-2 pair re-weld). NULL = all boundary verts.
+ * gate         optional winding gate (BpaBridgeGate); NULL disables it (a
+ *              restricted-cloud re-weld relies on want_mask, not the gate).
  *
  * Returns 0 on success. On success *out_faces / *out_nf hold the combined
  * (original + bridge) face list. *out_n_bridge (may be NULL) receives the
@@ -45,7 +54,9 @@
 int SeamWeld_bridge(Arena_T arena,
                     const float *verts, size_t nv,
                     const int32_t *faces, size_t nf,
-                    float cube_size, float rho, float band,
+                    float cube_size, float rho, float rho_max, float band,
+                    const uint8_t *want_mask,
+                    const BpaBridgeGate *gate,
                     int32_t **out_faces, size_t *out_nf,
                     size_t *out_n_bridge);
 

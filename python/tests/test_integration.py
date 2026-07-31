@@ -9,6 +9,7 @@ import tifffile
 from _helpers import grid_disk, make_local_zarr
 
 from scrollunwrap.cube_planner import plan_cubes
+from scrollunwrap.adaptive_bpa import AdaptiveBpaConfig
 from scrollunwrap.flatten import run_flatboi
 from scrollunwrap.mesher import run_mesher
 from scrollunwrap.meshprep import write_obj_vf
@@ -66,6 +67,30 @@ def test_stream_mesh_and_weld(cube_mesh_bin, grid_weld_bin, tmp_path):
     assert res.welded_obj.exists()
     nverts = sum(1 for ln in open(res.welded_obj) if ln.startswith("v "))
     assert nverts > 0
+
+
+def test_adaptive_bpa_clean_cube_selects_baseline(
+        cube_mesh_bin, grid_weld_bin, wind_audit_bin, tmp_path):
+    """Exercise candidate isolation, stage audits, selection, and canonical copy.
+
+    A deliberately huge winding pitch makes this planar synthetic slab clean;
+    the 1.20 baseline must pass without launching the lower-radius candidates.
+    """
+    uri, _ = make_local_zarr(tmp_path / "adapt.zarr", shape=(128, 128, 128),
+                             chunks=(64, 64, 64),
+                             blob=(slice(62, 65), slice(16, 112), slice(16, 112)))
+    vol = open_volume(uri, 0)
+    cubes = plan_cubes((0, 128, 0, 128, 0, 128), level=0)
+    cfg = AdaptiveBpaConfig(Path(wind_audit_bin), umb_y=0, umb_x=0,
+                            pitch=1000.0, rhos=(1.2, 1.1, 1.0))
+    res = run_mesher(vol, cubes, tmp_path / "adaptive_mesh",
+                     cube_mesh_bin=cube_mesh_bin, grid_weld_bin=grid_weld_bin,
+                     halo=13, max_concurrent=1, adaptive_bpa=cfg)
+    report = res.dump_dir / cubes[0].cube_id / "adaptive_bpa.json"
+    data = __import__("json").loads(report.read_text())
+    assert data["selected_rho"] == 1.2
+    assert data["accepted_clean_candidate"]
+    assert len(data["candidates"]) == 1
 
 
 def test_flatten_and_tifxyz_coordinate_fidelity(flatboi_bin, obj2tifxyz_bin, tmp_path):

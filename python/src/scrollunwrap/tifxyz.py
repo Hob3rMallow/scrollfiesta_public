@@ -14,7 +14,8 @@ from pathlib import Path
 
 
 def run_obj2tifxyz(uv_obj, out_dir, *, binary, step_size: int = 20,
-                   timeout: float = 1800.0) -> tuple[Path, dict, str]:
+                   timeout: float = 1800.0, require_mask: bool = False
+                   ) -> tuple[Path, dict, str]:
     """Run the legacy converter and validate its outputs.
 
     Returns (out_dir, meta_json, stdout). Raises on missing outputs.
@@ -28,6 +29,8 @@ def run_obj2tifxyz(uv_obj, out_dir, *, binary, step_size: int = 20,
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     missing = [fn for fn in ("x.tif", "y.tif", "z.tif", "meta.json")
                if not (out_dir / fn).exists()]
+    if require_mask and not (out_dir / "mask.tif").exists():
+        missing.append("mask.tif")
     if missing or proc.returncode != 0:
         raise RuntimeError(
             f"vc_obj2tifxyz_legacy failed (rc={proc.returncode}, missing={missing})\n"

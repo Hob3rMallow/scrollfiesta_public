@@ -9,6 +9,7 @@
 #include "dump_obj.h"
 #include "obj_io.h"
 #include "obj_colors.h"
+#include "cc_color.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -99,41 +100,6 @@ static void copy_to_all_obj_dir(const char *dir, const char *cube_id,
     copy_file(all_path, dst);
 }
 
-/* Combine individual OBJ files into one, adjusting face indices.
- * Reads each file line by line; "v" lines pass through, "f" lines
- * get vertex offset added.  An "o comp_NNN" line is inserted before
- * each component. */
-static void combine_objs(const char *const *paths, const size_t *nv_arr,
-                          size_t count, const char *out_path)
-{
-    FILE *out = fopen(out_path, "w");
-    if (!out) return;
-
-    size_t vert_offset = 0;
-    for (size_t c = 0; c < count; c++) {
-        fprintf(out, "o comp_%03d\n", (int)(c + 1));
-        FILE *in = fopen(paths[c], "r");
-        if (!in) { vert_offset += nv_arr[c]; continue; }
-
-        char line[256];
-        while (fgets(line, (int)sizeof(line), in)) {
-            if (line[0] == 'v' && line[1] == ' ') {
-                fputs(line, out);
-            } else if (line[0] == 'f' && line[1] == ' ') {
-                int a = 0, b = 0, c2 = 0;
-                if (sscanf(line + 2, "%d %d %d", &a, &b, &c2) == 3)
-                    fprintf(out, "f %zu %zu %zu\n",
-                            (size_t)a + vert_offset,
-                            (size_t)b + vert_offset,
-                            (size_t)c2 + vert_offset);
-            }
-        }
-        fclose(in);
-        vert_offset += nv_arr[c];
-    }
-    fclose(out);
-}
-
 /* ----------------------------------------------------------------
  * Public API
  * ---------------------------------------------------------------- */
@@ -167,36 +133,34 @@ void DumpObj_write_meshes(Arena_T arena, const char *dir,
 
     Arena_Mark mark = Arena_save(arena);
 
-    char *path_buf = (char *)ARENA_ALLOC(arena,
-        (long)(count * COMP_PATH_LEN));
-    size_t *nv_arr = (size_t *)ARENA_ALLOC(arena,
-        (long)(count * sizeof(size_t)));
-    const char **path_ptrs = (const char **)ARENA_ALLOC(arena,
-        (long)(count * sizeof(const char *)));
-
     /* Write verts in WORLD source-voxel coords (cube-local + cube origin
-     * parsed from cube_id). This makes per-cube dumps from different cubes
-     * line up the same way grid_weld would stitch them, so loading
-     * multiple cube_id_stepX_all.obj files in MeshLab gives the same
-     * spatial layout as the final welded mesh. Without the offset, every
-     * cube's dump lands at the origin and they all overlap. */
+     * parsed from cube_id) so per-cube dumps line up the way grid_weld stitches
+     * them. Per-component files keep their flat pipeline-component colour; the
+     * combined _all.obj is recoloured by CONNECTED COMPONENT (union-find over
+     * face connectivity) so wrap shatter / cross-wrap fusion shows on load
+     * (mesh_render --vcolor, no obj_cc_color step). */
     float origin[3];
     parse_cube_origin_zyx(cube_id, origin);
 
     /* Bright blue for hole-fill verts (red carries an error/"bad" connotation).
-     * Green is reserved by grid_weld for cross-cube weld highlights in the final
-     * welded.obj — keep the three concerns visually distinct (per-cube fills =
-     * blue, cross-cube weld points = green). */
+     * Green is reserved by grid_weld for cross-cube weld highlights. */
     static const float FILL_BLUE[3] = {0.10f, 0.45f, 1.00f};
 
+    /* Accumulate the combined (world-shifted) mesh in one pass for the CC dump. */
+    size_t tot_nv = 0, tot_nf = 0;
+    for (size_t i = 0; i < count; i++) { tot_nv += meshes[i].nv; tot_nf += meshes[i].nf; }
+    float   *comb_v = (float *)ARENA_ALLOC(arena, (long)(tot_nv * 3 * sizeof(float)));
+    int32_t *comb_f = (int32_t *)ARENA_ALLOC(arena, (long)(tot_nf * 3 * sizeof(int32_t)));
+    float   *comb_c = (float *)ARENA_ALLOC(arena, (long)(tot_nv * 3 * sizeof(float)));
+    size_t vo = 0, fo = 0;
+    char comp_path[COMP_PATH_LEN];
+
     for (size_t i = 0; i < count; i++) {
-        char *comp_path = path_buf + (ptrdiff_t)(i * COMP_PATH_LEN);
-        snprintf(comp_path, COMP_PATH_LEN,
+        snprintf(comp_path, sizeof(comp_path),
                  "%.512s/%.256s_%.128s_%03d.obj",
                  dir, cube_id, step_tag, (int)(i + 1));
 
-        float *shifted = (float *)ARENA_ALLOC(arena,
-            (long)(meshes[i].nv * 3 * sizeof(float)));
+        float *shifted = comb_v + vo * 3;   /* accumulate in place */
         offset_verts(meshes[i].verts, shifted, meshes[i].nv, origin);
 
         if (meshes[i].nv_pre_fill > 0) {
@@ -210,16 +174,22 @@ void DumpObj_write_meshes(Arena_T arena, const char *dir,
                                 meshes[i].faces, meshes[i].nf,
                                 OBJ_COLORS[comp_color_idx(&meshes[i])]);
         }
-        nv_arr[i] = meshes[i].nv;
-        path_ptrs[i] = comp_path;
+        for (size_t f = 0; f < meshes[i].nf; f++) {   /* offset faces into combined space */
+            comb_f[(fo + f) * 3 + 0] = meshes[i].faces[f * 3 + 0] + (int32_t)vo;
+            comb_f[(fo + f) * 3 + 1] = meshes[i].faces[f * 3 + 1] + (int32_t)vo;
+            comb_f[(fo + f) * 3 + 2] = meshes[i].faces[f * 3 + 2] + (int32_t)vo;
+        }
+        vo += meshes[i].nv; fo += meshes[i].nf;
     }
 
     char all_path[1024];
     snprintf(all_path, sizeof(all_path), "%.512s/%.256s_%.128s_all.obj",
              dir, cube_id, step_tag);
-    combine_objs(path_ptrs, nv_arr, count, all_path);
+    { CCColorOpts opts; CCColor_default_opts(&opts); opts.sat = 0.75;
+      CCColor_compute(tot_nv, comb_f, tot_nf, &opts, comb_c, NULL);
+      ObjIO_write_per_vertex_color(all_path, comb_v, tot_nv, comb_f, tot_nf, comb_c); }
     copy_to_all_obj_dir(dir, cube_id, all_path);
-    fprintf(stderr, "  [dump] %zu OBJs + combined -> %s\n", count, dir);
+    fprintf(stderr, "  [dump] %zu OBJs + CC-coloured combined -> %s\n", count, dir);
 
     Arena_restore(arena, mark);
 }
@@ -290,38 +260,43 @@ void DumpObj_write_mesh_ptrs(Arena_T arena, const char *dir,
 
     Arena_Mark mark = Arena_save(arena);
 
-    char *path_buf = (char *)ARENA_ALLOC(arena,
-        (long)(count * COMP_PATH_LEN));
-    size_t *nv_arr = (size_t *)ARENA_ALLOC(arena,
-        (long)(count * sizeof(size_t)));
-    const char **path_ptrs = (const char **)ARENA_ALLOC(arena,
-        (long)(count * sizeof(const char *)));
-
     /* World-coord offset (see DumpObj_write_meshes for rationale). */
     float origin[3];
     parse_cube_origin_zyx(cube_id, origin);
 
+    size_t tot_nv = 0, tot_nf = 0;
+    for (size_t i = 0; i < count; i++) { tot_nv += meshes[i]->nv; tot_nf += meshes[i]->nf; }
+    float   *comb_v = (float *)ARENA_ALLOC(arena, (long)(tot_nv * 3 * sizeof(float)));
+    int32_t *comb_f = (int32_t *)ARENA_ALLOC(arena, (long)(tot_nf * 3 * sizeof(int32_t)));
+    float   *comb_c = (float *)ARENA_ALLOC(arena, (long)(tot_nv * 3 * sizeof(float)));
+    size_t vo = 0, fo = 0;
+    char comp_path[COMP_PATH_LEN];
+
     for (size_t i = 0; i < count; i++) {
-        char *comp_path = path_buf + (ptrdiff_t)(i * COMP_PATH_LEN);
-        snprintf(comp_path, COMP_PATH_LEN,
+        snprintf(comp_path, sizeof(comp_path),
                  "%.512s/%.256s_%.128s_%03d.obj",
                  dir, cube_id, step_tag, (int)(i + 1));
-        float *shifted = (float *)ARENA_ALLOC(arena,
-            (long)(meshes[i]->nv * 3 * sizeof(float)));
+        float *shifted = comb_v + vo * 3;
         offset_verts(meshes[i]->verts, shifted, meshes[i]->nv, origin);
         ObjIO_write_colored(comp_path, shifted, meshes[i]->nv,
                             meshes[i]->faces, meshes[i]->nf,
                             OBJ_COLORS[comp_color_idx(meshes[i])]);
-        nv_arr[i] = meshes[i]->nv;
-        path_ptrs[i] = comp_path;
+        for (size_t f = 0; f < meshes[i]->nf; f++) {
+            comb_f[(fo + f) * 3 + 0] = meshes[i]->faces[f * 3 + 0] + (int32_t)vo;
+            comb_f[(fo + f) * 3 + 1] = meshes[i]->faces[f * 3 + 1] + (int32_t)vo;
+            comb_f[(fo + f) * 3 + 2] = meshes[i]->faces[f * 3 + 2] + (int32_t)vo;
+        }
+        vo += meshes[i]->nv; fo += meshes[i]->nf;
     }
 
     char all_path[1024];
     snprintf(all_path, sizeof(all_path), "%.512s/%.256s_%.128s_all.obj",
              dir, cube_id, step_tag);
-    combine_objs(path_ptrs, nv_arr, count, all_path);
+    { CCColorOpts opts; CCColor_default_opts(&opts); opts.sat = 0.75;
+      CCColor_compute(tot_nv, comb_f, tot_nf, &opts, comb_c, NULL);
+      ObjIO_write_per_vertex_color(all_path, comb_v, tot_nv, comb_f, tot_nf, comb_c); }
     copy_to_all_obj_dir(dir, cube_id, all_path);
-    fprintf(stderr, "  [dump] %zu OBJs + combined -> %s\n", count, dir);
+    fprintf(stderr, "  [dump] %zu OBJs + CC-coloured combined -> %s\n", count, dir);
 
     Arena_restore(arena, mark);
 }

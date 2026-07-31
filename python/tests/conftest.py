@@ -24,6 +24,11 @@ def grid_weld_bin():
 
 
 @pytest.fixture
+def wind_audit_bin():
+    return _need(_paths.default_wind_audit(), "wind_audit")
+
+
+@pytest.fixture
 def flatboi_bin():
     return _need(_paths.default_flatboi(), "flatboi")
 

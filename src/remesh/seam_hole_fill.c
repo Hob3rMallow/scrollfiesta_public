@@ -21,8 +21,13 @@ void SeamHoleFill_default_params(SeamHoleFillParams *p)
 {
     p->cube = 128.0;
     p->band = 6.0;
-    p->max_extent = 6.5;   /* < 7-vox inter-wrap clearance (phase gate is the real guard) */
-    p->max_loop = 8;
+    p->max_extent = 8.0;   /* phase gate is the real wrap guard when armed;
+                            * unarmed runs clamp to 4 (see ext_cap below).
+                            * 6.5 left the observed 6.1-7.5 vox seam slots
+                            * open forever (2026-07-18 residue census). */
+    p->max_loop = 12;      /* was 8; the census showed a clean straddling
+                            * 12-edge slot at extent 7.5 */
+    p->near_vox = 3.0;     /* phase-gated non-straddle acceptance band */
     p->umb_y = 0.0; p->umb_x = 0.0; p->pitch = 0.0;  /* phase gate off until set */
     p->wind_tol_turns = 0.25;
 }
@@ -135,19 +140,26 @@ static int pt_in_tri2(const double p[2], const double a[2],
     return !(neg && pos);
 }
 
-/* Ear-clip a small (3..8) boundary loop into a GENERAL (non-fan) triangulation.
- * Projects to the loop's Newell-normal plane, clips ears (convex, empty, non-
- * sliver), and -- crucially at a seam between sheets -- refuses any ear whose new
- * diagonal already exists as a mesh edge (`eh`), so the result is manifold-safe
- * by construction. This replaces the removed multi-apex fan: it is deterministic
- * and picks a triangulation that FITS the surrounding mesh rather than forcing a
- * star fan from an arbitrary apex. Triangles are reverse-wound to -sn (the
- * boundary-edge reversal). Returns the triangle count (n-2), or 0 if no manifold-
- * safe, non-folding triangulation exists (caller leaves the loop open). */
+/* Ear-clip a small (3..SHF_EC_MAX) boundary loop into a GENERAL (non-fan)
+ * triangulation. Projects to the loop's Newell-normal plane, clips ears
+ * (convex, empty, non-sliver), and -- crucially at a seam between sheets --
+ * refuses any ear whose new diagonal already exists as a mesh edge (`eh`), so
+ * the result is manifold-safe by construction. This replaces the removed
+ * multi-apex fan: it is deterministic and picks a triangulation that FITS the
+ * surrounding mesh rather than forcing a star fan from an arbitrary apex.
+ * Triangles are reverse-wound to -sn (the boundary-edge reversal).
+ * `min_alt_gate` / `fold_gate` parameterize the sliver and fold rejections so
+ * the caller can retry with relaxed gates under the winding-phase guard (a
+ * thin capped sliver beats an open puncture; manifold + diagonal-exists
+ * guards are never relaxed). Returns the triangle count (n-2), or 0 if no
+ * manifold-safe, non-folding triangulation exists (caller leaves the loop
+ * open). */
+enum { SHF_EC_MAX = 12 };
 static int earclip_loop(const float *V, const int32_t *loop, int n,
-                        EHash *eh, const double sn[3], int32_t *out)
+                        EHash *eh, const double sn[3], int32_t *out,
+                        double min_alt_gate, double fold_gate)
 {
-    if (n < 3 || n > 8) return 0;
+    if (n < 3 || n > SHF_EC_MAX) return 0;
     int ax = (fabs(sn[0]) <= fabs(sn[1]) && fabs(sn[0]) <= fabs(sn[2])) ? 0
            : (fabs(sn[1]) <= fabs(sn[2]) ? 1 : 2);
     double t[3] = {0,0,0}; t[ax] = 1.0;
@@ -156,7 +168,7 @@ static int earclip_loop(const float *V, const int32_t *loop, int n,
     if (ul < 1e-12) return 0;
     u[0]/=ul; u[1]/=ul; u[2]/=ul;
     double w[3] = { sn[1]*u[2]-sn[2]*u[1], sn[2]*u[0]-sn[0]*u[2], sn[0]*u[1]-sn[1]*u[0] };
-    double P2[8][2];
+    double P2[SHF_EC_MAX][2];
     for (int k = 0; k < n; k++) {
         const float *pk = &V[(size_t)loop[k]*3];
         P2[k][0] = pk[0]*u[0]+pk[1]*u[1]+pk[2]*u[2];
@@ -165,7 +177,7 @@ static int earclip_loop(const float *V, const int32_t *loop, int n,
     double area2 = 0.0;
     for (int k = 0; k < n; k++) { int j=(k+1)%n; area2 += P2[k][0]*P2[j][1]-P2[j][0]*P2[k][1]; }
     double ori = area2 >= 0 ? 1.0 : -1.0;
-    int rem[8], m = n;
+    int rem[SHF_EC_MAX], m = n;
     for (int k = 0; k < n; k++) rem[k] = k;
     int nt = 0, guard = 0;
     while (m > 3 && guard++ < 64) {
@@ -174,7 +186,7 @@ static int earclip_loop(const float *V, const int32_t *loop, int n,
             int ip = rem[(pos+m-1)%m], ii = rem[pos], iq = rem[(pos+1)%m];
             if (cross2(P2[ip], P2[ii], P2[iq]) * ori <= 0.0) continue;   /* reflex */
             if (eh_get(eh, loop[ip], loop[iq]) != 0) continue;          /* diagonal exists */
-            if (tri_min_alt(V, loop[ip], loop[ii], loop[iq]) < 0.05) continue; /* sliver */
+            if (tri_min_alt(V, loop[ip], loop[ii], loop[iq]) < min_alt_gate) continue; /* sliver */
             int inside = 0;
             for (int s = 0; s < m; s++) {
                 int iv = rem[s];
@@ -195,7 +207,7 @@ static int earclip_loop(const float *V, const int32_t *loop, int n,
         if (!tri_normal(V, out[t2*3+0], out[t2*3+1], out[t2*3+2], nn)) return 0;
         double d = nn[0]*nref[0]+nn[1]*nref[1]+nn[2]*nref[2];
         if (d < 0.0) { int32_t tmp = out[t2*3+1]; out[t2*3+1] = out[t2*3+2]; out[t2*3+2] = tmp; d = -d; }
-        if (d < 0.2) return 0;    /* triangle folds relative to the surface */
+        if (d < fold_gate) return 0;  /* triangle folds relative to the surface */
     }
     return nt;
 }
@@ -331,13 +343,24 @@ int SeamHoleFill_process(Arena_T arena, ComponentMesh *cm,
         }
         double ext = sqrt((mx[0]-mn[0])*(mx[0]-mn[0]) + (mx[1]-mn[1])*(mx[1]-mn[1]) + (mx[2]-mn[2])*(mx[2]-mn[2]));
 
-        /* near-seam + straddle on some axis */
+        /* near-seam on some axis: within the band AND either straddling the
+         * plane, or (phase gate armed only) hugging it — the whole bbox within
+         * near_vox of the plane. The weld's trim inset + bridge pull some seam
+         * punctures fully 1-2 vox to one side, and the strict straddle test
+         * left exactly those open on every pass (2026-07-18 residue census:
+         * 5 of the last 13 small gaps were one-sided hugs). Unarmed runs keep
+         * the strict straddle requirement — the phase gate is what makes the
+         * relaxation wrap-safe. */
         int on_seam = 0;
         for (int a = 0; a < 3; a++) {
             double mid = 0.5*(mn[a]+mx[a]);
             double coord = p->cube * floor(mid / p->cube + 0.5);
-            if (mn[a] >= coord - p->band && mx[a] <= coord + p->band &&
-                mn[a] < coord && mx[a] > coord) { on_seam = 1; break; }
+            if (mn[a] < coord - p->band || mx[a] > coord + p->band) continue;
+            if (mn[a] < coord && mx[a] > coord) { on_seam = 1; break; }
+            if (phase_on && p->near_vox > 0.0 &&
+                mn[a] >= coord - p->near_vox && mx[a] <= coord + p->near_vox) {
+                on_seam = 1; break;
+            }
         }
         if (!on_seam) continue;
         z.seam_candidates++;
@@ -393,16 +416,23 @@ int SeamHoleFill_process(Arena_T arena, ComponentMesh *cm,
          * (it refuses any diagonal that already exists), and leaves the loop OPEN
          * if none is manifold-safe. */
         size_t ntri = n - 2;
-        if (ntri > 6) { continue; }  /* guard the fixed buffers (max_loop<=8) */
-        int32_t tri[3 * 6];
-        int ntri_ec = earclip_loop(V, loop, (int)n, &eh, sn, tri);
+        if (ntri > (size_t)(SHF_EC_MAX - 2)) { continue; }  /* guard fixed buffers */
+        int32_t tri[3 * (SHF_EC_MAX - 2)];
+        int ntri_ec = earclip_loop(V, loop, (int)n, &eh, sn, tri, 0.05, 0.2);
+        if ((ntri_ec <= 0 || (size_t)ntri_ec != ntri) && phase_on) {
+            /* Second chance with relaxed sliver/fold gates. Under the phase
+             * gate the loop is same-wrap by construction, and a thin capped
+             * sliver beats an open puncture; the manifold and diagonal-exists
+             * guards inside earclip are never relaxed. */
+            ntri_ec = earclip_loop(V, loop, (int)n, &eh, sn, tri, 0.005, 0.05);
+        }
         if (ntri_ec <= 0 || (size_t)ntri_ec != ntri) { z.skip_geom++; continue; }
         /* manifold check: for every edge the fill touches, require
          * existing_incident_faces + fill_uses <= 2 (boundary edge 1+1=2 ok;
          * internal diagonal 0+2=2 ok, but a diagonal already in the mesh ->
          * 1+2=3 rejected). Tally over the fill (<=18 edges) vs the live hash. */
         {
-            uint64_t ek[3*6]; int euse[3*6]; size_t ne = 0;
+            uint64_t ek[3*(SHF_EC_MAX-2)]; int euse[3*(SHF_EC_MAX-2)]; size_t ne = 0;
             for (size_t t = 0; t < ntri; t++) {
                 int32_t vtx[3] = { tri[t*3+0], tri[t*3+1], tri[t*3+2] };
                 for (int e = 0; e < 3; e++) {

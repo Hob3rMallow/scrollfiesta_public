@@ -1,0 +1,32 @@
+
+                            ======================================
+                               CLAPACK README FILE FOR WINDOWS
+                            ======================================
+
+============================================================================================
+          Version 3.1.1
+Release date: February 2008
+F2C translation of LAPACK 3.1.1
+To get revisions info about LAPACK 3.1.0 and 3.1.1, 
+read LAPACK-revisions3.1.0.info and LAPACK-revisions3.1.1.info
+============================================================================================
+
+
+This package is intended to Windows machines.
+It provides a build of CLAPACK  3.1.1 under Microsft Visual Studio on Win32 and x64.
+The pre-compiled libraries are available in the LIB directory. 
+They come in 4 flavours:
+	- release
+	- debug
+	- release without wrap
+	- debug without wrap
+
+Read the README.install file for more information.
+
+Help:
+LAPACK forum : http://icl.cs.utk.edu/lapack-forum
+LAPACK mailing list: lapack@cs.utk.edu
+
+Julie Langou
+University Of Tennessee
+February 2008

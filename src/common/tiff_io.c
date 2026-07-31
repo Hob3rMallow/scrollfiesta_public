@@ -3,6 +3,7 @@
 #include <tiff.h>
 #include <tiffio.h>
 #include <assert.h>
+#include <stdio.h>
 #include <string.h>
 
 /* Mutex-serialize all libtiff calls [common.md §9, c-style-guide §11.2] */
@@ -193,6 +194,118 @@ int TiffIO_save_float2d(const char *path, const float *img, int W, int H)
     TIFFClose(tif);
     ves_mutex_unlock(&tiff_lock);
     return 0;
+}
+
+/* 64-bit seek: MSVC has no fseeko. */
+static int rows_seek(FILE *f, uint64_t off)
+{
+#if defined(_WIN32)
+    return _fseeki64(f, (long long)off, SEEK_SET);
+#else
+    return fseeko(f, (off_t)off, SEEK_SET);
+#endif
+}
+
+int TiffIO_rows_open(Arena_T arena, const char *path, TiffRowReader *rd)
+{
+    assert(arena);
+    assert(path);
+    assert(rd);
+
+    memset(rd, 0, sizeof(*rd));
+
+    ves_mutex_lock(&tiff_lock);
+    TIFF *tif = TIFFOpen(path, "r");
+    if (tif == NULL) {
+        ves_mutex_unlock(&tiff_lock);
+        return -1;
+    }
+
+    uint32_t w = 0, h = 0, rps = 0;
+    uint16_t bps = 0, spp = 0, comp = 0, fmt = 0;
+    uint64_t *offs = NULL;
+    TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &w);
+    TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &h);
+    TIFFGetFieldDefaulted(tif, TIFFTAG_BITSPERSAMPLE, &bps);
+    TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLESPERPIXEL, &spp);
+    TIFFGetFieldDefaulted(tif, TIFFTAG_COMPRESSION, &comp);
+    TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLEFORMAT, &fmt);
+    TIFFGetFieldDefaulted(tif, TIFFTAG_ROWSPERSTRIP, &rps);
+
+    if (w == 0 || h == 0 || bps != 8 || spp != 1
+        || comp != COMPRESSION_NONE
+        || (fmt != SAMPLEFORMAT_UINT && fmt != 0)
+        || TIFFIsTiled(tif)
+        || !TIFFGetField(tif, TIFFTAG_STRIPOFFSETS, &offs) || offs == NULL) {
+        TIFFClose(tif);
+        ves_mutex_unlock(&tiff_lock);
+        return -1;
+    }
+    if (rps == 0 || rps > h) rps = h;   /* single-strip default */
+
+    uint32_t n_strips = (uint32_t)TIFFNumberOfStrips(tif);
+    if (n_strips == 0 || (uint64_t)n_strips * rps < h) {
+        TIFFClose(tif);
+        ves_mutex_unlock(&tiff_lock);
+        return -1;
+    }
+
+    uint64_t *off_copy = (uint64_t *)ARENA_ALLOC(arena,
+                             (size_t)n_strips * sizeof(uint64_t));
+    for (uint32_t s = 0; s < n_strips; s++)
+        off_copy[s] = offs[s];
+
+    TIFFClose(tif);
+    ves_mutex_unlock(&tiff_lock);
+
+    FILE *f = fopen(path, "rb");
+    if (f == NULL)
+        return -1;
+
+    rd->f = f;
+    rd->W = (int)w;
+    rd->H = (int)h;
+    rd->rows_per_strip = rps;
+    rd->strip_off = off_copy;
+    rd->n_strips = n_strips;
+    return 0;
+}
+
+int TiffIO_rows_read(TiffRowReader *rd, int y, int x0, int w, uint8_t *dst)
+{
+    assert(rd);
+    assert(dst);
+
+    if (rd->f == NULL || y < 0 || y >= rd->H || x0 < 0 || w < 0
+        || x0 + w > rd->W)
+        return -1;
+    if (w == 0)
+        return 0;
+
+    uint32_t strip = (uint32_t)y / rd->rows_per_strip;
+    uint32_t row_in = (uint32_t)y % rd->rows_per_strip;
+    if (strip >= rd->n_strips)
+        return -1;
+
+    uint64_t off = rd->strip_off[strip]
+                 + (uint64_t)row_in * (uint64_t)rd->W + (uint64_t)x0;
+    if (rows_seek(rd->f, off) != 0)
+        return -1;
+    if (fread(dst, 1, (size_t)w, rd->f) != (size_t)w)
+        return -1;
+    return 0;
+}
+
+void TiffIO_rows_close(TiffRowReader *rd)
+{
+    if (rd == NULL)
+        return;
+    if (rd->f != NULL) {
+        fclose(rd->f);
+        rd->f = NULL;
+    }
+    rd->strip_off = NULL;   /* arena-owned */
+    rd->n_strips = 0;
 }
 
 int TiffIO_load_float2d(Arena_T arena, const char *path,

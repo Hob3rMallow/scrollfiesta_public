@@ -71,7 +71,7 @@ static int32_t lf_find(int32_t *p, int32_t x) {
 }
 
 static void vertex_audit(Arena_T arena, size_t nv, const int32_t *F, size_t nf,
-                         MeshManifoldStats *out) {
+                         MeshManifoldStats *out, uint8_t *out_mask) {
     if (nv == 0 || nf == 0) return;
     size_t *deg = (size_t *)ARENA_CALLOC(arena, (long)nv, (long)sizeof(size_t));
     for (size_t f = 0; f < nf; f++)
@@ -119,7 +119,10 @@ static void vertex_audit(Arena_T arena, size_t nv, const int32_t *F, size_t nf,
         }
         size_t fans = 0;
         for (size_t t = 0; t < k; t++) if (lf_find(parent, (int32_t)t) == (int32_t)t) fans++;
-        if (fans > 1) out->nm_verts++;
+        if (fans > 1) {
+            out->nm_verts++;
+            if (out_mask) out_mask[v] = 1;
+        }
     }
 }
 
@@ -130,9 +133,22 @@ MeshManifoldStats MeshManifold_audit(Arena_T arena, size_t nv,
     s.nv = nv; s.nf = nf;
     Arena_Mark mark = Arena_save(arena);
     edge_audit(arena, faces, nf, &s);
-    vertex_audit(arena, nv, faces, nf, &s);
+    vertex_audit(arena, nv, faces, nf, &s, NULL);
     Arena_restore(arena, mark);
     return s;
+}
+
+size_t MeshManifold_mark_nonmanifold_vertices(Arena_T arena, size_t nv,
+                                              const int32_t *faces, size_t nf,
+                                              uint8_t *out_mask) {
+    MeshManifoldStats s;
+    memset(&s, 0, sizeof s);
+    if (!out_mask) return 0;
+    memset(out_mask, 0, nv * sizeof(*out_mask));
+    Arena_Mark mark = Arena_save(arena);
+    vertex_audit(arena, nv, faces, nf, &s, out_mask);
+    Arena_restore(arena, mark);
+    return s.nm_verts;
 }
 
 /* ---- selftest: same five cases as src/tools/manifold_check.c ---- */

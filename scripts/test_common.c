@@ -11,7 +11,7 @@
 #include "common/bfs.h"
 #include "common/tiff_io.h"
 #include "common/halo_loader.h"
-#include "common/ply_io.h"
+
 #include "common/obj_io.h"
 
 #include <stdio.h>
@@ -133,6 +133,27 @@ static void test_arena_large_alloc(void)
     big[0] = 1;
     big[big_size - 1] = 255;
 
+    Arena_dispose(&arena);
+    PASS();
+}
+
+static void test_arena_huge_alloc(void)
+{
+    TEST(arena_huge_alloc);
+
+    /* Win64 LLP64 regression: Arena_alloc/Arena_calloc took a 32-bit `long`,
+     * so any single allocation >2 GB truncated -> heap overflow / crash (hit in
+     * ribbon.c slice_mesh at whole-scroll scale). Exercise a >2^31-byte alloc
+     * and touch both ends; a truncated size would fault. 64-bit build only. */
+    if (sizeof(size_t) < 8) { printf("[SKIP 32-bit]\n"); tests_passed++; return; }
+
+    Arena_T arena = Arena_new();
+    size_t huge = (size_t)2560 * 1024 * 1024;   /* 2.5 GB > INT32_MAX */
+    uint8_t *p = (uint8_t *)ARENA_ALLOC(arena, huge);
+    assert(p != NULL);
+    p[0] = 7;
+    p[huge - 1] = 200;
+    assert(p[0] == 7 && p[huge - 1] == 200);
     Arena_dispose(&arena);
     PASS();
 }
@@ -521,8 +542,12 @@ static void test_tiff_round_trip(void)
         }
     }
 
-    /* Save */
-    const char *path = "/tmp/test_vesuvius_tiff.tif";
+    /* Save in the platform temp directory. */
+    char tmpdir[512];
+    char path[1024];
+    ASSERT_EQ(ves_temp_dir(tmpdir, sizeof tmpdir), 0,
+              "resolve temp directory");
+    snprintf(path, sizeof path, "%stest_vesuvius_tiff.tif", tmpdir);
     int ret = TiffIO_save(path, vol, D, H, W);
     ASSERT_EQ(ret, 0, "save should succeed");
 
@@ -714,7 +739,11 @@ static void test_obj_round_trip(void)
 
     float verts[] = {0,0,0, 1,0,0, 0,1,0, 1,1,0};
     int32_t faces[] = {0,1,2, 1,3,2};
-    const char *path = "/tmp/test_vesuvius.obj";
+    char tmpdir[512];
+    char path[1024];
+    ASSERT_EQ(ves_temp_dir(tmpdir, sizeof tmpdir), 0,
+              "resolve temp directory");
+    snprintf(path, sizeof path, "%stest_vesuvius.obj", tmpdir);
 
     int ret = ObjIO_write(path, verts, 4, faces, 2);
     ASSERT_EQ(ret, 0, "write should succeed");
@@ -772,6 +801,7 @@ int main(void)
     test_arena_save_restore();
     test_arena_large_alloc();
     test_arena_free_reuse();
+    test_arena_huge_alloc();
 
     printf("\n[Except]\n");
     test_except_try_catch();

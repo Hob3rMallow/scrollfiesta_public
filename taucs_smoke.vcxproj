@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{D3A1F0C2-7B45-4E61-9A3C-2F8E6B1D4055}</ProjectGuid>
+    <RootNamespace>taucs_smoke</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <Keyword>Win32Proj</Keyword>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>$(SolutionDir)build\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)build\obj\taucs_smoke_$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutDir>$(SolutionDir)build\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)build\obj\taucs_smoke_$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level1</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <PreprocessorDefinitions>_DEBUG;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)deps\taucs\src;$(SolutionDir)deps\taucs\build;$(SolutionDir)deps\taucs\external\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(SolutionDir)deps\clapack\LIB\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>clapackd_nowrap.lib;BLASd_nowrap.lib;libf2cd.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <!-- CLAPACK prebuilt libs use the static CRT (/MTd); force the project's
+           DLL CRT (MSVCRTD) to win so the exe has a single CRT. -->
+      <IgnoreSpecificDefaultLibraries>LIBCMTD</IgnoreSpecificDefaultLibraries>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level1</WarningLevel>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>NDEBUG;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)deps\taucs\src;$(SolutionDir)deps\taucs\build;$(SolutionDir)deps\taucs\external\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(SolutionDir)deps\clapack\LIB\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>clapack_nowrap.lib;BLAS_nowrap.lib;libf2c.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <IgnoreSpecificDefaultLibraries>LIBCMT</IgnoreSpecificDefaultLibraries>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="src\tools\taucs_smoke.c" />
+    <!-- TAUCS double-real subset (per-datatype wrappers; see deps\taucs\build\gen_wrappers.sh) -->
+    <ClCompile Include="deps\taucs\build\wrap\taucs_complex_GEN.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_complex_D.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_logging_GEN.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_timer_GEN.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_malloc_GEN.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_base_GEN.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_base_D.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_vec_base_GEN.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_vec_base_D.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_ops_GEN.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_ops_D.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_order_GEN.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_sn_llt_GEN.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_sn_llt_D.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_factor_llt_GEN.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_factor_llt_D.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_solve_llt_GEN.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_solve_llt_D.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_iter_D.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_linsolve_GEN.c" />
+    <!-- Ordering backend (genmmd, f2c-translated) -->
+    <ClCompile Include="deps\taucs\external\src\genmmd.c" />
+    <!-- Stubs for OOC / AMWB paths we don't compile (never executed) -->
+    <ClCompile Include="deps\taucs\build\taucs_stubs.c" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

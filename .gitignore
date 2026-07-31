@@ -3,11 +3,8 @@
 # ============================================================
 
 # ------ Build output (MSVC) ------
-# Anchored to the repo root (leading slash) so it does NOT match vendored
-# source directories named "build", e.g. deps/src/tiff-4.7.1/build/ which is
-# libtiff's own source subdirectory. CMake build output for the vendored deps
-# is ignored explicitly further down (deps/src/.../build/ and .../bld/).
-/build/
+build/
+/build-*/
 *.obj
 *.exe
 *.pdb
@@ -16,6 +13,7 @@
 *.exp
 *.iobj
 *.ipdb
+*.idb
 *.tlog
 *.recipe
 *.lastbuildstate
@@ -38,9 +36,6 @@
 /src/cube_mesh
 /src/grid_weld
 /src/grid_pipeline
-/src/obj_components
-/src/pinhole_verdict
-/src/seam_audit
 /src/test_common
 
 # ------ IDE ------
@@ -63,11 +58,14 @@ cmake_install.cmake
 CTestTestfile.cmake
 
 # ------ Experiment output & data ------
-output/
+output/*
+!output/canonical_best/
 nnunet-preds/
 test_sheets/
 
 # ------ Dependencies: build artifacts ------
+# Project-local Rust/rustup installation used by the optional CubeCL MLS build
+.toolchains/
 # Pre-built executables (PoissonRecon is 165 MB)
 deps/bin/
 # Windows-built static libs (rebuilt from deps/src/)
@@ -87,11 +85,19 @@ scripts/step0.5-2d-trace/test_optical_flow
 # ------ Ground truth data (large binaries) ------
 gt/
 TRAIN_LABELS/
-PHerc0139-4x5x5/
-PHerc0139-4x5x5.zip
+# Glob catches every PHerc grid dir (4x5x5, 4x21x21-cubes, future ones). Cube
+# TIFs live inside these (cubes_PRED/, cubes_RAW/), so no broad *.tif rule is
+# needed -- and *.tif/*.tiff would wrongly shadow the tracked libtiff test
+# fixtures under deps/src/tiff-4.7.1/test/images/.
+PHerc0139-*/
+PHerc0139-*.zip
+PHerc1447-*/
+PHerc1203-*/
 
 # ------ Python cache ------
 __pycache__/
+.pytest_cache/
+pytest-cache-files-*/
 
 # ------ Metric solver: build artifacts ------
 metric-windows/build/
@@ -106,15 +112,39 @@ metric-windows/topological-metrics-kaggle/external/Betti-Matching-3D/build_py/
 *.swp
 *~
 
-# ------ Sample output meshes (3D OBJ files, NOT MSVC object files) ------
-# Re-include these despite the "*.obj" rule above; stored via Git LFS (.gitattributes)
-!sample_outputs/**/*.obj
+# Reference papers (local only; cited by name+URL in changelog)
+papers/
 
-# ------ scrollunwrap pipeline run outputs (meshes / tifxyz / renders / logs) ------
-# Never commit pipeline output (and it may be derived from private data).
+# ------ Archived fixture payloads (manifest + README stay tracked) ------
+archive/*/placed/
+archive/*/*.csv
+archive/*/*.json
+
+# ------ Temp/scratch trees (not part of the repo) ------
+.tmp_scrollfiesta/
+.debug_images/
+tmp/
+# CubeCL MLS experiment tree (668 MB incl. Rust build artifacts; separate track)
+deps/scrollfiesta-mls-cubecl/
+
+# ------ Public sample/output and local build exclusions ------
+!sample_outputs/**/*.obj
 runs/
 *.tifxyz/
-
-# ------ macOS / editor / local build cruft ------
 .DS_Store
 deps/build-clipper2/
+
+# ------ LaTeX build products (submission.pdf at the repo root is canonical) ------
+submission_update/submission.pdf
+submission_update/*.aux
+submission_update/*.bbl
+submission_update/*.blg
+submission_update/*.fdb_latexmk
+submission_update/*.fls
+submission_update/*.log
+submission_update/*.out
+submission_update/*.synctex.gz
+
+# Only the verified, pre-ribbon canonical bundle is committed. All probe,
+# ablation, worker, and duplicated per-cube output remains ignored.
+!output/canonical_best/**

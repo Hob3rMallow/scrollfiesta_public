@@ -3,6 +3,7 @@
 
 #include "../common/ves_platform.h"
 #include "../common/qem.h"
+#include "../remesh/cvt_remesh.h"
 #include "../common/mesh_trim.h"
 #include "../common/dump_obj.h"
 #include "../common/pipeline_constants.h"
@@ -21,15 +22,87 @@
 #include "../remesh/dev_gate.h"
 #include "../common/mesh_manifold.h"
 #include "../common/mls_project.h"
+#include "../common/halo_loader.h"
+#include "../common/tiff_io.h"
 #include "../topology/seam_cut.h"
 
 #include <assert.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 static double now_sec(void) { return ves_clock_sec(); }
 static double elapsed_since(double t0) { return now_sec() - t0; }
+
+/*
+ * CVT is geometric, not scroll-topological.  At a coarse site density it can
+ * replace a long walk around one wrap with a short radial edge into the next
+ * wrap.  BPA's accumulated phase gate prevents that during reconstruction, so
+ * use the same branch-cut-free coordinate to validate every CVT candidate:
+ *
+ *     dw = dr / pitch - shortest(dtheta) / (2*pi)
+ *
+ * A face with |dw| > 0.7 on any edge is a reliable full-turn shortcut.  The
+ * 0.7 threshold deliberately differs from the 0.45 BPA growth tolerance:
+ * applying 0.45 after remeshing cuts legitimate coarse tangential triangles
+ * and causes severe fragmentation.  See wind_cut.c for the diagnostic form.
+ */
+static double pipeline_wrap_angle(double a)
+{
+    const double two_pi = 6.28318530717958647692;
+    while (a >  0.5 * two_pi) a -= two_pi;
+    while (a <= -0.5 * two_pi) a += two_pi;
+    return a;
+}
+
+static double pipeline_winding_edge_delta(const float *verts,
+                                          size_t a, size_t b,
+                                          const BpaReconGate *gate)
+{
+    const double two_pi = 6.28318530717958647692;
+    double ay = (double)verts[a*3+1] + gate->origin_y - gate->umb_y;
+    double ax = (double)verts[a*3+2] + gate->origin_x - gate->umb_x;
+    double by = (double)verts[b*3+1] + gate->origin_y - gate->umb_y;
+    double bx = (double)verts[b*3+2] + gate->origin_x - gate->umb_x;
+    double dr = hypot(by, bx) - hypot(ay, ax);
+    double dtheta = pipeline_wrap_angle(atan2(by, bx) - atan2(ay, ax));
+    return dr / gate->pitch - dtheta / two_pi;
+}
+
+static size_t pipeline_count_winding_shortcut_faces(const float *verts,
+                                                    const int32_t *faces,
+                                                    size_t nf,
+                                                    const BpaReconGate *gate,
+                                                    double tol,
+                                                    double *out_max_abs_dw)
+{
+    size_t bad = 0;
+    double max_abs_dw = 0.0;
+    if (!verts || !faces || !gate || !(gate->pitch > 0.0)) {
+        if (out_max_abs_dw) *out_max_abs_dw = 0.0;
+        return 0;
+    }
+    for (size_t i = 0; i < nf; i++) {
+        const int32_t *f = &faces[i*3];
+        double d0 = fabs(pipeline_winding_edge_delta(
+            verts, (size_t)f[0], (size_t)f[1], gate));
+        double d1 = fabs(pipeline_winding_edge_delta(
+            verts, (size_t)f[1], (size_t)f[2], gate));
+        double d2 = fabs(pipeline_winding_edge_delta(
+            verts, (size_t)f[2], (size_t)f[0], gate));
+        double md = d0 > d1 ? d0 : d1;
+        if (d2 > md) md = d2;
+        if (md > max_abs_dw) max_abs_dw = md;
+        if (md > tol) bad++;
+    }
+    if (out_max_abs_dw) *out_max_abs_dw = max_abs_dw;
+    return bad;
+}
+static int pipeline_delamination_merge_experiment_enabled(void)
+{
+    return 0;
+}
 
 /* Read an env var as a double, falling back to `dflt` when unset/unparsable.
  * Lets the Step 1c developability-cut knobs be swept without a rebuild. */
@@ -40,6 +113,70 @@ static double env_d(const char *name, double dflt)
     char *end = NULL;
     double v = strtod(s, &end);
     return (end && end != s) ? v : dflt;
+}
+
+static int pipeline_parse_cube_origin(const PipelineInput *in,
+                                      float out_zyx[3])
+{
+    int z = 0, y = 0, x = 0;
+    if (in->cube_id &&
+        sscanf(in->cube_id, "z%d_y%d_x%d", &z, &y, &x) == 3) {
+        out_zyx[0] = (float)z;
+        out_zyx[1] = (float)y;
+        out_zyx[2] = (float)x;
+        return 0;
+    }
+    if (in->vol_in) {
+        out_zyx[0] = (float)in->cube_origin_zyx[0];
+        out_zyx[1] = (float)in->cube_origin_zyx[1];
+        out_zyx[2] = (float)in->cube_origin_zyx[2];
+        return 0;
+    }
+    return -1;
+}
+
+static int pipeline_file_exists(const char *path)
+{
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return 0;
+    fclose(fp);
+    return 1;
+}
+
+/* Resolve the ORIGINAL texture source independently of the nnU-Net input.
+ * VES_RAW_DIR is authoritative.  For the on-disk cube layout, the ordinary
+ * input path is .../cubes_PRED/<cube>.tif and the raw sibling is
+ * .../cubes_RAW/<cube>.tif. */
+static int pipeline_resolve_raw_dir(const PipelineInput *in,
+                                    char *out, size_t cap)
+{
+    const char *override = sf_env("VES_RAW_DIR");
+    const char *source = NULL;
+    if (override && *override) {
+        snprintf(out, cap, "%s", override);
+    } else {
+        source = in->pred_dir;
+        if (!source || !*source) source = in->tiff_path;
+        if (!source || !*source) return -1;
+        snprintf(out, cap, "%s", source);
+        if (source == in->tiff_path) {
+            char *slash = NULL;
+            for (char *p = out; *p; p++)
+                if (*p == '/' || *p == '\\') slash = p;
+            if (slash) *slash = '\0';
+            else snprintf(out, cap, ".");
+        }
+        char *leaf = out;
+        for (char *p = out; *p; p++)
+            if (*p == '/' || *p == '\\') leaf = p + 1;
+        if (strcmp(leaf, "cubes_PRED") != 0) return -1;
+        snprintf(leaf, cap - (size_t)(leaf - out), "cubes_RAW");
+    }
+
+    if (!in->cube_id || !*in->cube_id) return -1;
+    char probe[2304];
+    snprintf(probe, sizeof(probe), "%s/%s.tif", out, in->cube_id);
+    return pipeline_file_exists(probe) ? 0 : -1;
 }
 
 static int dump_stage(Arena_T arena,
@@ -119,6 +256,118 @@ int pipeline_process_cube(Arena_T arena,
 
     memset(out, 0, sizeof(*out));
 
+    /* Stage-dump gate. In final-only mode every INTERMEDIATE stage dump is
+     * suppressed (dump_stage/dump_cloud_stage no-op on a NULL dir) and only
+     * step12_final — the OBJ grid_weld consumes — is written. The full
+     * stage set is a seam-debug affordance (~300 MB of text OBJ per dense
+     * cube); with 32 concurrent cubes it IO-bounds the entire grid run.
+     * Re-run one cube without --dump-final-only to regenerate its stages. */
+    const char *stage_dump_dir = in->dump_final_only ? NULL : in->dump_dir;
+
+    /* Opt-in calibration path for a small two-label delamination merge.  The
+     * healed topology is fitted to ORIGINAL cubes_RAW material.  The padded
+     * nnU-Net prediction is loaded only as a loose post-fit safety prior.  The
+     * ordinary multicut split remains the fallback on every load or gate
+     * failure. */
+    /* Keep the failed merge oracle in-tree, but make production activation
+     * impossible even when a stale caller exports VES_OVERLAP_MERGE. */
+    OverlapSepOptions overlap_options;
+    const OverlapSepOptions *overlap_options_ptr = NULL;
+    char merge_raw_dir[2048] = {0};
+    const char *merge_request = sf_env("VES_OVERLAP_MERGE");
+    memset(&overlap_options, 0, sizeof(overlap_options));
+    if (pipeline_delamination_merge_experiment_enabled() &&
+        merge_request && *merge_request) {
+        float merge_world_offset[3] = {0.0f, 0.0f, 0.0f};
+        int have_raw = pipeline_resolve_raw_dir(
+            in, merge_raw_dir, sizeof(merge_raw_dir)) == 0 &&
+            pipeline_parse_cube_origin(in, merge_world_offset) == 0;
+        const uint8_t *merge_pred = NULL;
+        size_t merge_D = 0, merge_H = 0, merge_W = 0;
+        float merge_pred_offset[3] = {0.0f, 0.0f, 0.0f};
+        if (in->vol_in && in->p_size_in > 0) {
+            merge_pred = in->vol_in;
+            merge_D = merge_H = merge_W = (size_t)in->p_size_in;
+            merge_pred_offset[0] = (float)in->halo_voxels;
+            merge_pred_offset[1] = (float)in->halo_voxels;
+            merge_pred_offset[2] = (float)in->halo_voxels;
+        } else if (in->halo_voxels > 0 && in->pred_dir && in->cube_id &&
+                   in->cube_D == in->cube_H && in->cube_D == in->cube_W) {
+            uint8_t *loaded = NULL;
+            int p_size = 0;
+            int64_t padded_origin[3] = {0, 0, 0};
+            if (HaloLoader_load(arena, in->pred_dir, in->cube_id,
+                                in->cube_D, in->halo_voxels,
+                                &loaded, &p_size, padded_origin) == 0) {
+                merge_pred = loaded;
+                merge_D = merge_H = merge_W = (size_t)p_size;
+                merge_pred_offset[0] = (float)in->halo_voxels;
+                merge_pred_offset[1] = (float)in->halo_voxels;
+                merge_pred_offset[2] = (float)in->halo_voxels;
+            }
+        } else if (in->tiff_path) {
+            uint8_t *loaded = NULL;
+            int d = 0, h = 0, w = 0;
+            if (TiffIO_load(arena, in->tiff_path,
+                            &loaded, &d, &h, &w) == 0) {
+                merge_pred = loaded;
+                merge_D = (size_t)d;
+                merge_H = (size_t)h;
+                merge_W = (size_t)w;
+            }
+        }
+
+        if (have_raw) {
+            overlap_options.enable_delamination_merge = 1;
+            overlap_options.pred_vol = merge_pred;
+            overlap_options.pred_D = merge_D;
+            overlap_options.pred_H = merge_H;
+            overlap_options.pred_W = merge_W;
+            memcpy(overlap_options.pred_offset, merge_pred_offset,
+                   sizeof(merge_pred_offset));
+            overlap_options.pred_safety_distance =
+                (float)env_d("VES_OVERLAP_MERGE_PRED_SAFETY", 8.0);
+            overlap_options.raw_dir = merge_raw_dir;
+            overlap_options.raw_chunk = (long)env_d(
+                "VES_OVERLAP_MERGE_RAW_CHUNK", 128.0);
+            memcpy(overlap_options.world_offset, merge_world_offset,
+                   sizeof(merge_world_offset));
+            overlap_options.raw_snap_reach =
+                (float)env_d("VES_OVERLAP_MERGE_RAW_REACH", 8.0);
+            overlap_options.raw_snap_alpha =
+                (float)env_d("VES_OVERLAP_MERGE_RAW_ALPHA", 0.10);
+            overlap_options.raw_quilt_weight =
+                (float)env_d("VES_OVERLAP_MERGE_RAW_QUILT", 250.0);
+            overlap_options_ptr = &overlap_options;
+            fprintf(stderr,
+                    "  Delamination merge calibration enabled "
+                    "(raw=%s origin=%.0f,%.0f,%.0f; "
+                    "prediction-safety=%s%zux%zux%zu)\n",
+                    merge_raw_dir,
+                    merge_world_offset[0], merge_world_offset[1],
+                    merge_world_offset[2], merge_pred ? "" : "unavailable ",
+                    merge_D, merge_H, merge_W);
+        } else {
+            fprintf(stderr,
+                    "  Delamination merge requested but original cubes_RAW "
+                    "source/origin is unavailable; retaining split-only "
+                    "behavior\n");
+        }
+    } else if (merge_request && *merge_request) {
+        fprintf(stderr,
+                "  Delamination merge experiment is hard-disabled; "
+                "retaining multicut split behavior\n");
+    }
+    {
+        const char *overlap_debug = sf_env("VES_OVERLAP_DEBUG_DIR");
+        if (overlap_debug && *overlap_debug) {
+            DumpObj_ensure_dir(overlap_debug);
+            OverlapSep_set_debug_dir(overlap_debug);
+        } else {
+            OverlapSep_set_debug_dir(NULL);
+        }
+    }
+
     /* MeshExtract_run takes the cube-scoped dump dir (<dump_dir>/<cube_id>),
      * not the top-level dump dir. Materialize that path here and ensure
      * the directory exists. */
@@ -144,6 +393,7 @@ int pipeline_process_cube(Arena_T arena,
                              (in->halo_voxels > 0 || in->dump_dir)
                                  ? in->cube_id : NULL,
                              in->skip_qem,
+                             in->trim_inset,
                              in->vol_in, in->p_size_in,
                              in->vol_in ? in->cube_origin_zyx : NULL,
                              &out->meshes, &out->n_meshes, &clouds);
@@ -154,9 +404,9 @@ int pipeline_process_cube(Arena_T arena,
     }
     fprintf(stderr, "  Extract: %zu components (%.3fs)\n",
             out->n_meshes, out->t_extract);
-    dump_cloud_stage(arena, in->dump_dir, in->cube_id, "step0_mls",
+    dump_cloud_stage(arena, stage_dump_dir, in->cube_id, "step0_mls",
                      clouds, out->n_meshes);
-    dump_stage(arena, in->dump_dir, in->cube_id, "step1_bpa",
+    dump_stage(arena, stage_dump_dir, in->cube_id, "step1_bpa",
                out->meshes, out->n_meshes);
 
     /* ---- Step 1b: connectivity re-split. A voxel-CC can hold several
@@ -172,15 +422,15 @@ int pipeline_process_cube(Arena_T arena,
         double tr = now_sec();
         char resplit_dump_dir[1024] = {0};
         MeshResplitDump rdump = {0};
-        if (in->dump_dir && in->cube_id) {
+        if (stage_dump_dir && in->cube_id) {
             snprintf(resplit_dump_dir, sizeof resplit_dump_dir, "%s/%s",
-                     in->dump_dir, in->cube_id);
+                     stage_dump_dir, in->cube_id);
             rdump.dir = resplit_dump_dir; rdump.cube_id = in->cube_id;
             rdump.cc_stage = "step2_cc"; rdump.mls_stage = "step3_mls";
         }
         ComponentMesh *rs = NULL; size_t n_rs = 0;
         if (MeshResplit_run(arena, out->meshes, out->n_meshes, clouds,
-                            in->n_threads, in->dump_dir ? &rdump : NULL,
+                            in->n_threads, stage_dump_dir ? &rdump : NULL,
                             &rs, &n_rs, &rclouds) == 0 && n_rs > 0) {
             if (n_rs != out->n_meshes)
                 fprintf(stderr, "  Resplit: %zu -> %zu components (%.3fs)\n",
@@ -190,7 +440,7 @@ int pipeline_process_cube(Arena_T arena,
         } else {
             rclouds = NULL;   /* keep rclouds aligned with out->meshes */
         }
-        dump_stage(arena, in->dump_dir, in->cube_id, "step4_bpa",
+        dump_stage(arena, stage_dump_dir, in->cube_id, "step4_bpa",
                    out->meshes, out->n_meshes);
     }
 
@@ -271,7 +521,7 @@ int pipeline_process_cube(Arena_T arena,
         fprintf(stderr,
             "  DepthPeel: %zu -> %zu components (%zu stack(s) peeled into %zu "
             "layers, %.3fs)\n", n_in, cnt, n_peeled, n_layers, elapsed_since(tdp));
-        dump_stage(arena, in->dump_dir, in->cube_id, "step1b_peel",
+        dump_stage(arena, stage_dump_dir, in->cube_id, "step1b_peel",
                    out->meshes, out->n_meshes);
     }
 
@@ -406,7 +656,7 @@ int pipeline_process_cube(Arena_T arena,
         fprintf(stderr,
             "  DevCut: %zu -> %zu components (%zu cut, %zu gate-rejected, "
             "%.3fs)\n", n_in, cnt, n_cut, n_gate_rej, elapsed_since(tdc));
-        dump_stage(arena, in->dump_dir, in->cube_id, "step1c_devcut",
+        dump_stage(arena, stage_dump_dir, in->cube_id, "step1c_devcut",
                    out->meshes, out->n_meshes);
     }
 
@@ -467,9 +717,9 @@ int pipeline_process_cube(Arena_T arena,
                  * its own PCA normal). */
                 ComponentMesh *osub = NULL;
                 size_t n_osub = 0;
-                int orc = OverlapSep_process(arena, &subs[j], 0,
-                                             in->n_threads, overlap_timeout,
-                                             &osub, &n_osub);
+                int orc = OverlapSep_process_ex(
+                    arena, &subs[j], 0, in->n_threads, overlap_timeout,
+                    overlap_options_ptr, &osub, &n_osub);
                 if (orc != 0 || n_osub == 0) { osub = &subs[j]; n_osub = 1; }
                 if (n_osub > 1) n_ovl++;
                 for (size_t k = 0; k < n_osub; k++) {
@@ -492,7 +742,7 @@ int pipeline_process_cube(Arena_T arena,
             }
         }
         range[total_in] = total_out;
-        dump_stage(arena, in->dump_dir, in->cube_id, "step5_cc",
+        dump_stage(arena, stage_dump_dir, in->cube_id, "step5_cc",
                    split_meshes, total_out);
 
         /* ---- Step 4: re-LOP + re-BPA each split piece from its OWN verts.
@@ -533,7 +783,7 @@ int pipeline_process_cube(Arena_T arena,
             "%zu re-surfaced, %zu pinch-split, %.3fs)\n",
             total_in, total_out, n_bridge, n_ovl, n_resurf, split_pinch, t_b);
 
-        dump_stage(arena, in->dump_dir, in->cube_id, "step7_cc_bpa",
+        dump_stage(arena, stage_dump_dir, in->cube_id, "step7_cc_bpa",
                    out->meshes, out->n_meshes);
     }
 
@@ -568,7 +818,7 @@ int pipeline_process_cube(Arena_T arena,
             "  HoleFill: %zu pinch splits, %zu 3-loop fills (+%zu tris), "
             "%zu loops skipped, %zu comps CDT-filled (%.3fs)\n",
             pinch, tri_filled, tri_added, skipped, cdt_filled, t_f);
-        dump_stage(arena, in->dump_dir, in->cube_id, "step8_holefill",
+        dump_stage(arena, stage_dump_dir, in->cube_id, "step8_holefill",
                    out->meshes, out->n_meshes);
     }
 
@@ -608,7 +858,7 @@ int pipeline_process_cube(Arena_T arena,
             "  Sever: %ld short handle(s) cut across %zu/%zu comp(s) (%.3fs)\n",
             total_sev, n_sev_comps, out->n_meshes, elapsed_since(ts));
         if (total_sev > 0)
-            dump_stage(arena, in->dump_dir, in->cube_id, "step9_sever",
+            dump_stage(arena, stage_dump_dir, in->cube_id, "step9_sever",
                        out->meshes, out->n_meshes);
     }
 
@@ -618,9 +868,23 @@ int pipeline_process_cube(Arena_T arena,
         float ratio = (in->qem_target_ratio > 0.0f)
                           ? in->qem_target_ratio
                           : QEM_TARGET_RATIO;
+        /* CVT generator density (sites per input face). Env VES_CVT_RATIO overrides
+         * the compiled default for quick density sweeps without a rebuild. */
+        float cvt_ratio = CVT_TARGET_RATIO;
+        { const char *e = sf_env("VES_CVT_RATIO");
+          if (e) { float r = (float)atof(e); if (r > 0.0f) cvt_ratio = r; } }
         size_t total_in_nv = 0, total_in_nf = 0;
         size_t total_out_nv = 0, total_out_nf = 0;
         size_t n_simplified = 0;
+        BpaReconGate simplify_wind_gate;
+        const BpaReconGate *simplify_wind_gate_p = NULL;
+        float simplify_cube_origin[3] = {0.0f, 0.0f, 0.0f};
+        if (pipeline_parse_cube_origin(in, simplify_cube_origin) == 0 &&
+            BpaReconGate_from_env(&simplify_wind_gate,
+                                  simplify_cube_origin))
+            simplify_wind_gate_p = &simplify_wind_gate;
+        size_t total_cvt_wind_retries = 0;
+        size_t total_wind_rejects = 0;
         for (size_t i = 0; i < out->n_meshes; i++) {
             ComponentMesh *cm = &out->meshes[i];
             if (cm->nf <= QEM_MIN_FACES_FOR_SIMPLIFY) continue;
@@ -630,7 +894,106 @@ int pipeline_process_cube(Arena_T arena,
             float *new_v = NULL;
             int32_t *new_f = NULL;
             size_t new_nv = 0, new_nf = 0;
-            int qrc = QEM_simplify_pinned(arena, cm->verts, cm->nv,
+            int qrc = -1;
+            if (in->simplify_engine == 1 && cm->nf <= CVT_MAX_COMPONENT_FACES) {
+                /* CVT/RVD remesher (the default simplifier), UNIFORM density at
+                 * CVT_TARGET_RATIO. Coarse seams are made weldable at WELD TIME:
+                 * grid_weld refines the seam band to ~SEAM_REFINE_TARGET_VOX
+                 * before bridging and recoarsens it after (seam_refine.h), so
+                 * per-cube meshes no longer carry a dense rim. The graded
+                 * sizing field (fine rim, coarse interior -- the pre-refine
+                 * approach) is kept behind VES_CVT_GRADED=1 for A/B runs.
+                 * Fail-closed: on any error/empty output fall back to QEM for
+                 * this component so a bad component never drops out of the
+                 * weld; the post-trim ManifoldGuard cleans residual bowtie/NM
+                 * edges. Components denser than CVT_MAX_COMPONENT_FACES route
+                 * to QEM (else) so one pathological sheet can't dominate. */
+                double tcvt = now_sec();
+                CvtOpts co; CVT_default_opts(&co);
+                co.n_iters = CVT_PIPELINE_ITERS;
+                size_t target_ns = (size_t)((float)cm->nf * cvt_ratio);
+                if (target_ns < CVT_MIN_SITES) target_ns = CVT_MIN_SITES;
+                /* Graded field (opt-in), aligned to the SAME owned box the trim
+                 * cuts at so the dense band lands on the surviving rim. */
+                CvtField fld; const CvtField *fldp = NULL;
+                { const char *ge = sf_env("VES_CVT_GRADED");
+                  if (ge && *ge == '1' && in->halo_voxels > 0) {
+                    float ins = in->trim_inset >= 0.0f ? in->trim_inset
+                                                       : (float)BPA_OWNED_TRIM_INSET;
+                    fld.lo = (double)ins;
+                    fld.hi = (double)in->cube_D - (double)ins;
+                    fld.h_seam     = CVT_SEAM_EDGE;
+                    fld.h_interior = CVT_INTERIOR_EDGE;
+                    fld.band_lo    = CVT_SEAM_BAND;
+                    fld.band_hi    = CVT_SEAM_BAND + CVT_SEAM_RAMP;
+                    fld.energy_exp = 4;
+                    fldp = &fld;
+                  } }
+                int cvt_wind_reject = 0;
+                size_t cvt_attempt = 0;
+                for (;;) {
+                    double ta = now_sec();
+                    new_v = NULL; new_f = NULL; new_nv = 0; new_nf = 0;
+                    qrc = CVT_remesh(arena, cm->verts, cm->nv,
+                                     cm->faces, cm->nf,
+                                     target_ns, &co, fldp,
+                                     &new_v, &new_nv, &new_f, &new_nf);
+                    size_t bad_faces = 0;
+                    double max_abs_dw = 0.0;
+                    if (qrc == 0 && new_nf > 0 && simplify_wind_gate_p) {
+                        bad_faces = pipeline_count_winding_shortcut_faces(
+                            new_v, new_f, new_nf, simplify_wind_gate_p,
+                            0.70, &max_abs_dw);
+                    }
+                    if (bad_faces > 0 && !fldp && cvt_attempt < 4) {
+                        size_t next_ns = target_ns <= cm->nf / 2
+                                           ? target_ns * 2 : cm->nf;
+                        if (next_ns > target_ns) {
+                            fprintf(stderr,
+                                "    CVT: comp %zu attempt %zu (%zu sites, "
+                                "%zu v, %.3fs) made %zu cross-winding face(s) "
+                                "(max|dw|=%.3f); retrying at %zu sites\n",
+                                i, cvt_attempt + 1, target_ns, new_nv,
+                                elapsed_since(ta), bad_faces, max_abs_dw,
+                                next_ns);
+                            target_ns = next_ns;
+                            cvt_attempt++;
+                            total_cvt_wind_retries++;
+                            continue;
+                        }
+                    }
+                    if (bad_faces > 0) {
+                        fprintf(stderr,
+                            "    CVT: comp %zu rejected after %zu attempt(s): "
+                            "%zu cross-winding face(s), max|dw|=%.3f; "
+                            "keeping unsimplified topology\n",
+                            i, cvt_attempt + 1, bad_faces, max_abs_dw);
+                        cvt_wind_reject = 1;
+                        total_wind_rejects++;
+                    }
+                    fprintf(stderr,
+                            "    CVT: comp %zu %zu f -> %zu v%s "
+                            "(%zu sites, %zu attempt%s, %.3fs)%s\n",
+                            i, cm->nf, new_nv,
+                            fldp ? " graded" : " uniform", target_ns,
+                            cvt_attempt + 1, cvt_attempt ? "s" : "",
+                            elapsed_since(tcvt),
+                            (qrc != 0 || new_nf == 0)
+                                ? " FAILED -> QEM" : "");
+                    break;
+                }
+                if (cvt_wind_reject) {
+                    new_v = NULL; new_f = NULL; new_nv = 0; new_nf = 0;
+                    qrc = -1;
+                } else if (qrc != 0 || new_nf == 0) {
+                    new_v = NULL; new_f = NULL; new_nv = 0; new_nf = 0;
+                    qrc = QEM_simplify_pinned(arena, cm->verts, cm->nv,
+                                              cm->faces, cm->nf, NULL,
+                                              cm->pca_normal, target_nf,
+                                              &new_v, &new_nv, &new_f, &new_nf, NULL);
+                }
+            } else {
+                qrc = QEM_simplify_pinned(arena, cm->verts, cm->nv,
                                           cm->faces, cm->nf,
                                           NULL,
                                           cm->pca_normal,
@@ -638,6 +1001,23 @@ int pipeline_process_cube(Arena_T arena,
                                           &new_v, &new_nv,
                                           &new_f, &new_nf,
                                           NULL);
+            }
+            if (qrc == 0 && new_nf > 0 && simplify_wind_gate_p) {
+                double max_abs_dw = 0.0;
+                size_t bad_faces = pipeline_count_winding_shortcut_faces(
+                    new_v, new_f, new_nf, simplify_wind_gate_p,
+                    0.70, &max_abs_dw);
+                if (bad_faces > 0) {
+                    fprintf(stderr,
+                        "    Simplifier: comp %zu candidate rejected: "
+                        "%zu cross-winding face(s), max|dw|=%.3f; "
+                        "keeping unsimplified topology\n",
+                        i, bad_faces, max_abs_dw);
+                    new_v = NULL; new_f = NULL; new_nv = 0; new_nf = 0;
+                    qrc = -1;
+                    total_wind_rejects++;
+                }
+            }
             if (qrc == 0 && new_nf > 0) {
                 total_in_nv += cm->nv;
                 total_in_nf += cm->nf;
@@ -672,14 +1052,20 @@ int pipeline_process_cube(Arena_T arena,
             n_simplified, out->n_meshes,
             total_in_nv, total_in_nf,
             total_out_nv, total_out_nf, total_qem_oflips, out->t_qem);
-        dump_stage(arena, in->dump_dir, in->cube_id, "step10_qem",
+        if (simplify_wind_gate_p)
+            fprintf(stderr,
+                "  Simplify winding guard: %zu CVT density retry(s), "
+                "%zu unsafe candidate(s) rejected\n",
+                total_cvt_wind_retries, total_wind_rejects);
+        dump_stage(arena, stage_dump_dir, in->cube_id, "step10_qem",
                    out->meshes, out->n_meshes);
     }
 
     /* ---- Kibble removal: connectivity pass + surface-area filter ----
      * After hole-fill/QEM, split into connectivity-components and drop any whose
-     * area is < KIBBLE_AREA_FRAC of the total meshed cube area (stray BPA
-     * islands, cut-zone crumbs). Leaves only the real sheets. ---- */
+     * area is < KIBBLE_AREA_FRAC of its upstream sheet's area (stray BPA
+     * islands, cut-zone crumbs). Parent-relative scoring preserves the many
+     * legitimate wraps in a densely wound cube. ---- */
     {
         double tk = now_sec();
         ComponentMesh *kept = NULL; size_t n_kept = 0, n_cull = 0;
@@ -691,22 +1077,40 @@ int pipeline_process_cube(Arena_T arena,
         }
         fprintf(stderr, "  Kibble: %zu culled, %zu kept (%.3fs)\n",
                 n_cull, out->n_meshes, elapsed_since(tk));
-        dump_stage(arena, in->dump_dir, in->cube_id, "step11_kibble",
+        dump_stage(arena, stage_dump_dir, in->cube_id, "step11_kibble",
                    out->meshes, out->n_meshes);
     }
 
     /* ---- Trim to owned region (halo mode only) ---- */
     if (in->halo_voxels > 0) {
         double tt = now_sec();
-        /* Inset the owned box by BPA_OWNED_TRIM_INSET so the FINAL per-cube mesh
-         * (step12_final = the weld input) never reaches a cube face — regardless
-         * of which path produced it (extract, or a re-LOP'd split piece, which
-         * re-BPAs WITHOUT the step0 cloud inset). This is the
-         * catch-all that guarantees adjacent cubes' charts don't touch: a grazing
-         * wrap otherwise lands in both cubes at the shared plane and z-fight-
-         * doubles. The 2*INSET gap is spanned by the seam bridge. */
-        float owned_lo = (float)BPA_OWNED_TRIM_INSET;
-        float owned_hi = (float)in->cube_D - (float)BPA_OWNED_TRIM_INSET;  /* cubic cubes */
+        /* Inset the owned box so the FINAL per-cube mesh (step12_final = the
+         * weld input) never reaches a cube face — regardless of which path
+         * produced it (extract, or a re-LOP'd split piece, which re-BPAs
+         * WITHOUT the step0 cloud inset). This is the catch-all that
+         * guarantees adjacent cubes' charts don't touch: a grazing wrap
+         * otherwise lands in both cubes at the shared plane and z-fight-
+         * doubles. The 2*INSET gap is spanned by grid_weld's seam bridge.
+         * trim_inset 0 (whole-grid unwrap path) lets charts reach the faces:
+         * the mutual-nearest weld merges the boundary rows instead, and the
+         * grazing doubles become SeamOwn's seam double-paint (handled). */
+        float ins = in->trim_inset >= 0.0f ? in->trim_inset
+                                           : (float)BPA_OWNED_TRIM_INSET;
+        float owned_lo = ins;
+        float owned_hi = (float)in->cube_D - ins;  /* cubic cubes */
+        /* Cut-at-plane trim (default when inset > 0): clip crossing triangles
+         * at the owned-box planes instead of dropping them, so the boundary
+         * lands EXACTLY on the inset planes and the inter-cube gap is a
+         * uniform 2*inset regardless of mesh density. The drop-only rule lost
+         * up to a full edge length per side -- fatal at coarse CVT (~10-15 vox
+         * edges): one jittered boundary vert gouged an edge-deep notch into
+         * the seam rim. inset==0 (whole-grid unwrap path) keeps drop-only:
+         * charts there are MEANT to reach the faces and be row-merged.
+         * Env kill switch: VES_TRIM_CUT=0. */
+        int use_cut = (ins > 0.0f);
+        { const char *e = sf_env("VES_TRIM_CUT");
+          if (e && *e == '0') use_cut = 0; }
+        size_t total_cut_faces = 0;
         ComponentMesh *trimmed = (ComponentMesh *)ARENA_CALLOC(
             arena, (long)out->n_meshes, (long)sizeof(ComponentMesh));
         size_t n_trim_kept = 0;
@@ -719,12 +1123,24 @@ int pipeline_process_cube(Arena_T arena,
             float *t_v = NULL;
             int32_t *t_f = NULL;
             size_t t_nv = 0, t_nf = 0;
-            int trc = Mesh_trim_to_owned_box(arena,
-                src->verts, src->nv, src->faces, src->nf,
-                NULL,
-                owned_lo, owned_hi,
-                &t_v, &t_nv, &t_f, &t_nf,
-                NULL);
+            int trc = 0;
+            if (use_cut) {
+                size_t n_cut = 0;
+                trc = Mesh_trim_cut_to_owned_box(arena,
+                    src->verts, src->nv, src->faces, src->nf,
+                    owned_lo, owned_hi,
+                    (float)TRIM_CUT_SNAP_EPS_VOX,
+                    &t_v, &t_nv, &t_f, &t_nf,
+                    &n_cut);
+                total_cut_faces += n_cut;
+            } else {
+                trc = Mesh_trim_to_owned_box(arena,
+                    src->verts, src->nv, src->faces, src->nf,
+                    NULL,
+                    owned_lo, owned_hi,
+                    &t_v, &t_nv, &t_f, &t_nf,
+                    NULL);
+            }
             if (trc != 0 || t_nf == 0) continue;
             dst->verts = t_v;
             dst->faces = t_f;
@@ -751,10 +1167,13 @@ int pipeline_process_cube(Arena_T arena,
         out->n_trimmed = n_trim_kept;
         out->t_trim = elapsed_since(tt);
         fprintf(stderr,
-            "  Trim: %zu/%zu comps kept, %zu/%zu -> %zu/%zu v/f (%.3fs)\n",
+            "  Trim: %zu/%zu comps kept, %zu/%zu -> %zu/%zu v/f "
+            "(%s, %zu faces cut) (%.3fs)\n",
             n_trim_kept, out->n_meshes,
             total_in_nv, total_in_nf,
-            total_out_nv, total_out_nf, out->t_trim);
+            total_out_nv, total_out_nf,
+            use_cut ? "cut-at-plane" : "drop-only", total_cut_faces,
+            out->t_trim);
 
     } else {
         /* No halo: trimmed == meshes by reference. */

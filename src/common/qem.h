@@ -66,4 +66,57 @@ int QEM_simplify_pinned(Arena_T arena,
                         int32_t **out_faces, size_t *out_nf,
                         uint8_t **out_pin_mask);
 
+/*
+ * Full-control variant. QEM_simplify / QEM_simplify_pinned are wrappers
+ * around this with default options (auto-pin boundary, winding repair on).
+ *
+ *   free_boundary       -- skip the Phase-4b auto-pin of boundary-loop
+ *                          vertices. The boundary QUADRIC penalty still
+ *                          applies (Garland-Heckbert constraint planes), so
+ *                          open edges resist drifting, but hole rims no
+ *                          longer survive at full input resolution. Use for
+ *                          hole-riddled welded sheets where uniform
+ *                          decimation matters more than rim preservation.
+ *   skip_winding_repair -- keep each surviving face's INPUT winding: skip
+ *                          both global reference-normal flip repairs (the
+ *                          compaction vote and the final iterative pass).
+ *                          Those repairs assume a mostly-planar patch; on a
+ *                          surface wrapped around an axis ~half of all face
+ *                          normals oppose ANY global reference, so the
+ *                          "repair" flips whole regions. A consistently
+ *                          oriented input stays consistently oriented.
+ *   prob_quadrics       -- use the FULL per-face anisotropic probabilistic
+ *                          plane quadric (Trettner & Kobbelt 2020) instead of
+ *                          the deterministic n·nᵀ quadric + per-vertex σ²I hack.
+ *                          Each face plane is a noisy observation: normal
+ *                          n ~ N(n̄, σ_n²I), point p ~ N(p̄, σ_p²I), and the
+ *                          face quadric is E[(nᵀ(x−p))²]. The σ_n²I term makes
+ *                          the 3×3 A block full-rank on flat/degenerate patches,
+ *                          so the optimal-position solve is well conditioned and
+ *                          places verts robustly -> fewer slivers / more uniform
+ *                          triangles. Reduces to the deterministic quadric at
+ *                          σ=0. Default OFF (deterministic path unchanged).
+ *   prob_sigma_n/_p     -- noise magnitudes (vox). 0 => auto from the median
+ *                          edge length (QEM_PROB_SIGMA_FACTOR / _POS_FACTOR).
+ *                          Only consulted when prob_quadrics != 0.
+ */
+typedef struct {
+    const uint8_t *pin_mask;      /* optional [in_nv] caller pins */
+    const float   *ref_normal;    /* optional winding reference (unit) */
+    int            free_boundary;
+    int            skip_winding_repair;
+    int            prob_quadrics;  /* full per-face probabilistic quadrics (see above) */
+    float          prob_sigma_n;   /* normal-noise σ   (0 => auto from median edge) */
+    float          prob_sigma_p;   /* position-noise σ (0 => auto from median edge) */
+} QemOpts;
+
+int QEM_simplify_opts(Arena_T arena,
+                      const float *in_verts, size_t in_nv,
+                      const int32_t *in_faces, size_t in_nf,
+                      size_t target_nf,
+                      const QemOpts *opts,
+                      float **out_verts, size_t *out_nv,
+                      int32_t **out_faces, size_t *out_nf,
+                      uint8_t **out_pin_mask);
+
 #endif

@@ -82,6 +82,7 @@
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <OpenMPSupport>true</OpenMPSupport>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
       <CompileAs>Default</CompileAs>
     </ClCompile>
     <Link>
@@ -105,7 +106,33 @@
     <ClCompile Include="src\common\run_ctx.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\remesh\ball_pivot.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\remesh\seam_weld.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\remesh\seam_planes.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\remesh\seam_refine.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <!-- Seam-band CVT beautification: pulls the CVT/RVD engine + exact predicates -->
+    <ClCompile Include="src\remesh\seam_band_cvt.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\remesh\cvt_remesh.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\remesh\rvd_clip.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\closest_tri.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\attene_predicates_wrap.cpp">
+      <CompileAs>CompileAsCpp</CompileAs>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>$(SolutionDir)deps\src\attene-predicates;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="deps\src\attene-predicates\uinteger.cpp">
+      <CompileAs>CompileAsCpp</CompileAs>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>$(SolutionDir)deps\src\attene-predicates;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="deps\src\attene-predicates\ieee_binary.cpp">
+      <CompileAs>CompileAsCpp</CompileAs>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>$(SolutionDir)deps\src\attene-predicates;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="src\remesh\sheet_reweld.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\remesh\seam_hole_fill.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\kdtree.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\union_find.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\cc_color.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\remesh\fold_cleanup.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\remesh\pinhole_fill.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\remesh\manifold_guard.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
@@ -117,7 +144,7 @@
     <ClCompile Include="src\common\csr.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\pca.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <!-- Lambda gate: Crane developability energy + 3x3 eigensolver. -->
-    <ClCompile Include="src\topology\developability.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\developability.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\eig3.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\holefill\hole_fill.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\holefill\clipper2_wrap.cpp">

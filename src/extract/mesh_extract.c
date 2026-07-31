@@ -20,6 +20,7 @@
 #include "../remesh/ball_pivot.h"
 #include "../remesh/orient_mesh.h"
 #include "../remesh/normal_orient.h"
+#include "../remesh/patch_repair.h"
 
 #include <assert.h>
 #include <string.h>
@@ -565,6 +566,7 @@ int MeshExtract_run(Arena_T          arena,
                     const char      *dump_cube_dir,
                     const char      *cube_id,
                     int              skip_qem,
+                    float            trim_inset,
                     const uint8_t   *vol_in,
                     int              p_size_in,
                     const int64_t   *cube_origin_in,
@@ -750,6 +752,15 @@ int MeshExtract_run(Arena_T          arena,
     size_t out_count = 0;
     int HW = H * W;
 
+    /* EXTRACT_TIMING=1: per-phase wall accumulators summed over every
+     * component, printed once after the loop (release-visible; the finer
+     * per-comp prints stay VESUVIUS_DEBUG-gated). Cheap enough to always
+     * accumulate: 8 clock reads per component. */
+    enum { XT_PREP, XT_CLOUD, XT_MLS, XT_WELDTRIM,
+           XT_HOPPE, XT_BPA, XT_PATCH, XT_N };
+    double xt[XT_N] = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+    double xt_mark = 0.0;
+
     /* Halo bounds in vol coords: owned region = [halo_voxels, halo_voxels + cube_D).
      * When halo == 0, owned region = whole volume. */
     int owned_lo = halo_voxels;
@@ -757,6 +768,7 @@ int MeshExtract_run(Arena_T          arena,
 
     for (int32_t ci = 0; ci < n_valid; ci++) {
         Arena_free(scratch);
+        xt_mark = ves_clock_sec();
         int32_t comp_label = comps[ci].label;
         /* Connectivity-resplit snapshot (main arena: scratch is reset next iter,
          * but the resplit runs after all components return). Filled after LOP. */
@@ -875,6 +887,8 @@ int MeshExtract_run(Arena_T          arena,
                 comp_label, pD, pH, pW,
                 t_c1 - t_c0);
 #endif
+
+        { double xn = ves_clock_sec(); xt[XT_PREP] += xn - xt_mark; xt_mark = xn; }
 
         /* Source the point cloud by voxel-center sampling: one point at
          * the center of every foreground voxel. This gives a single-layer
@@ -1001,6 +1015,8 @@ int MeshExtract_run(Arena_T          arena,
             }
         }
 
+        { double xn = ves_clock_sec(); xt[XT_CLOUD] += xn - xt_mark; xt_mark = xn; }
+
         /* Stable palette color for this component, keyed off the original
          * component label so the same sheet keeps the same color through
          * every diagnostic stage and the final dump. */
@@ -1053,6 +1069,11 @@ int MeshExtract_run(Arena_T          arena,
                               MLS_PROJECT_RADIUS_VOX,
                               cube_world_origin,
                               dst, normals_dst);
+            if (!MLS_cubecl_last_call_ok()) {
+                fprintf(stderr, "MeshExtract: CubeCL MLS failed: %s\n",
+                        MLS_cubecl_last_error());
+                return -1;
+            }
             src = dst;
             dst = (dst == mls_verts) ? mls_scratch : mls_verts;
         }
@@ -1081,6 +1102,8 @@ int MeshExtract_run(Arena_T          arena,
                 comp_label, MLS_PROJECT_ITERS,
                 (double)MLS_PROJECT_RADIUS_VOX, surf_nv, t_c1 - t_c0);
 #endif
+
+        { double xn = ves_clock_sec(); xt[XT_MLS] += xn - xt_mark; xt_mark = xn; }
 
         /* Diagnostic dump: LOP-only (post MLS, BEFORE
          * the backface cull). Useful for tracking where holes are
@@ -1194,7 +1217,8 @@ int MeshExtract_run(Arena_T          arena,
              * wrap grazes the seam; the 2*INSET gap is spanned by the seam bridge.
              * No faces yet -> compact verts + normals in place. */
             if (halo_voxels > 0 && surf_nv > 0) {
-                float ins  = (float)BPA_OWNED_TRIM_INSET;
+                float ins  = trim_inset >= 0.0f ? trim_inset
+                                                : (float)BPA_OWNED_TRIM_INSET;
                 float lo   = ins;
                 float hi_z = (float)cube_D - ins;
                 float hi_y = (float)cube_H - ins;
@@ -1220,7 +1244,7 @@ int MeshExtract_run(Arena_T          arena,
 #ifdef VESUVIUS_DEBUG
                 fprintf(stderr,
                     "    comp %d: pre-BPA owned trim (inset=%.2f) %zu -> %zu verts\n",
-                    comp_label, (double)BPA_OWNED_TRIM_INSET, surf_nv, kept);
+                    comp_label, (double)ins, surf_nv, kept);
 #endif
                 surf_nv = kept;
                 /* Dump the LOP cloud AFTER the owned trim (points only, no BPA),
@@ -1241,6 +1265,8 @@ int MeshExtract_run(Arena_T          arena,
                 if (surf_nv < 3) continue;   /* nothing left to triangulate */
             }
 
+            { double xn = ves_clock_sec(); xt[XT_WELDTRIM] += xn - xt_mark; xt_mark = xn; }
+
             /* Hoppe 1992 §3.3 globally-consistent orientation before BPA: replace
              * mls_project's (1,1,1) per-vertex normal sign with a MST-propagated,
              * majority-re-anchored consistent sign, so BPA's normal gate stops
@@ -1260,12 +1286,16 @@ int MeshExtract_run(Arena_T          arena,
                     comp_label, hf, surf_nv, (double)hr);
             }
 
+            { double xn = ves_clock_sec(); xt[XT_HOPPE] += xn - xt_mark; xt_mark = xn; }
+
             int32_t *bpa_faces = NULL;
             size_t   bpa_nf = 0;
-            int rc = BallPivot_reconstruct(scratch,
-                                            mls_verts, mls_normals, surf_nv,
-                                            BPA_RHO_VOX,
-                                            &bpa_faces, &bpa_nf);
+            BpaReconGate bpa_gate;
+            const BpaReconGate *bpa_gate_p =
+                BpaReconGate_from_env(&bpa_gate, cube_world_origin) ? &bpa_gate : NULL;
+            int rc = BallPivot_reconstruct_gated(
+                scratch, mls_verts, mls_normals, surf_nv, BPA_RHO_VOX,
+                bpa_gate_p, &bpa_faces, &bpa_nf);
             if (rc != 0 || bpa_nf == 0) {
                 fprintf(stderr,
                     "    comp %d: BPA failed (rc=%d, nf=%zu) — skip\n",
@@ -1281,7 +1311,35 @@ int MeshExtract_run(Arena_T          arena,
                 "    comp %d: BPA rho=%.1f -> %zu faces (%zu verts, %.2f s)\n",
                 comp_label, (double)BPA_RHO_VOX, surf_nf, surf_nv, t_c1 - t_c0);
 #endif
+
+            { double xn = ves_clock_sec(); xt[XT_BPA] += xn - xt_mark; xt_mark = xn; }
+
+            /* Patch repair: local tangent-plane Delaunay re-triangulation of
+             * BPA's "lightning-bolt" tear patches (src/remesh/patch_repair.c).
+             * Per-sheet, never crosses components, skips anything ambiguous.
+             * DEFAULT ON (4x5x5 A/B 2026-07-09: raw tears -75%, step12 -63%,
+             * weld components 27->27 = no merger; NM 0). Disable: PATCH_REPAIR_OFF. */
+            if (!getenv("PATCH_REPAIR_OFF")) {
+                int32_t *pr_faces = NULL;
+                size_t pr_nf = 0;
+                PatchRepairStats prs;
+                if (PatchRepair_repair(scratch, mls_verts, surf_nv,
+                                       surf_faces, surf_nf,
+                                       &pr_faces, &pr_nf, &prs) == 0 && pr_nf > 0) {
+                    fprintf(stderr,
+                        "    comp %d: patch_repair %zu/%zu patches (tears=%zu, "
+                        "-%zu +%zu faces; skip g%zu r%zu p%zu t%zu)\n",
+                        comp_label, prs.n_repaired, prs.n_patches,
+                        prs.n_tear_clusters, prs.faces_deleted, prs.faces_added,
+                        prs.n_skip_gate, prs.n_skip_ring, prs.n_skip_project,
+                        prs.n_skip_tri);
+                    surf_faces = pr_faces;
+                    surf_nf    = pr_nf;
+                }
+            }
         }
+
+        { double xn = ves_clock_sec(); xt[XT_PATCH] += xn - xt_mark; xt_mark = xn; }
 
         /* Sign-propagation BFS — DISABLED by default after the 2026-05-27
          * test run showed it backfires on thick (>R_kernel) connected
@@ -1527,6 +1585,15 @@ int MeshExtract_run(Arena_T          arena,
                 t_end - t_start);
     }
 #endif
+
+    if (getenv("EXTRACT_TIMING")) {
+        fprintf(stderr,
+            "  [extract-timing] prep=%.2f cloud=%.2f mls=%.2f weld+trim=%.2f "
+            "hoppe=%.2f bpa=%.2f patch=%.2f  (s, summed over %zu comps; "
+            "remainder = orient/finalize)\n",
+            xt[XT_PREP], xt[XT_CLOUD], xt[XT_MLS], xt[XT_WELDTRIM],
+            xt[XT_HOPPE], xt[XT_BPA], xt[XT_PATCH], out_count);
+    }
 
     *out_meshes = meshes;
     *out_n_meshes = out_count;

@@ -1,1 +1,5 @@
 sample_outputs/**/*.obj filter=lfs diff=lfs merge=lfs -text
+output/canonical_best/**/*.obj filter=lfs diff=lfs merge=lfs -text
+output/canonical_best/**/*.bin filter=lfs diff=lfs merge=lfs -text
+output/canonical_best/**/*.tif filter=lfs diff=lfs merge=lfs -text
+output/canonical_best/**/*.png filter=lfs diff=lfs merge=lfs -text

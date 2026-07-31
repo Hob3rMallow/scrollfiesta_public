@@ -53,13 +53,22 @@ int LiftedMulticut_kernighan_lin(
 
         /* Build lifted graph (adjacency + overlap edges) */
         andres::graph::Graph<> lifted(static_cast<size_t>(num_nodes));
-        std::vector<double> costs(static_cast<size_t>(num_lifted_edges));
+        std::vector<double> costs;
+        costs.reserve(static_cast<size_t>(num_lifted_edges));
         for (int32_t i = 0; i < num_lifted_edges; i++) {
-            lifted.insertEdge(
+            const size_t edge = lifted.insertEdge(
                 static_cast<size_t>(lifted_from[i]),
                 static_cast<size_t>(lifted_to[i]));
-            costs[static_cast<size_t>(i)] = lifted_weights[i];
+            /* Graph<> coalesces parallel edges.  The caller deliberately can
+             * supply the same pair once as an attractive original edge and
+             * again as a repulsive lifted overlap.  Indexing costs by input
+             * position silently shifted every later weight after the first
+             * duplicate.  Accumulate by the graph's returned edge id so the
+             * combined objective is represented exactly. */
+            if (edge >= costs.size()) costs.resize(edge + 1, 0.0);
+            costs[edge] += lifted_weights[i];
         }
+        if (costs.size() != lifted.numberOfEdges()) return -1;
 
         /* Phase 1: Greedy additive edge contraction */
         size_t min_k = (min_clusters > 1)
@@ -93,6 +102,23 @@ int LiftedMulticut_kernighan_lin(
             out_labels[i] = 0;
         return -1;
     }
+}
+
+int LiftedMulticut_selftest(void)
+{
+    const int32_t adj_from[2] = {0, 1};
+    const int32_t adj_to[2] = {1, 2};
+    const int32_t lifted_from[3] = {0, 0, 1};
+    const int32_t lifted_to[3] = {1, 1, 2};
+    const double lifted_weight[3] = {10.0, -30.0, 10.0};
+    int32_t label[3] = {-1, -1, -1};
+    int32_t clusters = 0;
+    int rc = LiftedMulticut_kernighan_lin(
+        3, 2, adj_from, adj_to, 3, lifted_from, lifted_to,
+        lifted_weight, 0, label, &clusters);
+    if (rc != 0 || clusters != 2) return 1;
+    if (label[0] == label[1] || label[1] != label[2]) return 1;
+    return 0;
 }
 
 } /* extern "C" */

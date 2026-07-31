@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{01B820C4-FB51-4FA2-9642-BA250D0B9D49}</ProjectGuid>
+    <RootNamespace>atlas_strip_scroll</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <Keyword>Win32Proj</Keyword>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType><UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset><CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType><UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset><CharacterSet>Unicode</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>$(SolutionDir)build\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)build\obj\atlas_strip_scroll_$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutDir>$(SolutionDir)build\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)build\obj\atlas_strip_scroll_$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel><Optimization>Disabled</Optimization>
+      <PreprocessorDefinitions>_DEBUG;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)deps\taucs\src;$(SolutionDir)deps\taucs\build;$(SolutionDir)deps\taucs\external\src;$(SolutionDir)deps\src\tiff-4.7.1\libtiff;$(SolutionDir)deps\src\tiff-4.7.1\bld\libtiff;$(SolutionDir)deps\src\graph\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary><DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <LanguageStandard_C>stdc17</LanguageStandard_C><CompileAs>CompileAsC</CompileAs><MultiProcessorCompilation>true</MultiProcessorCompilation>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem><StackReserveSize>536870912</StackReserveSize><GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(SolutionDir)deps\clapack\LIB\x64;$(SolutionDir)deps\lib\win64\Debug;$(SolutionDir)deps\lib\win64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>clapackd_nowrap.lib;BLASd_nowrap.lib;libf2cd.lib;tiff.lib;zs.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <IgnoreSpecificDefaultLibraries>LIBCMTD</IgnoreSpecificDefaultLibraries>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel><Optimization>MaxSpeed</Optimization><FunctionLevelLinking>true</FunctionLevelLinking><IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>NDEBUG;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)deps\taucs\src;$(SolutionDir)deps\taucs\build;$(SolutionDir)deps\taucs\external\src;$(SolutionDir)deps\src\tiff-4.7.1\libtiff;$(SolutionDir)deps\src\tiff-4.7.1\bld\libtiff;$(SolutionDir)deps\src\graph\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary><LanguageStandard_C>stdc17</LanguageStandard_C><CompileAs>CompileAsC</CompileAs><MultiProcessorCompilation>true</MultiProcessorCompilation>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem><StackReserveSize>536870912</StackReserveSize><GenerateDebugInformation>true</GenerateDebugInformation><EnableCOMDATFolding>true</EnableCOMDATFolding><OptimizeReferences>true</OptimizeReferences>
+      <AdditionalLibraryDirectories>$(SolutionDir)deps\clapack\LIB\x64;$(SolutionDir)deps\lib\win64\Release;$(SolutionDir)deps\lib\win64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>clapack_nowrap.lib;BLAS_nowrap.lib;libf2c.lib;tiff.lib;zs.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <IgnoreSpecificDefaultLibraries>LIBCMT</IgnoreSpecificDefaultLibraries>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="src\tools\atlas_strip_scroll.c" />
+    <ClCompile Include="src\whole\atlas_candidates.c" />
+    <ClCompile Include="src\whole\atlas_boxcut.c" />
+    <ClCompile Include="src\whole\atlas_boxcut_layout.c" />
+    <ClCompile Include="src\whole\atlas_component_lift.c" />
+    <ClCompile Include="src\whole\atlas_collision_register.c" />
+    <ClCompile Include="src\whole\atlas_overlap_audit.c" />
+    <ClCompile Include="src\whole\atlas_radial_order.c" />
+    <ClCompile Include="src\whole\atlas_register.c" />
+    <ClCompile Include="src\whole\atlas_place_search.c" />
+    <ClCompile Include="src\whole\atlas_sheet_split.c" />
+    <ClCompile Include="src\whole\atlas_turn_advance.c" />
+    <ClCompile Include="src\whole\atlas_warp.c" />
+    <ClCompile Include="src\whole\atlas_seam_audit.c" />
+    <ClCompile Include="src\whole\atlas_xyz_weld_audit.c" />
+    <ClCompile Include="src\whole\atlas_winding_sync.c" />
+    <ClCompile Include="src\whole\atlas_field.c" />
+    <ClCompile Include="src\whole\atlas_field_refine.c" />
+    <ClCompile Include="src\whole\atlas_field_apply.c" />
+    <ClCompile Include="src\whole\atlas_overlap_fix.c" />
+    <ClCompile Include="src\whole\atlas_strip.c" />
+    <ClCompile Include="src\whole\monotone_qp.c" />
+    <ClCompile Include="src\flatten\sparse_solve.c" />
+    <ClCompile Include="src\unroll\piece_set.c" />
+    <ClCompile Include="src\unroll\scaffold.c" />
+    <ClCompile Include="src\common\arena.c" />
+    <ClCompile Include="src\common\except.c" />
+    <ClCompile Include="src\common\kdtree.c" />
+    <ClCompile Include="src\common\union_find.c" />
+    <ClCompile Include="src\common\obj_io.c" />
+    <ClCompile Include="src\common\raw_sample.c" />
+    <ClCompile Include="src\common\tiff_io.c" />
+    <ClCompile Include="src\common\ves_platform.c" />
+    <ClCompile Include="src\common\run_ctx.c" />
+    <ClCompile Include="src\remesh\ball_pivot.c" />
+    <ClCompile Include="src\remesh\seam_planes.c" />
+    <ClCompile Include="src\remesh\seam_refine.c" />
+    <ClCompile Include="src\remesh\seam_weld.c" />
+    <ClCompile Include="src\remesh\weld_cleanup.c" />
+    <ClCompile Include="src\split\multicut_wrap.cpp"><CompileAs>CompileAsCpp</CompileAs><LanguageStandard>stdcpp17</LanguageStandard><PreprocessorDefinitions>NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_complex_GEN.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_complex_D.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_logging_GEN.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_timer_GEN.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_malloc_GEN.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_base_GEN.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_base_D.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_vec_base_GEN.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_vec_base_D.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_ops_GEN.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_ops_D.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_order_GEN.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_sn_llt_GEN.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_sn_llt_D.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_factor_llt_GEN.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_factor_llt_D.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_solve_llt_GEN.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_solve_llt_D.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_iter_D.c" />
+    <ClCompile Include="deps\taucs\build\wrap\taucs_linsolve_GEN.c" />
+    <ClCompile Include="deps\taucs\external\src\genmmd.c" />
+    <ClCompile Include="deps\taucs\build\taucs_stubs.c" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

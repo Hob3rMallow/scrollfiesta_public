@@ -21,6 +21,18 @@
 /* Candidate edge of a target triangle, sorted shortest-first for collapse. */
 typedef struct { int32_t u, v; double len; } EdgeCand;
 
+/* Recoarsen mode context for collapse_round (NULL = legacy sliver/degen
+ * targeting). In recoarsen mode a face is a candidate iff its SHORTEST edge is
+ * < collapse_below AND both of that edge's endpoints lie within `band` of a
+ * detected seam plane -- the length-based, band-restricted selection that
+ * collapses the temporarily-fine seam band back out after bridging. */
+typedef struct {
+    const SeamPlane *planes;
+    size_t           np;
+    double           band;
+    double           collapse_below;
+} RecoarsenCtx;
+
 /* ===================================================================
  * Geometry helpers (double accumulation off float positions).
  * =================================================================== */
@@ -373,7 +385,8 @@ static void lock_ring(uint8_t *locked, const int32_t *off, const int32_t *idx,
  * compacts `faces` in place. Returns collapses accepted; *nf updated. */
 static size_t collapse_round(Arena_T arena, const float *V,
                              int32_t *faces, size_t *nf, size_t nv,
-                             const WeldCleanupParams *p)
+                             const WeldCleanupParams *p,
+                             const RecoarsenCtx *rc)
 {
     Arena_Mark mark = Arena_save(arena);
     int32_t *off=NULL, *idx=NULL;
@@ -391,12 +404,21 @@ static size_t collapse_round(Arena_T arena, const float *V,
         EdgeCand E[3];
         int t, s;
         if (a==b||b==c||a==c) continue;
-        if (!is_target(V,a,b,c,p)) continue;
+        if (!rc && !is_target(V,a,b,c,p)) continue;
         E[0].u=a; E[0].v=b; E[1].u=b; E[1].v=c; E[2].u=c; E[2].v=a;
         for (t=0;t<3;t++) E[t].len=edge_len3(V,E[t].u,E[t].v);
         /* sort 3 edges ascending by length */
         for (t=0;t<2;t++) for (s=t+1;s<3;s++)
             if (E[s].len < E[t].len){ EdgeCand tmp=E[t]; E[t]=E[s]; E[s]=tmp; }
+        /* Recoarsen mode: length-based band-restricted candidate test on the
+         * shortest edge (both endpoints in the seam band). */
+        if (rc){
+            if (E[0].len >= rc->collapse_below) continue;
+            if (SeamPlanes_vert_dist(V, E[0].u, rc->planes, rc->np) > rc->band)
+                continue;
+            if (SeamPlanes_vert_dist(V, E[0].v, rc->planes, rc->np) > rc->band)
+                continue;
+        }
         /* ONLY the shortest edge is a collapse candidate -- it is the needle's
          * short edge. Never fall through to a sliver's LONG edges: those are
          * legitimate geometry (e.g. a bipyramid apex), and collapsing one when
@@ -484,7 +506,7 @@ int WeldCleanup_process(Arena_T arena, ComponentMesh *cm,
 
     /* Pass 2: guarded collapse for the residue (needles, zero-area, T-caps). */
     for (r=0; r<p.collapse_max_rounds; r++){
-        size_t k = collapse_round(arena, cm->verts, wf, &nf, nv, &p);
+        size_t k = collapse_round(arena, cm->verts, wf, &nf, nv, &p, NULL);
         total_collapses += k;
         if (k == 0) break;
     }
@@ -501,6 +523,91 @@ int WeldCleanup_process(Arena_T arena, ComponentMesh *cm,
         stats->n_collapses = total_collapses;
         stats->faces_out = nf;
         stats->targets_out = count_targets(cm->verts, wf, nf, &p);
+    }
+    return 0;
+}
+
+size_t WeldCleanup_flip_rounds(Arena_T arena, const float *verts, size_t nv,
+                               int32_t *faces, size_t nf, int max_rounds)
+{
+    assert(arena);
+    if (nf == 0 || nv == 0 || faces == NULL || verts == NULL) return 0;
+    return flip_rounds(arena, verts, faces, nf, nv, max_rounds);
+}
+
+void WeldCleanup_default_recoarsen_params(WeldRecoarsenParams *p)
+{
+    assert(p);
+    p->band             = WELD_RECOARSEN_BAND_VOX;
+    p->collapse_below   = WELD_RECOARSEN_BELOW_VOX;
+    p->max_collapse_len = WELD_CLEANUP_MAX_COLLAPSE_LEN;
+    p->max_rounds       = WELD_RECOARSEN_MAX_ROUNDS;
+    p->flip_max_rounds  = WELD_CLEANUP_FLIP_ROUNDS;
+}
+
+int WeldCleanup_recoarsen_seam(Arena_T arena, ComponentMesh *cm,
+                               const SeamPlane *planes, size_t np,
+                               const WeldRecoarsenParams *params,
+                               WeldRecoarsenStats *st)
+{
+    WeldRecoarsenParams p;
+    WeldCleanupParams pl;              /* carries max_collapse_len into the round */
+    RecoarsenCtx ctx;
+    int32_t *wf = NULL;
+    size_t nf, nv, total_flips=0, total_collapses=0;
+    int r, flips_since_progress=0;
+
+    assert(arena);
+    assert(cm);
+    assert(cm->self == cm);
+
+    if (params) p = *params; else WeldCleanup_default_recoarsen_params(&p);
+
+    nf = cm->nf; nv = cm->nv;
+    if (st){ memset(st, 0, sizeof *st); st->faces_in=nf; st->faces_out=nf; }
+    if (nf == 0 || nv == 0 || cm->faces == NULL || cm->verts == NULL) return 0;
+    if (np == 0 || planes == NULL) return 0;   /* no seams: nothing to recoarsen */
+
+    WeldCleanup_default_params(&pl);
+    pl.max_collapse_len = p.max_collapse_len;
+
+    ctx.planes = planes;
+    ctx.np = np;
+    ctx.band = p.band;
+    ctx.collapse_below = p.collapse_below;
+
+    wf = (int32_t *)ARENA_ALLOC(arena, (long)(nf*3*sizeof(int32_t)));
+    memcpy(wf, cm->faces, nf*3*sizeof(int32_t));
+
+    /* Collapse rounds to fixpoint, with one interleaved boundary-frozen flip
+     * burst when collapses stall (a flip can unfold a configuration the
+     * normal-flip guard was blocking); stop when neither makes progress. */
+    for (r = 0; r < p.max_rounds; r++){
+        size_t k = collapse_round(arena, cm->verts, wf, &nf, nv, &pl, &ctx);
+        total_collapses += k;
+        if (k == 0){
+            size_t fl;
+            if (flips_since_progress) break;
+            fl = flip_rounds(arena, cm->verts, wf, nf, nv, p.flip_max_rounds);
+            total_flips += fl;
+            flips_since_progress = 1;
+            if (fl == 0) break;
+            continue;
+        }
+        flips_since_progress = 0;
+    }
+
+    /* Final flip-to-convergence tidies the caps the collapses exposed. */
+    if (total_collapses > 0)
+        total_flips += flip_rounds(arena, cm->verts, wf, nf, nv, p.flip_max_rounds);
+
+    cm->faces = wf;
+    cm->nf = nf;
+
+    if (st){
+        st->n_collapses = total_collapses;
+        st->n_flips = total_flips;
+        st->faces_out = nf;
     }
     return 0;
 }

@@ -107,8 +107,20 @@
  * tol at the swept pitches) = 4-5 handles, +0.3-1.3k unpaired; looser 3.5 vox
  * = 9. On non-core dumps 2.0 vox zeroes all handles. Residual core handles are
  * sub-gate wrap contacts -> need a fusion-line cutter, not a tighter radius
- * (tightening to 1.5 vox only fragments). Env SEAM_WIND_TOL overrides. */
-#define SEAM_WIND_TOL_DEFAULT_TURNS 0.25
+ * (tightening to 1.5 vox only fragments). Env SEAM_WIND_TOL overrides.
+ *
+ * 2026-07-22 raised 0.25 -> 0.35 for the CVT-coarse pipeline. At CVT edge
+ * lengths (~8-12 vox, refined to 3.5 at the seam) the within-wrap radial WOBBLE
+ * of a single sheet across a seam reaches ~2.85 vox -- above 0.25*9.5=2.4 vox --
+ * so the bridge-face FILTER (ball_pivot.c) dropped the seam faces needed to weld
+ * two charts of the SAME wrap, leaving intra-sheet splits (wind_audit: the
+ * dominant #0<->#2 split, dw=-0.12, unbridged). 0.35 (=3.3 vox) clears the
+ * wobble while staying under the 0.40 hard cap that guards the ~0.50 delamination
+ * membrane. Faithful grid_weld A/B (8-cube L1 node, full recoarsen+band-CVT):
+ * split_comp_pairs 10->5, FULL-TURN fusions 4599->4620 (flat), MANIFOLD; core
+ * node (r~99): fusions 572->556 (down), splits unchanged. No fusion cost at mid
+ * OR core. See [[project_wind_audit_topology]]. */
+#define SEAM_WIND_TOL_DEFAULT_TURNS 0.35
 
 /* Winding-gate HARD cap, in turns: reject a seam bridge whose phase gap
  * exceeds this REGARDLESS of chord direction. The radial-dominance conjunct
@@ -122,6 +134,23 @@
  * separates every legitimate closure from the cross-layer/next-wrap step.
  * Env SEAM_WIND_HARD_TOL overrides. */
 #define SEAM_WIND_HARD_TOL_DEFAULT_TURNS 0.40
+
+/* Phase-2 sheet-correspondence re-weld (src/remesh/sheet_reweld.c). After the
+ * conservative phase-1 seam bridge, recover legit same-sheet closures it gated
+ * (divots) by confirming a 1:1 sheet correspondence across each seam and
+ * permissively re-welding each confirmed pair on a cloud restricted to those
+ * two sheets. Correspondence evidence = phase-1 bridge VOTES (each phase-1
+ * bridge face voting for the sheet-pair it joins) weighted vs geometric near-
+ * seam boundary OVERLAP; a pair is confirmed only when it is the mutual-best
+ * match with the runner-up below MARGIN_FRAC (one sheet and ONLY one). The pair
+ * weld runs with the winding gate OFF (cloud restriction is the safety) and a
+ * wider ball (RHO_MAX) to span the divot gaps. */
+#define SHEET_REWELD_OVERLAP_R    3.0   /* boundary-overlap match radius (vox) */
+#define SHEET_REWELD_VOTE_WEIGHT  2.0   /* one phase-1 vote vs one overlap match */
+#define SHEET_REWELD_MIN_SCORE    8.0   /* min combined evidence to confirm */
+#define SHEET_REWELD_MARGIN_FRAC  0.5   /* runner-up < this * best, both sides */
+#define SHEET_REWELD_RHO_MAX      6.0f  /* wider ball for the permissive weld */
+#define SHEET_REWELD_BAND         6.0f  /* seam band (match phase-1) */
 #define MLS_RESPLIT_ASSIGN_MARGIN_VOX 1.5f
                                      /* 2026-06-03: re-LOP point->piece assignment
                                       * margin. A parent original point is assigned
@@ -195,6 +224,15 @@
  * bridge can still reach across. Applies to all 6 faces (the outer-grid faces
  * lose a negligible INSET-vox band of real surface). */
 #define BPA_OWNED_TRIM_INSET    1.0f
+
+/* Cut-at-plane trim (Mesh_trim_cut_to_owned_box, the halo-mode default when
+ * inset > 0). Vertices/crossings within this of an owned-box plane are clamped
+ * onto it: far above the double->float ulp at 128-vox coords (~1e-5, the CVT
+ * boundary-site jitter that cost whole coarse rings under the drop-only rule),
+ * far below any real feature. Max positional error = this. Also the minimum
+ * output edge length the cut can create (crossings nearer an endpoint reuse
+ * the endpoint). Env kill switch for the whole cut path: VES_TRIM_CUT=0. */
+#define TRIM_CUT_SNAP_EPS_VOX   0.05f
 
 /* Seam weld -- pre-bridge sliver cull. A boundary triangle whose open edge lies
  * in a seam plane is a bridge-front candidate; if it is a near-degenerate sliver
@@ -369,6 +407,8 @@
 #define QEM_SAFE_RADIUS_FACTOR    0.5f    /* proximity radius = factor * median_edge_len */
 #define QEM_KDTREE_REBUILD_INTERVAL 500   /* rebuild spatial index every N collapses */
 #define QEM_PROB_SIGMA_FACTOR     0.05    /* σ_n = factor * median_edge_len */
+#define QEM_PROB_SIGMA_POS_FACTOR 0.05    /* σ_p = factor * median_edge_len (position noise,
+                                           * full per-face probabilistic quadric only) */
 #define QEM_MAINTENANCE_INTERVAL  10000   /* collapses between maintenance passes */
 #define QEM_MAINT_SMOOTH_LAMBDA   0.1f    /* gentle smoothing factor (vs 0.5 in tri_quality) */
 #define QEM_FLIP_MAX_ROUNDS       8       /* post-QEM Surazhsky-Gotsman edge-flip rounds:
@@ -382,6 +422,50 @@
                                              collapses fewer than 0.1% of the remaining
                                              faces — converged short of target_nf */
 
+/* Step 0 — CVT/RVD variational remesher (the DEFAULT simplifier; --simplify qem
+ * selects the old QEM path, also the fail-closed fallback). The CWF energy converges
+ * by ~12-15 iterations with the decaying lambda_CVT, well short of the standalone
+ * default of 50; the pipeline trades the tail for throughput. */
+#define CVT_PIPELINE_ITERS          12    /* Lloyd/CWF iterations per component      */
+
+/* GRADED density (the pipeline default): the CVT target edge length varies with
+ * depth into the owned box -- fine (weldable) near the cube faces, coarse in the
+ * interior. The seam edge length is DERIVED from the seam-weld bridge cap so seams
+ * close by construction: a bridge triangle survives only if its longest edge
+ * <= 2*BRIDGE_RHO_MAX (=6 vox, pinned by the 7-vox inter-wrap clearance), so the
+ * seam band targets well under that. This replaces hand-tuning one global ratio to
+ * straddle the cap. See src/remesh/sizing_field.h. */
+#define CVT_SEAM_EDGE     (1.2f * BRIDGE_RHO_MAX)  /* ~3.6 vox: seam-band target edge, DERIVED;
+                                                    * invariant CVT_SEAM_EDGE < 2*BRIDGE_RHO_MAX. */
+#define CVT_INTERIOR_EDGE   13.0f  /* vox: deep-interior target edge (the one coarseness knob) */
+#define CVT_SEAM_BAND        2.0f  /* vox: flat full-density pad inward from each owned-box plane.
+                                    * THIN RIM (was 6.0): just past the 1-vox trim inset, so only
+                                    * the ring that survives to become the seam is dense. */
+#define CVT_SEAM_RAMP       10.0f  /* vox: smoothstep ramp width seam->interior (was 30.0; the
+                                    * 6+30 band covered most of a core-dense cube -> 1.32M faces).
+                                    * |grad h| ~0.94 at 10 vox -- steeper than the documented 0.47
+                                    * comfort point, so watch ramp-ring min-angle in the A/B;
+                                    * ~8-12 is the floor before ramp-ring quality degrades. */
+
+#define CVT_TARGET_RATIO         0.0025f  /* uniform-density knob: sites = this * input faces.
+                                           * THE operative default again (the pipeline passes
+                                           * field==NULL unless VES_CVT_GRADED=1): 0.0025's
+                                           * ~13-vox seams are now weldable because grid_weld
+                                           * refines the seam band to ~3.5 vox before bridging
+                                           * and recoarsens it after (seam_refine.h). History:
+                                           * bare 0.0025 could not weld (seam-rim circumradius
+                                           * ~7 > rho_max=3 -> 2 bridge faces); 0.012 welded at
+                                           * ~0.9M faces; the graded rim welded at 1.3M (band
+                                           * 6+30) / 0.61M (band 2+10) -- all superseded by
+                                           * weld-time refine+recoarsen. VES_CVT_RATIO overrides. */
+#define CVT_MIN_SITES               50    /* floor: a component needs at least this many
+                                           * generators to form a valid RVD dual; small sheets
+                                           * never simplify below it. */
+#define CVT_MAX_COMPONENT_FACES     200000 /* safety valve: a component denser than this
+                                            * falls back to QEM so one pathological sheet
+                                            * cannot dominate a cube's wall-clock. Normal
+                                            * per-sheet inputs sit far below this.       */
+
 /* Post-weld cleanup (grid_weld terminal step — WeldCleanup_process).
  * The BPA seam bridge leaves slivers / zero-area faces / T-junctions the
  * per-cube QEM never sees (QEM runs before the weld). Flip-first, then guarded
@@ -393,6 +477,103 @@
                                              * < the ~7 vox inter-wrap clearance, so a collapse
                                              * can never fuse two scroll wraps */
 #define WELD_CLEANUP_FLIP_ROUNDS      8     /* Surazhsky-Gotsman flip rounds (to convergence) */
+
+/* Weld-time seam-band refinement (SeamRefine_process, grid_weld pre-bridge).
+ * Makes uniform-coarse CVT cubes bridgeable without per-cube dense rims: the
+ * band next to each detected seam plane is subdivided (+flipped) into
+ * well-shaped ~target triangles. The target is pinned by the bridge's priming
+ * geometry: a hinge ball reconstructs only when the front triangle's
+ * CIRCUMRADIUS <= rho <= BRIDGE_RHO_MAX (ball_pivot.c sphere_center), and a
+ * near-equilateral triangle of edge e has circumradius e/sqrt(3), so
+ * 3.5/1.73 ~ 2.0 <= the adaptive rho (~2.6 at a 3.5-vox front median). Also
+ * matches CVT_SEAM_EDGE (~3.6), the rim size the graded runs PROVED weldable.
+ * NOTE plain boundary-midpoint splitting alone cannot work: fan children keep
+ * the far apex and their circumradius stays ~5 > rho at every depth -- the
+ * interior band splits + flips are what make the band well-shaped. */
+#define SEAM_REFINE_TARGET_VOX      3.5f  /* band edge-length target (vox) */
+#define SEAM_REFINE_MAX_ROUNDS      8     /* split-round cap: 13 -> 3.5 needs 2
+                                           * halvings, but the independent-set
+                                           * face locks throttle a face to one
+                                           * split/round; 8 converges with margin */
+
+/* Post-recoarsen seam-band CVT beautification (SeamBandCvt_process). The
+ * guarded collapse leaves the band QEM-scarred and anisotropic next to the
+ * blue-noise CVT interior; this re-meshes each band patch with the SAME
+ * CVT/RVD engine, pinned-boundary (junction ring + hole rims immutable,
+ * bit-exact -> conforming stitch, open boundaries unchanged) and FAIL-CLOSED
+ * (per-patch conformity + Euler/manifold/connectivity gates; a rejected patch
+ * keeps its recoarsen-quality geometry). Runs AFTER recoarsen: the coarse band
+ * is a far cheaper RVD input, and the collapse pass doubles as the fallback. */
+#define SEAM_BANDCVT_BAND_VOX      14.0   /* face eligibility: any vert within this of a
+                                           * detected plane (== recoarsen band -> the CVT
+                                           * sees exactly the collapse-touched region) */
+#define SEAM_BANDCVT_H_VOX         13.0   /* band target edge == CVT_INTERIOR_EDGE, so the
+                                           * band matches the per-cube interior density and
+                                           * the weld disappears visually */
+#define SEAM_BANDCVT_ITERS         10     /* Lloyd/CWF iterations per patch (12 is the
+                                           * per-cube default; bands are simpler strips) */
+#define SEAM_BANDCVT_MIN_FACES     64     /* leave dust patches alone */
+#define SEAM_BANDCVT_TILE_VOX      96.0   /* in-plane tile size: the fail-closed blast
+                                           * radius. Untiled, the band lattice is ONE
+                                           * grid-spanning patch and any single gate trip
+                                           * rejects the whole band (measured). ~Cube-scale
+                                           * tiles keep patches cheap and rejections local
+                                           * (a core fold rejects its tile only). */
+#define SEAM_BANDCVT_FINE_FRAC     0.10   /* process a patch only if >= this fraction of
+                                           * its edges is < 0.6*h: pass B (half-tile
+                                           * offset) then re-meshes only pass A's border
+                                           * strips + rejects instead of churning accepted
+                                           * CVT interiors. */
+
+/* Post-bridge seam-band recoarsening (WeldCleanup_recoarsen_seam). The weldable
+ * fine seam band (thin graded CVT rim now; weld-time refinement later) is only
+ * needed WHILE bridging + filling; once the seam is closed the band is collapsed
+ * back toward the coarse budget. Length-based, band-restricted guarded collapse:
+ * same link-condition / normal-flip / boundary-preserving guards as the sliver
+ * cleanup, so open boundary loops (grid edges, the next hierarchical level's
+ * seams) exit BIT-IDENTICAL -- that boundary preservation is the hierarchical
+ * composability guarantee. Fusion safety does NOT come from the band (which
+ * only SELECTS candidates spatially): it comes from collapse contracting
+ * EXISTING edges only, plus the WELD_CLEANUP_MAX_COLLAPSE_LEN cap (5 < 7-vox
+ * inter-wrap clearance). The band settles at ~5-10 vox edges, not the 13-vox
+ * interior -- do NOT raise the cap to chase the last factor. ORDERING is
+ * load-bearing: recoarsen runs AFTER every hole closer (fills gate on extent;
+ * a pre-fill recoarsen coarsened slit rims past the gates: 9 -> 188 open seam
+ * loops on the 4x5x5). */
+#define WELD_RECOARSEN_BAND_VOX      14.0   /* verts within this of a detected seam plane are
+                                             * candidates. Covers the graded rim + ramp
+                                             * (CVT_SEAM_BAND 2 + CVT_SEAM_RAMP 10 + margin);
+                                             * harmless when wider -- interior edges (~13 vox)
+                                             * are never below the length threshold. */
+#define WELD_RECOARSEN_BELOW_VOX      5.0   /* collapse band edges shorter than this (vox);
+                                             * == WELD_CLEANUP_MAX_COLLAPSE_LEN so the ~3.6-vox
+                                             * rim edges are candidates (3.0 missed them: the
+                                             * rim merged nothing and only bridge tris shrank) */
+#define WELD_RECOARSEN_MAX_ROUNDS     8     /* collapse-round cap (1-ring locking clears ~half
+                                             * a chain per round; 2.0 -> ~5 vox needs ~3) */
+
+/* Isotropic incremental remeshing (Remesh_isotropic — post-QEM quality pass).
+ * Botsch-Kobbelt / Surazhsky-Gotsman: split long edges, collapse short edges,
+ * flip for max-min-angle, tangential relax. Interior-only (boundary frozen),
+ * same target face count, fail-closed. Runs AFTER decimation to repair the
+ * slivers / coarse-center-vs-fine-rim anisotropy that collapse-only QEM leaves. */
+#define REMESH_ITERS               5      /* outer split/collapse/flip/relax iterations */
+/* Split/collapse band deliberately WIDER than the textbook 4/3-4/5: the input is
+ * an already-decimated mesh that QEM's own flip+smooth maintenance has converged,
+ * so a tight band just churns good geometry into slivers with no net gain. Only
+ * genuinely-coarse edges (>1.5 L) are split and genuine needles (<0.5 L) removed;
+ * flip + tangential relax carry the rest. */
+#define REMESH_SPLIT_RATIO         1.5f   /* split   edges > ratio*L (coarse only) */
+#define REMESH_COLLAPSE_RATIO      0.5f   /* collapse edges < ratio*L (needles only) */
+#define REMESH_RELAX_LAMBDA        0.1f    /* tangential Laplacian step             */
+#define REMESH_SPLIT_MAX_ROUNDS    4       /* inner split rounds per iteration      */
+#define REMESH_COLLAPSE_MAX_ROUNDS 6       /* inner collapse rounds per iteration   */
+#define REMESH_FLIP_MAX_ROUNDS     8       /* inner flip rounds per iteration       */
+#define REMESH_FACE_COUNT_TOL      0.10f   /* accept only if |nf_out - F| <= tol*F  */
+#define REMESH_MAX_COLLAPSE_LEN    6.0f    /* never collapse an edge longer than this (vox);
+                                            * < the ~7 vox inter-wrap clearance, so a collapse
+                                            * can never fuse two scroll wraps (belt-and-braces
+                                            * atop the interior-only + link/fold guards) */
 #define WELD_CLEANUP_COLLAPSE_ROUNDS  6     /* guarded short-edge collapse rounds             */
 
 /* Threading */
@@ -427,5 +608,16 @@
 #define ZIP_CHAIN_LEN_WEIGHT      0.1f  /* score weight for |len_A - len_B| */
 #define ZIP_CHAIN_NORMAL_WEIGHT   2.0f  /* score weight for (1 - |n_A · n_B|) */
 #define ZIP_FOLDOVER_NEAR_VOX     4.0f  /* bbox padding for triangle-tri intersection diagnostic */
+
+/* Step 0 — patch repair (src/remesh/patch_repair.c): local tangent-plane
+ * Delaunay re-triangulation of BPA "lightning-bolt" tear patches. Per
+ * connected sheet only; every gate failure leaves the patch untouched.
+ * Opt-in via env PATCH_REPAIR=1 while under validation. ball_pivot-style
+ * local mirrors of these live in patch_repair.c. */
+#define PR_TEAR_MAX_EDGES     64    /* boundary cluster larger than this is not a tear */
+#define PR_PATCH_RINGS         2    /* face rings grown around a tear                   */
+#define PR_PATCH_MAX_FACES   256    /* patch bigger than this is skipped                */
+#define PR_PATCH_MAX_VERTS   512
+#define PR_PLANAR_MAX_THICK 0.75f   /* sqrt(smallest PCA eigenvalue) cap, vox           */
 
 #endif

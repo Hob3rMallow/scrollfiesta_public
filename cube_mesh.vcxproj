@@ -58,6 +58,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <OutDir>$(SolutionDir)build\$(Configuration)\</OutDir>
     <IntDir>$(SolutionDir)build\obj\$(Configuration)\</IntDir>
+    <UseCubeClMls Condition="'$(UseCubeClMls)'==''">false</UseCubeClMls>
   </PropertyGroup>
   <!-- ============================================================ -->
   <!-- Compiler settings - Debug                                     -->
@@ -67,7 +68,7 @@
       <WarningLevel>Level4</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>_DEBUG;VESUVIUS_DEBUG;_CRT_SECURE_NO_WARNINGS;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)deps\include;$(SolutionDir)deps\src\tiff-4.7.1\libtiff;$(SolutionDir)deps\src\tiff-4.7.1\bld\libtiff;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)docs\research\gco-v3.0;$(SolutionDir)deps\include;$(SolutionDir)deps\src\tiff-4.7.1\libtiff;$(SolutionDir)deps\src\tiff-4.7.1\bld\libtiff;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
@@ -94,13 +95,15 @@
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>NDEBUG;_CRT_SECURE_NO_WARNINGS;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)deps\include;$(SolutionDir)deps\src\tiff-4.7.1\libtiff;$(SolutionDir)deps\src\tiff-4.7.1\bld\libtiff;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions Condition="'$(UseCubeClMls)'!='true'">NDEBUG;_CRT_SECURE_NO_WARNINGS;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(UseCubeClMls)'=='true'">NDEBUG;VESUVIUS_MLS_CUBECL=1;_CRT_SECURE_NO_WARNINGS;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)docs\research\gco-v3.0;$(SolutionDir)deps\include;$(SolutionDir)deps\src\tiff-4.7.1\libtiff;$(SolutionDir)deps\src\tiff-4.7.1\bld\libtiff;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <OpenMPSupport>true</OpenMPSupport>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
       <CompileAs>Default</CompileAs>
       <ObjectFileName>$(IntDir)%(RelativeDir)</ObjectFileName>
     </ClCompile>
@@ -110,9 +113,14 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(SolutionDir)deps\lib\win64\Release;$(SolutionDir)deps\lib\win64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>tiff.lib;zs.lib;Clipper2.lib;Clipper2Z.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies Condition="'$(UseCubeClMls)'!='true'">tiff.lib;zs.lib;Clipper2.lib;Clipper2Z.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies Condition="'$(UseCubeClMls)'=='true'">mls_cubecl_import.lib;tiff.lib;zs.lib;Clipper2.lib;Clipper2Z.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
     </Link>
+    <PostBuildEvent Condition="'$(UseCubeClMls)'=='true'">
+      <Command>copy /Y "$(SolutionDir)deps\lib\win64\Release\herculaneum_mls_cubecl.dll" "$(OutDir)herculaneum_mls_cubecl.dll"
+if exist "$(SolutionDir)deps\lib\win64\Release\cubecl-cuda-runtime\*.dll" copy /Y "$(SolutionDir)deps\lib\win64\Release\cubecl-cuda-runtime\*.dll" "$(OutDir)"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <!-- ============================================================ -->
   <!-- C source files (compiled as C with /TC)                       -->
@@ -138,6 +146,9 @@
     <ClCompile Include="src\common\union_find.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
+    <ClCompile Include="src\common\cc_color.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
     <ClCompile Include="src\common\bfs.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
@@ -146,6 +157,7 @@
     </ClCompile>
     <ClCompile Include="src\common\mls_project.c">
       <CompileAs>CompileAsC</CompileAs>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64' and '$(UseCubeClMls)'=='true'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="src\common\vert_weld.c">
       <CompileAs>CompileAsC</CompileAs>
@@ -159,19 +171,16 @@
     <ClCompile Include="src\common\mesh_trim.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
-    <ClCompile Include="src\common\ply_io.c">
-      <CompileAs>CompileAsC</CompileAs>
-    </ClCompile>
-    <ClCompile Include="src\common\obj_io.c">
+<ClCompile Include="src\common\obj_io.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <ClCompile Include="src\common\dump_obj.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
-    <ClCompile Include="src\common\ves_platform.c">
+    <ClCompile Include="src\common\run_ctx.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
-    <ClCompile Include="src\common\run_ctx.c">
+    <ClCompile Include="src\common\ves_platform.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <ClCompile Include="src\common\qem.c">
@@ -194,12 +203,15 @@
     <ClCompile Include="src\extract\mesh_resplit.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
-    <!-- Pre-Step-0 input validation: reject garbage solid-slab predictions. -->
     <ClCompile Include="src\extract\pred_reject.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <!-- Remesh: Ball-Pivoting Algorithm (Bernardini 1999). -->
     <ClCompile Include="src\remesh\ball_pivot.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <!-- Remesh: tangent-plane Delaunay tear-patch repair. -->
+    <ClCompile Include="src\remesh\patch_repair.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <!-- Remesh: deterministic per-component winding orientation. -->
@@ -215,6 +227,13 @@
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <ClCompile Include="src\remesh\component_cull.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <!-- Developability "bad sheet" gate + its shared angle-defect metric. -->
+    <ClCompile Include="src\remesh\dev_gate.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\dev_metric.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <!-- Remesh: Hoppe 1992 consistent normal orientation (pre-BPA). -->
@@ -233,26 +252,28 @@
     <ClCompile Include="src\split\overlap_sep.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
+    <ClCompile Include="src\split\overlap_merge.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\split\overlap_quality.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <!-- Raw-CT target detection + pinned local solve for delamination healing. -->
+    <ClCompile Include="src\flatten\surface_snap.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\snap_darkcut.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\snap_quilt.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\snap_solve.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\recto_refine.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\raw_sample.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\gco_wrap.cpp"><CompileAs>CompileAsCpp</CompileAs></ClCompile>
+    <ClCompile Include="docs\research\gco-v3.0\GCoptimization.cpp"><CompileAs>CompileAsCpp</CompileAs></ClCompile>
+    <ClCompile Include="docs\research\gco-v3.0\LinkedBlockList.cpp"><CompileAs>CompileAsCpp</CompileAs></ClCompile>
     <!-- Step 1b-peel: stacked-wrap separator -->
     <ClCompile Include="src\split\depth_peel.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <!-- Step 1c: Developability cut (Stein/Grinspun/Crane 2018, sec 4.4) -->
     <ClCompile Include="src\split\dev_cut.c">
-      <CompileAs>CompileAsC</CompileAs>
-    </ClCompile>
-    <!-- Developability "bad sheet" gate + its shared angle-defect metric. -->
-    <ClCompile Include="src\remesh\dev_gate.c">
-      <CompileAs>CompileAsC</CompileAs>
-    </ClCompile>
-    <ClCompile Include="src\common\dev_metric.c">
-      <CompileAs>CompileAsC</CompileAs>
-    </ClCompile>
-    <!-- Crane developability energy (the dev-cut seam detector) + shared 3x3 eigensolver -->
-    <ClCompile Include="src\topology\developability.c">
-      <CompileAs>CompileAsC</CompileAs>
-    </ClCompile>
-    <ClCompile Include="src\common\eig3.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <!-- Hole fill: CDT-based interior loop closure -->
@@ -278,16 +299,49 @@
       <WarningLevel>Level1</WarningLevel>
     </ClCompile>
     <!-- Topology + Seamster genus reduction (short-handle sever after hole fill) -->
-    <ClCompile Include="src\topology\mesh_topo.c">
+    <ClCompile Include="src\flatten\mesh_topo.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
-    <ClCompile Include="src\topology\seam_cut.c">
+    <ClCompile Include="src\flatten\seam_cut.c">
       <CompileAs>CompileAsC</CompileAs>
       <WarningLevel>Level1</WarningLevel>
+    </ClCompile>
+    <!-- Crane developability energy (the dev-cut seam detector) + shared 3x3 eigensolver -->
+    <ClCompile Include="src\flatten\developability.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\eig3.c">
+      <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <!-- Pipeline library (per-cube orchestration) -->
     <ClCompile Include="src\pipeline\pipeline_cube.c">
       <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <!-- CVT/RVD variational remesher (M0-M3), selected by simplify=cvt -->
+    <ClCompile Include="src\common\closest_tri.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\remesh\rvd_clip.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\remesh\cvt_remesh.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <!-- CVT/RVD exact Voronoi predicates (Attene indirect predicates, C++17) -->
+    <ClCompile Include="src\common\attene_predicates_wrap.cpp">
+      <CompileAs>CompileAsCpp</CompileAs>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>$(SolutionDir)deps\src\attene-predicates;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="deps\src\attene-predicates\uinteger.cpp">
+      <CompileAs>CompileAsCpp</CompileAs>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>$(SolutionDir)deps\src\attene-predicates;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="deps\src\attene-predicates\ieee_binary.cpp">
+      <CompileAs>CompileAsCpp</CompileAs>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>$(SolutionDir)deps\src\attene-predicates;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemGroup>
   <!-- ============================================================ -->
@@ -307,36 +361,36 @@
     <ClInclude Include="src\common\tiff_io.h" />
     <ClInclude Include="src\common\halo_loader.h" />
     <ClInclude Include="src\common\mesh_trim.h" />
-    <ClInclude Include="src\common\ply_io.h" />
+
     <ClInclude Include="src\common\obj_io.h" />
     <ClInclude Include="src\common\obj_colors.h" />
     <ClInclude Include="src\common\dump_obj.h" />
     <ClInclude Include="src\common\mesh_types.h" />
     <ClInclude Include="src\common\pipeline_constants.h" />
     <ClInclude Include="src\common\ves_platform.h" />
+    <ClInclude Include="src\common\run_ctx.h" />
     <ClInclude Include="src\common\qem.h" />
     <ClInclude Include="src\common\raw_snapback.h" />
     <ClInclude Include="src\common\snap_cg.h" />
     <ClInclude Include="src\common\mesh_manifold.h" />
     <!-- Step headers -->
     <ClInclude Include="src\extract\mesh_extract.h" />
-    <ClInclude Include="src\extract\pred_reject.h" />
     <ClInclude Include="src\remesh\ball_pivot.h" />
+    <ClInclude Include="src\remesh\patch_repair.h" />
     <ClInclude Include="src\remesh\orient_mesh.h" />
     <ClInclude Include="src\remesh\pinhole_fill.h" />
     <ClInclude Include="src\remesh\manifold_guard.h" />
-    <ClInclude Include="src\remesh\dev_gate.h" />
     <ClInclude Include="src\split\overlap_sep.h" />
-    <ClInclude Include="src\split\depth_peel.h" />
+    <ClInclude Include="src\split\overlap_merge.h" />
     <ClInclude Include="src\split\dev_cut.h" />
-    <ClInclude Include="src\topology\developability.h" />
-    <ClInclude Include="src\common\eig3.h" />
-    <ClInclude Include="src\common\dev_metric.h" />
+    <ClInclude Include="src\split\depth_peel.h" />
     <ClInclude Include="src\split\multicut_wrap.h" />
+    <ClInclude Include="src\flatten\developability.h" />
+    <ClInclude Include="src\common\eig3.h" />
     <ClInclude Include="src\holefill\hole_fill.h" />
     <ClInclude Include="src\holefill\clipper2_wrap.h" />
-    <ClInclude Include="src\topology\mesh_topo.h" />
-    <ClInclude Include="src\topology\seam_cut.h" />
+    <ClInclude Include="src\flatten\mesh_topo.h" />
+    <ClInclude Include="src\flatten\seam_cut.h" />
     <ClInclude Include="src\pipeline\pipeline_cube.h" />
     <ClInclude Include="deps\include\triangle.h" />
   </ItemGroup>

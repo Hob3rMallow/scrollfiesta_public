@@ -1,0 +1,7 @@
+canonical run -- grid=D:\work\vesuvius-c\PHerc0139-10x10x10 tree=D:\work\scrollfiesta_public started 2026-07-30T23:53:13
+mls_backend=cubecl-cuda cuda_path=D:\work\vesuvius-c\.toolchains\cuda-13.2-wheels\nvidia\cu13
+grid_pipeline: exit=0 t=879.4s
+scroll_whole: exit=0 t=9.7s
+reregister: exit=0 t=3.3s
+audit: exit=1 t=0.4s
+tiled_atlas: exit=0 t=319.0s

@@ -143,12 +143,15 @@ static long   g_dbg_wall = 0;
  * and the candidate exceeds g_wind_tol turns. g_wind_tol <= 0 disables it (per-cube
  * reconstruct never sets it). See SEAM_UMBILICUS_{Y,X} / SEAM_WRAP_PITCH / SEAM_WIND_TOL.
  * Default tolerance mirrors SEAM_WIND_TOL_DEFAULT_TURNS in pipeline_constants.h:
- * 0.25 turn = ~2.4 vox radial at PHerc0139's ~9.5 vox true pitch, the 2026-07-08
- * A/B operating point (pin ON: 27 handles ungated -> 4-5; looser 3.5 vox -> 9).
- * The HARD cap (mirrors SEAM_WIND_HARD_TOL_DEFAULT_TURNS) applies regardless of
- * chord direction: the radial-dominance exemption below re-admitted lateral
- * CROSS-LAYER stitches between delaminated surfaces ~half a pitch apart. */
-#define SEAM_WIND_TOL_DEFAULT_TURNS 0.25
+ * 0.35 turn = ~3.3 vox radial at PHerc0139's ~9.5 vox true pitch (raised from
+ * 0.25 on 2026-07-22 for the CVT-coarse pipeline -- the seam within-wrap radial
+ * wobble reaches ~2.85 vox, above the old 2.4-vox gate, so the post-bridge FILTER
+ * dropped same-wrap seam faces and left intra-sheet splits; see the constant's
+ * comment in pipeline_constants.h). Still under the HARD cap (0.40), which
+ * (mirrors SEAM_WIND_HARD_TOL_DEFAULT_TURNS) applies regardless of chord
+ * direction: it guards the lateral CROSS-LAYER stitch between delaminated
+ * surfaces ~half a pitch (~0.50 turn) apart. */
+#define SEAM_WIND_TOL_DEFAULT_TURNS 0.35
 #define SEAM_WIND_HARD_TOL_DEFAULT_TURNS 0.40
 static double g_wind_tol   = 0.0;   /* tolerance in TURNS (0 = off) */
 static double g_wind_hard  = 0.0;   /* unconditional cap in TURNS (0 = off) */
@@ -264,13 +267,9 @@ typedef struct {
     int *head, *next;
 } Grid;
 
-/* Returns NULL when the cloud's extents demand an absurd cell table (a
- * degenerate/garbage input) or an allocation fails -- callers fail cleanly
- * instead of dereferencing a failed malloc. */
 static Grid *grid_build(const Vec3 *V, int nv, double cell_size)
 {
     Grid *g = (Grid *)calloc(1, sizeof(*g));
-    if (!g) return NULL;
     g->cell_size = cell_size;
     if (nv <= 0) return g;
     double zmin=V[0].z, zmax=V[0].z, ymin=V[0].y, ymax=V[0].y, xmin=V[0].x, xmax=V[0].x;
@@ -283,26 +282,9 @@ static Grid *grid_build(const Vec3 *V, int nv, double cell_size)
     g->gz = (int)ceil((zmax-zmin)/cell_size)+1;
     g->gy = (int)ceil((ymax-ymin)/cell_size)+1;
     g->gx = (int)ceil((xmax-xmin)/cell_size)+1;
-    if (g->gz <= 0 || g->gy <= 0 || g->gx <= 0) {
-        free(g);
-        return NULL;
-    }
     size_t nc = (size_t)g->gz*g->gy*g->gx;
-    /* Overflow / sanity cap: > 2^31 cells (8 GB of heads) is never a real
-     * cloud; it means the coordinates are garbage. */
-    if (nc / (size_t)g->gz / (size_t)g->gy != (size_t)g->gx ||
-        nc > ((size_t)1 << 31)) {
-        free(g);
-        return NULL;
-    }
     g->head = (int *)malloc(nc * sizeof(int));
     g->next = (int *)malloc((size_t)nv * sizeof(int));
-    if (!g->head || !g->next) {
-        free(g->head);
-        free(g->next);
-        free(g);
-        return NULL;
-    }
     for (size_t i = 0; i < nc; i++) g->head[i] = -1;
     for (int i = 0; i < nv; i++) {
         int cz = (int)floor((V[i].z-zmin)/cell_size);
@@ -887,7 +869,18 @@ typedef struct {
      * boundary). */
     int dbg_no_pivot, dbg_bowtie, dbg_orient, dbg_3fan, dbg_bowtie_ok, dbg_fold;
     int dbg_retry_saved, dbg_all_cand_failed, dbg_facecoh, dbg_wall;
+    long dbg_grow_wind;
     const Vec3 *normals;   /* per-vertex MLS normals, for the wall-guard (may be NULL) */
+
+    /* Per-seed accumulated winding phase for the per-cube anti-staircase gate.
+     * NULL means gate-off (the bridge path and legacy reconstruct). Values are
+     * branch-cut-free because each accepted edge contributes its local dtheta,
+     * then are held near zero relative to the current seed. */
+    double *grow_phase;    /* [nv], NAN until reached by a seed */
+    double grow_pitch;
+    double grow_tol;
+    double grow_umb_y, grow_umb_x;
+    double grow_origin_y, grow_origin_x;
 } BpaBuild;
 
 static void bpa_build_init(BpaBuild *b, int n)
@@ -901,9 +894,66 @@ static void bpa_build_init(BpaBuild *b, int n)
     b->dbg_no_pivot = b->dbg_bowtie = b->dbg_orient = b->dbg_3fan = 0;
     b->dbg_bowtie_ok = 0; b->dbg_fold = 0;
     b->dbg_retry_saved = 0; b->dbg_all_cand_failed = 0; b->dbg_facecoh = 0;
-    b->dbg_wall = 0; b->normals = NULL;
+    b->dbg_wall = 0; b->dbg_grow_wind = 0; b->normals = NULL;
+    b->grow_phase = NULL;
+    b->grow_pitch = b->grow_tol = 0.0;
+    b->grow_umb_y = b->grow_umb_x = 0.0;
+    b->grow_origin_y = b->grow_origin_x = 0.0;
 }
-static void bpa_build_free(BpaBuild *b) { free(b->F); free(b->queue); }
+static void bpa_build_free(BpaBuild *b)
+{
+    free(b->F); free(b->queue); free(b->grow_phase);
+}
+
+/* Branch-cut-free analytic winding increment from vertex a to b. The vertices
+ * are cube-local, while the umbilicus is in source/world coordinates. */
+static double bpa_grow_phase_step(const BpaBuild *b, const Vec3 *V, int a, int c)
+{
+    double ay = b->grow_origin_y + (double)V[a].y - b->grow_umb_y;
+    double ax = b->grow_origin_x + (double)V[a].x - b->grow_umb_x;
+    double cy = b->grow_origin_y + (double)V[c].y - b->grow_umb_y;
+    double cx = b->grow_origin_x + (double)V[c].x - b->grow_umb_x;
+    double dth = atan2(cy, cx) - atan2(ay, ax);
+    while (dth >  M_PI) dth -= 2.0*M_PI;
+    while (dth < -M_PI) dth += 2.0*M_PI;
+    return (hypot(cy, cx) - hypot(ay, ax)) / b->grow_pitch
+         - dth / (2.0*M_PI);
+}
+
+/* Start one disconnected BPA growth at phase zero. Centering the three seed
+ * values avoids spending tolerance on an arbitrary choice of seed vertex. */
+static void bpa_grow_phase_seed(BpaBuild *b, const Vec3 *V, int a, int c, int d)
+{
+    if (!b->grow_phase) return;
+    double pa = 0.0;
+    double pc = bpa_grow_phase_step(b, V, a, c);
+    double pd0 = bpa_grow_phase_step(b, V, a, d);
+    double pd1 = pc + bpa_grow_phase_step(b, V, c, d);
+    double pd = 0.5 * (pd0 + pd1);
+    double mean = (pa + pc + pd) / 3.0;
+    b->grow_phase[a] = pa - mean;
+    b->grow_phase[c] = pc - mean;
+    b->grow_phase[d] = pd - mean;
+}
+
+/* Infer a candidate's accumulated phase from both front endpoints. A true
+ * spiral sheet stays near its seed even across atan2's branch cut; a gradual
+ * through-thickness staircase accumulates roughly one turn per crossed wrap. */
+static int bpa_grow_phase_candidate(const BpaBuild *b, const Vec3 *V,
+                                    int t, int h, int v_new, double *out_phase)
+{
+    if (!b->grow_phase) { *out_phase = 0.0; return 1; }
+    if (!isfinite(b->grow_phase[t]) || !isfinite(b->grow_phase[h])) return 0;
+    double pt = b->grow_phase[t] + bpa_grow_phase_step(b, V, t, v_new);
+    double ph = b->grow_phase[h] + bpa_grow_phase_step(b, V, h, v_new);
+    double pc = 0.5 * (pt + ph);
+    if (!isfinite(pc) || fabs(pc) > b->grow_tol) return 0;
+    if (isfinite(b->grow_phase[v_new]) &&
+        fabs(pc - b->grow_phase[v_new]) > b->grow_tol)
+        return 0;
+    *out_phase = pc;
+    return 1;
+}
 
 static void bpa_add_face(BpaBuild *b, int a, int v, int c)
 {
@@ -1028,6 +1078,16 @@ static int bpa_try_candidate(const Vec3 *V, EdgeStore *es, uint8_t *used,
         glue_is_wall(V, b->normals, t, h, v_new, g_wall_guard_cos, g_wall_min_edge)) {
         abort_pivot = 1; b->dbg_wall++;
     }
+    /* Per-cube growth anchor: unlike the seam gate below, this compares the
+     * branch-cut-free phase accumulated from the current seed. It therefore
+     * catches a wall climbed through many individually-small radial steps. */
+    double grow_phase_new = NAN;
+    if (!abort_pivot && b->grow_phase &&
+        !bpa_grow_phase_candidate(b, V, t, h, v_new, &grow_phase_new)) {
+        abort_pivot = 1;
+        b->dbg_grow_wind++;
+    }
+
     /* Winding gate (seam bridge): glue the front edge (t,h) to the candidate v_new
      * only if they are the SAME wrap -- same winding about the umbilicus. The phase
      * w = r/pitch - theta/(2pi) is tangentially invariant, so a same-wrap weld (even
@@ -1071,6 +1131,8 @@ static int bpa_try_candidate(const Vec3 *V, EdgeStore *es, uint8_t *used,
     /* Accept. */
     bpa_add_face(b, t, v_new, h);
     used[v_new] = 1;
+    if (b->grow_phase && !isfinite(b->grow_phase[v_new]))
+        b->grow_phase[v_new] = grow_phase_new;
     edge_set_state(es, vfront, ei, ES_INTERIOR);
     /* Only reverse coincidences survive the guards above, so a hit always closes
      * cleanly to a 2-face manifold edge (FRONT or BOUNDARY -> closed). */
@@ -1106,7 +1168,7 @@ static void bpa_grow(const Grid *g, const Vec3 *V, const Vec3 *N, double rho,
     unsigned poll_tick = 0;
     while (b->qh < b->qt) {
         if (((++poll_tick) & 1023u) == 0)
-            RunCtx_check();   /* front drain is the BPA hot loop */
+            RunCtx_check();
         int ei = b->queue[b->qh++];
         if (es->e[ei].state != ES_FRONT) continue;
         int va = es->e[ei].va, vb = es->e[ei].vb;       /* sorted: pivot geometry */
@@ -1372,11 +1434,43 @@ static int fill_pinholes(EdgeStore *es, const Grid *g, const Vec3 *V, const Vec3
     return filled;
 }
 
-int BallPivot_reconstruct(Arena_T arena,
+static int bpa_env_double(const char *name, double *out)
+{
+    const char *s = sf_env(name);
+    char *end = NULL;
+    if (!s || !*s) return 0;
+    double v = strtod(s, &end);
+    if (!end || end == s || *end != '\0' || !isfinite(v)) return 0;
+    *out = v;
+    return 1;
+}
+
+int BpaReconGate_from_env(BpaReconGate *out, const float origin_zyx[3])
+{
+    if (!out) return 0;
+    memset(out, 0, sizeof(*out));
+    if (!bpa_env_double("BPA_GROW_UMBILICUS_Y", &out->umb_y) ||
+        !bpa_env_double("BPA_GROW_UMBILICUS_X", &out->umb_x) ||
+        !bpa_env_double("BPA_GROW_WRAP_PITCH", &out->pitch) ||
+        !bpa_env_double("BPA_GROW_WIND_TOL", &out->tol) ||
+        !(out->pitch > 0.0) || !(out->tol > 0.0 && out->tol < 0.5)) {
+        memset(out, 0, sizeof(*out));
+        return 0;
+    }
+    if (origin_zyx) {
+        out->origin_y = (double)origin_zyx[1];
+        out->origin_x = (double)origin_zyx[2];
+    }
+    return 1;
+}
+
+
+int BallPivot_reconstruct_gated(Arena_T arena,
                           const float *verts,
                           const float *normals,
                           size_t nv,
                           float rho_f,
+                          const BpaReconGate *gate,
                           int32_t **out_faces,
                           size_t *out_nf)
 {
@@ -1428,17 +1522,33 @@ int BallPivot_reconstruct(Arena_T arena,
     int n = (int)nv;
 
     Grid *g = grid_build(V, n, 2.0*rho);
-    if (!g) {
-        fprintf(stderr, "BPA: degenerate point cloud (spatial grid failed)\n");
-        return 1;
-    }
     EdgeStore *es = edges_new(n*3);
     uint8_t *used = (uint8_t *)calloc((size_t)n, 1);
     int *vfront = (int *)calloc((size_t)n, sizeof(int));
     BpaBuild b; bpa_build_init(&b, n);
     b.normals = N;   /* enable the wall-guard (per-vertex MLS normals) */
+    if (gate && isfinite(gate->pitch) && isfinite(gate->tol) &&
+        gate->pitch > 0.0 && gate->tol > 0.0 && gate->tol < 0.5 &&
+        isfinite(gate->umb_y) && isfinite(gate->umb_x) &&
+        isfinite(gate->origin_y) && isfinite(gate->origin_x)) {
+        b.grow_phase = (double *)malloc((size_t)n * sizeof(double));
+        for (int i = 0; i < n; i++) b.grow_phase[i] = NAN;
+        b.grow_pitch = gate->pitch;
+        b.grow_tol = gate->tol;
+        b.grow_umb_y = gate->umb_y;
+        b.grow_umb_x = gate->umb_x;
+        b.grow_origin_y = gate->origin_y;
+        b.grow_origin_x = gate->origin_x;
+        fprintf(stderr,
+                "    BPA growth winding anchor ON: umbilicus=(y%.1f,x%.1f) "
+                "origin=(y%.0f,x%.0f) pitch=%.2f tol=%.2f turn\n",
+                b.grow_umb_y, b.grow_umb_x, b.grow_origin_y,
+                b.grow_origin_x, b.grow_pitch, b.grow_tol);
+    }
+
 
     int seed_scan = 0;
+    int grow_seeds = 0;
     while (seed_scan < n) {
         int seed_face[3]; double seed_O[3];
         int found = 0;
@@ -1464,6 +1574,9 @@ int BallPivot_reconstruct(Arena_T arena,
         }
         if (!found) break;
 
+        grow_seeds++;
+        bpa_grow_phase_seed(&b, V, seed_face[0], seed_face[1], seed_face[2]);
+
         bpa_add_face(&b, seed_face[0], seed_face[1], seed_face[2]);
         used[seed_face[0]] = used[seed_face[1]] = used[seed_face[2]] = 1;
 
@@ -1474,6 +1587,10 @@ int BallPivot_reconstruct(Arena_T arena,
 
         bpa_grow(g, V, N, rho, es, used, vfront, &b, 0 /*strict bowtie*/);
     }
+
+    if (b.grow_phase)
+        fprintf(stderr, "    BPA growth winding anchor: %ld candidate(s) rejected, "
+                "%d independent seed growth(s)\n", b.dbg_grow_wind, grow_seeds);
 
     /* --- Pinhole-fill pass. BPA's front is one-shot: a dead-ended edge is retired
      * as ES_BOUNDARY and never re-closed, even after the surrounding mesh fills in
@@ -1550,6 +1667,18 @@ int BallPivot_reconstruct(Arena_T arena,
     return 0;
 }
 
+int BallPivot_reconstruct(Arena_T arena,
+                          const float *verts,
+                          const float *normals,
+                          size_t nv,
+                          float rho,
+                          int32_t **out_faces,
+                          size_t *out_nf)
+{
+    return BallPivot_reconstruct_gated(arena, verts, normals, nv, rho, NULL,
+                                       out_faces, out_nf);
+}
+
 /* Winding-phase edge test for the FINAL bridge-face filter (below). Returns 1
  * if edge (a,b) is a cross-wrap jump -- non-tangential-dominant chord with
  * |dw| > tol, or over the hard cap. Mirrors the per-glue winding gate, but the
@@ -1581,6 +1710,7 @@ int BallPivot_bridge(Arena_T arena,
                      float rho_max_f,
                      const BpaInitEdge *init_edges,
                      size_t n_init,
+                     const BpaBridgeGate *gate,
                      int32_t **out_faces,
                      size_t *out_nf)
 {
@@ -1607,31 +1737,24 @@ int BallPivot_bridge(Arena_T arena,
                              * spans a gap with a divergent face across the seam */
     g_wall_guard_cos = -2.0; /* ditto the wall-guard: the seam bridge spans the
                               * inter-cube gap with a near-normal "wall" by design */
-    /* Winding gate -- the inter-sheet weld gate. Reject bridging two DIFFERENT wraps
-     * by comparing WINDING about the umbilicus (phase = r/pitch - theta/2pi). ON only
-     * when the umbilicus (SEAM_UMBILICUS_{Y,X}) AND the wrap pitch (SEAM_WRAP_PITCH,
-     * radius per turn) are supplied; SEAM_WIND_TOL overrides the default tolerance
-     * (SEAM_WIND_TOL_DEFAULT_TURNS = 0.25 turn). */
+    /* Winding gate -- the inter-sheet weld gate. Reject bridging two DIFFERENT
+     * wraps by WINDING about the umbilicus (phase = r/pitch - theta/2pi). Now a
+     * caller parameter (BpaBridgeGate) rather than env-read, so a restricted-
+     * cloud permissive re-weld can pass NULL / pitch<=0 to disable it while the
+     * primary weld passes the env-derived gate. ARMED only when pitch > 0 and an
+     * umbilicus is supplied. */
     g_wind_tol = 0.0; g_wind_hard = 0.0;
     g_wrap_pitch = 0.0; g_umb_y = 0.0; g_umb_x = 0.0; g_dbg_wind = 0;
-    { const char *e = sf_env("SEAM_UMBILICUS_Y"); if (e) g_umb_y = atof(e); }
-    { const char *e = sf_env("SEAM_UMBILICUS_X"); if (e) g_umb_x = atof(e); }
-    { const char *e = sf_env("SEAM_WRAP_PITCH"); if (e) { double v = atof(e); if (v > 0) g_wrap_pitch = v; } }
-    if (g_wrap_pitch > 0.0 && (g_umb_y != 0.0 || g_umb_x != 0.0)) {
-        g_wind_tol = SEAM_WIND_TOL_DEFAULT_TURNS;
-        g_wind_hard = SEAM_WIND_HARD_TOL_DEFAULT_TURNS;
-        { const char *e = sf_env("SEAM_WIND_TOL"); if (e) { double v = atof(e); if (v > 0) g_wind_tol = v; } }
-        { const char *e = sf_env("SEAM_WIND_HARD_TOL"); if (e) { double v = atof(e); if (v > 0) g_wind_hard = v; } }
+    if (gate && gate->pitch > 0.0 && (gate->umb_y != 0.0 || gate->umb_x != 0.0)) {
+        g_umb_y = gate->umb_y; g_umb_x = gate->umb_x; g_wrap_pitch = gate->pitch;
+        g_wind_tol = (gate->tol > 0.0) ? gate->tol : SEAM_WIND_TOL_DEFAULT_TURNS;
+        g_wind_hard = (gate->hard > 0.0) ? gate->hard : 0.0;
         fprintf(stderr, "  [bridge] winding gate ON: umbilicus=(y%.1f,x%.1f) pitch=%.1f vox "
                 "tol=%.2f turn (hard cap %.2f)\n",
                 g_umb_y, g_umb_x, g_wrap_pitch, g_wind_tol, g_wind_hard);
     }
 
     Grid *g = grid_build(V, n, 2.0*rho);
-    if (!g) {
-        fprintf(stderr, "BPA bridge: degenerate point cloud (spatial grid failed)\n");
-        return 1;
-    }
     EdgeStore *es = edges_new((int)n_init * 4);
     /* `used` only gates the seed scan, which the bridge never runs; keep
      * it so bpa_grow's `used[v_new]=1` writes land somewhere valid.

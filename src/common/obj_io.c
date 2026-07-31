@@ -277,3 +277,44 @@ int ObjIO_write_uv(const char *path, const float *verts, size_t nv,
     fclose(f);
     return 0;
 }
+
+int ObjIO_write_uv_masked(const char *path, const float *verts, size_t nv,
+                          const int32_t *faces, size_t nf, const float *uv,
+                          const uint8_t *keep)
+{
+    assert(path);
+    assert(uv || nv == 0);
+
+    FILE *f = fopen(path, "w");
+    if (f == NULL) {
+        return -1;
+    }
+
+    if (verts) {
+        for (size_t i = 0; i < nv; i++) {
+            fprintf(f, "v %.6f %.6f %.6f\n",
+                    (double)verts[i * 3 + 0],
+                    (double)verts[i * 3 + 1],
+                    (double)verts[i * 3 + 2]);
+        }
+    }
+    if (uv) {
+        for (size_t i = 0; i < nv; i++) {
+            fprintf(f, "vt %.6f %.6f\n",
+                    (double)uv[i * 2 + 0],
+                    (double)uv[i * 2 + 1]);
+        }
+    }
+    if (faces) {
+        for (size_t i = 0; i < nf; i++) {
+            if (keep != NULL && keep[i] == 0) continue;
+            int a = faces[i * 3 + 0] + 1;
+            int b = faces[i * 3 + 1] + 1;
+            int c = faces[i * 3 + 2] + 1;
+            fprintf(f, "f %d/%d %d/%d %d/%d\n", a, a, b, b, c, c);
+        }
+    }
+
+    fclose(f);
+    return 0;
+}

@@ -36,10 +36,15 @@
 #include "../common/arena.h"
 #include "../common/except.h"
 #include "../common/obj_io.h"
+#include "../common/cc_color.h"
 #include "../common/mesh_types.h"
 #include "../common/mesh_manifold.h"
 #include "../common/pipeline_constants.h"
 #include "../remesh/seam_weld.h"
+#include "../remesh/seam_planes.h"
+#include "../remesh/seam_refine.h"
+#include "../remesh/seam_band_cvt.h"
+#include "../remesh/sheet_reweld.h"
 #include "../remesh/seam_hole_fill.h"
 #include "../remesh/fold_cleanup.h"
 #include "../remesh/pinhole_fill.h"
@@ -49,7 +54,7 @@
 #include "../remesh/weld_cleanup.h"
 #include "../holefill/hole_fill.h"
 #include "../common/vert_weld.h"
-#include "../topology/developability.h"
+#include "../flatten/developability.h"
 
 #define CUBE_SIZE_VOX 128.0f    /* Cube boundary planes are integer multiples */
 #define SEAM_AXIS_EPS 0.6f      /* vert is "on" a cube-boundary plane if any
@@ -104,6 +109,14 @@ static int parse_cube_origin(const char *cube_id,
     *vz = iz;
     *vy = iy;
     *vx = ix;
+    return 0;
+}
+
+/* Existence check for the node-OBJ resolver's nested-vs-flat fallback. */
+static int gw_file_exists(const char *p)
+{
+    FILE *f = fopen(p, "rb");
+    if (f) { fclose(f); return 1; }
     return 0;
 }
 
@@ -770,16 +783,25 @@ static void dump_stage(Arena_T arena, const char *dir, const char *prefix,
     Arena_Mark m = Arena_save(arena);
     float *colors = (float *)ARENA_ALLOC(arena,
                        (long)(nv * 3L * (long)sizeof(float)));
-    for (size_t v = 0; v < nv; v++) {
-        const float *c = GREY;
-        if (v < color_nv) {
-            int cube = vert_cube_idx[v];
-            int pal = (cube >= 0 && cube < (int)n_cubes) ? cube_palette[cube] : 0;
-            c = CUBE_PALETTE[pal];
+    /* Default: colour by CONNECTED COMPONENT (wrap shatter / fusion shows on
+     * load). Set GW_COLOR_BY=cube for the old per-cube provenance palette
+     * (useful for seam-weld debugging). */
+    const char *gw_color_by = getenv("GW_COLOR_BY");
+    if (gw_color_by && !strcmp(gw_color_by, "cube")) {
+        for (size_t v = 0; v < nv; v++) {
+            const float *c = GREY;
+            if (v < color_nv) {
+                int cube = vert_cube_idx[v];
+                int pal = (cube >= 0 && cube < (int)n_cubes) ? cube_palette[cube] : 0;
+                c = CUBE_PALETTE[pal];
+            }
+            colors[v * 3 + 0] = c[0];
+            colors[v * 3 + 1] = c[1];
+            colors[v * 3 + 2] = c[2];
         }
-        colors[v * 3 + 0] = c[0];
-        colors[v * 3 + 1] = c[1];
-        colors[v * 3 + 2] = c[2];
+    } else {
+        CCColorOpts opts; CCColor_default_opts(&opts); opts.sat = 0.75;
+        CCColor_compute(nv, faces, nf, &opts, colors, NULL);
     }
     char path[1024];
     snprintf(path, sizeof(path), "%s/%s_%02d_%s.obj", dir, prefix, idx, name);
@@ -794,6 +816,19 @@ static void dump_stage(Arena_T arena, const char *dir, const char *prefix,
 /* ===================================================================
  * Main
  * =================================================================== */
+
+/* Phase wall-clock: prints the time since the previous checkpoint. The weld
+ * is single-process and serial, so a running phase profile in the log is the
+ * whole story ("full logging" house rule; grid_weld.log keeps it). */
+static double gw_phase_prev = -1.0;
+static void gw_phase(const char *name)
+{
+    double now = ves_clock_sec();
+    if (gw_phase_prev >= 0.0) {
+        fprintf(stderr, "  [time] %-12s %7.2fs\n", name, now - gw_phase_prev);
+    }
+    gw_phase_prev = now;
+}
 
 int main(int argc, char **argv)
 {
@@ -851,6 +886,14 @@ int main(int argc, char **argv)
     int no_holefill = (getenv("SEAM_NO_HOLEFILL") != NULL); /* --no-holefill: skip interior-hole fill */
     int subgrid = 0;            /* --subgrid z0 z1 y0 y1 x0 x1: weld one origin-bbox block only */
     int64_t sg_z0 = 0, sg_z1 = 0, sg_y0 = 0, sg_y1 = 0, sg_x0 = 0, sg_x1 = 0;
+    /* --vert-cap/--face-cap: override the node-count-derived capacity. The
+     * default estimate (1.5M vert / 2M face per input node) is calibrated for
+     * leaf-sized cubes; an UNDECIMATED upper-level weld (hierarchical_weld
+     * --no-decimate) folds the whole scroll into a handful of huge nodes, so a
+     * 4-node terminal weld needs far more than 4*2M faces. The caller passes
+     * the real budget here; 0 = use the estimate. Still clamped to the 32-bit
+     * alloc ceilings (150M vert / 80M face). */
+    size_t vert_cap_override = 0, face_cap_override = 0;
     for (int i = 3; i < argc; i++) {
         if (strcmp(argv[i], "--emit-weld-verts") == 0 && i + 1 < argc) {
             weld_verts_out = argv[++i];
@@ -885,6 +928,10 @@ int main(int argc, char **argv)
             sg_z0 = atoll(argv[++i]); sg_z1 = atoll(argv[++i]);
             sg_y0 = atoll(argv[++i]); sg_y1 = atoll(argv[++i]);
             sg_x0 = atoll(argv[++i]); sg_x1 = atoll(argv[++i]);
+        } else if (strcmp(argv[i], "--vert-cap") == 0 && i + 1 < argc) {
+            vert_cap_override = (size_t)atoll(argv[++i]);
+        } else if (strcmp(argv[i], "--face-cap") == 0 && i + 1 < argc) {
+            face_cap_override = (size_t)atoll(argv[++i]);
         } else {
             fprintf(stderr, "grid_weld: unknown arg %s\n", argv[i]);
             return 1;
@@ -916,6 +963,7 @@ int main(int argc, char **argv)
     CubeList cubes = {0, 0, 0};
 
     TRY
+        gw_phase("start");
         /* Cube set. Pair mode welds exactly two named components; grid mode
          * enumerates every cube subdirectory. Pushing the two cube IDs into the
          * same CubeList lets every sizing/palette/coloring/JSON path below run
@@ -957,11 +1005,15 @@ int main(int argc, char **argv)
         /* Output vert array. Plain concatenation of every cube's verts (the
          * bitwise hash-join weld is gone), so size for the no-reuse worst
          * case. Per-cube dumps are ~30K-180K verts, but grid_weld is also used
-         * to stitch already-welded *block* meshes (e.g. decimated 4x5x5 tiles
-         * at ~200-340K verts each); 500K/input covers both, plus headroom for
-         * hole-fill Steiner verts. The 150M ceiling still bounds a full grid. */
-        size_t vert_per_cube_est = 500000;
-        size_t vert_cap = cubes.n * vert_per_cube_est;
+         * to stitch already-welded *block* meshes: for hierarchical_weld LOD
+         * tiers the boundary-pinned decimated blocks stay large (300K-700K+
+         * verts each at upper levels), so a weld of just 2 such tiles blew the
+         * old 2*500K=1M cap. 1.5M/input covers 2-input upper-level welds with
+         * margin, plus hole-fill Steiner verts. The 150M ceiling still bounds a
+         * full grid. */
+        size_t vert_per_cube_est = 1500000;
+        size_t vert_cap = vert_cap_override ? vert_cap_override
+                                            : cubes.n * vert_per_cube_est;
         if (vert_cap < (1 << 16)) vert_cap = (1 << 16);
         /* Cap at 32-bit alloc limit: vert_cap * 12 bytes < 2 GB --> 178M. */
         if (vert_cap > 150000000) vert_cap = 150000000;
@@ -1002,10 +1054,12 @@ int main(int argc, char **argv)
             cube_palette[i] = (int8_t)(idx & 0xFu);
         }
 
-        /* Face accumulator. ~400K/cube for per-cube dumps; raised to 900K to
-         * also cover decimated block tiles (~300-470K each) plus the bridge +
-         * hole-fill faces the weld adds. The 80M ceiling still bounds a grid. */
-        face_cap = cubes.n * 900000;
+        /* Face accumulator. ~400K/cube for per-cube dumps; raised to 2M to also
+         * cover the large boundary-pinned LOD tiles hierarchical_weld welds at
+         * upper levels (~300-700K each, matching the vert bump above) plus the
+         * bridge + hole-fill faces the weld adds. The 80M ceiling still bounds a
+         * grid. */
+        face_cap = face_cap_override ? face_cap_override : cubes.n * 2000000;
         if (face_cap < (1 << 16)) face_cap = (1 << 16);
         /* Cap at 32-bit alloc limit: face_cap * 24 bytes < 2 GB --> 87M. */
         if (face_cap > 80000000) face_cap = 80000000;
@@ -1036,6 +1090,13 @@ int main(int argc, char **argv)
                 snprintf(obj_path, sizeof(obj_path),
                     "%s/%s/%s_%s/%s_%s_all.obj",
                     grid_dir, cube_id, cube_id, stage, cube_id, stage);
+                if (!gw_file_exists(obj_path)) {
+                    /* Flat hierarchical-LOD layout (hierarchical_weld):
+                     * <dir>/<id>/<id>_<stage>_all.obj */
+                    snprintf(obj_path, sizeof(obj_path),
+                        "%s/%s/%s_%s_all.obj",
+                        grid_dir, cube_id, cube_id, stage);
+                }
             }
 
             Arena_free(scratch);
@@ -1105,6 +1166,7 @@ int main(int argc, char **argv)
         fprintf(stderr,
             "grid_weld: aggregate: %zu v_in -> %zu unique, %zu f_in pre-dedup\n",
             total_in_verts, out_nv, all_nf);
+        gw_phase("load");
 
         /* Pair mode: print each component's world bbox so it is obvious whether
          * the two straddle a cube-boundary plane (a multiple of seam_cube on one
@@ -1151,6 +1213,7 @@ int main(int argc, char **argv)
         n_unique_faces = write_i;
         fprintf(stderr, "grid_weld: %zu unique faces (deduped from %zu)\n",
                 n_unique_faces, all_nf);
+        gw_phase("facesort");
 
         /* Run manifold audit on welded mesh. */
         int32_t *flat_faces = (int32_t *)ARENA_ALLOC(arena,
@@ -1176,6 +1239,10 @@ int main(int argc, char **argv)
         dump_stage(arena, dump_stages_dir, stage_prefix, 0, "concat",
                    out_verts, out_nv, flat_faces, n_unique_faces,
                    vert_cube_idx, cube_palette, cubes.n, color_nv);
+        size_t recoarsen_collapses = 0, recoarsen_faces_in = 0,
+               recoarsen_faces_out = 0;
+        size_t bandcvt_accepted = 0, bandcvt_rejected = 0,
+               bandcvt_faces_in = 0, bandcvt_faces_out = 0;
         if (!no_bridge) {              /* --no-bridge: stage-1 concat, no weld */
             /* band 6 (was 4): the bridge front considers boundary edges within
              * this many vox of the seam plane. At 4, near-seam material whose
@@ -1189,21 +1256,155 @@ int main(int argc, char **argv)
             const char *e;
             if ((e = getenv("SEAM_RHO")))  rho  = (float)atof(e);
             if ((e = getenv("SEAM_BAND"))) band = (float)atof(e);
+            /* Phase-1 winding gate, from env (the gate is now a param, not
+             * env-read inside the bridge). Armed only when the umbilicus +
+             * pitch are supplied; grid runners pass them. */
+            BpaBridgeGate seam_gate;
+            memset(&seam_gate, 0, sizeof seam_gate);
+            if ((e = getenv("SEAM_UMBILICUS_Y"))) seam_gate.umb_y = atof(e);
+            if ((e = getenv("SEAM_UMBILICUS_X"))) seam_gate.umb_x = atof(e);
+            if ((e = getenv("SEAM_WRAP_PITCH"))) { double v = atof(e); if (v > 0) seam_gate.pitch = v; }
+            if (seam_gate.pitch > 0.0 && (seam_gate.umb_y != 0.0 || seam_gate.umb_x != 0.0)) {
+                seam_gate.tol  = SEAM_WIND_TOL_DEFAULT_TURNS;
+                seam_gate.hard = SEAM_WIND_HARD_TOL_DEFAULT_TURNS;
+                if ((e = getenv("SEAM_WIND_TOL")))      { double v = atof(e); if (v > 0) seam_gate.tol  = v; }
+                if ((e = getenv("SEAM_WIND_HARD_TOL"))) { double v = atof(e); if (v > 0) seam_gate.hard = v; }
+            }
             /* Pair-debug: always emit the BPA init front next to the output so
              * missed seam edges (red) are visible without setting env by hand.
              * An explicitly-set SEAM_DUMP_FRONT wins. */
             if (pair_mode) set_env_if_unset("SEAM_DUMP_FRONT", out_path);
+
+            /* Weld-time seam-band refinement (default ON): subdivide + flip
+             * the band next to each detected seam plane into well-shaped
+             * ~3.5-vox triangles so the bridge can prime on uniform-coarse
+             * CVT cubes (a ~13-vox triangle's circumradius ~7 > rho_max=3
+             * fails sphere_center -> zero bridges; see seam_refine.h). New
+             * verts are chord midpoints carrying their source vert's cube
+             * provenance; the band is collapsed back out by the recoarsen
+             * stage after all closers. On dense or graded-rim inputs the
+             * band edges are already <= target, so this no-ops. SEAM_NO_REFINE
+             * disables; SEAM_REFINE_TARGET tunes. */
+            if (!getenv("SEAM_NO_REFINE")) {
+                uint8_t *rf_used = (uint8_t *)ARENA_CALLOC(arena, (long)out_nv, 1L);
+                for (size_t f = 0; f < n_unique_faces; f++) {
+                    rf_used[flat_faces[f*3+0]] = 1;
+                    rf_used[flat_faces[f*3+1]] = 1;
+                    rf_used[flat_faces[f*3+2]] = 1;
+                }
+                SeamPlane fplanes[64];
+                size_t fnp = SeamPlanes_detect(out_verts, out_nv, rf_used,
+                                               (double)seam_cube, (double)band,
+                                               fplanes, 64);
+                if (fnp > 0) {
+                    SeamRefineParams sp; SeamRefine_default_params(&sp);
+                    sp.band = band;
+                    if ((e = getenv("SEAM_REFINE_TARGET"))) {
+                        double v = atof(e); if (v > 0) sp.target_len = (float)v;
+                    }
+                    SeamRefineStats sst;
+                    float *rf_v = NULL; int32_t *rf_f = NULL;
+                    int32_t *rf_src = NULL;
+                    size_t rf_nv = 0, rf_nf = 0, rf_nnew = 0;
+                    if (SeamRefine_process(arena, out_verts, out_nv,
+                                           flat_faces, n_unique_faces,
+                                           fplanes, fnp, &sp,
+                                           &rf_v, &rf_nv, &rf_f, &rf_nf,
+                                           &rf_src, &rf_nnew, &sst) == 0
+                        && rf_nnew > 0) {
+                        if (rf_nv > vert_cap) {
+                            fprintf(stderr, "grid_weld: vert capacity %zu "
+                                    "exceeded by seam refine (%zu)\n",
+                                    vert_cap, rf_nv);
+                            RAISE(IO_Failed);
+                        }
+                        /* src[i] always indexes an already-provenanced vert
+                         * (< out_nv + i), so one ordered pass suffices. */
+                        for (size_t v2 = 0; v2 < rf_nnew; v2++)
+                            vert_cube_idx[out_nv + v2] =
+                                vert_cube_idx[rf_src[v2]];
+                        out_verts = rf_v; out_nv = rf_nv;
+                        flat_faces = rf_f; n_unique_faces = rf_nf;
+                        color_nv = out_nv;  /* refine verts carry cube colors */
+                        fprintf(stderr,
+                            "Seam refine: %zu bnd + %zu int split(s), %zu "
+                            "flip(s), %zu round(s) -> +%zu verts +%zu faces "
+                            "(target %.1f vox, %zu plane(s))\n",
+                            sst.bnd_splits, sst.int_splits, sst.flips,
+                            sst.rounds, sst.verts_added, sst.faces_added,
+                            (double)sp.target_len, fnp);
+                    }
+                }
+                gw_phase("refine");
+                dump_stage(arena, dump_stages_dir, stage_prefix, 1, "refine",
+                           out_verts, out_nv, flat_faces, n_unique_faces,
+                           vert_cube_idx, cube_palette, cubes.n, color_nv);
+            }
+
             fprintf(stderr,
                 "Seam-weld: cube=%.0f rho=%.2f band=%.2f over %zu faces\n",
                 (double)seam_cube, (double)rho, (double)band,
                 n_unique_faces);
 
+            /* Phase-2 sheet labeling: connected components of the PRE-weld
+             * mesh (cubes concatenated, no cross-cube faces yet), done before
+             * the bridge so vert indices stay stable through it. Skipped when
+             * the phase-2 reweld is disabled. */
+            /* DEFAULT OFF (2026-07-09): the 4x5x5 audit found the phase-2 reweld
+             * net-catastrophic -- it uses a rho=6 ball (2*rho=12 vox) with the
+             * winding gate OFF, breaking the phase-1 invariant 2*BRIDGE_RHO_MAX=6
+             * < 7-vox clearance. In the crumpled core a matched sheet folds
+             * within 12 vox of itself, so the over-wide gate-off ball welds the
+             * sheet to ITSELF across a fold -> overlapping flaps (and boundary
+             * tangles -> MORE gaps). The two-sheet cloud restriction only guards
+             * against a THIRD sheet, not intra-sheet fold-welds. Grid-wide,
+             * disabling it drops gaps 515->115, flaps 1436->84, same_dir 39->4.
+             * Opt back in with SEAM_REWELD=1 (e.g. to test a gated rewrite). */
+            int reweld_off = (getenv("SEAM_REWELD") == NULL);
+            int32_t *vert_sheet = NULL; size_t n_sheets = 0;
+            if (!reweld_off)
+                SheetReweld_label(arena, flat_faces, n_unique_faces, out_nv,
+                                  &vert_sheet, &n_sheets);
+
             int32_t *sw_faces = NULL; size_t sw_nf = 0, n_bridge = 0;
             SeamWeld_bridge(arena, out_verts, out_nv, flat_faces,
-                            n_unique_faces, seam_cube, rho, band,
+                            n_unique_faces, seam_cube, rho, 0.0f, band,
+                            NULL /* want_mask: primary weld = all */,
+                            &seam_gate,
                             &sw_faces, &sw_nf, &n_bridge);
             fprintf(stderr, "  bridge: %zu -> %zu faces (+%zu bridge)\n",
                     n_unique_faces, sw_nf, n_bridge);
+            gw_phase("bridge");
+
+            /* Phase 2: sheet-correspondence permissive re-weld. Recover legit
+             * same-sheet closures the conservative phase-1 winding gate left as
+             * holes: confirm a 1:1 sheet correspondence across each seam
+             * (phase-1 bridge votes + near-seam geometric overlap, mutual-best
+             * + margin) and re-weld each confirmed pair on a cloud restricted
+             * to those two sheets (gate OFF, wider ball). The safety is the
+             * cloud restriction -- the ball cannot reach a third sheet.
+             * SEAM_NO_REWELD -> phase-1-only baseline. */
+            size_t n_bridge_total = n_bridge;
+            if (!reweld_off && vert_sheet && n_sheets >= 2) {
+                SheetReweldParams rwp;
+                SheetReweld_default_params(&rwp);
+                rwp.band = band;   /* match the phase-1 seam band */
+                if ((e = getenv("SHEET_REWELD_RHOMAX"))) {
+                    float v = (float)atof(e); if (v > 0.0f) rwp.rho_max = v;
+                }
+                int32_t *rw_faces = NULL; size_t rw_nf = 0;
+                SheetReweldStats rwst;
+                SheetReweld_process(arena, out_verts, out_nv, sw_faces, sw_nf,
+                                    n_bridge, vert_sheet, n_sheets,
+                                    seam_cube, &seam_gate, &rwp,
+                                    &rw_faces, &rw_nf, &rwst);
+                fprintf(stderr, "  reweld(phase2): %zu sheets, %zu candidate "
+                        "pair(s), %zu confirmed, +%zu faces -> %zu\n",
+                        rwst.n_sheets, rwst.n_candidates, rwst.n_pairs,
+                        rwst.n_faces_added, rw_nf);
+                sw_faces = rw_faces; sw_nf = rw_nf;
+                n_bridge_total = n_bridge + rwst.n_faces_added;
+            }
             if (pair_mode && n_bridge == 0)
                 fprintf(stderr,
                     "WARNING: 0 bridge faces -- detect_planes found no shared "
@@ -1217,7 +1418,7 @@ int main(int argc, char **argv)
              * fused vertex). These indices are < color_nv and survive the
              * fold/pinhole/cull below, so the green seam highlight + the
              * weld-vert report stat below stay meaningful. */
-            for (size_t f = sw_nf - n_bridge; f < sw_nf; f++) {
+            for (size_t f = sw_nf - n_bridge_total; f < sw_nf; f++) {
                 for (int k = 0; k < 3; k++) {
                     int32_t vv = sw_faces[f * 3 + k];
                     if (vv >= 0 && (size_t)vv < out_nv) vert_is_weld[vv] = 1;
@@ -1225,7 +1426,7 @@ int main(int argc, char **argv)
             }
 
             /* Stage 01: raw BPA bridge output (pre-orientation). */
-            dump_stage(arena, dump_stages_dir, stage_prefix, 1, "bridge",
+            dump_stage(arena, dump_stages_dir, stage_prefix, 2, "bridge",
                        out_verts, out_nv, sw_faces, sw_nf,
                        vert_cube_idx, cube_palette, cubes.n, color_nv);
 
@@ -1243,8 +1444,9 @@ int main(int argc, char **argv)
                                   &sw_flipped, &sw_comp, &sw_resid);
             fprintf(stderr, "  pre-orient: %zu components, %zu flipped, "
                     "%zu residual same_dir\n", sw_comp, sw_flipped, sw_resid);
+            gw_phase("preorient");
             /* Stage 02: after pre-fold orientation reconciliation. */
-            dump_stage(arena, dump_stages_dir, stage_prefix, 2, "preorient",
+            dump_stage(arena, dump_stages_dir, stage_prefix, 3, "preorient",
                        out_verts, out_nv, sw_faces, sw_nf,
                        vert_cube_idx, cube_palette, cubes.n, color_nv);
 
@@ -1261,8 +1463,9 @@ int main(int argc, char **argv)
             FoldCleanup_process(arena, &cm, 1, 8, &fold_removed);
             fprintf(stderr, "  foldcleanup: removed %zu fold faces -> %zu faces\n",
                     fold_removed, cm.nf);
+            gw_phase("foldclean");
             /* Stage 03: after fold-flap removal. */
-            dump_stage(arena, dump_stages_dir, stage_prefix, 3, "foldcleanup",
+            dump_stage(arena, dump_stages_dir, stage_prefix, 4, "foldcleanup",
                        cm.verts, cm.nv, cm.faces, cm.nf,
                        vert_cube_idx, cube_palette, cubes.n, color_nv);
 
@@ -1281,8 +1484,9 @@ int main(int argc, char **argv)
                 "  pinhole: splits=%zu filled=%zu tris+=%zu skipped=%zu"
                 " -> %zu faces, %zu verts\n",
                 splits, filled, added, skipped, cm.nf, cm.nv);
+            gw_phase("pinchsplit");
             /* Stage 04: after pinhole micro-hole reclose. */
-            dump_stage(arena, dump_stages_dir, stage_prefix, 4, "pinhole",
+            dump_stage(arena, dump_stages_dir, stage_prefix, 5, "pinhole",
                        cm.verts, cm.nv, cm.faces, cm.nf,
                        vert_cube_idx, cube_palette, cubes.n, color_nv);
 
@@ -1294,8 +1498,9 @@ int main(int argc, char **argv)
             cm.nf = culled_nf;
             fprintf(stderr, "  cull: removed %zu faces in %zu tiny comps -> %zu faces\n",
                     culled, culled_comps, cm.nf);
+            gw_phase("cull");
             /* Stage 05: after tiny-component cull. */
-            dump_stage(arena, dump_stages_dir, stage_prefix, 5, "cull",
+            dump_stage(arena, dump_stages_dir, stage_prefix, 6, "cull",
                        cm.verts, cm.nv, cm.faces, cm.nf,
                        vert_cube_idx, cube_palette, cubes.n, color_nv);
 
@@ -1315,9 +1520,10 @@ int main(int argc, char **argv)
                     wcs.n_flips, wcs.n_collapses, cm.nf,
                     wcs.targets_in, wcs.targets_out);
             }
+            gw_phase("cleanup");
 
             /* Stage 06: after post-weld flip + short-edge collapse cleanup. */
-            dump_stage(arena, dump_stages_dir, stage_prefix, 6, "cleanup",
+            dump_stage(arena, dump_stages_dir, stage_prefix, 7, "cleanup",
                        cm.verts, cm.nv, cm.faces, cm.nf,
                        vert_cube_idx, cube_palette, cubes.n, color_nv);
 
@@ -1336,10 +1542,11 @@ int main(int argc, char **argv)
                     " -> %zu faces, %zu verts\n",
                     hl_loops, hl_interior, hl_filled, cm.nf, cm.nv);
             }
+            gw_phase("holefill");
 
             /* Stage 07: after interior-hole fill (the stage that hangs on the
              * full grid -- per-hole dumps in <dir>/holes/ catch the culprit). */
-            dump_stage(arena, dump_stages_dir, stage_prefix, 7, "holefill",
+            dump_stage(arena, dump_stages_dir, stage_prefix, 8, "holefill",
                        cm.verts, cm.nv, cm.faces, cm.nf,
                        vert_cube_idx, cube_palette, cubes.n, color_nv);
 
@@ -1360,6 +1567,7 @@ int main(int argc, char **argv)
                 ms.unpaired, ms.non_manifold, ms.same_dir_pairs,
                 ms.manifold_pairs, vms0.nm_verts);
         }
+        gw_phase("audit_pre");
 
         /* Final winding pass: OrientMesh_consistent's live-winding BFS drives
          * same_dir to 0 even across the seam (repair_winding's stale-edge cache
@@ -1372,6 +1580,7 @@ int main(int argc, char **argv)
         fprintf(stderr,
             "Winding repair (OrientMesh): %zu components, %zu flipped, "
             "%zu residual same_dir\n", n_components, n_flipped, n_resid);
+        gw_phase("orient");
 
         /* Post-weld cross-component orientation: OrientMesh makes each component
          * internally consistent but anchors its global sign against winding-
@@ -1379,12 +1588,34 @@ int main(int argc, char **argv)
          * flipped normals) survives. Flip whole components whose normals oppose
          * their SPATIAL neighbours instead. Radius 3 vox < the >=7-vox inter-wrap
          * clearance, so a component only ever votes against the same sheet across
-         * the seam gap, never an adjacent wrap. */
-        size_t ow_flipped = 0;
-        OrientWeld_components(arena, out_verts, out_nv, flat_faces, n_unique_faces,
-                              3.0f, &ow_flipped);
-        fprintf(stderr, "Component orientation: %zu backward component(s) flipped\n",
-                ow_flipped);
+         * the seam gap, never an adjacent wrap.
+         *
+         * DETACHED components (no other geometry within 3 vox anywhere -- shell
+         * fragments whose connection was never meshed) get no spatial vote and
+         * would keep the per-cube (1,1,1) anchor's azimuth-dependent sign. When
+         * the umbilicus env is set (same SEAM_UMBILICUS_Y/X as the seam gate),
+         * those fall back to a RADIAL vote against the largest component. */
+        size_t ow_flipped = 0, ow_radial = 0;
+        float ow_axp[3] = { 0.0f, 0.0f, 0.0f };
+        float ow_axd[3] = { 1.0f, 0.0f, 0.0f };   /* scroll axis = Z in (z,y,x) */
+        const float *ow_paxp = NULL, *ow_paxd = NULL;
+        {
+            const char *ey = getenv("SEAM_UMBILICUS_Y");
+            const char *ex = getenv("SEAM_UMBILICUS_X");
+            if (ey != NULL && ex != NULL) {
+                ow_axp[1] = (float)atof(ey);
+                ow_axp[2] = (float)atof(ex);
+                ow_paxp = ow_axp;
+                ow_paxd = ow_axd;
+            }
+        }
+        OrientWeld_components_axis(arena, out_verts, out_nv, flat_faces,
+                                   n_unique_faces, 3.0f, ow_paxp, ow_paxd,
+                                   &ow_flipped, &ow_radial);
+        fprintf(stderr, "Component orientation: %zu backward component(s) flipped"
+                " (%zu decided by radial fallback%s)\n", ow_flipped, ow_radial,
+                ow_paxp != NULL ? "" : " -- fallback OFF, no umbilicus env");
+        gw_phase("orientweld");
 
         /* Final pinhole pass over the WHOLE welded mesh. The earlier pass (inside
          * the seam block) ran before cull / cleanup-collapse / holefill / the
@@ -1406,6 +1637,7 @@ int main(int argc, char **argv)
             flat_faces = pcm.faces; n_unique_faces = pcm.nf;
             out_verts = pcm.verts; out_nv = pcm.nv;
         }
+        gw_phase("pinhole2");
 
         /* Micro-weld: post-concat stages (seam bridge, CDT fill) can CREATE a
          * vertex exactly on an existing vertex's position (observed: 4 such
@@ -1429,6 +1661,7 @@ int main(int argc, char **argv)
             }
             out_verts = w_verts; out_nv = w_nv; n_unique_faces = w_nf;
         }
+        gw_phase("microweld");
 
         /* Fill fixpoint. Each fill pass reshapes the boundary structure (a
          * pinhole fill splits or shrinks a larger loop; an interior fill
@@ -1457,6 +1690,7 @@ int main(int argc, char **argv)
                         round, r_filled, r_fl, n_unique_faces, out_nv);
             }
         }
+        gw_phase("fixpoint");
 
         /* Lambda gate -- "don't weld if it produces high lambda". The seam bridge
          * can fuse two DIFFERENT wraps where they pass within ~rho at the core; the
@@ -1650,14 +1884,15 @@ int main(int argc, char **argv)
             }
         }
 
-        /* Seam-hole fill: the BPA bridge zips most of each grazing seam but
-         * leaves a dotted line of tiny straddling punctures; pinhole's 4.5-vox
-         * diameter gate and interior-only hole-fill leave many open. Close them
-         * here, AFTER every other closer, with three merger-safe gates: near-seam
-         * + straddle, small extent, and winding-phase coherence (armed by the same
-         * umbilicus/pitch as the seam gate -- so it can never fill across the
-         * sub-clearance core wraps). The final manifold guard below re-verifies
-         * the result. SEAM_NO_SEAMFILL disables. */
+        /* Seam-hole fill (audit output/weld_audit_4x5x5/AUDIT.md): the BPA bridge
+         * zips most of each grazing seam but leaves a dotted line of tiny
+         * straddling punctures; pinhole's 4.5-vox diameter gate and interior-only
+         * hole-fill leave many open. Close them here, AFTER every other closer,
+         * with three merger-safe gates: near-seam + straddle, small extent, and
+         * winding-phase coherence (armed by the same umbilicus/pitch as the seam
+         * gate -- so it can never fill across the sub-clearance core wraps). The
+         * final manifold guard below re-verifies the result. SEAM_NO_SEAMFILL
+         * disables. */
         if (!getenv("SEAM_NO_SEAMFILL")) {
             ComponentMesh scm; memset(&scm, 0, sizeof scm);
             scm.verts = out_verts; scm.faces = flat_faces;
@@ -1683,6 +1918,7 @@ int main(int argc, char **argv)
             flat_faces = scm.faces; n_unique_faces = scm.nf;
             out_verts = scm.verts; out_nv = scm.nv;
         }
+        gw_phase("seamfill");
 
         /* Final manifold guard. The strict seam bridge leaves only a handful of
          * residual non-manifold edges (vs many under the old relaxed zip).
@@ -1704,6 +1940,7 @@ int main(int argc, char **argv)
             flat_faces = wcm.faces; n_unique_faces = wcm.nf;
             out_verts = wcm.verts; out_nv = wcm.nv;
         }
+        gw_phase("guard");
 
         /* Post-guard convergence. The manifold guard drops faces to resolve NM
          * edges, which OPENS small boundary notches that every earlier closer
@@ -1723,7 +1960,35 @@ int main(int argc, char **argv)
               if ((e = getenv("SEAM_WRAP_PITCH")))  { double v = atof(e); if (v > 0) pgp.pitch = v; }
               if ((e = getenv("SEAM_WIND_TOL")))    { double v = atof(e); if (v > 0) pgp.wind_tol_turns = v; }
               if ((e = getenv("SEAM_SEAMFILL_EXTENT"))) { double v = atof(e); if (v > 0) pgp.max_extent = v; } }
+            /* 3 rounds is the empirical fixed point. Rounds 4-6 were tried
+             * (2026-07-18) and enter a LIMIT CYCLE at the residual fold
+             * slits: seamfill caps the slit, the guard's pinch audit splits
+             * it back open, repeat -- net faces oscillate +-2 with no
+             * convergence. The residue (11-12 sub-6-vox loops on the 4x5x5)
+             * is loops containing bit-coincident vertex PAIRS at folds,
+             * where the orient-guarded micro-weld refuses the merge
+             * (recto-verso protection) and any triangulation would need a
+             * zero-area triangle. Those stay open by design. */
             for (int gr = 1; gr <= 3; gr++) {
+                /* Zip coincident fill-created vertex pairs FIRST each round:
+                 * the late closers (CDT interior fill, pinhole, seam fill) can
+                 * mint a vertex exactly on an existing one, leaving a
+                 * zero-width slit no triangulator can cap (observed: a 5-loop
+                 * with two bit-coincident verts surviving every closer). The
+                 * main micro-weld stage ran BEFORE these verts existed. Same
+                 * call + eps; SEAM_NO_MICROWELD disables both. */
+                if (!getenv("SEAM_NO_MICROWELD")) {
+                    size_t pw_nf = 0, pw_nv = 0;
+                    float *pw_v = NULL;
+                    Weld_verts(arena, out_verts, out_nv, NULL,
+                               flat_faces, n_unique_faces, &pw_nf,
+                               1e-3f, /*guard_orient=*/true, &pw_v, &pw_nv, NULL);
+                    if (pw_nv != out_nv) {
+                        fprintf(stderr, "  postguard micro-weld: %zu -> %zu verts\n",
+                                out_nv, pw_nv);
+                    }
+                    out_verts = pw_v; out_nv = pw_nv; n_unique_faces = pw_nf;
+                }
                 ComponentMesh pg; memset(&pg, 0, sizeof pg);
                 pg.verts = out_verts; pg.faces = flat_faces;
                 pg.nv = out_nv; pg.nf = n_unique_faces; pg.comp_id = 1; pg.self = &pg;
@@ -1742,15 +2007,178 @@ int main(int argc, char **argv)
                     pmg.faces_deleted == 0 && pmg.pinch_splits == 0) break;
             }
         }
+        gw_phase("postguard");
 
-        /* Post-fill winding repair: re-run the intra-component winding BFS after
-         * the late closers. The final pinhole pass and the micro-weld append faces
-         * AFTER the main OrientMesh pass above, and a fill wound to its loop's own
-         * Newell normal can disagree with the sheet it patches -> same_dir edges;
-         * the final manifold guard likewise drops/splits faces. OrientMesh_consistent's
-         * live-winding BFS drives same_dir back to 0 without changing topology -- it
-         * only flips face winding, preserving component structure (so it cannot mask
-         * a merger: the component COUNT is unchanged). */
+        /* Seam-band recoarsen: collapse the temporarily-fine seam band (thin
+         * graded CVT rim / weld-time refinement) back toward the coarse budget.
+         * Placed AFTER every closer -- interior fill, fixpoint, seam-hole fill,
+         * manifold guard, post-guard convergence -- because those close holes
+         * at DENSE band scale, where every loop is small enough for the
+         * merger-safe fill gates (pinhole 6.5 / seamfill extent caps). Running
+         * recoarsen earlier coarsened residual slit rims past those gates and
+         * left them open (measured: seam loops 9 -> 188 on the 4x5x5 with an
+         * aggressive band). Here the seam is as closed as it will get, and
+         * recoarsening cannot reopen it: collapses contract existing edges
+         * only, boundary loops exit bit-identical (weld_cleanup.h) -- which
+         * also leaves unbridged holes and a hierarchical level's outer faces
+         * untouched, letting hierarchical_weld stack this per level. The final
+         * winding repair + manifold audits below re-verify the result.
+         * SEAM_NO_RECOARSEN=1 skips; SEAM_RECOARSEN_BELOW/_BAND tune. */
+        if (!no_bridge && !no_cleanup && !getenv("SEAM_NO_RECOARSEN")) {
+            /* Same seam band default the bridge used (its `band` local is
+             * scoped to the bridge block above; re-read env, same default). */
+            double r_band = 6.0;
+            { const char *rbe = getenv("SEAM_BAND");
+              if (rbe) { double v = atof(rbe); if (v > 0) r_band = v; } }
+            uint8_t *r_used = (uint8_t *)ARENA_CALLOC(arena, (long)out_nv, 1L);
+            for (size_t f = 0; f < n_unique_faces; f++) {
+                r_used[flat_faces[f*3+0]] = 1;
+                r_used[flat_faces[f*3+1]] = 1;
+                r_used[flat_faces[f*3+2]] = 1;
+            }
+            SeamPlane rplanes[64];
+            size_t rnp = SeamPlanes_detect(out_verts, out_nv, r_used,
+                                           (double)seam_cube, r_band,
+                                           rplanes, 64);
+            if (rnp > 0) {
+                ComponentMesh rcm; memset(&rcm, 0, sizeof rcm);
+                rcm.verts = out_verts; rcm.faces = flat_faces;
+                rcm.nv = out_nv; rcm.nf = n_unique_faces;
+                rcm.comp_id = 1; rcm.self = &rcm;
+                WeldRecoarsenParams rp;
+                WeldCleanup_default_recoarsen_params(&rp);
+                { const char *re;
+                  if ((re = getenv("SEAM_RECOARSEN_BELOW"))) {
+                      double v = atof(re); if (v > 0) rp.collapse_below = v; }
+                  if ((re = getenv("SEAM_RECOARSEN_BAND"))) {
+                      double v = atof(re); if (v > 0) rp.band = v; } }
+                WeldRecoarsenStats rs;
+                WeldCleanup_recoarsen_seam(arena, &rcm, rplanes, rnp, &rp, &rs);
+                flat_faces = rcm.faces; n_unique_faces = rcm.nf;
+                recoarsen_collapses = rs.n_collapses;
+                recoarsen_faces_in = rs.faces_in;
+                recoarsen_faces_out = rs.faces_out;
+                fprintf(stderr,
+                    "Recoarsen: %zu collapse(s), %zu flip(s), %zu -> %zu faces "
+                    "(band %.1f, below %.1f vox, %zu plane(s))\n",
+                    rs.n_collapses, rs.n_flips, rs.faces_in, rs.faces_out,
+                    rp.band, rp.collapse_below, rnp);
+            }
+            gw_phase("recoarsen");
+            dump_stage(arena, dump_stages_dir, stage_prefix, 9, "recoarsen",
+                       out_verts, out_nv, flat_faces, n_unique_faces,
+                       vert_cube_idx, cube_palette, cubes.n, color_nv);
+        }
+
+        /* Seam-band CVT beautification: re-mesh the recoarsened band with the
+         * SAME CVT/RVD engine the per-cube interiors were built with, so the
+         * weld is blue-noise CVT quality everywhere instead of collapse-
+         * scarred. Pinned-boundary (junction rings + hole rims bit-exact ->
+         * conforming stitch, open boundaries unchanged) and FAIL-CLOSED per
+         * patch (conformity + Euler/manifold/connectivity gates; a rejected
+         * patch -- e.g. tight core folds where RVD cells could jump -- keeps
+         * its recoarsen geometry). Runs before the final winding repair so
+         * dual-face winding is reconciled, and before the final audits which
+         * re-verify everything. SEAM_NO_BANDCVT=1 skips; SEAM_BANDCVT_H
+         * tunes the band target edge length. */
+        if (!no_bridge && !no_cleanup && !getenv("SEAM_NO_BANDCVT")) {
+            double bc_band = 6.0;
+            { const char *bce = getenv("SEAM_BAND");
+              if (bce) { double v = atof(bce); if (v > 0) bc_band = v; } }
+            uint8_t *bc_used = (uint8_t *)ARENA_CALLOC(arena, (long)out_nv, 1L);
+            for (size_t f = 0; f < n_unique_faces; f++) {
+                bc_used[flat_faces[f*3+0]] = 1;
+                bc_used[flat_faces[f*3+1]] = 1;
+                bc_used[flat_faces[f*3+2]] = 1;
+            }
+            SeamPlane bplanes[64];
+            size_t bnp = SeamPlanes_detect(out_verts, out_nv, bc_used,
+                                           (double)seam_cube, bc_band,
+                                           bplanes, 64);
+            if (bnp > 0) {
+                SeamBandCvtParams bp; SeamBandCvt_default_params(&bp);
+                { const char *bce;
+                  if ((bce = getenv("SEAM_BANDCVT_H"))) {
+                      double v = atof(bce); if (v > 0) bp.target_h = v; }
+                  if ((bce = getenv("SEAM_BANDCVT_BAND"))) {
+                      double v = atof(bce); if (v > 0) bp.band = v; } }
+                /* Two passes: A on the aligned tiling, B on a half-tile
+                 * OFFSET tiling so A's pinned tile borders land tile-interior
+                 * and are re-meshed away (the fine_frac filter keeps B off
+                 * A's accepted interiors). */
+                for (int bc_pass = 0; bc_pass < 2; bc_pass++) {
+                    bp.offset_half = bc_pass;
+                    SeamBandCvtStats bst;
+                    float *bc_v = NULL; int32_t *bc_f = NULL; int32_t *bc_src = NULL;
+                    size_t bc_nv = 0, bc_nf = 0, bc_nnew = 0;
+                    if (SeamBandCvt_process(arena, out_verts, out_nv,
+                                            flat_faces, n_unique_faces,
+                                            bplanes, bnp, &bp,
+                                            &bc_v, &bc_nv, &bc_f, &bc_nf,
+                                            &bc_src, &bc_nnew, &bst) == 0
+                        && bst.accepted > 0) {
+                        if (bc_nv > vert_cap) {
+                            fprintf(stderr, "grid_weld: vert capacity %zu "
+                                    "exceeded by band CVT (%zu)\n",
+                                    vert_cap, bc_nv);
+                            RAISE(IO_Failed);
+                        }
+                        for (size_t v2 = 0; v2 < bc_nnew; v2++)
+                            vert_cube_idx[out_nv + v2] = vert_cube_idx[bc_src[v2]];
+                        out_verts = bc_v; out_nv = bc_nv;
+                        flat_faces = bc_f; n_unique_faces = bc_nf;
+                        color_nv = out_nv;
+                        bandcvt_accepted += bst.accepted;
+                        bandcvt_rejected += bst.rejected;
+                        bandcvt_faces_in += bst.faces_band_in;
+                        bandcvt_faces_out += bst.faces_band_out;
+                    }
+                    fprintf(stderr,
+                        "Band CVT pass %c: %zu/%zu patch(es) accepted "
+                        "(rej rc=%zu pin=%zu bnd=%zu chi=%zu nm=%zu vtx=%zu comp=%zu; "
+                        "%zu small, %zu clean), band %zu -> %zu faces, "
+                        "+%zu verts (h %.1f, tile %.0f)\n",
+                        bc_pass ? 'B' : 'A', bst.accepted, bst.patches,
+                        bst.rej_rc, bst.rej_pin, bst.rej_bnd, bst.rej_chi,
+                        bst.rej_manifold, bst.rej_vtx, bst.rej_comp,
+                        bst.skipped_small, bst.skipped_clean,
+                        bst.faces_band_in, bst.faces_band_out,
+                        bst.verts_added, bp.target_h, bp.tile);
+                }
+                /* pinch insurance: the per-patch gates prove edge-
+                 * manifoldness, not vertex-links; let the guard mop any
+                 * bowtie before the final audits (idle when clean). */
+                if (bandcvt_accepted > 0) {
+                    ComponentMesh gm; memset(&gm, 0, sizeof gm);
+                    gm.verts = out_verts; gm.faces = flat_faces;
+                    gm.nv = out_nv; gm.nf = n_unique_faces;
+                    gm.comp_id = 1; gm.self = &gm;
+                    ManifoldGuardStats mg2;
+                    ManifoldGuard_process(arena, &gm, 1, 0, &mg2);
+                    out_verts = gm.verts; flat_faces = gm.faces;
+                    out_nv = gm.nv; n_unique_faces = gm.nf;
+                    if (mg2.nm_edges_resolved || mg2.pinch_splits)
+                        fprintf(stderr,
+                            "  band-cvt guard: %zu NM edge(s), %zu pinch "
+                            "split(s)\n", mg2.nm_edges_resolved,
+                            mg2.pinch_splits);
+                }
+            }
+            gw_phase("bandcvt");
+            dump_stage(arena, dump_stages_dir, stage_prefix, 10, "bandcvt",
+                       out_verts, out_nv, flat_faces, n_unique_faces,
+                       vert_cube_idx, cube_palette, cubes.n, color_nv);
+        }
+
+        /* Re-run the intra-component winding BFS AFTER the late fills. Every
+         * closer above (final pinhole, bowtie, seam-hole ear-clip, post-guard)
+         * appends faces AFTER the main OrientMesh pass at line ~1426, and a fill
+         * wound to the loop's own Newell normal can disagree with the sheet it
+         * patches -> same_dir edges (0 in v2 while the holes stayed open, 468 once
+         * they were filled). OrientMesh_consistent's live-winding BFS drives
+         * same_dir back to 0 without changing topology -- it only flips face
+         * winding, preserving component structure (so it cannot mask a merger:
+         * the component COUNT is unchanged, verified by the post-repair audit). */
         if (!no_cleanup) {
             size_t ro_comp = 0, ro_flip = 0, ro_resid = 0;
             OrientMesh_consistent(arena, out_verts, out_nv, NULL,
@@ -1759,9 +2187,10 @@ int main(int argc, char **argv)
             fprintf(stderr, "Post-fill winding repair: %zu components, %zu "
                     "flipped, %zu residual same_dir\n", ro_comp, ro_flip, ro_resid);
         }
+        gw_phase("orient2");
 
-        /* Stage 08: final mesh after the last winding pass (== welded.obj). */
-        dump_stage(arena, dump_stages_dir, stage_prefix, 8, "final",
+        /* Stage 11: final mesh after the last winding pass (== welded.obj). */
+        dump_stage(arena, dump_stages_dir, stage_prefix, 11, "final",
                    out_verts, out_nv, flat_faces, n_unique_faces,
                    vert_cube_idx, cube_palette, cubes.n, color_nv);
 
@@ -1801,6 +2230,7 @@ int main(int argc, char **argv)
             "manifold=%zu pinch_verts=%zu\n",
             ms.unpaired, ms.non_manifold, ms.same_dir_pairs, ms.manifold_pairs,
             pinch_verts);
+        gw_phase("audit_post");
 
         /* Count weld verts (verts touched by a BPA seam-bridge face).
          * Populated right after SeamWeld_bridge, so only meaningful for the
@@ -1821,28 +2251,43 @@ int main(int argc, char **argv)
             fprintf(stderr, "grid_weld: cannot open %s\n", out_path);
             RAISE(IO_Failed);
         }
-        fprintf(ofp, "# grid_weld output: per-cube vertex colors\n");
-        fprintf(ofp, "# weld verts (shared across >=2 cubes) tinted green\n");
+        /* Default: colour by CONNECTED COMPONENT so wrap shatter / cross-wrap
+         * fusion is visible on load (mesh_render --vcolor, no obj_cc_color step).
+         * GW_COLOR_BY=cube keeps the old per-cube / green-weld / blue-pinhole
+         * provenance view for seam-weld debugging. */
+        const char *gw_color_by = getenv("GW_COLOR_BY");
+        int by_cube = (gw_color_by && !strcmp(gw_color_by, "cube"));
+        float *cc = NULL;
+        if (!by_cube) {
+            cc = (float *)malloc(out_nv * 3 * sizeof(float));
+            if (cc) { CCColorOpts opts; CCColor_default_opts(&opts); opts.sat = 0.75;
+                      CCColor_compute(out_nv, flat_faces, n_unique_faces, &opts, cc, NULL); }
+        }
+        fprintf(ofp, "# grid_weld output: %s vertex colors\n",
+                cc ? "connected-component" : "per-cube provenance");
         fprintf(ofp, "# %zu verts (%zu weld), %zu faces\n",
                 out_nv, n_weld_verts, n_unique_faces);
         for (size_t v = 0; v < out_nv; v++) {
-            const float *c;
-            int is_weld = (v < color_nv) ? vert_is_weld[v] : 0;
-            if (is_weld) {
-                c = SEAM_COLOR;                 /* green: bridge weld vert */
-            } else if (v >= color_nv) {
-                c = PINHOLE_COLOR;              /* blue: pinhole/holefill-added vert */
+            float cr, cg, cb;
+            if (cc) {
+                cr = cc[v*3+0]; cg = cc[v*3+1]; cb = cc[v*3+2];
             } else {
-                int cube = vert_cube_idx[v];
-                int pal = (cube >= 0 && cube < (int)cubes.n) ? cube_palette[cube] : 0;
-                c = CUBE_PALETTE[pal];
+                const float *c;
+                int is_weld = (v < color_nv) ? vert_is_weld[v] : 0;
+                if (is_weld)            c = SEAM_COLOR;      /* green: bridge weld vert */
+                else if (v >= color_nv) c = PINHOLE_COLOR;   /* blue: pinhole/holefill vert */
+                else { int cube = vert_cube_idx[v];
+                       int pal = (cube >= 0 && cube < (int)cubes.n) ? cube_palette[cube] : 0;
+                       c = CUBE_PALETTE[pal]; }
+                cr = c[0]; cg = c[1]; cb = c[2];
             }
             fprintf(ofp, "v %.6f %.6f %.6f %.4f %.4f %.4f\n",
                 (double)out_verts[v * 3 + 0],
                 (double)out_verts[v * 3 + 1],
                 (double)out_verts[v * 3 + 2],
-                (double)c[0], (double)c[1], (double)c[2]);
+                (double)cr, (double)cg, (double)cb);
         }
+        free(cc);
         for (size_t f = 0; f < n_unique_faces; f++) {
             fprintf(ofp, "f %d %d %d\n",
                 flat_faces[f * 3 + 0] + 1,
@@ -1852,6 +2297,7 @@ int main(int argc, char **argv)
         fclose(ofp);
         fprintf(stderr, "Wrote %s (%zu verts, %zu green weld verts, %zu faces)\n",
                 out_path, out_nv, n_weld_verts, n_unique_faces);
+        gw_phase("write_obj");
 
         /* Optional weld-vert sidecar (consumed by the winding
          * diagnostic to compute its headline weld-vert disagreement
@@ -1890,6 +2336,17 @@ int main(int argc, char **argv)
                 "  \"total_unique_verts\": %zu,\n"
                 "  \"total_input_faces\": %zu,\n"
                 "  \"total_unique_faces\": %zu,\n"
+                "  \"recoarsen\": {\n"
+                "    \"collapses\": %zu,\n"
+                "    \"faces_in\":  %zu,\n"
+                "    \"faces_out\": %zu\n"
+                "  },\n"
+                "  \"band_cvt\": {\n"
+                "    \"patches_accepted\": %zu,\n"
+                "    \"patches_rejected\": %zu,\n"
+                "    \"band_faces_in\":  %zu,\n"
+                "    \"band_faces_out\": %zu\n"
+                "  },\n"
                 "  \"manifold_audit\": {\n"
                 "    \"unpaired\":     %zu,\n"
                 "    \"non_manifold\": %zu,\n"
@@ -1900,6 +2357,9 @@ int main(int argc, char **argv)
                 "}\n",
                 cubes.n, total_in_verts, out_nv, total_in_faces,
                 n_unique_faces,
+                recoarsen_collapses, recoarsen_faces_in, recoarsen_faces_out,
+                bandcvt_accepted, bandcvt_rejected,
+                bandcvt_faces_in, bandcvt_faces_out,
                 ms.unpaired, ms.non_manifold,
                 ms.same_dir_pairs, ms.manifold_pairs, pinch_verts);
             fclose(rp);

@@ -19,13 +19,13 @@
 
 cmake_minimum_required(VERSION 3.24)
 
-project(scrollfiesta VERSION 0.9.0 LANGUAGES C CXX)
+project(scrollfiesta VERSION 0.10.0 LANGUAGES C CXX)
 
 # ---------------------------------------------------------------------------
 # Options (standalone builds get everything; embedded builds get the library)
 # ---------------------------------------------------------------------------
 option(SCROLLFIESTA_BUILD_TOOLS
-       "Build cube_mesh/grid_pipeline/grid_weld + diagnostic tools"
+       "Build the six supported CLI front ends plus small diagnostic tools"
        ${PROJECT_IS_TOP_LEVEL})
 option(SCROLLFIESTA_BUILD_TESTS
        "Build the ctest suite"
@@ -136,14 +136,17 @@ set(SF_COMMON_SRC
     ${SF_SRC}/common/csr.c
     ${SF_SRC}/common/kdtree.c
     ${SF_SRC}/common/union_find.c
+    ${SF_SRC}/common/cc_color.c
     ${SF_SRC}/common/bfs.c
     ${SF_SRC}/common/pca.c
     ${SF_SRC}/common/mls_project.c
     ${SF_SRC}/common/vert_weld.c
     ${SF_SRC}/common/halo_loader.c
+    ${SF_SRC}/common/raw_sample.c
+    ${SF_SRC}/common/closest_tri.c
     ${SF_SRC}/common/mesh_manifold.c
     ${SF_SRC}/common/mesh_trim.c
-    ${SF_SRC}/common/ply_io.c
+
     ${SF_SRC}/common/obj_io.c
     ${SF_SRC}/common/dump_obj.c
     ${SF_SRC}/common/ves_platform.c
@@ -167,10 +170,15 @@ set(SF_SPLIT_SRC
     ${SF_SRC}/split/oracle.c
     ${SF_SRC}/split/bridge_cut.c
     ${SF_SRC}/split/overlap_sep.c
+    ${SF_SRC}/split/overlap_merge.c
+    ${SF_SRC}/split/overlap_quality.c
     ${SF_SRC}/split/depth_peel.c
     ${SF_SRC}/split/dev_cut.c)
 set(SF_REMESH_SRC
     ${SF_SRC}/remesh/ball_pivot.c
+    ${SF_SRC}/remesh/patch_repair.c
+    ${SF_SRC}/remesh/cvt_remesh.c
+    ${SF_SRC}/remesh/rvd_clip.c
     ${SF_SRC}/remesh/orient_mesh.c
     ${SF_SRC}/remesh/pinhole_fill.c
     ${SF_SRC}/remesh/normal_orient.c
@@ -179,6 +187,10 @@ set(SF_REMESH_SRC
     ${SF_SRC}/remesh/dev_gate.c)
 set(SF_WELD_SRC
     ${SF_SRC}/remesh/seam_weld.c
+    ${SF_SRC}/remesh/seam_planes.c
+    ${SF_SRC}/remesh/seam_refine.c
+    ${SF_SRC}/remesh/seam_band_cvt.c
+    ${SF_SRC}/remesh/sheet_reweld.c
     ${SF_SRC}/remesh/seam_hole_fill.c
     ${SF_SRC}/remesh/fold_cleanup.c
     ${SF_SRC}/remesh/orient_weld.c
@@ -188,19 +200,34 @@ set(SF_TOPO_SRC
     ${SF_SRC}/topology/mesh_topo.c
     ${SF_SRC}/topology/seam_cut.c
     ${SF_SRC}/topology/developability.c)
+set(SF_FLATTEN_SRC
+    ${SF_SRC}/flatten/surface_snap.c
+    ${SF_SRC}/flatten/snap_darkcut.c
+    ${SF_SRC}/flatten/snap_quilt.c
+    ${SF_SRC}/flatten/snap_solve.c
+    ${SF_SRC}/flatten/recto_refine.c)
 set(SF_PIPELINE_SRC ${SF_SRC}/pipeline/pipeline_cube.c)
 set(SF_CXX_WRAP_SRC
     ${SF_SRC}/holefill/clipper2_wrap.cpp
-    ${SF_SRC}/split/multicut_wrap.cpp)
+    ${SF_SRC}/split/multicut_wrap.cpp
+    ${SF_SRC}/common/gco_wrap.cpp
+    ${SF_SRC}/common/attene_predicates_wrap.cpp
+    ${SF_DEPS}/src/attene-predicates/uinteger.cpp
+    ${SF_DEPS}/src/attene-predicates/ieee_binary.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/gco-v3.0/GCoptimization.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/gco-v3.0/LinkedBlockList.cpp)
 
 add_library(scrollfiesta_core STATIC
     ${SF_COMMON_SRC} ${SF_EXTRACT_SRC} ${SF_SPLIT_SRC} ${SF_REMESH_SRC}
-    ${SF_WELD_SRC} ${SF_HOLEFILL_SRC} ${SF_TOPO_SRC} ${SF_PIPELINE_SRC}
-    ${SF_CXX_WRAP_SRC})
+    ${SF_WELD_SRC} ${SF_HOLEFILL_SRC} ${SF_TOPO_SRC} ${SF_FLATTEN_SRC}
+    ${SF_PIPELINE_SRC} ${SF_CXX_WRAP_SRC})
 target_include_directories(scrollfiesta_core PUBLIC
     ${SF_SRC}
     ${SF_DEPS}/include
-    ${SF_DEPS}/src/graph/include)
+    ${SF_DEPS}/src/graph/include
+    PRIVATE
+    ${SF_DEPS}/src/attene-predicates
+    ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/gco-v3.0)
 target_link_libraries(scrollfiesta_core PRIVATE
     sf_triangle Clipper2 Clipper2Z ${SF_TIFF_LIBS})
 set_target_properties(scrollfiesta_core PROPERTIES
@@ -290,6 +317,140 @@ if(SCROLLFIESTA_BUILD_TOOLS)
             target_compile_definitions(${tool} PRIVATE _GNU_SOURCE)
         endif()
     endforeach()
+
+    # Supported whole-scroll path. These source lists mirror the corresponding
+    # MSVC projects and deliberately replace the retired scroll_unwrap /
+    # scroll_atlas / scroll_ribbon front ends.
+    add_executable(scroll_whole
+        ${SF_SRC}/tools/scroll_whole.c
+        ${SF_SRC}/whole/cube_schedule.c
+        ${SF_SRC}/whole/placed_cube.c
+        ${SF_SRC}/whole/cube_register.c
+        ${SF_SRC}/whole/group_graph.c
+        ${SF_SRC}/whole/weld_track.c
+        ${SF_SRC}/whole/weld_build.c
+        ${SF_SRC}/whole/arc_reg.c
+        ${SF_SRC}/common/maxflow.c
+        ${SF_SRC}/flatten/ribbon.c
+        ${SF_SRC}/flatten/seam_cut.c
+        ${SF_SRC}/flatten/mesh_topo.c
+        ${SF_SRC}/common/arena.c
+        ${SF_SRC}/common/except.c
+        ${SF_SRC}/common/obj_io.c
+        ${SF_SRC}/common/ves_platform.c
+        ${SF_SRC}/common/pca.c
+        ${SF_SRC}/common/csr.c
+        ${SF_SRC}/common/union_find.c
+        ${SF_SRC}/common/kdtree.c)
+
+    add_executable(scroll_unroll
+        ${SF_SRC}/tools/scroll_unroll.c
+        ${SF_SRC}/unroll/piece_set.c
+        ${SF_SRC}/unroll/scaffold.c
+        ${SF_SRC}/unroll/export_atlas.c
+        ${SF_SRC}/unroll/scroll_raster.c
+        ${SF_SRC}/unroll/strip_metrics.c
+        ${SF_SRC}/unroll/strip_preview.c
+        ${SF_SRC}/unroll/seam_own.c
+        ${SF_SRC}/unroll/snap_grid.c
+        ${SF_SRC}/unroll/tifxyz_export.c
+        ${SF_SRC}/unroll/uv_weld.c
+        ${SF_SRC}/unroll/relax_grid.c
+        ${SF_SRC}/flatten/overlap_quilt.c
+        ${SF_SRC}/flatten/snap_darkcut.c
+        ${SF_SRC}/flatten/snap_quilt.c
+        ${SF_SRC}/flatten/recto_refine.c
+        ${SF_SRC}/flatten/ribbon_relax.c
+        ${SF_SRC}/flatten/fiber_field.c
+        ${SF_SRC}/flatten/rawtex_bake.c
+        ${SF_SRC}/common/pca.c
+        ${SF_SRC}/common/csr.c
+        ${SF_SRC}/common/kdtree.c
+        ${SF_SRC}/common/snap_cg.c
+        ${SF_SRC}/common/gco_wrap.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/gco-v3.0/GCoptimization.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/gco-v3.0/LinkedBlockList.cpp
+        ${SF_SRC}/split/multicut_wrap.cpp
+        ${SF_SRC}/common/arena.c
+        ${SF_SRC}/common/except.c
+        ${SF_SRC}/common/obj_io.c
+        ${SF_SRC}/common/ves_platform.c
+        ${SF_SRC}/common/raw_sample.c
+        ${SF_SRC}/common/tiff_io.c
+        ${SF_SRC}/common/tif_strip.c
+        ${SF_SRC}/common/ves_png.c)
+
+    add_executable(atlas_overlap_fix
+        ${SF_SRC}/tools/atlas_overlap_fix_tool.c
+        ${SF_SRC}/tools/atlas_overlap_fix_sparse.c
+        ${SF_SRC}/whole/atlas_collision_register.c
+        ${SF_SRC}/whole/atlas_overlap_audit.c
+        ${SF_SRC}/whole/monotone_qp.c
+        ${SF_SRC}/whole/atlas_overlap_fix.c
+        ${SF_SRC}/whole/atlas_register.c
+        ${SF_SRC}/whole/atlas_solution.c
+        ${SF_SRC}/unroll/piece_set.c
+        ${SF_SRC}/unroll/scaffold.c
+        ${SF_SRC}/common/arena.c
+        ${SF_SRC}/common/except.c
+        ${SF_SRC}/common/union_find.c
+        ${SF_SRC}/common/obj_io.c
+        ${SF_SRC}/common/raw_sample.c
+        ${SF_SRC}/common/tiff_io.c
+        ${SF_SRC}/common/ves_platform.c
+        ${SF_SRC}/common/ves_png.c)
+
+    # Terminal stage of the whole-scroll path: fits one collision-free ribbon
+    # through the registered atlas that atlas_overlap_fix hands over as
+    # atlas_solution.bin. Mirrors atlas_ribbon_fit.vcxproj.
+    add_executable(atlas_ribbon_fit
+        ${SF_SRC}/tools/atlas_ribbon_fit_tool.c
+        ${SF_SRC}/tools/atlas_overlap_fix_sparse.c
+        ${SF_SRC}/whole/atlas_ribbon_fit.c
+        ${SF_SRC}/whole/atlas_ribbon_texture.c
+        ${SF_SRC}/whole/atlas_overlap_audit.c
+        ${SF_SRC}/whole/monotone_qp.c
+        ${SF_SRC}/whole/atlas_solution.c
+        ${SF_SRC}/unroll/piece_set.c
+        ${SF_SRC}/unroll/scaffold.c
+        ${SF_SRC}/common/arena.c
+        ${SF_SRC}/common/except.c
+        ${SF_SRC}/common/union_find.c
+        ${SF_SRC}/common/obj_io.c
+        ${SF_SRC}/common/raw_sample.c
+        ${SF_SRC}/common/tiff_io.c
+        ${SF_SRC}/common/ves_platform.c)
+
+    foreach(tool scroll_whole scroll_unroll atlas_overlap_fix atlas_ribbon_fit)
+        target_include_directories(${tool} PRIVATE
+            ${SF_SRC}
+            ${SF_DEPS}/include
+            ${SF_DEPS}/src/graph/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/gco-v3.0)
+        set_target_properties(${tool} PROPERTIES
+            C_STANDARD 17 C_EXTENSIONS ON CXX_STANDARD 17 CXX_EXTENSIONS OFF)
+        if(WIN32)
+            target_compile_definitions(${tool} PRIVATE
+                _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_DEPRECATE NOMINMAX)
+        else()
+            target_compile_definitions(${tool} PRIVATE _GNU_SOURCE)
+            target_link_libraries(${tool} PRIVATE m)
+        endif()
+    endforeach()
+    target_link_libraries(scroll_unroll PRIVATE ${SF_TIFF_LIBS})
+    target_link_libraries(atlas_overlap_fix PRIVATE ${SF_TIFF_LIBS})
+    target_link_libraries(atlas_ribbon_fit PRIVATE ${SF_TIFF_LIBS})
+    if(SCROLLFIESTA_OPENMP)
+        if(MSVC)
+            target_compile_options(scroll_whole PRIVATE /openmp)
+            target_compile_options(scroll_unroll PRIVATE /openmp)
+        else()
+            target_compile_options(scroll_whole PRIVATE -fopenmp)
+            target_link_options(scroll_whole PRIVATE -fopenmp)
+            target_compile_options(scroll_unroll PRIVATE -fopenmp)
+            target_link_options(scroll_unroll PRIVATE -fopenmp)
+        endif()
+    endif()
 
     # Diagnostic tools: single self-contained translation units (only libm).
     foreach(tool obj_components pinhole_verdict seam_audit)

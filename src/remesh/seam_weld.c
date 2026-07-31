@@ -5,7 +5,7 @@
  * DIRECT BRIDGE (no peelback). Each cube is BPA'd on its own region (step0 trims
  * the cloud to the cube face), so adjacent cubes meet at the seam plane with a
  * ~1-vox gap. We collect the open boundary half-edges that lie IN a detected
- * seam plane (edge_in_seam_plane -- grid-edge perimeter boundaries are excluded)
+ * seam plane (SeamPlanes_edge_in -- grid-edge perimeter boundaries are excluded)
  * and feed them as the BPA init front; the directed-front glue rolls a ball
  * across the gap at an escalating, capped radius, emitting bridge faces wound
  * consistently with the existing surface. The radius cap (2*rho_max below the
@@ -20,6 +20,7 @@
 #include "seam_weld.h"
 #include "../common/run_ctx.h"
 #include "ball_pivot.h"
+#include "seam_planes.h"
 #include "../common/pipeline_constants.h"
 
 #include <math.h>
@@ -32,21 +33,9 @@
 #define M_PI 3.14159265358979323846  /* MSVC math.h omits it without _USE_MATH_DEFINES */
 #endif
 
-/* A detected cube-boundary plane: mesh exists substantially on both sides. */
-typedef struct { int axis; double coord; } SeamPlane;
-
-/* Beyond the export-halo overhang, both sides of a TRUE seam carry mesh.
- * A cube's genuine outer boundary only has a ~1-vox export sliver on its
- * outside, so requiring mesh past this margin rejects those. Ties to
- * EXPORT_HALO_VOX (=1) in pipeline_constants.h. */
-#define SEAM_MIN_SIDE 2.0
-
-/* A seam-FACING boundary edge lies IN the seam plane; a perpendicular perimeter
- * edge crosses it. We keep only edges whose endpoints sit at nearly the same
- * plane-axis coordinate (|delta| < this). Feeding perimeter edges to the bridge
- * makes the ball roll ALONG the perimeter instead of across the gap, which
- * sprays fragments and leaves the seam open. */
-#define SEAM_PARALLEL_EPS 0.75
+/* SeamPlane + the plane detection/classification queries (detect, edge-in,
+ * face-straddle, vert-dist) live in seam_planes.{h,c}, shared with the
+ * weld-time band refine/recoarsen stages. Bodies moved there verbatim. */
 
 static void compute_vertex_normals(const float *verts, size_t nv,
                                    const int32_t *faces, size_t nf,
@@ -77,88 +66,6 @@ static void compute_vertex_normals(const float *verts, size_t nv,
             normals[v*3+2] = (float)(x/len);
         }
     }
-}
-
-/* Detect interior cube-boundary planes (multiples of cube_size with mesh on
- * both sides beyond the export-halo sliver). Returns count, fills planes[]. */
-static size_t detect_planes(const float *verts, size_t nv,
-                            const uint8_t *used, double cube_size,
-                            double band, SeamPlane *planes, size_t max_planes)
-{
-    double mn[3] = { 1e30, 1e30, 1e30 }, mx[3] = { -1e30, -1e30, -1e30 };
-    for (size_t v = 0; v < nv; v++) {
-        if (!used[v]) continue;
-        for (int a = 0; a < 3; a++) {
-            double c = verts[v*3+(size_t)a];
-            if (c < mn[a]) mn[a] = c;
-            if (c > mx[a]) mx[a] = c;
-        }
-    }
-    size_t np = 0;
-    for (int a = 0; a < 3 && np < max_planes; a++) {
-        long k0 = (long)ceil(mn[a] / cube_size);
-        long k1 = (long)floor(mx[a] / cube_size);
-        for (long k = k0; k <= k1 && np < max_planes; k++) {
-            double c = (double)k * cube_size;
-            int has_lo = 0, has_hi = 0;
-            for (size_t v = 0; v < nv; v++) {
-                if (!used[v]) continue;
-                double cc = verts[v*3+(size_t)a];
-                if (cc > c - band && cc < c - SEAM_MIN_SIDE) has_lo = 1;
-                if (cc > c + SEAM_MIN_SIDE && cc < c + band) has_hi = 1;
-                if (has_lo && has_hi) break;
-            }
-            if (has_lo && has_hi) {
-                planes[np].axis = a;
-                planes[np].coord = c;
-                np++;
-            }
-        }
-    }
-    return np;
-}
-
-/* A seam-FACING boundary edge LIES IN a seam plane: both endpoints within
- * `band` of the plane AND the edge nearly parallel to it (endpoints at almost
- * the same plane-axis coordinate, |delta| < SEAM_PARALLEL_EPS). This rejects
- * perimeter edges that merely pass near the plane while running across it. */
-static int edge_in_seam_plane(const float *verts, int32_t va, int32_t vb,
-                              const SeamPlane *planes, size_t np, double band)
-{
-    for (size_t p = 0; p < np; p++) {
-        int ax = planes[p].axis;
-        double ca = (double)verts[(size_t)va*3+(size_t)ax];
-        double cb = (double)verts[(size_t)vb*3+(size_t)ax];
-        if (fabs(ca - planes[p].coord) < band &&
-            fabs(cb - planes[p].coord) < band &&
-            fabs(ca - cb) < SEAM_PARALLEL_EPS)
-            return 1;
-    }
-    return 0;
-}
-
-/* The seam plane a bridge face CROSSES: its verts straddle the plane (some
- * below, some above) and all sit within `band` of it. Returns the plane index,
- * or -1 if the face is entirely on one side -- a FOLD-BACK, where the rolling
- * ball rolled back onto one component's own surface and laid a reversed, doubled
- * triangle (n.dot=-1 in seam_audit) instead of bridging to the opposite front.
- * The bridge's job is to connect the two fronts across the gap, so a fold-back
- * (and, via the same-side-edge test in the caller, a face that spans over a
- * component's surface) must be rejected. */
-static int face_seam_plane(const float *verts, int32_t a, int32_t b, int32_t c,
-                           const SeamPlane *planes, size_t np, double band)
-{
-    for (size_t p = 0; p < np; p++) {
-        int ax = planes[p].axis; double co = planes[p].coord;
-        double ca = (double)verts[(size_t)a*3+(size_t)ax];
-        double cb = (double)verts[(size_t)b*3+(size_t)ax];
-        double cc = (double)verts[(size_t)c*3+(size_t)ax];
-        double mn = ca < cb ? (ca < cc ? ca : cc) : (cb < cc ? cb : cc);
-        double mx = ca > cb ? (ca > cc ? ca : cc) : (cb > cc ? cb : cc);
-        if (mn < co && mx > co && (co - mn) < band && (mx - co) < band)
-            return (int)p;   /* straddles this seam plane, within the band */
-    }
-    return -1;
 }
 
 typedef struct {
@@ -237,9 +144,9 @@ static void ec_inc(ECell *t, size_t mask, int64_t key)
  * BEFORE the bridge runs. <prefix>.front_tris.obj = the (va,vb,v_opp) incident
  * triangles BPA hinges off of (the literal start front). <prefix>.front_edges.obj
  * = EVERY run-1 boundary edge as a colored l-segment: green = selected (passed
- * edge_in_seam_plane, fed to BPA), red = excluded (run-1 boundary but NOT in a
+ * SeamPlanes_edge_in, fed to BPA), red = excluded (run-1 boundary but NOT in a
  * seam plane). A seam edge that should bridge but shows red is a detection miss
- * (detect_planes / edge_in_seam_plane), not a BPA failure. Inline per-segment
+ * (SeamPlanes_detect / _edge_in), not a BPA failure. Inline per-segment
  * verts (not shared) so a vertex on both a selected and an excluded edge can't
  * blend colors. Gated by SEAM_DUMP_FRONT; mirrors SEAM_DUMP_BRIDGE below. */
 static void dump_seam_front(const char *prefix,
@@ -323,18 +230,6 @@ static int cmp_faceedge(const void *pa, const void *pb)
     return 0;
 }
 
-/* Distance of vertex v to the nearest seam plane (along that plane's axis). */
-static double vert_seam_dist(const float *verts, int32_t v,
-                             const SeamPlane *planes, size_t np)
-{
-    double best = 1e30;
-    for (size_t p = 0; p < np; p++) {
-        double d = fabs((double)verts[(size_t)v*3+(size_t)planes[p].axis] - planes[p].coord);
-        if (d < best) best = d;
-    }
-    return best;
-}
-
 /* Mark (in del[], length nf) two kinds of pre-bridge garbage near the seam:
  *
  *   (A) SLIVER: a triangle with a seam-plane boundary edge whose min altitude is
@@ -387,15 +282,15 @@ static size_t mark_sliver_and_tip_tris(const float *verts,
         int has_seam_bnd = 0;
         for (int e = 0; e < 3; e++)
             if ((bmask[f] & (1<<e)) &&
-                edge_in_seam_plane(verts, t[e], t[(e+1)%3], planes, np, band)) { has_seam_bnd = 1; break; }
+                SeamPlanes_edge_in(verts, t[e], t[(e+1)%3], planes, np, band)) { has_seam_bnd = 1; break; }
         if (has_seam_bnd && tri_min_alt3(p0, p1, p2) < min_alt) { del[f] = 1; ndel++; continue; }
         /* (B) seam-ward dangling tip: >=2 boundary edges; the vertex they share
          *     pokes toward the seam (in band + closest of the three). */
         int nb = (bmask[f]&1) + ((bmask[f]>>1)&1) + ((bmask[f]>>2)&1);
         if (nb >= 2) {
-            double d0 = vert_seam_dist(verts, t[0], planes, np);
-            double d1 = vert_seam_dist(verts, t[1], planes, np);
-            double d2 = vert_seam_dist(verts, t[2], planes, np);
+            double d0 = SeamPlanes_vert_dist(verts, t[0], planes, np);
+            double d1 = SeamPlanes_vert_dist(verts, t[1], planes, np);
+            double d2 = SeamPlanes_vert_dist(verts, t[2], planes, np);
             int tip;
             if (nb == 3)                                  tip = (d0<=d1&&d0<=d2)?0:(d1<=d2?1:2);
             else if ((bmask[f]&1) && (bmask[f]&4))        tip = 0;   /* edges 0=(0,1),2=(2,0) -> v0 */
@@ -414,7 +309,9 @@ static size_t mark_sliver_and_tip_tris(const float *verts,
 int SeamWeld_bridge(Arena_T arena,
                     const float *verts, size_t nv,
                     const int32_t *faces, size_t nf,
-                    float cube_size, float rho, float band,
+                    float cube_size, float rho, float rho_max_in, float band,
+                    const uint8_t *want_mask,
+                    const BpaBridgeGate *gate,
                     int32_t **out_faces, size_t *out_nf,
                     size_t *out_n_bridge)
 {
@@ -437,8 +334,8 @@ int SeamWeld_bridge(Arena_T arena,
 
     /* 2) Detect seam planes. */
     SeamPlane planes[64];
-    size_t np = detect_planes(verts, nv, used_any, (double)cube_size,
-                              (double)band, planes, 64);
+    size_t np = SeamPlanes_detect(verts, nv, used_any, (double)cube_size,
+                                  (double)band, planes, 64);
     if (np == 0) {
         /* Nothing to bridge -- return faces unchanged. */
         int32_t *out = (int32_t *)ARENA_ALLOC(arena, (long)(nf*3*sizeof(int32_t)));
@@ -449,8 +346,10 @@ int SeamWeld_bridge(Arena_T arena,
     }
 
     /* rho_max bounds the escalating bridge radius AND the over-long bridge-face
-     * cutoff (2*rho_max < ~CUT_GAP_DEPTH => NO inter-wrap mergers). Env override. */
-    double rho_max = (double)BRIDGE_RHO_MAX;
+     * cutoff (2*rho_max < ~CUT_GAP_DEPTH => NO inter-wrap mergers). Caller arg
+     * (a phase-2 restricted re-weld passes a WIDER cap to span divots); <=0
+     * falls back to BRIDGE_RHO_MAX; SEAM_RHO_MAX env still overrides. */
+    double rho_max = (rho_max_in > 0.0f) ? (double)rho_max_in : (double)BRIDGE_RHO_MAX;
     { const char *e = sf_env("SEAM_RHO_MAX"); if (e) rho_max = atof(e); }
 
     /* 2.5) Pre-bridge sliver + tip cull: drop sliver boundary triangles AND the
@@ -522,7 +421,7 @@ int SeamWeld_bridge(Arena_T arena,
         while (j < hn && he[j].key_u == he[i].key_u && he[j].key_v == he[i].key_v) j++;
         if (j - i == 1) {
             int32_t va = he[i].va, vb = he[i].vb, opp = he[i].opp;
-            if (edge_in_seam_plane(verts, va, vb, planes, np, (double)band)) {
+            if (SeamPlanes_edge_in(verts, va, vb, planes, np, (double)band)) {
                 init[n_init].va = va; init[n_init].vb = vb; init[n_init].v_opp = opp;
                 n_init++;
             } else {
@@ -533,7 +432,7 @@ int SeamWeld_bridge(Arena_T arena,
         i = j;
     }
 
-    /* 3b) Grazing-seam promotion. edge_in_seam_plane's parallel test rejects
+    /* 3b) Grazing-seam promotion. SeamPlanes_edge_in's parallel test rejects
      * boundary edges that RUN ACROSS the plane -- right for grid-perimeter
      * edges, wrong at a GRAZING seam (the wrap running parallel to the cube
      * face, e.g. the umbilicus-aligned band of every seam plane): there the
@@ -550,22 +449,20 @@ int SeamWeld_bridge(Arena_T arena,
      * also face each other within reach across a plane -- promoting those
      * re-admits cross-wrap mergers (4x5x5 A/B: handles 7 -> 14). So a pair
      * only counts as opposing if it is same-wrap by the winding phase
-     * w = r/pitch - theta/2pi about the umbilicus (|dw| <= tol), read from the
-     * same SEAM_UMBILICUS_{Y,X} / SEAM_WRAP_PITCH / SEAM_WIND_TOL env the
-     * bridge gate uses. Without that scroll knowledge the promotion CANNOT
-     * tell wraps apart and stays OFF. SEAM_NO_GRAZING_PROMOTE=1 also disables. */
+     * w = r/pitch - theta/2pi about the umbilicus (|dw| <= tol), taken from the
+     * same BpaBridgeGate the bridge uses. Without that scroll knowledge the
+     * promotion CANNOT tell wraps apart and stays OFF -- which is also the case
+     * for a phase-2 pair re-weld (gate == NULL): there the cloud is already
+     * restricted to two confirmed sheets, so promotion is neither needed nor
+     * safe. SEAM_NO_GRAZING_PROMOTE=1 also disables. */
     uint8_t *promoted_vert = NULL;  /* marks verts of promoted (grazing) edges;
                                      * their bridge faces bypass the straddle
                                      * test in the merge filter below. */
     double grz_umb_y = 0.0, grz_umb_x = 0.0, grz_pitch = 0.0, grz_tol = 0.0;
     {
-        const char *e = NULL;
-        if ((e = sf_env("SEAM_UMBILICUS_Y"))) grz_umb_y = atof(e);
-        if ((e = sf_env("SEAM_UMBILICUS_X"))) grz_umb_x = atof(e);
-        if ((e = sf_env("SEAM_WRAP_PITCH"))) { double v = atof(e); if (v > 0) grz_pitch = v; }
-        if (grz_pitch > 0.0 && (grz_umb_y != 0.0 || grz_umb_x != 0.0)) {
-            grz_tol = 0.25;   /* mirrors SEAM_WIND_TOL_DEFAULT_TURNS */
-            if ((e = sf_env("SEAM_WIND_TOL"))) { double v = atof(e); if (v > 0) grz_tol = v; }
+        if (gate && gate->pitch > 0.0 && (gate->umb_y != 0.0 || gate->umb_x != 0.0)) {
+            grz_umb_y = gate->umb_y; grz_umb_x = gate->umb_x; grz_pitch = gate->pitch;
+            grz_tol = (gate->tol > 0.0) ? gate->tol : 0.25;
         }
     }
     if (n_excl > 0 && grz_tol > 0.0 && !sf_env("SEAM_NO_GRAZING_PROMOTE")) {
@@ -674,6 +571,19 @@ int SeamWeld_bridge(Arena_T arena,
         free(hchain); free(hidx); free(hkey); free(mid);
     }
 
+    /* Phase-2 restriction: keep only front edges wholly inside want_mask (the
+     * two confirmed sheets of a pair re-weld). The cloud (built from init verts
+     * below) is thereby restricted to those two sheets, so a gate-off permissive
+     * weld can only join them. NULL want_mask = the primary weld (all edges). */
+    if (want_mask) {
+        size_t w = 0;
+        for (size_t i = 0; i < n_init; i++) {
+            int32_t a = init[i].va, b = init[i].vb, o = init[i].v_opp;
+            if (want_mask[a] && want_mask[b] && want_mask[o]) init[w++] = init[i];
+        }
+        n_init = w;
+    }
+
     /* Emit the init-front diagnostic BEFORE any early-out, so an empty or
      * under-detected front (n_init == 0) is itself visible in the dump. */
     {
@@ -748,12 +658,27 @@ int SeamWeld_bridge(Arena_T arena,
             "median=%.2f -> rho=%.2f..%.2f\n",
             np, n_init, ln, s_med, base, rho_max);
 
+    /* Coarse-rim detector: the one-line tripwire for THIS bridge's silent
+     * failure class. A front triangle primes only when its circumradius fits
+     * the ball (<= rho_max); a rim spaced much beyond ~1.2*rho_max cannot
+     * prime anywhere and the seam stays open with a clean-looking audit
+     * (measured: 11.7-vox rims -> 2 bridge faces, 23.5k unpaired). If this
+     * fires, an upstream densifier is missing (grid_weld's seam refine off?)
+     * or a producer shipped a coarse rim. */
+    if (s_med > 1.5 * rho_max) {
+        fprintf(stderr,
+            "  [seam] WARNING: boundary-edge median %.2f vox >> bridge reach "
+            "(rho_max %.2f): front triangles cannot prime, expect a near-zero "
+            "bridge. Refine the seam band before bridging (SEAM_NO_REFINE "
+            "unset?) or ship finer rims.\n", s_med, rho_max);
+    }
+
     /* 6) Bridge (single call; radius escalation happens inside BallPivot_bridge,
      *    where all radii share one edge store so the glue stays manifold). */
     int32_t *bridge_local = NULL;
     size_t n_bridge = 0;
     BallPivot_bridge(arena, lv, lnrm, ln, (float)base, (float)rho_max,
-                     init_local, n_init, &bridge_local, &n_bridge);
+                     init_local, n_init, gate, &bridge_local, &n_bridge);
     fprintf(stderr, "  [seam] BPA produced %zu bridge faces\n", n_bridge);
 
     /* 7) Combine all original faces + bridge faces, manifold-guarded. Drop a
@@ -781,7 +706,7 @@ int SeamWeld_bridge(Arena_T arena,
         int32_t g1 = l2g[bridge_local[f*3+1]];
         int32_t g2 = l2g[bridge_local[f*3+2]];
         if (g0 == g1 || g1 == g2 || g0 == g2) continue;        /* degenerate */
-        if (face_seam_plane(verts, g0, g1, g2, planes, np, (double)band) < 0) {
+        if (SeamPlanes_face_straddle(verts, g0, g1, g2, planes, np, (double)band) < 0) {
             /* The straddle test assumes the sheet CROSSES the plane; at a
              * grazing seam legit closure faces can sit entirely on one side.
              * Bypassing it for faces touching a promoted vert was tried and

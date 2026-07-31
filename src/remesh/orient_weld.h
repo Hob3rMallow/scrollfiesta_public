@@ -39,4 +39,40 @@ int OrientWeld_components(Arena_T arena,
                           float radius,
                           size_t *out_flipped);
 
+/*
+ * OrientWeld_components_axis -- the same pass with a RADIAL fallback for
+ * components the spatial vote cannot reach.
+ *
+ * A detached component (nothing from another component within `radius`
+ * anywhere -- e.g. an outer-shell fragment whose connecting geometry was
+ * never meshed) collects ZERO near pairs, so the spatial vote is silent and
+ * the component keeps whatever global sign the per-cube (1,1,1) MLS anchor
+ * gave it. For a scroll that sign is azimuth-dependent: shells on the far
+ * side of the umbilicus come out backward (2026-07-10 orientation audit:
+ * 13/26 components on grid_4x5x5_v5_full).
+ *
+ * Fallback: when a component's spatial evidence is WEAK -- fewer than 100
+ * near pairs and less than one pair per component vertex (a glancing touch;
+ * on the real scroll a 39k-vert shell collected 14 incidental pairs voting
+ * +12 against a radial vote of -37k) -- and an axis is given (axis_point /
+ * axis_dir, (z,y,x) voxel coords -- the scroll umbilicus), flip it if
+ * sign( sum_v n_v . r_hat_v ) disagrees with the ANCHOR (largest)
+ * component's radial sign. Radial facing is per-wrap-consistent and azimuth-
+ * free, so it anchors far components without any proximity requirement.
+ * Components with decisive spatial evidence are decided by the spatial vote
+ * exactly as before. axis_point == NULL (or a ~zero direction) reproduces
+ * OrientWeld_components bit-for-bit.
+ *
+ *   out_radial  (optional) components decided by the radial fallback
+ *               (counted whether or not they needed a flip)
+ */
+int OrientWeld_components_axis(Arena_T arena,
+                               const float *verts, size_t nv,
+                               int32_t *faces, size_t nf,
+                               float radius,
+                               const float *axis_point,
+                               const float *axis_dir,
+                               size_t *out_flipped,
+                               size_t *out_radial);
+
 #endif

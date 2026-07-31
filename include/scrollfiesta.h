@@ -63,7 +63,7 @@ extern "C" {
  * ════════════════════════════════════════════════════════════════════════ */
 
 #define SCROLLFIESTA_VERSION_MAJOR 0
-#define SCROLLFIESTA_VERSION_MINOR 9
+#define SCROLLFIESTA_VERSION_MINOR 10
 #define SCROLLFIESTA_VERSION_PATCH 0
 
 /* Bumped on ANY breaking change to a struct, enum, or signature in this
@@ -368,6 +368,31 @@ typedef struct sf_pipeline_report {
     double t_extract, t_qem, t_trim, t_dump;
     size_t n_bad_sheets;        /* components flagged by the dev gate        */
 } sf_pipeline_report;
+
+/* Gradual multi-winding growth gate (optional).
+ *
+ * A purely local pairwise winding test cannot see a Ball-Pivoting front that
+ * walks gradually up a through-thickness wall: every individual edge looks
+ * innocent while one growth front accumulates several complete turns, fusing
+ * wraps. Arming this gate integrates the branch-cut-free local phase step
+ * dw = dr/pitch - dtheta/(2*pi) from each seed and refuses a pivot once the
+ * accumulated phase leaves [-tol,+tol]; re-seeding then reconstructs the next
+ * wrap as a distinct component.
+ *
+ * It has no dedicated config field — like the weld's rho_max it is reached
+ * through documented knobs, so pass them in sf_common_opts.tuning (per call,
+ * no process environment involved). ALL FOUR are required to arm it; any
+ * missing or out-of-range value leaves the historical ungated behaviour:
+ *
+ *   BPA_GROW_UMBILICUS_Y  scroll axis y, source-space voxels
+ *   BPA_GROW_UMBILICUS_X  scroll axis x, source-space voxels
+ *   BPA_GROW_WRAP_PITCH   radial spacing per turn, voxels (> 0)
+ *   BPA_GROW_WIND_TOL     max accumulated seed phase, turns (0 < tol < 0.5)
+ *
+ * PHerc0139, for example: {"3405","2878","9.5","0.45"}. The origin the phase
+ * is measured against is sf_pipeline_config.origin_xyz, so no extra plumbing
+ * is needed. The grid_pipeline CLI arms the same gate from
+ * --umb-y/--umb-x/--wrap-pitch/--grow-wind-tol. */
 
 /* ══════════════════════════════════════════════════════════════════════════
  * Weld (experimental — probe the table entry for NULL before calling; a

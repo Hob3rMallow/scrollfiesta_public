@@ -39,8 +39,15 @@
 typedef struct SeamHoleFillParams {
     double cube;            /* seam-plane spacing (voxels), e.g. 128 */
     double band;            /* a loop is near-seam if within this of a plane */
-    double max_extent;      /* bbox-diagonal cap (vox); < inter-wrap clearance */
-    int    max_loop;        /* largest boundary loop (edges) to fill, e.g. 8 */
+    double max_extent;      /* bbox-diagonal cap (vox); phase gate is the real
+                             * wrap guard when armed (unarmed clamps to 4) */
+    int    max_loop;        /* largest boundary loop (edges) to fill, e.g. 12 */
+    double near_vox;        /* PHASE-GATED ONLY: also accept a non-straddling
+                             * loop whose bbox lies entirely within this of a
+                             * seam plane. The weld's trim inset + bridge pull
+                             * some seam punctures fully to one side of the
+                             * plane (observed 1-2 vox); the strict straddle
+                             * test left those open forever. */
     /* Winding-phase gate (mirrors the seam-weld gate). pitch <= 0 disables it,
      * in which case a tighter extent cap is used instead. */
     double umb_y, umb_x, pitch;
@@ -59,8 +66,10 @@ typedef struct SeamHoleFillStats {
     size_t skip_bubble;        /* rejected: sole boundary loop of its component */
 } SeamHoleFillStats;
 
-/* Fill p->cube/band/etc with sensible defaults (cube 128, band 6, max_extent 6,
- * max_loop 8, wind_tol 0.25, phase gate disabled until umbilicus/pitch set). */
+/* Fill p->cube/band/etc with sensible defaults (cube 128, band 6, max_extent 8,
+ * max_loop 12, near_vox 3, wind_tol 0.25, phase gate disabled until
+ * umbilicus/pitch set — unarmed, the extent cap clamps to 4 and the straddle
+ * requirement stays strict). */
 void SeamHoleFill_default_params(SeamHoleFillParams *p);
 
 /* Close merger-safe seam punctures in `cm`. cm->faces is arena-reallocated and

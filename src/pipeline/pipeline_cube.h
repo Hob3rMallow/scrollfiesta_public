@@ -34,9 +34,29 @@ typedef struct {
     int         cube_D, cube_H, cube_W;
     int         n_threads;
     float       qem_target_ratio; /* 0 = use pipeline_constants default */
+    float       trim_inset;      /* owned-box inset, vox; < 0 = the
+                                  * BPA_OWNED_TRIM_INSET default (1.0).
+                                  * 0 = charts reach the cube faces: REQUIRED
+                                  * for the incremental whole-grid unwrap
+                                  * (no seam bridge to span a gap; the
+                                  * mutual-nearest weld merges the near-
+                                  * coincident boundary rows instead). Keep
+                                  * the default for the grid_weld path -- its
+                                  * seam bridge NEEDS the 2*inset gap. */
     const char *dump_dir;        /* if non-NULL, writes per-stage OBJs under
                                   * <dump_dir>/<cube_id>/<cube_id>_<stage>/ */
     int         skip_qem;
+    int         simplify_engine; /* 1 = CVT/RVD remesher (the default; main.c +
+                                  * grid_pipeline.c both default to 1);
+                                  * 0 = QEM (--simplify qem), also the
+                                  * fail-closed fallback on CVT errors */
+    int         dump_final_only; /* nonzero = write ONLY step12_final (the
+                                  * grid_weld input). The full intermediate
+                                  * stage set (~300 MB/dense cube of text OBJ)
+                                  * is a seam-debug affordance; at fleet
+                                  * concurrency it IO-bounds the whole grid
+                                  * run. Re-run a single cube without this
+                                  * flag to regenerate its stage dumps. */
 
     /* Optional in-memory input. When vol_in != NULL the TIFF/halo loaders are
      * bypassed: vol_in is a padded (p_size_in)^3 uint8 buffer whose (0,0,0) is

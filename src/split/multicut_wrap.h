@@ -42,6 +42,10 @@ int LiftedMulticut_kernighan_lin(
     int32_t       *out_labels,
     int32_t       *out_num_clusters);
 
+/* Regression for coalesced parallel lifted edges: their weights must be
+ * accumulated by graph edge id rather than shifted by input position. */
+int LiftedMulticut_selftest(void);
+
 #ifdef __cplusplus
 }
 #endif

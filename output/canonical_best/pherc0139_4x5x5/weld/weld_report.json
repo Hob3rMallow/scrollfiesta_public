@@ -1,0 +1,25 @@
+{
+  "cubes_processed": 100,
+  "total_input_verts": 113112,
+  "total_unique_verts": 588279,
+  "total_input_faces": 195228,
+  "total_unique_faces": 384806,
+  "recoarsen": {
+    "collapses": 350320,
+    "faces_in":  1117490,
+    "faces_out": 416850
+  },
+  "band_cvt": {
+    "patches_accepted": 530,
+    "patches_rejected": 2253,
+    "band_faces_in":  73645,
+    "band_faces_out": 41601
+  },
+  "manifold_audit": {
+    "unpaired":     35500,
+    "non_manifold": 0,
+    "same_dir_pairs": 427,
+    "manifold_pairs": 559032,
+    "pinch_verts":   0
+  }
+}

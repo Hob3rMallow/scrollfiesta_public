@@ -39,7 +39,6 @@ except.c         (depends on arena for Except_T defs only)
     |
     +--- bfs.c          (depends on arena, csr)
     |
-    +--- ply_io.c       (depends on arena)
     |
     +--- obj_io.c       (depends on arena)
 ```
@@ -813,49 +812,6 @@ int TiffIO_save(const char *path,
 
 ---
 
-## 10. ply_io.h — Binary PLY I/O
-
-**Prefix**: `PlyIO_`
-**Source**: `ply_io.c`, `ply_io.h`
-**Dependencies**: `arena.h`
-**Book refs**: c-style-guide §11.3.5; STAGE_5 §9.1
-
-### Purpose
-
-Read/write binary PLY files for PoissonRecon interface. PoissonRecon takes
-oriented point clouds (vertices + normals) as input PLY and produces a
-triangle mesh as output PLY.
-
-### Interface
-
-```c
-/* Write oriented point cloud as binary little-endian PLY.
- * verts[n*3] = positions, normals[n*3] = unit normals. */
-int PlyIO_write_points(const char *path,
-                       const float *verts, const float *normals, size_t n);
-
-/* Read triangle mesh from binary PLY (PoissonRecon output).
- * Arena-allocates verts, faces, and optionally density.
- * Returns 0 on success. */
-int PlyIO_read_mesh(Arena_T arena, const char *path,
-                    float **out_verts, size_t *out_nv,
-                    int32_t **out_faces, size_t *out_nf,
-                    float **out_density);  /* may be NULL if not needed */
-```
-
-### Key Rules
-
-1. **Write in one `write()` call** when possible. Buffer the entire PLY
-   (header + data) and write once. Reduces syscall overhead.
-2. **Binary little-endian** format on both platforms (both are x86_64).
-   No byte-swapping needed.
-3. **Arena-allocate read buffers.** The PLY data for one component
-   (~600 KB vertices + ~1.2 MB faces) is small. Use arena save/restore
-   to reclaim I/O scratch after copying results.
-   [STAGE_5 §1.2.2]
-
----
-
 ## 11. obj_io.h — OBJ I/O (Debug Only)
 
 **Prefix**: `ObjIO_`
@@ -1032,7 +988,7 @@ RELEASE_FLAGS = -O2 -DNDEBUG -fopenmp
 
 COMMON_SRC = common/arena.c common/except.c common/csr.c common/kdtree.c \
              common/union_find.c common/bfs.c common/pca.c \
-             common/tiff_io.c common/ply_io.c common/obj_io.c
+             common/tiff_io.c common/obj_io.c
 COMMON_OBJ = $(COMMON_SRC:.c=.o)
 
 # External deps

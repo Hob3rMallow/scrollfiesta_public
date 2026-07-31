@@ -49,6 +49,45 @@ int BallPivot_reconstruct(Arena_T arena,
                           size_t *out_nf);
 
 /*
+ * Optional growth-scoped winding anchor for per-cube reconstruction.
+ *
+ * A local pairwise winding test is insufficient when BPA walks gradually up a
+ * through-thickness wall: every individual edge can be innocent while one
+ * growth front accumulates several complete turns.  The gated entry point
+ * integrates the branch-cut-free local phase step
+ *
+ *     dw = dr / pitch - dtheta / (2*pi)
+ *
+ * from each seed and rejects a pivot once the accumulated phase leaves
+ * [-tol,+tol].  Re-seeding then reconstructs the next wrap as a distinct mesh
+ * component.  `verts` remain cube-local; origin_y/x convert them to the world
+ * frame containing umb_y/x.
+ *
+ * Pass NULL (or pitch/tol <= 0) for the historical ungated behaviour.
+ */
+typedef struct {
+    double umb_y, umb_x;       /* world-space scroll umbilicus */
+    double origin_y, origin_x; /* cube-local -> world translation */
+    double pitch;              /* radial spacing per turn (vox) */
+    double tol;                /* maximum accumulated seed phase (turns) */
+} BpaReconGate;
+
+int BallPivot_reconstruct_gated(Arena_T arena,
+                                const float *verts,
+                                const float *normals,
+                                size_t nv,
+                                float rho,
+                                const BpaReconGate *gate,
+                                int32_t **out_faces,
+                                size_t *out_nf);
+
+/* Populate a per-cube gate from BPA_GROW_UMBILICUS_Y/X,
+ * BPA_GROW_WRAP_PITCH and BPA_GROW_WIND_TOL. `origin_zyx` is the cube's world
+ * origin; NULL means {0,0,0}. Returns 1 when all required values are valid and
+ * the gate is armed, otherwise zeroes `out` and returns 0. */
+int BpaReconGate_from_env(BpaReconGate *out, const float origin_zyx[3]);
+
+/*
  * Seam-bridge BPA. Same rolling-ball machinery as BallPivot_reconstruct,
  * but instead of auto-seeding it is primed with an explicit initial front
  * of boundary edges and never re-seeds. Used to weld two independently
@@ -89,6 +128,20 @@ typedef struct {
     int32_t va, vb, v_opp;
 } BpaInitEdge;
 
+/* Winding-gate parameters for the seam bridge. The gate rejects a bridge that
+ * connects two DIFFERENT wraps, by winding phase w = r/pitch - theta/2pi about
+ * the scroll umbilicus (see the gate in bpa_try_candidate). ARMED only when
+ * pitch > 0 AND an umbilicus is supplied; otherwise the gate is OFF (the caller
+ * uses this for a restricted-cloud permissive weld, where cloud restriction is
+ * the safety, not the gate). tol = phase tolerance (turns); hard = unconditional
+ * cap (turns, <=0 = none). Pass NULL to BallPivot_bridge for gate-off. */
+typedef struct {
+    double umb_y, umb_x;
+    double pitch;
+    double tol;
+    double hard;
+} BpaBridgeGate;
+
 int BallPivot_bridge(Arena_T arena,
                      const float *verts,
                      const float *normals,
@@ -97,6 +150,7 @@ int BallPivot_bridge(Arena_T arena,
                      float rho_max,
                      const BpaInitEdge *init_edges,
                      size_t n_init,
+                     const BpaBridgeGate *gate,
                      int32_t **out_faces,
                      size_t *out_nf);
 

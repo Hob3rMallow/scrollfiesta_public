@@ -1,0 +1,2 @@
+canonical run -- grid=D:\work\vesuvius-c\PHerc0139-4x21x21-cubes tree=D:\work\scrollfiesta_public started 2026-07-30T23:09:42
+grid_pipeline: exit=1 t=2,366.6s

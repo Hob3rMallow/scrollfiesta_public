@@ -9,8 +9,10 @@
  * "Kibble" removal: a connectivity pass + surface-area filter, run after
  * hole-fill/QEM. Splits every input mesh into its mesh-connectivity-components,
  * computes each component's triangle-area sum, and drops any component whose area
- * is < min_frac of the TOTAL meshed area across all inputs (e.g. min_frac =
- * KIBBLE_AREA_FRAC = 0.02 drops anything under 2% of the cube's meshed surface).
+ * is < min_frac of its PARENT input mesh's area. The input array already carries
+ * the semantic sheet split; using the whole-cube total catastrophically removes
+ * valid wraps when a cube contains more than 1/min_frac sheets. At least the
+ * largest connectivity component of every non-empty input is retained.
  *
  * Output is the surviving components, one ComponentMesh per kept connectivity-
  * component (arena-allocated, comp_id reassigned 1..*n_out, pca_normal/centroid

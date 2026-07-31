@@ -1,42 +1,49 @@
 # Third-party licenses
 
-ScrollFiesta's own code is MIT-licensed (see `LICENSE`). The vendored
-dependencies under `deps/src/` are **not** covered by that grant; each carries
-its own license, summarized below. The full license texts live inside each
-dependency's directory.
+ScrollFiesta's own code is MIT-licensed (see `LICENSE`). Vendored dependencies
+retain their own terms. This file is a practical inventory, not legal advice;
+use the license/notice files in each dependency directory as the authoritative
+text.
 
-## ⚠ Triangle — restricted commercial distribution
+## Important redistribution restrictions
 
-**`deps/src/triangle/`** — Jonathan Shewchuk's Triangle (constrained Delaunay
-triangulation; used by the hole-filling stage). License terms (from
-`deps/src/triangle/README`):
+### GCoptimization 3.0 — research use only
 
-> These programs may be freely redistributed under the condition that the
-> copyright notices [...] are not removed, **and no compensation is
-> received**. Private, research, and institutional use is free. [...]
-> Distribution of this code as part of a commercial system is permissible
-> **ONLY BY DIRECT ARRANGEMENT WITH THE AUTHOR.**
+`docs/research/gco-v3.0/` is compiled into the overlap/ownership solver used by
+the supported library and `scroll_unroll`. Its `GCO_README.TXT` permits use and
+distribution for **research purposes only**, prohibits commercial use, restricts
+redistribution, and requires the listed publications to be cited. Do not ship a
+commercial binary containing this code without separate permission or replacing
+the solver.
 
-This means ScrollFiesta binaries containing Triangle may be redistributed
-freely for non-commercial purposes with notices intact, but may **not** be
-sold or distributed as part of a commercial system without an arrangement
-with the author. If that constraint matters for your use, build without the
-CDT hole-fill path or contact the author. (A future build option to swap in a
-permissively-licensed CDT is on the roadmap.)
+### Triangle — restricted commercial distribution
 
-## Compiled into the library / binaries
+`deps/src/triangle/` is used for constrained-Delaunay hole filling. Its README
+permits free redistribution only when notices remain and no compensation is
+received; distribution as part of a commercial system requires a direct
+arrangement with Jonathan Shewchuk. Build without that path or obtain permission
+if commercial distribution matters.
 
-| Dependency | Path | License | Used for |
+## Dependencies compiled by supported builds
+
+| Dependency | Path | Terms / notice | Used for |
 |---|---|---|---|
-| Triangle | `deps/src/triangle/` | Shewchuk's custom terms (see above) | CDT hole filling |
-| Clipper2 | `deps/src/Clipper2/` | Boost Software License 1.0 (`deps/src/Clipper2/LICENSE`) | 2D polygon booleans in hole filling |
-| andres/graph | `deps/src/graph/` | No license text in the vendored copy; header-only, from <http://www.andres.sc/graph.html> / <https://github.com/bjoern-andres/graph> — verify upstream terms before commercial redistribution | Lifted-multicut solver (overlap separation) |
-| libtiff 4.7.1 | `deps/src/tiff-4.7.1/` | libtiff license (BSD-like; `deps/src/tiff-4.7.1/LICENSE.md`) | TIFF I/O — **Windows builds and CLI tools only**; the library core can be built without TIFF (`SCROLLFIESTA_WITH_TIFF=OFF`), and Linux tool builds link the system libtiff |
-| zlib | `deps/src/zlib/` | zlib license (`deps/src/zlib/LICENSE`) | libtiff dependency (Windows builds only) |
+| GCoptimization 3.0 | `docs/research/gco-v3.0/` | Research-only custom license and citation requirements in `GCO_README.TXT` | Graph-cut overlap ownership |
+| Triangle | `deps/src/triangle/` | Shewchuk custom non-commercial redistribution terms in `README` | CDT hole filling |
+| Clipper2 | `deps/src/Clipper2/` | Boost Software License 1.0 in `LICENSE` | 2D polygon booleans |
+| andres/graph | `deps/src/graph/` | Vendored copy has no license text; verify upstream terms before redistribution | Lifted-multicut graph structures |
+| attene-predicates | `deps/src/attene-predicates/` | Clean-room/project-authored subset; its README states it is covered by this repository's MIT license | Exact CVT/RVD predicates |
+| libtiff 4.7.1 | `deps/src/tiff-4.7.1/` | BSD-like libtiff license in `LICENSE.md` | TIFF CLI I/O; optional in library-only builds |
+| zlib | `deps/src/zlib/` | zlib license in `LICENSE` | Windows libtiff dependency |
+| stb_image_write | `deps/include/stb_image_write.h` | Public-domain/MIT dual offer in the header | PNG diagnostic output |
 
-## Present in the tree but NOT compiled or linked
+## Dependencies used by auxiliary atlas tools
 
-| Dependency | Path | License | Status |
+| Dependency | Path | Terms / notice | Used for |
 |---|---|---|---|
-| PoissonRecon | `deps/src/PoissonRecon/` | MIT/BSD-style (`deps/src/PoissonRecon/LICENSE`) | Vestigial — belonged to the retired Marching-Cubes/Poisson pipeline; not built by any current build system |
-| probabilistic-quadrics | `deps/src/probabilistic-quadrics/` | MIT (`deps/src/probabilistic-quadrics/LICENSE`) | Reference only — the probabilistic-quadric term in `src/common/qem.c` is an independent C reimplementation of the paper; the header is not included |
+| TAUCS | `deps/taucs/` | LGPL-3.0-or-later, GPL-3.0-or-later, or Apache-2.0 choice, plus the research-citation requirement in `LICENSE.txt` | Sparse solves in atlas tooling |
+| CLAPACK 3.1.1 | `deps/clapack/` | Netlib CLAPACK/LAPACK distribution; no single top-level license file is present in this vendored release. Preserve its notices and audit the distribution before redistribution. | BLAS/LAPACK support for TAUCS |
+| f2c runtime | `deps/clapack/F2CLIBS/` | AT&T/Lucent/Bellcore permission notice in `libf2c/Notice` plus notices in the bundled sources | CLAPACK runtime support |
+
+The unused PoissonRecon and probabilistic-quadrics source drops were removed;
+no current build includes them.

@@ -112,10 +112,7 @@
     <ClCompile Include="src\common\tiff_io.c">
       <Filter>Source Files\common</Filter>
     </ClCompile>
-    <ClCompile Include="src\common\ply_io.c">
-      <Filter>Source Files\common</Filter>
-    </ClCompile>
-    <ClCompile Include="src\common\obj_io.c">
+<ClCompile Include="src\common\obj_io.c">
       <Filter>Source Files\common</Filter>
     </ClCompile>
     <ClCompile Include="src\common\dump_obj.c">
@@ -232,10 +229,7 @@
     <ClInclude Include="src\common\tiff_io.h">
       <Filter>Header Files\common</Filter>
     </ClInclude>
-    <ClInclude Include="src\common\ply_io.h">
-      <Filter>Header Files\common</Filter>
-    </ClInclude>
-    <ClInclude Include="src\common\obj_io.h">
+<ClInclude Include="src\common\obj_io.h">
       <Filter>Header Files\common</Filter>
     </ClInclude>
     <ClInclude Include="src\common\obj_colors.h">

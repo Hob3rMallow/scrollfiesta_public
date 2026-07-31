@@ -1,0 +1,8 @@
+[reregister] 998 cubes; pitch=11.393 (auto) pair_gate=3.50 spiral a=0.377677 b=11.392883 sense=1
+[reregister] graph: 8139 nodes, 9709 edges (pairs used=68688, rej radius/frac=0/12) (0.3s)
+[group_graph] nodes=8139 edges=9709 comps=1302 energy=6643.9 frustrated=418 moves=43 anchor=0.018926 redundancy=0.420 pairs used=68688 rej r/frac=0/12 edges rej dr/prior=96/0
+[reregister] solve (forest; k-gauge=raw, du-gauge=seam, anchor=0.0189255): 1302 component(s), energy=6643.9, frustrated=418 edges, moves=43 (1.1s)
+[reregister] polish skipped: raw component gauge is incompatible with unconstrained per-cube integer sweeps
+[uwarp] APPLIED: 64543 springs, 7516 nodes (1243 scalar, 4145 turn-off gated, 4460 likelihood-downweighted); mismatch median 0.951 -> 0.612 vox (p95 12.811 -> 5.977); max|warp|=40.00 (0.9s)
+[reregister] finalize done (0 failed) in 0.8s
+[reregister] index rewritten (output\pherc0139_10x10x10_gpu_run_20260730\placed/placed_index.json kept as .bak); u span 265917 vox (3.2s total)

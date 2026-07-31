@@ -344,8 +344,9 @@ SF_API sf_status sf_weld(const sf_mesh *meshes, size_t n_meshes,
         if (SeamWeld_bridge(g.arena, wverts, wnv, cat_faces, wnf,
                             cfg->cube_size > 0.f ? cfg->cube_size : 128.f,
                             cfg->rho > 0.f ? cfg->rho : 1.5f,
+                            0.0f, /* default conservative rho cap */
                             cfg->band > 0.f ? cfg->band : 6.0f,
-                            &bfaces, &bnf, &n_bridge) != 0) {
+                            NULL, NULL, &bfaces, &bnf, &n_bridge) != 0) {
             rc = SF_ERROR;
         }
         if (rep)

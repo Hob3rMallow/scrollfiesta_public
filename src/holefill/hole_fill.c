@@ -29,9 +29,54 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* ------------------------------------------------------------------
+ * Directed boundary-adjacent edge index.
+ *
+ * orient_fill and the fan-fallback manifold checks need two mesh queries
+ * per hole-boundary edge: "which direction does the mesh wind edge
+ * (a,b)?" and "does edge {a,b} exist at all?". The old code answered by
+ * scanning ALL mesh faces per query — on the 4x5x5 weld (2.9M faces,
+ * ~3.4k holes) that was ~75 billion face visits = 127 s of a 351 s weld.
+ *
+ * Every query pair has both endpoints on a boundary loop, so one pass
+ * over the faces indexes just the directed half-edges whose endpoints
+ * are boundary-loop verts (open-addressing hash). `minf` keeps the
+ * SMALLEST face index containing each half-edge: the old scan broke at
+ * the first face containing either direction, so "direction of the
+ * lower-indexed face wins" reproduces it exactly (bit-identical output).
+ * The mesh is immutable during a fill pass (patches stitch at the end),
+ * so the index stays valid for the whole pass.
+ * ------------------------------------------------------------------ */
+typedef struct {
+    uint64_t *keys;   /* directed edge key (a<<32)|b; UINT64_MAX = empty */
+    int32_t  *minf;   /* smallest face index containing that half-edge */
+    size_t    tsize;  /* power-of-two slot count (0 = empty index) */
+} HFEdgeIndex;
+
+static inline uint64_t hf_mix64(uint64_t h)
+{
+    h ^= h >> 30; h *= 0xBF58476D1CE4E5B9ULL;
+    h ^= h >> 27; h *= 0x94D049BB133111EBULL;
+    h ^= h >> 31;
+    return h;
+}
+
+/* Smallest face index containing directed half-edge a->b, or INT32_MAX. */
+static int32_t hf_eidx_find(const HFEdgeIndex *eidx, int32_t a, int32_t b)
+{
+    if (eidx == NULL || eidx->tsize == 0) return INT32_MAX;
+    uint64_t key = ((uint64_t)(uint32_t)a << 32) | (uint64_t)(uint32_t)b;
+    size_t h = (size_t)(hf_mix64(key) & (uint64_t)(eidx->tsize - 1));
+    for (;;) {
+        uint64_t k = eidx->keys[h];
+        if (k == key) return eidx->minf[h];
+        if (k == UINT64_MAX) return INT32_MAX;
+        h = (h + 1) & (eidx->tsize - 1);
+    }
+}
+
 /* Forward decl: used before its static definition (clang errors otherwise). */
-static int loop_diag_in_mesh(int32_t va, int32_t vb,
-                             const int32_t *mesh_faces, size_t mesh_nf);
+static int loop_diag_in_mesh(int32_t va, int32_t vb, const HFEdgeIndex *eidx);
 
 /* Triangle library */
 #define ANSI_DECLARATORS
@@ -1285,7 +1330,7 @@ static int smooth_fill_cotangent(Arena_T arena,
 /* If the mesh has half-edge a→b, the fill must have b→a.              */
 /* ------------------------------------------------------------------ */
 static void orient_fill(int32_t *fill_faces, size_t fill_nf,
-                        const int32_t *mesh_faces, size_t mesh_nf,
+                        const HFEdgeIndex *eidx,
                         const int32_t *bdry_map, size_t n_boundary)
 {
     if (n_boundary < 2 || fill_nf == 0) return;
@@ -1328,25 +1373,18 @@ static void orient_fill(int32_t *fill_faces, size_t fill_nf,
 
         /* The fill face, after stitch, will map local bi→bj to mesh_a→mesh_b,
          * and local bj→bi to mesh_b→mesh_a.
-         * Now check what direction the MESH has for edge {mesh_a, mesh_b}. */
+         * Now check what direction the MESH has for edge {mesh_a, mesh_b}.
+         * O(1) via the boundary-edge index; "the direction in the lowest-
+         * indexed face wins" replicates the old first-match face scan
+         * exactly (a face cannot contain both directions of one edge). */
         int mesh_has_ab = 0;
         int mesh_has_ba = 0;
-        for (size_t f = 0; f < mesh_nf; f++) {
-            int32_t v0 = mesh_faces[f*3+0];
-            int32_t v1 = mesh_faces[f*3+1];
-            int32_t v2 = mesh_faces[f*3+2];
-            if ((v0==mesh_a && v1==mesh_b) ||
-                (v1==mesh_a && v2==mesh_b) ||
-                (v2==mesh_a && v0==mesh_b)) {
-                mesh_has_ab = 1;
-                break;
-            }
-            if ((v0==mesh_b && v1==mesh_a) ||
-                (v1==mesh_b && v2==mesh_a) ||
-                (v2==mesh_b && v0==mesh_a)) {
-                mesh_has_ba = 1;
-                break;
-            }
+        {
+            int32_t fa = hf_eidx_find(eidx, mesh_a, mesh_b);
+            int32_t fb = hf_eidx_find(eidx, mesh_b, mesh_a);
+            if (fa < fb)      mesh_has_ab = 1;
+            else if (fb < fa) mesh_has_ba = 1;
+            /* both INT32_MAX: edge not in mesh at all */
         }
         if (!mesh_has_ab && !mesh_has_ba) continue;
 
@@ -1530,16 +1568,15 @@ int prune_degenerate_fill(float *verts, int32_t *faces,
     return changed;
 }
 
-/* fill_one_hole's manifold pre-check calls this before its definition below */
-static int loop_diag_in_mesh(int32_t va, int32_t vb,
-                             const int32_t *mesh_faces, size_t mesh_nf);
+/* fill_one_hole's manifold pre-check calls this before its definition below
+ * (declared once near the top of the file, next to HFEdgeIndex). */
 
 /* ------------------------------------------------------------------ */
 /* fill_one_hole — fill a single boundary loop                         */
 /* ------------------------------------------------------------------ */
 static int fill_one_hole(Arena_T arena,
                          const float *mesh_verts,
-                         const int32_t *mesh_faces, size_t mesh_nf,
+                         const HFEdgeIndex *eidx,
                          const int32_t *loop_verts, size_t n_loop,
                          HoleFillResult *result)
 {
@@ -2043,7 +2080,7 @@ static int fill_one_hole(Arena_T arena,
                 if (diff == 1 || diff == n_loop - 1) continue;
                 int32_t mesh_a = bdry_map[la];
                 int32_t mesh_b = bdry_map[lb];
-                if (loop_diag_in_mesh(mesh_a, mesh_b, mesh_faces, mesh_nf)) {
+                if (loop_diag_in_mesh(mesh_a, mesh_b, eidx)) {
                     found_bad = 1;
                 }
             }
@@ -2088,7 +2125,7 @@ static int fill_one_hole(Arena_T arena,
     HFLOG("    [fill_one_hole] orienting fill faces...\n");
     HFFLUSH();
     orient_fill(fill_faces, tri_nf,
-                mesh_faces, mesh_nf,
+                eidx,
                 bdry_map, n_loop);
 
     HFLOG("    [fill_one_hole] done: %zu verts, %zu faces\n", tri_nv, tri_nf);
@@ -2121,23 +2158,18 @@ static int fill_one_hole(Arena_T arena,
 /* closed regions; leaving them open is harmless, filling them creates */
 /* non-manifold output).                                               */
 /* ------------------------------------------------------------------ */
-static int loop_diag_in_mesh(int32_t va, int32_t vb,
-                             const int32_t *mesh_faces, size_t mesh_nf)
+static int loop_diag_in_mesh(int32_t va, int32_t vb, const HFEdgeIndex *eidx)
 {
     if (va == vb) return 0;
-    for (size_t f = 0; f < mesh_nf; f++) {
-        int32_t a = mesh_faces[f*3+0];
-        int32_t b = mesh_faces[f*3+1];
-        int32_t c = mesh_faces[f*3+2];
-        if ((a == va && b == vb) || (b == va && a == vb)) return 1;
-        if ((b == va && c == vb) || (c == va && b == vb)) return 1;
-        if ((a == va && c == vb) || (c == va && a == vb)) return 1;
-    }
+    /* Existence in either direction — order-independent, so the O(1)
+     * index lookups replicate the old full-face scan exactly. */
+    if (hf_eidx_find(eidx, va, vb) != INT32_MAX) return 1;
+    if (hf_eidx_find(eidx, vb, va) != INT32_MAX) return 1;
     return 0;
 }
 
 static int fan_safe(int apex_idx, const int32_t *loop_verts, size_t n_loop,
-                    const int32_t *mesh_faces, size_t mesh_nf)
+                    const HFEdgeIndex *eidx)
 {
     int32_t apex_v = loop_verts[apex_idx];
     for (size_t k = 0; k < n_loop; k++) {
@@ -2149,7 +2181,7 @@ static int fan_safe(int apex_idx, const int32_t *loop_verts, size_t n_loop,
         /* k is not the apex and not a boundary-edge neighbour of the
          * apex; the edge (apex, k) is a diagonal that the fan would
          * introduce. Reject if already in the mesh. */
-        if (loop_diag_in_mesh(apex_v, loop_verts[k], mesh_faces, mesh_nf))
+        if (loop_diag_in_mesh(apex_v, loop_verts[k], eidx))
             return 0;
     }
     return 1;
@@ -2157,7 +2189,7 @@ static int fan_safe(int apex_idx, const int32_t *loop_verts, size_t n_loop,
 
 static int fill_micro_hole(Arena_T arena,
                            const float *mesh_verts,
-                           const int32_t *mesh_faces, size_t mesh_nf,
+                           const HFEdgeIndex *eidx,
                            const int32_t *loop_verts, size_t n_loop,
                            HoleFillResult *result)
 {
@@ -2168,7 +2200,7 @@ static int fill_micro_hole(Arena_T arena,
      * the mesh wins. */
     int apex = -1;
     for (size_t i = 0; i < n_loop; i++) {
-        if (fan_safe((int)i, loop_verts, n_loop, mesh_faces, mesh_nf)) {
+        if (fan_safe((int)i, loop_verts, n_loop, eidx)) {
             apex = (int)i;
             break;
         }
@@ -2211,7 +2243,7 @@ static int fill_micro_hole(Arena_T arena,
     }
 
     /* Orient fill boundary to oppose mesh boundary half-edges */
-    orient_fill(fill_faces, n_tri, mesh_faces, mesh_nf, bmap, n_loop);
+    orient_fill(fill_faces, n_tri, eidx, bmap, n_loop);
 
     result->verts = fill_verts;
     result->faces = fill_faces;
@@ -2831,6 +2863,61 @@ size_t split_pinched_loop(Arena_T arena,
 /* interior_only == 0: fill every cleanly-fillable closed 4+ loop (the */
 /* per-cube behaviour; HoleFill_process wraps this).                   */
 /* ------------------------------------------------------------------ */
+/* Build the directed boundary-adjacent edge index for one fill pass (see
+ * the HFEdgeIndex comment at the top of the file). Inserts, in ascending
+ * face order, every directed half-edge whose endpoints BOTH lie on a
+ * boundary loop; the first insert wins, so minf[] holds the smallest face
+ * index automatically. Scratch lives on `arena` inside the caller's mark. */
+static void hf_eidx_build(Arena_T arena, const int32_t *faces, size_t nf,
+                          size_t nv, const UEdge *bdry_edges, size_t n_bdry,
+                          HFEdgeIndex *out)
+{
+    memset(out, 0, sizeof(*out));
+    if (nf == 0 || n_bdry == 0 || nv == 0) return;
+    uint8_t *isb = (uint8_t *)ARENA_CALLOC(arena, (long)nv, 1L);
+    for (size_t e = 0; e < n_bdry; e++) {
+        isb[bdry_edges[e].v0] = 1;
+        isb[bdry_edges[e].v1] = 1;
+    }
+    size_t cnt = 0;
+    for (size_t f = 0; f < nf; f++) {
+        for (int k = 0; k < 3; k++) {
+            int32_t a = faces[f*3 + k];
+            int32_t b = faces[f*3 + ((k + 1) % 3)];
+            if (isb[a] && isb[b]) cnt++;
+        }
+    }
+    if (cnt == 0) return;
+    size_t T = 64;
+    while (T < cnt * 2) T <<= 1;
+    out->keys = (uint64_t *)ARENA_ALLOC(arena,
+                    (long)T * (long)sizeof(uint64_t));
+    out->minf = (int32_t *)ARENA_ALLOC(arena,
+                    (long)T * (long)sizeof(int32_t));
+    memset(out->keys, 0xFF, T * sizeof(uint64_t));
+    out->tsize = T;
+    for (size_t f = 0; f < nf; f++) {
+        for (int k = 0; k < 3; k++) {
+            int32_t a = faces[f*3 + k];
+            int32_t b = faces[f*3 + ((k + 1) % 3)];
+            if (!isb[a] || !isb[b]) continue;
+            uint64_t key = ((uint64_t)(uint32_t)a << 32)
+                         | (uint64_t)(uint32_t)b;
+            size_t h = (size_t)(hf_mix64(key) & (uint64_t)(T - 1));
+            for (;;) {
+                uint64_t kk = out->keys[h];
+                if (kk == key) break;   /* dup half-edge: smaller f already won */
+                if (kk == UINT64_MAX) {
+                    out->keys[h] = key;
+                    out->minf[h] = (int32_t)f;
+                    break;
+                }
+                h = (h + 1) & (T - 1);
+            }
+        }
+    }
+}
+
 int HoleFill_process_ex(Arena_T arena,
                      float **verts, int32_t **faces,
                      size_t *nv, size_t *nf,
@@ -3023,6 +3110,12 @@ int HoleFill_process_ex(Arena_T arena,
         }
     }
 
+    /* Directed boundary-adjacent edge index: O(1) winding/existence queries
+     * for orient_fill + the fan fallback. Valid for the whole pass — the
+     * fill patches stitch in at the END, so *faces never changes under it. */
+    HFEdgeIndex eidx;
+    hf_eidx_build(arena, *faces, *nf, *nv, bdry_edges, n_bdry, &eidx);
+
     /* 3. Classify and fill interior holes. A pinched loop splits into several
      * sub-loops, each its own fill, so size for more than n_loops (guarded
      * below as a hard backstop against overflow). */
@@ -3158,7 +3251,7 @@ int HoleFill_process_ex(Arena_T arena,
             double t_hole0 = ves_clock_sec();
             HoleFillResult res;
             memset(&res, 0, sizeof(res));
-            int rc = fill_one_hole(arena, *verts, *faces, *nf, lv, loop_n, &res);
+            int rc = fill_one_hole(arena, *verts, &eidx, lv, loop_n, &res);
             double t_hole_ms = (ves_clock_sec() - t_hole0) * 1000.0;
             if (rc == 0) {
                 HFLOG("  [hole_fill] loop %zu.%zu: filled OK (%zu verts, %zu faces) [%.1f ms]\n",

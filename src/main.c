@@ -34,6 +34,7 @@
 #include "common/arena.h"
 #include "common/except.h"
 #include "common/dump_obj.h"
+#include "common/mls_project.h"
 #include "pipeline/pipeline_cube.h"
 
 #ifdef _OPENMP
@@ -58,10 +59,11 @@ static int get_thread_count(void)
 static void usage(const char *argv0)
 {
     fprintf(stderr,
-        "Usage: %s input.tif output.tif [--dump-obj dir] [--no-qem] "
-        "[--no-timeout] [--halo N]\n"
+        "Usage: %s input.tif output.tif [--dump-obj dir] [--dump-final-only] "
+        "[--no-qem] [--simplify qem|cvt] [--no-timeout] [--halo N] [--trim-inset F]\n"
         "   or: %s --stdin-raw <p_size> <oz> <oy> <ox> --dump-obj dir "
-        "[--halo N] [--no-qem] [--no-timeout]\n",
+        "[--dump-final-only] [--halo N] [--trim-inset F] [--no-qem] "
+        "[--simplify qem|cvt] [--no-timeout]\n",
         argv0, argv0);
 }
 
@@ -73,8 +75,11 @@ int main(int argc, char *argv[])
     const char *output_path = NULL;
     const char *dump_dir    = NULL;
     int skip_qem    = 0;
+    int simplify_engine = 1;    /* 1 = CVT/RVD (default), 0 = QEM (--simplify qem) */
+    int dump_final_only = 0;
     int no_timeout  = 0;
     int halo_voxels = 0;
+    float trim_inset = -1.0f;   /* < 0 = BPA_OWNED_TRIM_INSET default */
     int p_size = 0, oz = 0, oy = 0, ox = 0;
     int opt_start = 0;
 
@@ -97,12 +102,30 @@ int main(int argc, char *argv[])
             skip_qem = 1;
         } else if (strcmp(argv[i], "--qem") == 0) {
             skip_qem = 0;
+        } else if (strcmp(argv[i], "--simplify") == 0 && i + 1 < argc) {
+            const char *e = argv[++i];
+            if      (strcmp(e, "cvt") == 0) simplify_engine = 1;
+            else if (strcmp(e, "qem") == 0) simplify_engine = 0;
+            else { fprintf(stderr, "ERROR: --simplify must be qem|cvt\n"); return 1; }
+        } else if (strcmp(argv[i], "--dump-final-only") == 0) {
+            /* Write only step12_final (the grid_weld input); skip the
+             * intermediate stage dumps. Fleet default via grid_pipeline —
+             * the full stage set is ~300 MB/dense cube and IO-bounds
+             * concurrent grid runs. Re-run one cube without this flag to
+             * regenerate its stage dumps for seam debugging. */
+            dump_final_only = 1;
         } else if (strcmp(argv[i], "--no-timeout") == 0) {
             no_timeout = 1;
         } else if (strcmp(argv[i], "--halo") == 0 && i + 1 < argc) {
             halo_voxels = atoi(argv[++i]);
             if (halo_voxels < 0) {
                 fprintf(stderr, "ERROR: --halo must be >= 0\n");
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--trim-inset") == 0 && i + 1 < argc) {
+            trim_inset = (float)atof(argv[++i]);
+            if (trim_inset < 0.0f || trim_inset > 8.0f) {
+                fprintf(stderr, "ERROR: --trim-inset must be in [0, 8]\n");
                 return 1;
             }
         } else {
@@ -196,6 +219,19 @@ int main(int argc, char *argv[])
     fprintf(stderr, "cube_mesh: %s (threads=%d, halo=%d)\n",
             stdin_raw ? cube_id : input_path, n_threads, halo_voxels);
 
+    if (!MLS_cubecl_preflight()) {
+        fprintf(stderr, "cube_mesh: CubeCL MLS preflight failed: %s\n",
+                MLS_cubecl_last_error());
+        return 5;
+    }
+#ifdef VESUVIUS_MLS_CUBECL
+    {
+        const char *backend = getenv("MLS_BACKEND");
+        fprintf(stderr, "cube_mesh: CubeCL MLS preflight OK (backend=%s)\n",
+                (backend && backend[0]) ? backend : "auto");
+    }
+#endif
+
     double t_total = ves_clock_sec();
     double hard_timeout = no_timeout ? 1e9 : HARD_TIMEOUT_SEC;
     ves_hard_timeout_start(hard_timeout + 1.0, &g_timeout_flag);
@@ -230,8 +266,11 @@ int main(int argc, char *argv[])
                 .cube_W           = 128,
                 .n_threads        = n_threads,
                 .qem_target_ratio = 0.0f,  /* use default */
+                .trim_inset       = trim_inset,
                 .dump_dir         = dump_dir,
                 .skip_qem         = skip_qem,
+                .simplify_engine  = simplify_engine,
+                .dump_final_only  = dump_final_only,
                 .vol_in           = raw_buf,
                 .p_size_in        = stdin_raw ? p_size : 0,
                 .cube_origin_zyx  = { oz, oy, ox },

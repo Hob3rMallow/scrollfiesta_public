@@ -84,6 +84,10 @@ int MeshExtract_run(Arena_T          arena,
                     const char      *dump_cube_dir,
                     const char      *cube_id,
                     int              skip_qem,
+                    float            trim_inset,      /* owned-box inset, vox;
+                                                       * < 0 = the
+                                                       * BPA_OWNED_TRIM_INSET
+                                                       * default */
                     const uint8_t   *vol_in,          /* optional in-memory cube */
                     int              p_size_in,
                     const int64_t   *cube_origin_in,  /* owned origin (z,y,x) */

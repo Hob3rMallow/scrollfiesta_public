@@ -1054,6 +1054,42 @@ static void qem_maintenance_pass(Arena_T arena,
     Arena_restore(arena, mark);
 }
 
+/* Median of sampled edge lengths (<= 1000 faces * 3 edges), used to scale the
+ * probabilistic-quadric sigmas. Scratch is Arena_save/restore-scoped. */
+static float qem_median_sampled_edge(Arena_T arena, const float *in_verts,
+                                     const int32_t *in_faces, size_t in_nf)
+{
+    Arena_Mark mark = Arena_save(arena);
+    size_t sample_faces = in_nf < 1000 ? in_nf : 1000;
+    size_t sample_edges = sample_faces * 3;
+    float *lens = (float *)ARENA_ALLOC(arena, (long)(sample_edges * sizeof(float)));
+    size_t pstep = sample_faces ? in_nf / sample_faces : 1;
+    size_t psi = 0, pfi = 0;
+    float med = 0.0f;
+    if (pstep < 1) pstep = 1;
+    for (pfi = 0; psi < sample_edges && pfi < in_nf; pfi += pstep) {
+        int32_t i0 = in_faces[pfi * 3 + 0];
+        int32_t i1 = in_faces[pfi * 3 + 1];
+        int32_t i2 = in_faces[pfi * 3 + 2];
+        float dx, dy, dz;
+        dx = in_verts[i1*3+0] - in_verts[i0*3+0];
+        dy = in_verts[i1*3+1] - in_verts[i0*3+1];
+        dz = in_verts[i1*3+2] - in_verts[i0*3+2];
+        lens[psi++] = sqrtf(dx*dx + dy*dy + dz*dz);
+        dx = in_verts[i2*3+0] - in_verts[i1*3+0];
+        dy = in_verts[i2*3+1] - in_verts[i1*3+1];
+        dz = in_verts[i2*3+2] - in_verts[i1*3+2];
+        lens[psi++] = sqrtf(dx*dx + dy*dy + dz*dz);
+        dx = in_verts[i0*3+0] - in_verts[i2*3+0];
+        dy = in_verts[i0*3+1] - in_verts[i2*3+1];
+        dz = in_verts[i0*3+2] - in_verts[i2*3+2];
+        lens[psi++] = sqrtf(dx*dx + dy*dy + dz*dz);
+    }
+    if (psi > 0) { qsort(lens, psi, sizeof(float), float_cmp); med = lens[psi / 2]; }
+    Arena_restore(arena, mark);
+    return med;
+}
+
 /* ================================================================
  * Inner collapse pass (single QEM pass)
  * ================================================================ */
@@ -1063,6 +1099,9 @@ static int qem_collapse_pass(Arena_T arena,
                               const int32_t *in_faces, size_t in_nf,
                               const uint8_t *caller_pin_mask,
                               size_t target_nf,
+                              int free_boundary, int skip_winding_fix,
+                              int prob_quadrics, float prob_sigma_n,
+                              float prob_sigma_p,
                               float **out_verts, size_t *out_nv,
                               int32_t **out_faces, size_t *out_nf,
                               uint8_t **out_pin_mask)
@@ -1117,6 +1156,19 @@ static int qem_collapse_pass(Arena_T arena,
         }
     }
 
+    /* Probabilistic-quadric sigmas (Trettner & Kobbelt 2020, full per-face
+     * anisotropic form). Both 0 when prob mode is off => deterministic path. */
+    double prob_sn2 = 0.0, prob_sp2 = 0.0;
+    if (prob_quadrics) {
+        float med = qem_median_sampled_edge(arena, in_verts, in_faces, in_nf);
+        double sn = (prob_sigma_n > 0.0f) ? (double)prob_sigma_n
+                                          : QEM_PROB_SIGMA_FACTOR * (double)med;
+        double sp = (prob_sigma_p > 0.0f) ? (double)prob_sigma_p
+                                          : QEM_PROB_SIGMA_POS_FACTOR * (double)med;
+        prob_sn2 = sn * sn;
+        prob_sp2 = sp * sp;
+    }
+
     /* ---- Phase 2: Face quadrics ---- */
     /* Per-face alive tracking */
     uint8_t *face_alive = (uint8_t *)ARENA_ALLOC(arena, (long)(in_nf * sizeof(uint8_t)));
@@ -1152,7 +1204,28 @@ static int qem_collapse_pass(Arena_T arena,
             double d = -(nx * v0x + ny * v0y + nz * v0z);
 
             Quadric Qf;
-            quadric_from_plane(&Qf, nx, ny, nz, d);
+            if (prob_quadrics) {
+                /* Full per-face probabilistic plane quadric (Trettner & Kobbelt
+                 * 2020): n ~ N(n̄,σ_n²I), p ~ N(p̄,σ_p²I), p̄ = face centroid.
+                 *   A = n̄n̄ᵀ + σ_n²I,  b = -A p̄,  c = p̄ᵀA p̄ + σ_p²(1 + 3σ_n²)
+                 * (‖n̄‖²=1). Reduces to the n·nᵀ plane quadric at σ_n=σ_p=0. */
+                double px = (v0x + v1x + v2x) / 3.0;
+                double py = (v0y + v1y + v2y) / 3.0;
+                double pz = (v0z + v1z + v2z) / 3.0;
+                double A00 = nx*nx + prob_sn2, A01 = nx*ny, A02 = nx*nz;
+                double A11 = ny*ny + prob_sn2, A12 = ny*nz;
+                double A22 = nz*nz + prob_sn2;
+                double bx = -(A00*px + A01*py + A02*pz);
+                double by = -(A01*px + A11*py + A12*pz);
+                double bz = -(A02*px + A12*py + A22*pz);
+                double cc = -(px*bx + py*by + pz*bz) + prob_sp2 * (1.0 + 3.0*prob_sn2);
+                Qf.q[0]=A00; Qf.q[1]=A01; Qf.q[2]=A02; Qf.q[3]=bx;
+                Qf.q[4]=A11; Qf.q[5]=A12; Qf.q[6]=by;
+                Qf.q[7]=A22; Qf.q[8]=bz;
+                Qf.q[9]=cc;
+            } else {
+                quadric_from_plane(&Qf, nx, ny, nz, d);
+            }
 
             quadric_add(&verts[i0].Q, &Qf);
             quadric_add(&verts[i1].Q, &Qf);
@@ -1165,8 +1238,11 @@ static int qem_collapse_pass(Arena_T arena,
      * quadric, making A = nn^T + sigma^2*I always full-rank. This biases
      * optimal positions toward original vertex positions, producing more
      * uniform triangulations. sigma is much smaller than boundary weight
-     * so boundary preservation is unaffected. */
-    {
+     * so boundary preservation is unaffected.
+     * SKIPPED when prob_quadrics is set: the full per-face form in Phase 2 above
+     * already carries the σ_n²I (and σ_p²) noise, so re-adding it per vertex here
+     * would double-count the regularizer. */
+    if (!prob_quadrics) {
         Arena_Mark sigma_mark = Arena_save(arena);
         size_t sample_faces = in_nf < 1000 ? in_nf : 1000;
         size_t sample_edges = sample_faces * 3;
@@ -1426,15 +1502,17 @@ static int qem_collapse_pass(Arena_T arena,
         for (i = 0; i < in_nv; i++) {
             if (vert_pinned[i]) n_caller_pins++;
         }
-        for (i = 0; i < n_edges; i++) {
-            if (edges[i].face_count != 1) continue;
-            if (!vert_pinned[edges[i].v0]) {
-                vert_pinned[edges[i].v0] = 1;
-                n_boundary_verts++;
-            }
-            if (!vert_pinned[edges[i].v1]) {
-                vert_pinned[edges[i].v1] = 1;
-                n_boundary_verts++;
+        if (!free_boundary) {
+            for (i = 0; i < n_edges; i++) {
+                if (edges[i].face_count != 1) continue;
+                if (!vert_pinned[edges[i].v0]) {
+                    vert_pinned[edges[i].v0] = 1;
+                    n_boundary_verts++;
+                }
+                if (!vert_pinned[edges[i].v1]) {
+                    vert_pinned[edges[i].v1] = 1;
+                    n_boundary_verts++;
+                }
             }
         }
     }
@@ -1811,7 +1889,7 @@ static int qem_collapse_pass(Arena_T arena,
      * inverted faces (dot ≈ 0 passes but later flips). We compute a majority-vote
      * reference normal and fix any faces whose normal opposes it. */
     double ref_nx = 0.0, ref_ny = 0.0, ref_nz = 0.0;
-    {
+    if (!skip_winding_fix) {
         size_t f = 0;
         for (f = 0; f < in_nf; f++) {
             if (!face_alive[f]) continue;
@@ -1915,8 +1993,10 @@ static int qem_collapse_pass(Arena_T arena,
             int32_t i2 = find_root(verts, in_faces[f * 3 + 2]);
             if (i0 == i1 || i1 == i2 || i0 == i2) continue;
 
-            /* Check winding against reference normal; swap if inverted */
-            {
+            /* Check winding against reference normal; swap if inverted.
+             * Skipped in skip_winding_fix mode: a single global reference is
+             * meaningless on a wrapped surface (flips whole regions). */
+            if (!skip_winding_fix) {
                 float fe1[3], fe2[3];
                 int k = 0;
                 for (k = 0; k < 3; k++) {
@@ -2004,7 +2084,30 @@ int QEM_simplify_pinned(Arena_T arena,
                         int32_t **out_faces, size_t *out_nf,
                         uint8_t **out_pin_mask)
 {
+    QemOpts opts;
+    memset(&opts, 0, sizeof opts);
+    opts.pin_mask = pin_mask;
+    opts.ref_normal = ref_normal;
+    return QEM_simplify_opts(arena, in_verts, in_nv, in_faces, in_nf,
+                             target_nf, &opts,
+                             out_verts, out_nv, out_faces, out_nf,
+                             out_pin_mask);
+}
+
+int QEM_simplify_opts(Arena_T arena,
+                      const float *in_verts, size_t in_nv,
+                      const int32_t *in_faces, size_t in_nf,
+                      size_t target_nf,
+                      const QemOpts *qopts,
+                      float **out_verts, size_t *out_nv,
+                      int32_t **out_faces, size_t *out_nf,
+                      uint8_t **out_pin_mask)
+{
     int rc = 0;
+    QemOpts def;
+    if (qopts == NULL) { memset(&def, 0, sizeof def); qopts = &def; }
+    const uint8_t *pin_mask = qopts->pin_mask;
+    const float *ref_normal = qopts->ref_normal;
 
     assert(arena);
     assert(out_verts && out_nv && out_faces && out_nf);
@@ -2046,6 +2149,9 @@ int QEM_simplify_pinned(Arena_T arena,
     /* Single collapse pass all the way to target */
     rc = qem_collapse_pass(arena, in_verts, in_nv, in_faces, in_nf,
                             pin_mask, target_nf,
+                            qopts->free_boundary, qopts->skip_winding_repair,
+                            qopts->prob_quadrics, qopts->prob_sigma_n,
+                            qopts->prob_sigma_p,
                             out_verts, out_nv, out_faces, out_nf,
                             out_pin_mask);
     if (rc != 0) return rc;
@@ -2067,8 +2173,11 @@ int QEM_simplify_pinned(Arena_T arena,
      * computing an area-weighted reference normal and flipping any
      * face whose normal opposes it. Iterate until convergence since
      * fixing faces shifts the reference normal slightly. O(nf) per
-     * iteration, typically converges in 1-2 passes. */
-    if (*out_nf > 0) {
+     * iteration, typically converges in 1-2 passes.
+     * SKIPPED in skip_winding_repair mode: on a wrapped surface ~half of
+     * all face normals oppose any single global reference, so this pass
+     * would flip entire regions rather than repair stragglers. */
+    if (*out_nf > 0 && !qopts->skip_winding_repair) {
         float *fv = *out_verts;
         int32_t *ff = *out_faces;
         size_t fnf = *out_nf;

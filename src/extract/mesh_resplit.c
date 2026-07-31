@@ -20,6 +20,7 @@
 #include "../remesh/ball_pivot.h"
 #include "../remesh/normal_orient.h"
 #include "../remesh/orient_mesh.h"
+#include "../remesh/patch_repair.h"
 
 #include <string.h>
 #include <assert.h>
@@ -188,6 +189,11 @@ static int relop_rebpa(Arena_T arena, const float *pts, size_t n,
         float *ndst = (it == lop_iters - 1) ? pn : sn;
         MLS_project_verts(arena, src, n, MLS_PROJECT_RADIUS_VOX,
                           cell_origin, dst, ndst);
+        if (!MLS_cubecl_last_call_ok()) {
+            fprintf(stderr, "MeshResplit: CubeCL MLS failed: %s\n",
+                    MLS_cubecl_last_error());
+            return -1;
+        }
         /* Blend pinned (seam-band) points back toward their extract positions --
          * they were MLS'd with halo support this re-LOP lacks, so re-projecting
          * them freely drifts the cross-cube seam. The weight tapers from 1 at the
@@ -243,9 +249,26 @@ static int relop_rebpa(Arena_T arena, const float *pts, size_t n,
     { size_t hf = 0; NormalOrient_consistent(arena, wv, wn, wnv, 1.2f, &hf); }
 
     int32_t *faces = NULL; size_t nf = 0;
-    if (BallPivot_reconstruct(arena, wv, wn, wnv, BPA_RHO_VOX, &faces, &nf) != 0
+    BpaReconGate bpa_gate;
+    const BpaReconGate *bpa_gate_p =
+        BpaReconGate_from_env(&bpa_gate, cell_origin) ? &bpa_gate : NULL;
+    if (BallPivot_reconstruct_gated(arena, wv, wn, wnv, BPA_RHO_VOX,
+                                    bpa_gate_p, &faces, &nf) != 0
         || nf == 0)
         return -1;
+
+    /* Patch repair on the re-BPA'd piece (same default as mesh_extract:
+     * DEFAULT ON, disable with PATCH_REPAIR_OFF). Runs BEFORE OrientMesh so
+     * the global re-orient also covers the new tris. */
+    if (!getenv("PATCH_REPAIR_OFF")) {
+        int32_t *pr_faces = NULL;
+        size_t pr_nf = 0;
+        if (PatchRepair_repair(arena, wv, wnv, faces, nf,
+                               &pr_faces, &pr_nf, NULL) == 0 && pr_nf > 0) {
+            faces = pr_faces;
+            nf = pr_nf;
+        }
+    }
 
     OrientMesh_consistent(arena, wv, wnv, wn, faces, nf, NULL, NULL, NULL);
 

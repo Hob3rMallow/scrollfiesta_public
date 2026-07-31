@@ -1,0 +1,7 @@
+[audit] join completeness |du|<2: 82.23%  <6: 90.12% (z 75.90%/91.73%  y 86.79%/92.38%  x 83.95%/86.87%)
+[audit] quality gate: FAIL (turn-off 8.10%; limit 5.00%, |du|<2 82.23%; floor 50.00%, min pairs 100)
+[audit] 4437 adjacent pair-sets, 157205 pairs: turn-off=12728 (8.096%) collisions(<5vox)=23597
+[audit] du residual |.|<1/2/5/10/+: 103263/25338/12167/2063/14374
+[audit] global spiral fit r ~ a + b*phi/2pi: a=-11.43 b=-8.197 r2=0.9445 (n=174281)  corr(u,phi)=0.9756
+[audit] worst pair dphi_med=-314.158 rad (z04352_y04480_x03712|z04352_y04480_x03840)
+[audit] wrote output\pherc0139_4x21x21_run\placed/audit.json

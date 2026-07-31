@@ -1,0 +1,13 @@
+{
+  "ladder_step": 1.084792149970203,
+  "ladder_u0": -32828.02612264056,
+  "grid": [
+    4,
+    5,
+    5
+  ],
+  "cubes": 100,
+  "tiles": 1,
+  "sweeps": 1,
+  "wind_seed": false
+}

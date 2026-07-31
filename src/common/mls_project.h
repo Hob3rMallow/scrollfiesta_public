@@ -19,9 +19,10 @@
  *     θ(r) = (1 − r/R)^4 · (4r/R + 1)   if r < R, else 0
  *
  * Halo determinism contract:
- *   - Spatial-hash cells are computed as floor((coord + cell_origin) / R).
- *     Two cubes that pass the SAME `cell_origin` in some shared frame
- *     (e.g. world coords) get cell grids that ALIGN across cubes.
+ *   - Spatial-hash cells are computed as floor((coord + cell_origin) / cell)
+ *     with cell = R/2 (see MLS_CELL_DIV in the .c). Two cubes that pass the
+ *     SAME `cell_origin` in some shared frame (e.g. world coords) get cell
+ *     grids that ALIGN across cubes.
  *     If determinism doesn't matter, pass {0,0,0}.
  *   - Within each cell, entries are sorted by position (z,y,x) — not by
  *     vert index — so the accumulation order at a query is identical
@@ -48,5 +49,17 @@ void MLS_project_verts(Arena_T arena,
                        const float cell_origin[3],
                        float *out_verts,
                        float *out_normals);
+
+/* The Rust replacement preserves the historical void symbol above. These
+ * thread-local diagnostics make that ABI fail-closed at each C call site. */
+#ifdef VESUVIUS_MLS_CUBECL
+const char *MLS_cubecl_last_error(void);
+int MLS_cubecl_last_call_ok(void);
+int MLS_cubecl_preflight(void);
+#else
+static inline const char *MLS_cubecl_last_error(void) { return "no error"; }
+static inline int MLS_cubecl_last_call_ok(void) { return 1; }
+static inline int MLS_cubecl_preflight(void) { return 1; }
+#endif
 
 #endif

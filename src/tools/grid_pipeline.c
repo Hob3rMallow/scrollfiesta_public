@@ -11,7 +11,9 @@
  *                 [--halo N] [--threads-per-cube N] [--max-concurrent N]
  *                 [--exe path] [--weld path]
  *                 [--max-cubes N] [--skip-weld] [--check-determinism]
- *                 [--qem | --no-qem]
+ *                 [--simplify qem|cvt] [--qem | --no-qem]
+ *                 [--umb-y F --umb-x F --wrap-pitch F]
+ *                 [--grow-wind-tol F]
  *
  * Layout:
  *   <grid_dir>/cubes_PRED/*.tif         <- per-cube input prediction TIFFs
@@ -72,11 +74,58 @@ typedef struct {
     int         skip_weld;
     int         check_determinism;
     int         skip_qem;
+    int         simplify_engine; /* 1 = CVT/RVD (default), 0 = QEM (--simplify qem) */
     int         skip_existing;  /* resume: skip cubes whose step12_final OBJ is already complete */
     int         dry_run;        /* report skip/run decisions and exit; spawn nothing */
     int         reject_garbage; /* gate garbage (solid-slab) cubes pre-spawn (default 1) */
     const char *reject_list;    /* optional: skip cube_ids listed in this file (else detect inline) */
+    int         full_dumps;     /* pass NO --dump-final-only to children: every cube
+                                 * writes all intermediate stage OBJs (~300 MB/dense
+                                 * cube -- IO-bounds concurrent runs; debug only). */
+    double      umb_y, umb_x;   /* scroll umbilicus (source-space vox, y/x) */
+    double      wrap_pitch;     /* wrap pitch (vox/turn). These also arm
+                                 * grid_weld's seam winding/phase gates; the
+                                 * Jul-12 rebuild harness dropped them and paid
+                                 * 661 seam-band gaps against 16 when armed. */
+    double      grow_wind_tol;  /* BPA branch growth half-width in turns; 0=off */
+    int         have_umb_y, have_umb_x, have_wrap_pitch;
+                                /* geometry arguments arm grid_weld's seam
+                                 * winding/phase gates. Per-cube BPA gating is
+                                 * separately opt-in via --grow-wind-tol. */
+    int         have_grow_wind_tol;
+    float       trim_inset;     /* owned-box inset passthrough. Default 0: the
+                                 * whole-grid unwrap path is the documented
+                                 * chain, and it pairs cross-seam skins, so
+                                 * charts have to REACH the cube faces. The
+                                 * 1-vox inset measurably starves that: on
+                                 * PHerc0139-4x5x5 it halves the seam evidence
+                                 * (2,713 pairs vs 6,441) and the registration
+                                 * audit fails at 15.78% whole-turn error
+                                 * instead of passing at 2.98%. Pass < 0 for
+                                 * cube_mesh's own 1.0 default, which suits a
+                                 * weld-only run where the bridge wants a gap. */
 } GpOptions;
+
+static void set_process_env_double(const char *name, double value)
+{
+    char text[64];
+    snprintf(text, sizeof(text), "%.12g", value);
+#ifdef _WIN32
+    _putenv_s(name, text);
+#else
+    setenv(name, text, 1);
+#endif
+}
+
+static void clear_process_env(const char *name)
+{
+#ifdef _WIN32
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
+}
+
 
 static void usage(const char *prog)
 {
@@ -95,10 +144,29 @@ static void usage(const char *prog)
         "  --dry-run                 With --skip-existing: print which cubes would\n"
         "                            be skipped vs run, then exit (spawns nothing)\n"
         "  --check-determinism       Run each cube twice and cmp OBJs\n"
+        "  --simplify qem|cvt        Simplifier (default cvt)\n"
+        "  --qem                     Alias for --simplify qem\n"
         "  --no-qem                  Pass --no-qem to cube_mesh\n"
         "  --no-reject-garbage       Process all cubes (do not skip solid-slab garbage)\n"
         "  --reject-list FILE        Skip cube_ids listed in FILE (one per line);\n"
         "                            default detects garbage inline from each TIFF\n"
+        "  --trim-inset F            Owned-box inset passthrough to cube_mesh\n"
+        "                            (default 0: charts reach the cube faces so\n"
+        "                            the whole-grid unwrap can pair cross-seam\n"
+        "                            skins; pass 1 for a weld-only run, where\n"
+        "                            the bridge wants a gap)\n"
+        "  --full-dumps              Children write ALL intermediate stage OBJs\n"
+        "                            (default: step12_final only; the full set is\n"
+        "                            ~300 MB/dense cube and IO-bounds the fleet)\n"
+        "  --umb-y F --umb-x F       Scroll umbilicus (source-space voxels) and\n"
+        "  --wrap-pitch F            wrap pitch (vox/turn): arms grid_weld's seam\n"
+        "                            winding/phase gates, not per-cube meshing.\n"
+        "  --grow-wind-tol F         EXPERIMENTAL opt-in per-cube BPA growth gate;\n"
+        "                            off by default, 0 disables, must be < .5.\n"
+        "                            This can fragment sheets; all three geometry\n"
+        "                            arguments above are required when F > 0.\n"
+        "                            PHerc0139 weld geometry:\n"
+        "                            --umb-y 3405 --umb-x 2878 --wrap-pitch 9.5\n"
         "  --selftest                Run built-in unit tests and exit\n",
         prog);
 }
@@ -111,9 +179,12 @@ static int parse_args(int argc, char *argv[], GpOptions *o)
     o->threads_per_cube = 1;
     o->max_concurrent = 0;  /* derived below */
     o->max_cubes = 0;
+    o->simplify_engine = 1; /* CVT/RVD by default; --simplify qem selects the old QEM path */
     o->exe_path = "build/Release/cube_mesh.exe";
     o->weld_path = "build/Release/grid_weld.exe";
     o->reject_garbage = 1;  /* gate solid-slab garbage cubes by default */
+    o->trim_inset = 0.0f;   /* whole-scroll path: charts reach the cube faces */
+    o->grow_wind_tol = 0.0;     /* fail-safe: coherent sheets are the default */
 
     if (argc < 3) { usage(argv[0]); return -1; }
     o->grid_dir = argv[1];
@@ -132,6 +203,20 @@ static int parse_args(int argc, char *argv[], GpOptions *o)
             o->weld_path = argv[++i];
         } else if (!strcmp(argv[i], "--max-cubes") && i + 1 < argc) {
             o->max_cubes = atoi(argv[++i]);
+        } else if (!strcmp(argv[i], "--full-dumps")) {
+            o->full_dumps = 1;
+        } else if (!strcmp(argv[i], "--umb-y") && i + 1 < argc) {
+            o->umb_y = atof(argv[++i]);
+            o->have_umb_y = 1;
+        } else if (!strcmp(argv[i], "--umb-x") && i + 1 < argc) {
+            o->umb_x = atof(argv[++i]);
+            o->have_umb_x = 1;
+        } else if (!strcmp(argv[i], "--wrap-pitch") && i + 1 < argc) {
+            o->wrap_pitch = atof(argv[++i]);
+            o->have_wrap_pitch = 1;
+        } else if (!strcmp(argv[i], "--grow-wind-tol") && i + 1 < argc) {
+            o->grow_wind_tol = atof(argv[++i]);
+            o->have_grow_wind_tol = 1;
         } else if (!strcmp(argv[i], "--skip-weld")) {
             o->skip_weld = 1;
         } else if (!strcmp(argv[i], "--skip-existing") ||
@@ -145,15 +230,44 @@ static int parse_args(int argc, char *argv[], GpOptions *o)
             o->skip_qem = 1;
         } else if (!strcmp(argv[i], "--qem")) {
             o->skip_qem = 0;
+            o->simplify_engine = 0;
+        } else if (!strcmp(argv[i], "--simplify") && i + 1 < argc) {
+            const char *e = argv[++i];
+            if      (!strcmp(e, "cvt")) o->simplify_engine = 1;
+            else if (!strcmp(e, "qem")) o->simplify_engine = 0;
+            else { fprintf(stderr, "ERROR: --simplify must be qem|cvt\n"); return -1; }
         } else if (!strcmp(argv[i], "--no-reject-garbage")) {
             o->reject_garbage = 0;
         } else if (!strcmp(argv[i], "--reject-list") && i + 1 < argc) {
             o->reject_list = argv[++i];
+        } else if (!strcmp(argv[i], "--trim-inset") && i + 1 < argc) {
+            o->trim_inset = (float)atof(argv[++i]);
         } else {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);
             usage(argv[0]);
             return -1;
         }
+    }
+
+    if (o->grow_wind_tol < 0.0 || o->grow_wind_tol >= 0.5) {
+        fprintf(stderr, "ERROR: --grow-wind-tol must be in [0, .5)\n");
+        return -1;
+    }
+    if ((o->have_umb_y || o->have_umb_x || o->have_wrap_pitch)
+        && !(o->have_umb_y && o->have_umb_x && o->have_wrap_pitch)) {
+        fprintf(stderr,
+                "ERROR: --umb-y, --umb-x and --wrap-pitch must be supplied together\n");
+        return -1;
+    }
+    if (o->have_wrap_pitch && o->wrap_pitch <= 0.0) {
+        fprintf(stderr, "ERROR: --wrap-pitch must be positive\n");
+        return -1;
+    }
+    if (o->have_grow_wind_tol && o->grow_wind_tol > 0.0
+        && !(o->have_umb_y && o->have_umb_x && o->have_wrap_pitch)) {
+        fprintf(stderr,
+                "ERROR: positive --grow-wind-tol requires --umb-y, --umb-x and --wrap-pitch\n");
+        return -1;
     }
 
     if (o->max_concurrent == 0) {
@@ -251,7 +365,9 @@ static int run_one_cube(const char *exe_path,
                         const CubeJob *job,
                         const char *output_dir,
                         const char *dump_dir,
-                        int halo, int threads, int skip_qem)
+                        int halo, int threads, int skip_qem,
+                        float trim_inset, int dump_final_only,
+                        int simplify_engine)
 {
     char out_tif[1024];
     snprintf(out_tif, sizeof(out_tif), "%s/cubes/%s.tif",
@@ -260,8 +376,10 @@ static int run_one_cube(const char *exe_path,
     /* Compose argv. */
     char halo_str[32];
     snprintf(halo_str, sizeof(halo_str), "%d", halo);
+    char trim_str[32];
+    snprintf(trim_str, sizeof(trim_str), "%.3f", (double)trim_inset);
 
-    const char *argv[16];
+    const char *argv[20];
     int argc = 0;
     argv[argc++] = exe_path;
     argv[argc++] = job->tiff_path;
@@ -271,7 +389,13 @@ static int run_one_cube(const char *exe_path,
     argv[argc++] = "--dump-obj";
     argv[argc++] = dump_dir;
     argv[argc++] = "--no-timeout";
+    if (dump_final_only) argv[argc++] = "--dump-final-only";
     if (skip_qem) argv[argc++] = "--no-qem";
+    if (simplify_engine == 1) { argv[argc++] = "--simplify"; argv[argc++] = "cvt"; }
+    if (trim_inset >= 0.0f) {
+        argv[argc++] = "--trim-inset";
+        argv[argc++] = trim_str;
+    }
     argv[argc] = NULL;
 
 #ifdef _WIN32
@@ -304,15 +428,13 @@ static int run_one_cube(const char *exe_path,
         return -1;
     }
 
-    /* Build a per-cube environment block: parent env + VESUVIUS_THREADS.
-     * Use SetEnvironmentVariable on the PARENT side momentarily is unsafe
-     * because of races between threads, so we pass NULL (inherit parent
-     * env unchanged). The cube_mesh child falls back to cpu_count() when
-     * VESUVIUS_THREADS is unset, which on a busy system over-subscribes;
-     * acceptable for now since the threads-per-cube limiter is in the
-     * orchestrator's max_concurrent.
-     *
-     * TODO: thread-local env block per cube to enforce threads_per_cube. */
+    /* VESUVIUS_THREADS reaches the child by inheritance: the orchestrator
+     * sets it ONCE (SetEnvironmentVariableA in main, before the spawn
+     * threads exist) and every child gets it via lpEnvironment=NULL.
+     * A per-child ANSI environment block was tried and abandoned — the
+     * CreateProcessA ANSI-env conversion path rejects otherwise-valid
+     * blocks with ERROR_INVALID_PARAMETER, and per-child blocks buy
+     * nothing when every cube shares the same thread budget anyway. */
     (void)threads;
 
     STARTUPINFOA si;
@@ -375,6 +497,62 @@ static int ensure_dir(const char *path)
     char fake_child[1024];
     snprintf(fake_child, sizeof(fake_child), "%s/x", path);
     return ves_ensure_parent_dir(fake_child);
+}
+
+static int absolute_path(const char *path, char *out, size_t out_size)
+{
+#ifdef _WIN32
+    DWORD n = GetFullPathNameA(path, (DWORD)out_size, out, NULL);
+    return n > 0 && n < (DWORD)out_size ? 0 : -1;
+#else
+    char *resolved = realpath(path, NULL);
+    if (!resolved) return -1;
+    size_t n = strlen(resolved);
+    if (n >= out_size) { free(resolved); return -1; }
+    memcpy(out, resolved, n + 1);
+    free(resolved);
+    return 0;
+#endif
+}
+
+static void write_json_string(FILE *f, const char *text)
+{
+    fputc('"', f);
+    for (const unsigned char *p = (const unsigned char *)text; *p; p++) {
+        if (*p == '"') fputs("\\\"", f);
+        else if (*p == '\\') fputs("\\\\", f);
+        else if (*p == '\n') fputs("\\n", f);
+        else if (*p == '\r') fputs("\\r", f);
+        else if (*p == '\t') fputs("\\t", f);
+        else if (*p >= 0x20) fputc(*p, f);
+    }
+    fputc('"', f);
+}
+
+/* Write this before any cube is launched. scrollslice walks upward from any
+ * output OBJ until it finds this file, then recovers raw.zarr, pred.zarr, and
+ * origin_zyx through the grid manifest. The relative default mesh becomes
+ * usable when the final weld lands; intermediate meshes override it. */
+static int write_scrollslice_source(const GpOptions *opts)
+{
+    char path[1024];
+    char dataset[2048];
+    int n = snprintf(path, sizeof(path),
+                     "%s/scrollslice.source.json", opts->output_dir);
+    if (n < 0 || (size_t)n >= sizeof(path)
+        || absolute_path(opts->grid_dir, dataset, sizeof(dataset)) != 0) {
+        return -1;
+    }
+    FILE *f = fopen(path, "wb");
+    if (!f) return -1;
+    fputs("{\n  \"format\": \"vesuvius-scrollslice-source-v1\",\n"
+          "  \"dataset\": ", f);
+    write_json_string(f, dataset);
+    fputs(",\n  \"mesh_axes\": \"zyx\",\n"
+          "  \"mesh\": \"welded.obj\"\n}\n", f);
+    if (fclose(f) != 0) return -1;
+    fprintf(stderr, "scrollslice source: %s\n", path);
+    return 0;
 }
 
 /* Build the path to a cube's final per-cube mesh (the stage grid_weld reads). */
@@ -499,6 +677,45 @@ static int run_selftest(void)
                 cases[i].name, got, cases[i].expect, ok ? "ok" : "FAIL");
         if (!ok) fails++;
     }
+
+    /* Regression: weld geometry must not silently arm per-cube BPA rejection.
+     * The old coupling shattered a known PHerc0139 cube from 5 sheets into 24
+     * fragments before CVT/RVD. Only an explicit positive --grow-wind-tol may
+     * opt into that experimental behavior. */
+    {
+        char *av[] = {
+            "grid_pipeline", "grid", "out",
+            "--umb-y", "3405", "--umb-x", "2878",
+            "--wrap-pitch", "9.5"
+        };
+        GpOptions o;
+        int rc = parse_args((int)(sizeof(av) / sizeof(av[0])), av, &o);
+        int ok = rc == 0 && o.have_umb_y && o.have_umb_x
+                 && o.have_wrap_pitch && !o.have_grow_wind_tol
+                 && o.grow_wind_tol == 0.0;
+        fprintf(stderr,
+                "[selftest] %-22s grow_explicit=%d tol=%.2f -> %s\n",
+                "weld-geometry-gate-off", o.have_grow_wind_tol,
+                o.grow_wind_tol, ok ? "ok" : "FAIL");
+        if (!ok) fails++;
+    }
+    {
+        char *av[] = {
+            "grid_pipeline", "grid", "out",
+            "--umb-y", "3405", "--umb-x", "2878",
+            "--wrap-pitch", "9.5", "--grow-wind-tol", ".45"
+        };
+        GpOptions o;
+        int rc = parse_args((int)(sizeof(av) / sizeof(av[0])), av, &o);
+        int ok = rc == 0 && o.have_grow_wind_tol
+                 && o.grow_wind_tol > 0.449 && o.grow_wind_tol < 0.451;
+        fprintf(stderr,
+                "[selftest] %-22s grow_explicit=%d tol=%.2f -> %s\n",
+                "explicit-growth-opt-in", o.have_grow_wind_tol,
+                o.grow_wind_tol, ok ? "ok" : "FAIL");
+        if (!ok) fails++;
+    }
+
     remove(p_ok); remove(p_trunc); remove(p_tiny);
     fprintf(stderr, "=== grid_pipeline selftest %s (%d failure%s) ===\n",
             fails ? "FAILED" : "PASSED", fails, fails == 1 ? "" : "s");
@@ -529,6 +746,36 @@ int main(int argc, char *argv[])
 #endif
     }
 
+    /* Per-cube BPA winding rejection is deliberately SEPARATE from weld
+     * geometry. A 2026-07-30 4x21x21 run accidentally coupled the two: on the
+     * byte-identical z04480_y03328_x02816 prediction, Resplit changed from
+     * 4->5 coherent sheets to 4->24 fragments before CVT/RVD. Clear inherited
+     * BPA_GROW_* variables as well, so a caller's stale environment cannot
+     * silently reproduce that corruption. The experimental gate now requires
+     * an explicit positive --grow-wind-tol. */
+    clear_process_env("BPA_GROW_UMBILICUS_Y");
+    clear_process_env("BPA_GROW_UMBILICUS_X");
+    clear_process_env("BPA_GROW_WRAP_PITCH");
+    clear_process_env("BPA_GROW_WIND_TOL");
+    if (opts.have_grow_wind_tol && opts.grow_wind_tol > 0.0) {
+        set_process_env_double("BPA_GROW_UMBILICUS_Y", opts.umb_y);
+        set_process_env_double("BPA_GROW_UMBILICUS_X", opts.umb_x);
+        set_process_env_double("BPA_GROW_WRAP_PITCH", opts.wrap_pitch);
+        set_process_env_double("BPA_GROW_WIND_TOL", opts.grow_wind_tol);
+        fprintf(stderr,
+            "WARNING: experimental BPA growth gate explicitly armed: "
+            "umbilicus=(%.1f,%.1f) pitch=%.3f tol=%.3f turns\n",
+            opts.umb_y, opts.umb_x, opts.wrap_pitch, opts.grow_wind_tol);
+    } else {
+        fprintf(stderr,
+            "BPA growth gate OFF (coherent-sheet default; weld geometry is scoped to grid_weld)\n");
+    }
+
+    if (opts.simplify_engine == 1) {
+        const char *ratio = getenv("VES_CVT_RATIO");
+        fprintf(stderr, "CVT site ratio: %s\n", ratio && ratio[0] ? ratio : "default");
+    }
+
     CubeJob *jobs = NULL;
     size_t n_jobs = 0;
     if (scan_cubes(opts.grid_dir, &jobs, &n_jobs) != 0) {
@@ -552,6 +799,12 @@ int main(int argc, char *argv[])
     ensure_dir(dump_dir);
     ensure_dir(log_dir);
     ensure_dir(cubes_dir);
+    if (write_scrollslice_source(&opts) != 0) {
+        fprintf(stderr, "ERROR: could not write %s/scrollslice.source.json\n",
+                opts.output_dir);
+        free(jobs);
+        return 1;
+    }
 
     for (size_t i = 0; i < n_jobs; i++) {
         snprintf(jobs[i].log_path, sizeof(jobs[i].log_path),
@@ -610,6 +863,24 @@ int main(int argc, char *argv[])
     double t_start = ves_clock_sec();
     omp_set_dynamic(0);
     omp_set_num_threads(opts.max_concurrent);
+
+#ifdef _WIN32
+    /* Enforce --threads-per-cube on Windows children. Set ONCE here,
+     * before the spawn threads exist (so no SetEnvironmentVariable race),
+     * and inherited by every CreateProcessA(lpEnvironment=NULL) child.
+     * All cubes share the same thread budget, so a global parent-side set
+     * is exactly equivalent to a per-child block — and sidesteps the
+     * ANSI lpEnvironment conversion quirks (ERROR_INVALID_PARAMETER).
+     * The POSIX branch does the equivalent putenv() in the forked child.
+     * Without this, children fell back to ves_cpu_count() and every
+     * concurrent cube opened a full-core OpenMP team inside MLS
+     * (max_concurrent x n_cores threads of thrash). */
+    {
+        char thr_str[32];
+        snprintf(thr_str, sizeof(thr_str), "%d", opts.threads_per_cube);
+        SetEnvironmentVariableA("VESUVIUS_THREADS", thr_str);
+    }
+#endif
 
     int n_ok = 0, n_fail = 0, n_skip = 0, n_reject = 0, n_reject_empty = 0;
     int i;
@@ -671,7 +942,8 @@ int main(int argc, char *argv[])
         int rc = run_one_cube(opts.exe_path, &jobs[i],
                               opts.output_dir, dump_dir,
                               opts.halo, opts.threads_per_cube,
-                              opts.skip_qem);
+                              opts.skip_qem, opts.trim_inset,
+                              !opts.full_dumps, opts.simplify_engine);
         jobs[i].exit_code = rc;
         jobs[i].wall_seconds = ves_clock_sec() - cube_start;
         if (rc == 0) n_ok++; else n_fail++;
@@ -719,7 +991,8 @@ int main(int argc, char *argv[])
             int rc_b = run_one_cube(opts.exe_path, &copy,
                                      opts.output_dir, dump_dir_b,
                                      opts.halo, opts.threads_per_cube,
-                                     opts.skip_qem);
+                                     opts.skip_qem, opts.trim_inset,
+                                     !opts.full_dumps, opts.simplify_engine);
             if (rc_b != 0) { n_diff++; continue; }
 
             /* Compare the final per-cube OBJ. */
@@ -765,6 +1038,43 @@ int main(int argc, char *argv[])
     if (!opts.skip_weld && n_ok > 0) {
         char weld_out[1024];
         snprintf(weld_out, sizeof(weld_out), "%s/welded.obj", opts.output_dir);
+        /* Arm grid_weld's seam winding + phase gates (it reads them from env:
+         * SEAM_UMBILICUS_Y/X + SEAM_WRAP_PITCH). Deliberately set HERE — after
+         * the cube fleet has finished, immediately before the weld spawn — so
+         * per-cube meshing NEVER sees them: pinhole_fill.c also reads
+         * SEAM_WRAP_PITCH, and arming it during meshing would change per-cube
+         * output. Regression note (2026-07-18): the Jul-12 rebuild harness
+         * stopped passing these, the weld ran gates-off, and the 4x5x5 shipped
+         * 661 seam-band boundary loops instead of 16. */
+        if (opts.have_umb_y && opts.have_umb_x && opts.have_wrap_pitch) {
+            char envv[64];
+            snprintf(envv, sizeof(envv), "%.6g", opts.umb_y);
+#ifdef _WIN32
+            SetEnvironmentVariableA("SEAM_UMBILICUS_Y", envv);
+#else
+            setenv("SEAM_UMBILICUS_Y", envv, 1);
+#endif
+            snprintf(envv, sizeof(envv), "%.6g", opts.umb_x);
+#ifdef _WIN32
+            SetEnvironmentVariableA("SEAM_UMBILICUS_X", envv);
+#else
+            setenv("SEAM_UMBILICUS_X", envv, 1);
+#endif
+            snprintf(envv, sizeof(envv), "%.6g", opts.wrap_pitch);
+#ifdef _WIN32
+            SetEnvironmentVariableA("SEAM_WRAP_PITCH", envv);
+#else
+            setenv("SEAM_WRAP_PITCH", envv, 1);
+#endif
+            fprintf(stderr,
+                "Seam gates armed for weld: umbilicus=(%.1f,%.1f) pitch=%.2f\n",
+                opts.umb_y, opts.umb_x, opts.wrap_pitch);
+        } else {
+            fprintf(stderr,
+                "Seam gates NOT armed (pass --umb-y/--umb-x/--wrap-pitch); "
+                "grid_weld's winding/phase gates run OFF\n");
+        }
+
         fprintf(stderr, "Running grid_weld -> %s\n", weld_out);
 
 #ifdef _WIN32

@@ -1,0 +1,7 @@
+[audit] join completeness |du|<2: 79.35%  <6: 89.26% (z 68.42%/84.50%  y 84.66%/93.38%  x 87.24%/91.53%)
+[audit] quality gate: FAIL (turn-off 5.52%; limit 5.00%, |du|<2 79.35%; floor 50.00%, min pairs 100)
+[audit] 2537 adjacent pair-sets, 68700 pairs: turn-off=3795 (5.524%) collisions(<5vox)=7464
+[audit] du residual |.|<1/2/5/10/+: 43035/11292/6679/1851/5843
+[audit] global spiral fit r ~ a + b*phi/2pi: a=-12.06 b=11.683 r2=0.8106 (n=74848)  corr(u,phi)=0.9827
+[audit] worst pair dphi_med=175.928 rad (z04608_y02816_x03328|z04608_y02816_x03456)
+[audit] wrote output\pherc0139_10x10x10_gpu_run_20260730\placed/audit.json

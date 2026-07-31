@@ -11,6 +11,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 PROJECTS = REPO.parent
 VILLA_BIN = PROJECTS / "villa" / "volume-cartographer" / "build-macos" / "bin"
+VILLA_WINDOWS_BIN = PROJECTS / "villa" / "volume-cartographer" / "build" / "windows-msvc" / "bin"
 
 # The Linux/macOS Makefile leaves binaries in src/; Windows MSVC
 # (scrollfiesta.sln) drops them in build/{Release,Debug}/ with .exe.
@@ -36,6 +37,13 @@ def default_grid_weld() -> Path | None:
                            REPO / "build" / "Debug" / f"grid_weld{_EXE}")
 
 
+def default_wind_audit() -> Path | None:
+    return _first_existing(REPO / "src" / "wind_audit",
+                           REPO / "build" / "Release" / f"wind_audit{_EXE}",
+                           REPO / "build" / "Debug" / f"wind_audit{_EXE}")
+
+
+
 def _which(name: str) -> Path | None:
     """shutil.which as Path | None. (Path(which(...) or "") is Path('.'),
     which exists — it would defeat the not-installed skip logic.)"""
@@ -47,8 +55,10 @@ def default_flatboi() -> Path | None:
     return _first_existing(VILLA_BIN / "flatboi", _which("flatboi"))
 
 
+
 def default_obj2tifxyz() -> Path | None:
-    return _first_existing(VILLA_BIN / "vc_obj2tifxyz_legacy",
+    return _first_existing(VILLA_WINDOWS_BIN / f"vc_obj2tifxyz_legacy{_EXE}",
+                           VILLA_BIN / "vc_obj2tifxyz_legacy",
                            _which("vc_obj2tifxyz_legacy"))
 
 
@@ -61,6 +71,26 @@ def default_env(threads_per_cube: int | None = None) -> dict:
     prev = env.get("DYLD_FALLBACK_LIBRARY_PATH", "")
     env["DYLD_FALLBACK_LIBRARY_PATH"] = ":".join([p for p in extra if Path(p).exists()] +
                                                  ([prev] if prev else []))
+    if sys.platform == "win32":
+        # The optional CubeCL build JIT-compiles through NVRTC. Discover the
+        # ignored project-local NVIDIA wheel payload and canonicalize PATH:
+        # PowerShell can carry both `Path` and `PATH`, and passing both through
+        # subprocess(env=...) can make a child see the stale value.
+        local_cuda = REPO / ".toolchains" / "cuda-13.2-wheels" / "nvidia" / "cu13"
+        configured = env.get("CUDA_PATH")
+        cuda_root = Path(configured) if configured else local_cuda
+        if (cuda_root / "include" / "cccl").exists():
+            env["CUDA_PATH"] = str(cuda_root)
+            previous_path = ""
+            for key in list(env):
+                if key.upper() == "PATH":
+                    if not previous_path:
+                        previous_path = env[key]
+                    del env[key]
+            bins = [cuda_root / "bin" / "x86_64", cuda_root / "bin"]
+            env["PATH"] = os.pathsep.join(
+                [str(path) for path in bins if path.exists()]
+                + ([previous_path] if previous_path else []))
     if threads_per_cube:
         env["VESUVIUS_THREADS"] = str(threads_per_cube)
         env["OMP_NUM_THREADS"] = str(threads_per_cube)

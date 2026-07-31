@@ -24,12 +24,29 @@ static void swap_idx(int32_t *indices, size_t a, size_t b)
     indices[b] = t;
 }
 
+/* Size of the left subtree of the root of a COMPLETE binary tree with n nodes
+ * (last level filled left-to-right). The heap-layout build below MUST split the
+ * range at this size, NOT at n/2: n/2 leaves interior heap slots unwritten for
+ * many n (e.g. n=5), and those slots keep the memset-zeroed (0,0,0)/orig_index 0
+ * value, which the nearest/ball searches then treat as a real point at the origin.
+ * Splitting by the complete-tree left size fills slots 0..n-1 with no gaps. */
+static size_t complete_left_size(size_t n)
+{
+    if (n <= 1) return 0;
+    size_t h = 0;                              /* floor(log2(n)) */
+    while (((size_t)1 << (h + 1)) <= n) h++;
+    size_t upper     = ((size_t)1 << h) - 1;   /* nodes in the full levels above the last */
+    size_t last      = n - upper;              /* nodes present in the last level */
+    size_t last_left = (size_t)1 << (h - 1);   /* capacity of the last level's left half */
+    return (((size_t)1 << (h - 1)) - 1) + (last < last_left ? last : last_left);
+}
+
 /* Partition indices by median of axis. Uses nth_element-style partition.
  * Returns median index position. */
 static size_t partition_median(const float *points, int32_t *indices,
                                 size_t lo, size_t hi, int axis)
 {
-    size_t mid = (lo + hi) / 2;
+    size_t mid = lo + complete_left_size(hi - lo);
 
     /* Simple median-of-three pivot selection, then partition */
     while (lo < hi) {

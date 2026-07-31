@@ -4,6 +4,41 @@
 #include "../common/arena.h"
 #include "../common/mesh_types.h"
 
+typedef struct {
+    /* Disabled by default.  When enabled, the real multicut split is also
+     * tested as a bounded two-label delamination event.  A merge is returned
+     * only after local re-triangulation, raw-CT fitting, and a second
+     * production overlap audit all succeed.  The prediction is retained only
+     * as a loose sanity prior; it is never the fitting target. */
+    int            enable_delamination_merge;
+    const uint8_t *pred_vol;       /* prediction volume */
+    size_t         pred_D;
+    size_t         pred_H;
+    size_t         pred_W;
+    float          pred_offset[3]; /* add to mesh coords before volume lookup */
+    float          pred_safety_distance;
+
+    const char    *raw_dir;        /* original cubes_RAW directory */
+    long           raw_chunk;      /* raw cube edge, normally 128 */
+    float          world_offset[3];/* local mesh -> raw world (z,y,x) */
+    float          raw_snap_reach; /* maximum raw search distance, vox */
+    float          raw_snap_alpha; /* target-vs-Laplacian solve blend */
+    float          raw_quilt_weight; /* MRF 1-ring depth coherence */
+} OverlapSepOptions;
+
+/* Read-only exact projected-triangle overlap audit.  This is the phase-3
+ * detector used by OverlapSep_process, exposed separately so callers can
+ * diagnose non-injective parameterizations without invoking multicut or
+ * changing the mesh. */
+typedef struct {
+    int32_t *face0;
+    int32_t *face1;
+    size_t count;
+} OverlapSepPairSet;
+
+int OverlapSep_detect_pairs(Arena_T arena, const ComponentMesh *mesh,
+                            OverlapSepPairSet *out_pairs);
+
 /*
  * OverlapSep_process -- Step 3 entry point (Overlap-Detection Multicut).
  *
@@ -33,6 +68,17 @@ int OverlapSep_process(Arena_T              arena,
                        double                timeout_sec,
                        ComponentMesh       **out_meshes,
                        size_t               *out_count);
+
+/* Extended entry point used by the cube pipeline.  The legacy function above
+ * is exactly equivalent to passing options == NULL. */
+int OverlapSep_process_ex(Arena_T                 arena,
+                          const ComponentMesh     *mesh,
+                          int                      sheet_count,
+                          int                      n_threads,
+                          double                   timeout_sec,
+                          const OverlapSepOptions *options,
+                          ComponentMesh          **out_meshes,
+                          size_t                  *out_count);
 
 /* Set a directory for debug OBJ dumps at each internal phase.
  * Pass NULL to disable (default). When set, overlap_sep writes:

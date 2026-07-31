@@ -36,6 +36,13 @@ typedef struct {
 MeshManifoldStats MeshManifold_audit(Arena_T arena, size_t nv,
                                      const int32_t *faces, size_t nf);
 
+/* Mark pinch/bowtie vertices (incident faces form two or more edge-connected
+ * fans). out_mask[nv] is cleared then filled with 1 at each such vertex.
+ * Returns the number marked; scratch is self-restoring. */
+size_t MeshManifold_mark_nonmanifold_vertices(Arena_T arena, size_t nv,
+                                              const int32_t *faces, size_t nf,
+                                              uint8_t *out_mask);
+
 static inline int MeshManifold_ok(const MeshManifoldStats *s) {
     return s->nm_edges == 0 && s->nm_verts == 0;
 }
