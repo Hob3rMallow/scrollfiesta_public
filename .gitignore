@@ -124,8 +124,9 @@ archive/*/*.json
 .tmp_scrollfiesta/
 .debug_images/
 tmp/
-# CubeCL MLS experiment tree (668 MB incl. Rust build artifacts; separate track)
-deps/scrollfiesta-mls-cubecl/
+# CubeCL MLS crate: source is tracked; Rust build artifacts and dev logs are not
+deps/scrollfiesta-mls-cubecl/target/
+deps/scrollfiesta-mls-cubecl/logs/
 
 # ------ Public sample/output and local build exclusions ------
 !sample_outputs/**/*.obj

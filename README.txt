@@ -218,8 +218,13 @@ commercial distribution. See THIRD_PARTY_LICENSES.md.
 
 NOTES
 -----
-- CPU-only: no GPU is used. The U-Net that produces the input predictions is a
-  separate, upstream tool and is not part of ScrollFiesta.
+- CPU by default: every stage runs on the CPU with no GPU required. The MLS
+  projection additionally has an optional GPU backend (the CubeCL CUDA/HIP
+  crate in deps/scrollfiesta-mls-cubecl, built with
+  scripts/build_mls_cubecl.ps1 and selected at runtime with MLS_BACKEND);
+  CPU and GPU backends feed the same geometry and topology gates. The U-Net
+  that produces the input predictions is a separate, upstream tool and is not
+  part of ScrollFiesta.
 - Topology is the priority: the weld is tuned to never merge distinct scroll
   wraps and never split a single sheet, even at the cost of leaving a seam gap.
 - Each executable prints its usage when run with no arguments.

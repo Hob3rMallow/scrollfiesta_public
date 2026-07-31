@@ -1,0 +1,38 @@
+[package]
+name = "herculaneum-mls-cubecl"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "Clean-room MLS midpoint projection experiment with Rust and CubeCL CPU/HIP/CUDA backends"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "herculaneum_mls_cubecl"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[features]
+default = ["rust-cpu"]
+rust-cpu = ["dep:rayon"]
+cubecl-cpu = ["dep:cubecl", "cubecl/cpu"]
+cubecl-hip = ["dep:cubecl", "cubecl/hip"]
+cubecl-cuda = ["dep:cubecl", "cubecl/cuda"]
+all-backends = ["rust-cpu", "cubecl-cpu", "cubecl-hip", "cubecl-cuda"]
+
+[dependencies]
+bytemuck = { version = "1.22", features = ["derive"] }
+libc = "0.2"
+rayon = { version = "1.10", optional = true }
+cubecl = { version = "=0.10.0", default-features = false, features = ["std"], optional = true }
+
+[dev-dependencies]
+approx = "0.5"
+
+[[bin]]
+name = "mls-bench"
+path = "src/bin/mls_bench.rs"
+required-features = ["rust-cpu"]
+
+[[bin]]
+name = "mls-real-bench"
+path = "src/bin/mls_real_bench.rs"

@@ -41,6 +41,7 @@ if commercial distribution matters.
 
 | Dependency | Path | Terms / notice | Used for |
 |---|---|---|---|
+| herculaneum-mls-cubecl | `deps/scrollfiesta-mls-cubecl/` | `MIT OR Apache-2.0` per its `Cargo.toml`; the pinned upstream (`VENDORED_FROM.md`) ships no separate license text file, so that declaration is the authoritative statement. Optional: only built when the GPU MLS backend is requested. | Optional CubeCL CPU/CUDA/HIP MLS projection backend |
 | TAUCS | `deps/taucs/` | LGPL-3.0-or-later, GPL-3.0-or-later, or Apache-2.0 choice, plus the research-citation requirement in `LICENSE.txt` | Sparse solves in atlas tooling |
 | CLAPACK 3.1.1 | `deps/clapack/` | Netlib CLAPACK/LAPACK distribution; no single top-level license file is present in this vendored release. Preserve its notices and audit the distribution before redistribution. | BLAS/LAPACK support for TAUCS |
 | f2c runtime | `deps/clapack/F2CLIBS/` | AT&T/Lucent/Bellcore permission notice in `libf2c/Notice` plus notices in the bundled sources | CLAPACK runtime support |
