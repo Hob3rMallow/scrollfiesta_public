@@ -101,7 +101,7 @@ static int hf_log_on(void) {
 #define HFFLUSH()    do { if (hf_log_on()) fflush(stderr); } while (0)
 extern int triangle_jmpbuf_set;
 
-#ifndef _MSC_VER
+#ifndef _WIN32
 #include <signal.h>
 /* Linux: sigsetjmp-based SIGSEGV guard for Triangle crashes */
 static sigjmp_buf triangle_segv_jmpbuf;
@@ -763,13 +763,14 @@ static int tri_timeout_ms(void)
     return ms;
 }
 
-#ifdef _MSC_VER
+#ifdef _WIN32
 #include <process.h>   /* _beginthreadex */
 
 /* SEH must be in its own function (MSVC forbids mixing __try with setjmp). */
 static int triangulate_seh(char *flags, struct triangulateio *in,
                            struct triangulateio *out)
 {
+#ifdef _MSC_VER
     __try {
         triangulate(flags, in, out, NULL);
     } __except(1 /* EXCEPTION_EXECUTE_HANDLER */) {
@@ -777,6 +778,12 @@ static int triangulate_seh(char *flags, struct triangulateio *in,
         return -1;
     }
     return 0;
+#else
+    /* MinGW: gcc has no __try. The triexit() longjmp and the thread
+     * watchdog below still guard; a raw access violation stays fatal. */
+    triangulate(flags, in, out, NULL);
+    return 0;
+#endif
 }
 
 typedef struct {

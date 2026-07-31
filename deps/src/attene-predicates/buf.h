@@ -115,7 +115,10 @@ struct BufHeader
 void* buf_alloc_ex(struct Allocator* a);
 void* buf_alloc(void);
 #endif
-void* buf_do_realloc_(void *a, size_t nr, size_t sz);
+/* static inline to match the BUF_IMPLEMENTATION definition below: g++
+ * rejects extern-then-static (MSVC permissively accepts it). The sole
+ * consumer is the implementing TU (uinteger.cpp). */
+static inline void* buf_do_realloc_(void *a, size_t nr, size_t sz);
 
 // Backing function for buf_clone(): copies the `elem_size`-byte elements of the
 // stretchy buffer `src` into a fresh buffer. Returns NULL for a NULL/empty src.

@@ -45,6 +45,17 @@ if(SCROLLFIESTA_BUILD_TOOLS AND NOT SCROLLFIESTA_WITH_TIFF)
                         "(the CLI tools read/write prediction TIFFs).")
 endif()
 
+# GCC 16.1.0 (current MSYS2 UCRT64 and winlibs releases) miscompiles correct,
+# UB-free interleaved-store loops at -O3 when strict aliasing is enabled:
+# scripts/gcc16_aliasing_repro.c builds a triangle grid whose face indices come
+# out wrong under -O3 but right under -O3 -fno-strict-aliasing or -O2. Mesh
+# code here is exactly that shape, and the MSVC baseline never exploits strict
+# aliasing, so disable it for GNU project-wide (directory scope: library,
+# tools, and tests) until the upstream fix lands.
+add_compile_options(
+    "$<$<AND:$<COMPILE_LANGUAGE:C>,$<C_COMPILER_ID:GNU>>:-fno-strict-aliasing>"
+    "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU>>:-fno-strict-aliasing>")
+
 # The canonical library artifact is the shared library (consumed via dlopen +
 # sf_get_api). Standalone builds default to shared unless the user says
 # otherwise; embedded builds inherit the host's BUILD_SHARED_LIBS.

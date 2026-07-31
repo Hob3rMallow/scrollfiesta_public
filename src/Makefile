@@ -19,7 +19,9 @@
 
 CC       = gcc
 CXX      = g++
-CFLAGS   = -std=c99 -Wall -Wextra -Wshadow -Wformat=2 -Werror=implicit-function-declaration -D_GNU_SOURCE
+# -fno-strict-aliasing: gcc 16.1.0 miscompiles correct interleaved-store mesh
+# loops at -O3 under strict aliasing (see scripts/gcc16_aliasing_repro.c).
+CFLAGS   = -std=c99 -Wall -Wextra -Wshadow -Wformat=2 -Werror=implicit-function-declaration -D_GNU_SOURCE -fno-strict-aliasing
 CXXFLAGS = -std=c++17 -O2 -Wno-register
 
 # System libs + local deps (pre-installed on the target; see CLAUDE.md).
