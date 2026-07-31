@@ -1,0 +1,43 @@
+\appendix
+\section{Developments Since the May 31 Update}
+\label{app:developments}
+
+This appendix lists the material changes implemented or validated between June 1 and July 30, 2026, relative to the May 31 progress report. The main paper describes the resulting current system; this list records the delta, with each new module described once, as it now stands. As of July 30 the whole-scroll atlas path is no longer split between a public repository and a private research tree: the winding lift, the registration solve, and the ribbon fit are all in the public repository, and the $4\times5\times5$ PHerc0139 chain from cube meshing through the fitted ribbon reproduces the research tree's results there. Publication is not verification --- the stabilization gates described above still govern what may be called verified papyrus --- but the evidence is now inspectable rather than described.
+
+{\small
+\begin{itemize}
+  \setlength{\itemsep}{0pt}
+  \item \textbf{Ingestion.} The public \texttt{scrollunwrap} workflow: authenticated or anonymous S3/OME-Zarr regions, local arrays, mesh-only operation, independent timeouts, graceful cube skipping, previews, and \texttt{tifxyz} export.
+
+  \item \textbf{Embeddable API.} A one-header, versioned C ABI and CMake targets for static, shared, and runtime-loaded use, including true XYZ coordinates, explicit allocation, status and provenance, progress, cancellation, and the public \texttt{sf\_weld} operation, with direct, runtime-load, cancellation, and embedded-consumer tests.
+
+  \item \textbf{Portable acceleration.} Clean Linux/GCC builds. MLS now runs through one projection interface with OpenMP, optional FP32 CUDA, and research CubeCL CUDA backends, all feeding the same geometry and topology gates.
+
+  \item \textbf{Per-cube extraction hardening.} Every separated piece is reconstructed from its relevant original voxel points; solid-slab and empty-input predictions are rejected up front; BPA carries the full guard set of Section~\ref{sec:percube}, including the wall guard and the per-seed integrated winding phase that refuses gradual multi-turn growth and re-seeds the next wrap as a distinct component; pinches are split, holes closed manifold-safely, handles severed repeatedly; component culling scores each component against its parent input rather than the whole-cube total, so cubes containing many sheets keep their valid wraps; halo ownership and degenerate-cloud handling are explicit.
+
+  \item \textbf{CVT/RVD level of detail.} The remesher is a restricted CVT with area and boundary seeding, normal-anisotropic relaxation, surface projection, and restricted-Delaunay output; repaired QEM remains only as an explicit or fail-closed fallback.
+
+  \item \textbf{Seam-band welding.} Local refinement around cube planes for BPA, orientation- and winding-gated micro-welds and closers, post-weld recoarsening, and pinned-boundary CVT/RVD accepted only when pins, boundary edges, manifoldness, component count, and Euler characteristic are preserved.
+
+  \item \textbf{Native metric parameterization.} The slice-domain solve of Section~\ref{sec:unwrap}: exact slice-stroke extraction, branch-cut-free geometric winding increments, cuts where strokes snake across wraps, trust-gated geometric anchors, and a reduced least-squares solve with PAVA monotonic projection, with short-edge parameter-jump audits, RAW read-back, and the consolidated \texttt{scroll\_ribbon --raw} path. Direct slice support is separated from neighbour-filled diagnostic values so fabricated plateaus cannot emit faces, and the global field is applied by robust support-to-chart registration --- one additive shift per raw chart --- preserving every local UV edge difference. This corrected the real-data developed advance from 10.3\% to 103.1\% of one circumference per turn without extension-induced flips or shear.
+
+  \item \textbf{Whole-grid atlas assembly.} PieceSet placement and ownership, \texttt{scroll\_whole} and \texttt{scroll\_unroll}, whole-grid snap, UV welding and relaxation, stripwise shared-winding decomposition, exact \texttt{tifxyz} welding, provenance masks, atlas manifests, and quilting-constrained arc registration.
+
+  \item \textbf{Discrete winding lift.} The alternating discrete--continuous stage of Section~\ref{sec:unwrap}, introduced as a whole: a deterministic per-chart tabu search over integer winding depths (departed-value tenure, aspiration, fixed-point energies, deterministic tie-breaking) with single-chart, welded-group, lateral-neighbourhood, and graded-rewind moves; wind bins integrated along weld and lateral chains so scroll-axis wander cancels; a measured field ladder for the per-wind $u$ step; happy-family protection and same-wind lateral coupling across holes; an exact-SAT-verified leaderboard that always retains the input assignment; same-cube rejection for proximity welds; physical post-move weld-displacement diagnostics; and the alternating loop in which tabu owns winding while \texttt{AtlasRegister} owns continuous metric placement. On the pinned $4\times5\times5$ atlas this reduced 373,536 exact overlap pairs to 1,874, confirmed by per-round winding-layer OBJs, $u$-radius diagnostics, chart/group/move CSVs, and a CT validation bake with 0.15\% multiple coverage. Its stricter acceptance gates remain active research and keep the 99.5\% overlap result from being treated as verified.
+
+  \item \textbf{RAW-guided snap.} Graph-cut dark-region detection, occupancy-safe candidate search, joint quilting-guided depth labels solved by alpha expansion, and a smooth pinned displacement solve with per-vertex reversion, plus a second global recto refinement that targets an oriented dark-to-bright transition; the recto objective remains under real-data evaluation.
+
+  \item \textbf{Villa, VC3D, and Spiral.} The verified local-patch handoff through Villa's maintained flattener and official loaders, plus a non-destructive VC3D command that creates cancellable unverified Spiral hints with explicit provenance and can feed them into an active fit.
+
+  \item \textbf{Topology and adaptive-extraction audits.} Abrupt-edge and broad branch-local winding tests, coverage and boundary gates, adaptive BPA radius trials, phase cutting, machine-readable reports, and the policy that unresolved broad fusions are quarantined rather than accepted because they look clean.
+
+  \item \textbf{Seam-consistent whole-scroll registration.} Registration now has a single path: the exact max-confidence forest, scalar consistency polish, then the continuous \texttt{ArcReg} $u$-warp. On $4\times5\times5$ this took whole-turn seam error from 90.73\% to 1.67\% of pairs and $|\Delta u| < 2$ join completeness from 8.52\% to 82.91\%. \texttt{--audit} exits nonzero when turn-off exceeds 5\% or close-join completeness falls below 50\%, so file existence can no longer certify a fragmented result.
+
+  \item \textbf{Winding topology across sparse grids.} Winding relations are preserved where the cube grid is sparse and neighbours are absent, so a missing cube no longer silently breaks the chain the registration and lift depend on.
+
+  \item \textbf{Collision-safe ribbon fitting.} The terminal whole-scroll stage described in Section~\ref{sec:repair}: constant-$v$ slicing, tangent-aware duplicate merging, per-row least-squares fitting under position, curvature, and unit-$u$ tangent terms, metric rejection of impossible bridges, chart-shift registration, and an exact rather than grid-approximate collision audit, with per-edge rejection provenance. \texttt{atlas\_overlap\_fix} hands the ribbon a checkpointed atlas solution, making the two stages separately runnable and separately auditable.
+
+  \item \textbf{Performance, memory, and robustness.} A rewritten OpenMP MLS engine and weld kernel with byte-identical output (Section~9), removal of hidden quadratic searches, \texttt{size\_t} arena sizes, bounded handle-sever scratch, KD-tree and QEM correctness fixes, and expanded component-coloured dumps, previews, CI, and unit coverage across the pipeline.
+\end{itemize}
+}
+

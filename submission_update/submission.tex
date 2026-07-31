@@ -1,0 +1,122 @@
+\documentclass[acmtog,nonacm]{acmart}
+
+%%
+%% \BibTeX command to typeset BibTeX logo in the docs
+
+\AtBeginDocument{%
+  \providecommand\BibTeX{{%
+    Bib\TeX}}}
+
+%% For multi-panel figures. acmart already loads graphicx and caption.
+\usepackage{subcaption}
+\usepackage{booktabs}
+
+%% This is a technical progress submission rather than an ACM publication.
+%% Suppress placeholder publication metadata while retaining the ACM two-column
+%% typography and running heads.
+\settopmatter{printacmref=false,printccs=false,printfolios=true}
+\authorsaddresses{}
+\setlength{\emergencystretch}{1em}
+
+%%
+%% Submission ID.
+%% Use this when submitting an article to a sponsored event. You'll
+%% receive a unique submission ID from the organizers
+%% of the event, and this ID should be used as the parameter to this command.
+%%\acmSubmissionID{123-A56-BU3}
+
+%%
+%% For managing citations, it is recommended to use bibliography
+%% files in BibTeX format.
+%%
+%% You can then either use BibTeX with the ACM-Reference-Format style,
+%% or BibLaTeX with the acmnumeric or acmauthoryear sytles, that include
+%% support for advanced citation of software artefact from the
+%% biblatex-software package, also separately available on CTAN.
+%%
+%% Look at the sample-*-biblatex.tex files for templates showcasing
+%% the biblatex styles.
+%%
+
+%%
+%% The majority of ACM publications use numbered citations and
+%% references.  The command \citestyle{authoryear} switches to the
+%% "author year" style.
+%%
+%% If you are preparing content for an event
+%% sponsored by ACM SIGGRAPH, you must use the "author year" style of
+%% citations and references.
+\citestyle{acmauthoryear}
+
+%%
+%% end of the preamble, start of the body of the document source.
+\begin{document}
+
+%%
+%% The "title" command has an optional parameter,
+%% allowing the author to define a "short title" to be used in page headers.
+\title{ScrollFiesta: A Virtual Meshing and Unwrapping Toolkit for the Herculaneum Papyri}
+
+%%
+%% By default, the full list of authors will be used in the page
+%% headers. Often, this list is too long, and will overlap
+%% other information printed in the page headers. This command allows
+%% the author to define a more concise list
+%% of authors' names for this purpose.
+\renewcommand{\shortauthors}{ScrollFiesta}
+
+%%
+%% The abstract is a short summary of the work to be presented in the
+%% article.
+\begin{abstract}
+Reading a carbonized Herculaneum papyrus requires recovering the topology of a tightly folded sheet from CT data, separating wraps that a segmentation has fused, and placing the surface in a plane without destroying the metric structure needed to read ink. We present \emph{ScrollFiesta}, an end-to-end system for that task. We use a moving least squares estimator to collapse binary or probabilistic voxel evidence to a thin point set; consistently oriented, guarded ball pivoting then reconstructs an open, single-sided surface from that point set, at which point we can apply mesh-space cuts, resurfacing, hole filling and handle severing operations to repair sheet topology. We use a centroidal/restricted Voronoi (CVT/RVD) remeshing to provide level of detail mechanisms for large patches of scroll data, and enable welding across individual cubes of mesh data for connected seam bands. Our output sheets, regardless of if they are welded or not, cano then be flattened by employing a hybrid discrete-combinatorial optimization pass, which alternates finding metric-developed length using a least-squares solve with a tabu search to assign integer winding depths to charts before the next stage of continuous re-registration. Our parameterization and CT read-back are then used to drive overlap quilting, RAW-guided surface snapping, recto-transition refinement, and finally atlas export. We validate our outputs on various subregions of the {\em pherc0139} test scroll, as well as initial results on other scrolls. On a 100-cube \emph{PHerc0139} block, weld-chain-relative graded moves reduce exact UV triangle overlaps from 373,536 pairs to 1,874 (99.5\%) while retaining coherent CT fibre texture. ScrollFiesta delivers surfaces that VC3D, Villa, and Spiral can consume directly, each one carrying the provenance and the audit that says how far it can be trusted. Our implementation is available as command-line tools, a public C API, and a remote-volume Python workflow. The result is a complete, auditable and automatic path from volume prediction to readable surface, with the current atlas and snap limitations reported rather than hidden.
+\end{abstract}
+
+%%
+%% This command processes the author and affiliation and title
+%% information and builds the first part of the formatted document.
+\begin{teaserfigure}
+  \centering
+  \begin{subfigure}[b]{0.175\textwidth}
+    \centering
+    \includegraphics[width=\linewidth]{figures/teaser_geometry.png}
+    \caption{Welded geometry}
+    \label{fig:overview_mesh}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.800\textwidth}
+    \centering
+    \includegraphics[width=\linewidth]{figures/teaser_ribbon.png}
+    \caption{Raw CT read-back through the finished atlas --- fibre bundles run continuously across the chart seams}
+    \label{fig:overview_unwrap}
+  \end{subfigure}
+  \caption{The current ScrollFiesta path on the $4\times5\times5$ PHerc0139 fixture, from reconstructed geometry to a readable sheet. The component-coloured weld (a) is lifted onto integer windings, which places every chart on the wrap it belongs to (Fig.~\ref{fig:tabu_winding}). Sampling raw volumetric CT data using this mesh produces the continuous fibres across seams in (b), validating that geometry, winding, and flattening are correct.}
+  \Description{Two panels: a coloured concentric scroll mesh shaded by surface normal, and a wide grayscale flattened CT strip containing continuous papyrus fibres.}
+  \label{fig:overview}
+\end{teaserfigure}
+
+\maketitle
+
+% ---------------------------------------------------------------------------
+% Body. One file per section under sections/; edit those, not this list.
+% ---------------------------------------------------------------------------
+\input{sections/01_introduction}
+\input{sections/02_related_work}
+\input{sections/03_algorithm_overview}
+\input{sections/04_per_cube_extraction}
+\input{sections/05_global_cube_welding}
+\input{sections/06_unwrapping}
+\input{sections/07_repair_parametric}
+\input{sections/08_interfaces}
+\input{sections/09_results_validation}
+\input{sections/10_conclusions}
+\input{sections/11_appendix_developments}
+\input{sections/12_appendix_technical}
+
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{bibliography}
+
+\end{document}
+\endinput
+%%
+%% End of file `sample-acmtog.tex'.

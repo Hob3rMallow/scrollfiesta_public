@@ -44,8 +44,8 @@ static void eh_init(Arena_T ar, EHash *h, size_t n)
 {
     size_t cap = 16; while (cap < n * 2) cap <<= 1;
     h->cap = cap; h->mask = cap - 1;
-    h->key = (uint64_t *)ARENA_ALLOC(ar, (long)(cap * sizeof(uint64_t)));
-    h->cnt = (int32_t *)ARENA_ALLOC(ar, (long)(cap * sizeof(int32_t)));
+    h->key = (uint64_t *)ARENA_ALLOC(ar, (size_t)(cap * sizeof(uint64_t)));
+    h->cnt = (int32_t *)ARENA_ALLOC(ar, (size_t)(cap * sizeof(int32_t)));
     for (size_t i = 0; i < cap; i++) { h->key[i] = UINT64_MAX; h->cnt[i] = 0; }
 }
 static int32_t *eh_slot(EHash *h, uint64_t k)
@@ -238,7 +238,7 @@ int SeamHoleFill_process(Arena_T arena, ComponentMesh *cm,
     /* directed boundary edges (undirected mult == 1) + per-vertex boundary degree.
      * Also union faces that share an interior (mult==2) edge, so we can later
      * refuse to cap the SOLE boundary loop of a component (a would-be bubble). */
-    DEdge *he = (DEdge *)ARENA_ALLOC(arena, (long)(hn * sizeof(DEdge)));
+    DEdge *he = (DEdge *)ARENA_ALLOC(arena, (size_t)(hn * sizeof(DEdge)));
     for (size_t f = 0; f < nf; f++) {
         int32_t a = F[f*3+0], b = F[f*3+1], c = F[f*3+2];
         he[f*3+0].s=a; he[f*3+0].d=b; he[f*3+0].face=(int32_t)f;
@@ -246,11 +246,11 @@ int SeamHoleFill_process(Arena_T arena, ComponentMesh *cm,
         he[f*3+2].s=c; he[f*3+2].d=a; he[f*3+2].face=(int32_t)f;
     }
     qsort(he, hn, sizeof(DEdge), cmp_dedge_und);
-    int32_t *fpar = (int32_t *)ARENA_ALLOC(arena, (long)(nf * sizeof(int32_t)));
+    int32_t *fpar = (int32_t *)ARENA_ALLOC(arena, (size_t)(nf * sizeof(int32_t)));
     for (size_t f = 0; f < nf; f++) fpar[f] = (int32_t)f;
-    DEdge *bnd = (DEdge *)ARENA_ALLOC(arena, (long)(hn * sizeof(DEdge)));
+    DEdge *bnd = (DEdge *)ARENA_ALLOC(arena, (size_t)(hn * sizeof(DEdge)));
     size_t nb = 0;
-    int32_t *bdeg = (int32_t *)ARENA_CALLOC(arena, (long)nv, (long)sizeof(int32_t));
+    int32_t *bdeg = (int32_t *)ARENA_CALLOC(arena, (size_t)nv, (size_t)sizeof(int32_t));
     for (size_t i = 0; i < hn;) {
         size_t j = i + 1;
         int32_t a0 = he[i].s<he[i].d?he[i].s:he[i].d, a1 = he[i].s<he[i].d?he[i].d:he[i].s;
@@ -266,15 +266,15 @@ int SeamHoleFill_process(Arena_T arena, ComponentMesh *cm,
 
     /* sort boundary edges by src for the walk */
     qsort(bnd, nb, sizeof(DEdge), cmp_dedge_src);
-    int32_t *src = (int32_t *)ARENA_ALLOC(arena, (long)(nb * sizeof(int32_t)));
+    int32_t *src = (int32_t *)ARENA_ALLOC(arena, (size_t)(nb * sizeof(int32_t)));
     for (size_t i = 0; i < nb; i++) src[i] = bnd[i].s;
-    uint8_t *used = (uint8_t *)ARENA_CALLOC(arena, (long)nb, 1L);
+    uint8_t *used = (uint8_t *)ARENA_CALLOC(arena, (size_t)nb, 1L);
 
     /* scratch for one loop's ordered vertices + the appended fill triangles */
-    int32_t *loop = (int32_t *)ARENA_ALLOC(arena, (long)((p->max_loop + 2) * (long)sizeof(int32_t)));
+    int32_t *loop = (int32_t *)ARENA_ALLOC(arena, (size_t)((p->max_loop + 2) * (size_t)sizeof(int32_t)));
     /* fill accumulator: at most (max_loop-2) tris per loop; grow generously */
     size_t fill_cap = nf + 4096, fill_n = 0;
-    int32_t *fill = (int32_t *)ARENA_ALLOC(arena, (long)(fill_cap * 3 * (long)sizeof(int32_t)));
+    int32_t *fill = (int32_t *)ARENA_ALLOC(arena, (size_t)(fill_cap * 3 * (size_t)sizeof(int32_t)));
 
     const double tol = p->wind_tol_turns;
     const int phase_on = (p->pitch > 0.0 && (p->umb_y != 0.0 || p->umb_x != 0.0));
@@ -289,8 +289,8 @@ int SeamHoleFill_process(Arena_T arena, ComponentMesh *cm,
      * puncture lives on a component that also owns a larger boundary (>=2 loops);
      * a tiny isolated patch whose ONLY boundary is this loop must NOT be capped
      * into a closed bubble. Cheap tracer pass over a scratch used-map. */
-    int32_t *loops_per_comp = (int32_t *)ARENA_CALLOC(arena, (long)nf, (long)sizeof(int32_t));
-    uint8_t *used2 = (uint8_t *)ARENA_CALLOC(arena, (long)nb, 1L);
+    int32_t *loops_per_comp = (int32_t *)ARENA_CALLOC(arena, (size_t)nf, (size_t)sizeof(int32_t));
+    uint8_t *used2 = (uint8_t *)ARENA_CALLOC(arena, (size_t)nb, 1L);
     for (size_t s0 = 0; s0 < nb; s0++) {
         if (used2[s0]) continue;
         size_t cur = s0;
@@ -452,7 +452,7 @@ int SeamHoleFill_process(Arena_T arena, ComponentMesh *cm,
         /* commit: append tris + update live edge counts */
         if (fill_n + ntri > fill_cap) {
             size_t ncap = (fill_n + ntri) * 2;
-            int32_t *nf2 = (int32_t *)ARENA_ALLOC(arena, (long)(ncap * 3 * (long)sizeof(int32_t)));
+            int32_t *nf2 = (int32_t *)ARENA_ALLOC(arena, (size_t)(ncap * 3 * (size_t)sizeof(int32_t)));
             memcpy(nf2, fill, fill_n * 3 * sizeof(int32_t));
             fill = nf2; fill_cap = ncap;
         }
@@ -471,7 +471,7 @@ int SeamHoleFill_process(Arena_T arena, ComponentMesh *cm,
      * combined face array into a fresh alloc that we do NOT restore). */
     if (fill_n > 0) {
         size_t nf_new = nf + fill_n;
-        int32_t *out = (int32_t *)ARENA_ALLOC(arena, (long)(nf_new * 3 * (long)sizeof(int32_t)));
+        int32_t *out = (int32_t *)ARENA_ALLOC(arena, (size_t)(nf_new * 3 * (size_t)sizeof(int32_t)));
         memcpy(out, F, nf * 3 * sizeof(int32_t));
         memcpy(out + nf * 3, fill, fill_n * 3 * sizeof(int32_t));
         cm->faces = out;

@@ -145,6 +145,7 @@ submission_update/*.log
 submission_update/*.out
 submission_update/*.synctex.gz
 
-# Only the verified, pre-ribbon canonical bundle is committed. All probe,
-# ablation, worker, and duplicated per-cube output remains ignored.
+# Only the curated canonical bundle is committed, including its snapped and
+# final-relaxed review artifacts. All probe, ablation, worker, and duplicated
+# per-cube output remains ignored.
 !output/canonical_best/**

@@ -1,10 +1,11 @@
 # run_canonical_grid.ps1 -- produce a canonical worked run for one cube grid.
 #
 # Runs the whole-scroll path end to end with the validated ribbon settings and
-# finishes by baking the RAW CT texture through the finished ribbon, which is the artifact
-# people actually want to look at:
+# publishes review images for the CT-snapped and final-relaxed surfaces before
+# baking the finished ribbon:
 #
 #   grid_pipeline -> scroll_whole -> --reregister -> --audit
+#                 -> scroll_unroll (join/ownership/snap/final relax reviews)
 #                 -> atlas_overlap_fix --production -> atlas texture
 #                 -> atlas_ribbon_fit -> ribbon texture
 #
@@ -93,6 +94,19 @@ function Stage($name, $exe, $argList, [switch]$allowFail) {
   Log ("  {0,-18}    exit={1} t={2:N1}s" -f $name, $code, $sw.Elapsed.TotalSeconds)
 }
 
+function RequireArtifact($label, $path, $notOlderThan = $null) {
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+    throw "CANONICAL ARTIFACT MISSING -- $label ($path)"
+  }
+  $item = Get-Item -LiteralPath $path
+  if ($item.Length -le 0) {
+    throw "CANONICAL ARTIFACT EMPTY -- $label ($path)"
+  }
+  if ($null -ne $notOlderThan -and $item.LastWriteTimeUtc -lt $notOlderThan) {
+    throw "CANONICAL ARTIFACT STALE -- $label ($path)"
+  }
+}
+
 if (-not $SkipMesh) {
   $env:MLS_BACKEND = $MlsBackend
   if ($MlsBackend -eq "cubecl-cuda") {
@@ -159,6 +173,73 @@ $yCount = @($coords.Y | Sort-Object -Unique).Count
 $xCount = @($coords.X | Sort-Object -Unique).Count
 $useTiledAtlas = !$MonolithicAtlas -and ($zCount -gt 5 -or $yCount -gt 5 -or $xCount -gt 5)
 $atlasSolution = "$Out\atlas\atlas_solution.bin"
+
+# The atlas and ribbon paths do not perform the CT surface snap or its final
+# light UV relaxation. Run the canonical five-stage review path as a sibling
+# product so those two states remain directly inspectable. Coarser raster
+# spacing keeps the review bounded on the long 4x21x21 grid; it changes only
+# the review raster, not the snapped/relaxed geometry.
+$reviewDir = "$Out\snap_relax"
+$reviewId = "canonical"
+$reviewDu = $AtlasRasterDu.ToString("R", [Globalization.CultureInfo]::InvariantCulture)
+$reviewDv = $AtlasRasterDv.ToString("R", [Globalization.CultureInfo]::InvariantCulture)
+$reviewStartedUtc = [DateTime]::UtcNow.AddSeconds(-2)
+Stage "snap_relax" "$B\scroll_unroll.exe" @(
+  "$Out\placed", $reviewDir, "--raw", $Raw,
+  "--steps", "12345", "--id", $reviewId,
+  "--du", $reviewDu, "--dv", $reviewDv, "--threads", "$Conc")
+
+$snapPreview = Join-Path $reviewDir "${reviewId}_step4_snap_rawtex_preview.png"
+$snapStrip = Join-Path $reviewDir "${reviewId}_step4_snap_rawtex_strip.png"
+$snapTif = Join-Path $reviewDir "${reviewId}_step4_snap_rawtex.tif"
+$snapStats = Join-Path $reviewDir "${reviewId}_step4_snap_stats.json"
+$relaxPreview = Join-Path $reviewDir "${reviewId}_step5_relax_rawtex_preview.png"
+$relaxStrip = Join-Path $reviewDir "${reviewId}_step5_relax_rawtex_strip.png"
+$relaxTif = Join-Path $reviewDir "${reviewId}_step5_relax_rawtex.tif"
+$relaxStats = Join-Path $reviewDir "${reviewId}_step5_relax_stats.json"
+RequireArtifact "snapped CT preview" $snapPreview $reviewStartedUtc
+RequireArtifact "snapped CT readable strip" $snapStrip $reviewStartedUtc
+RequireArtifact "snapped CT full-resolution raster" $snapTif $reviewStartedUtc
+RequireArtifact "snapped CT metrics" $snapStats $reviewStartedUtc
+RequireArtifact "final-relaxed CT preview" $relaxPreview $reviewStartedUtc
+RequireArtifact "final-relaxed CT readable strip" $relaxStrip $reviewStartedUtc
+RequireArtifact "final-relaxed CT full-resolution raster" $relaxTif $reviewStartedUtc
+RequireArtifact "final-relaxed metrics" $relaxStats $reviewStartedUtc
+try {
+  $snapReport = Get-Content -LiteralPath $snapStats -Raw | ConvertFrom-Json
+  $relaxReport = Get-Content -LiteralPath $relaxStats -Raw | ConvertFrom-Json
+} catch {
+  throw "CANONICAL ARTIFACT INVALID -- snap/relax metrics are not valid JSON: $_"
+}
+if ($snapReport.tool -ne "scroll_unroll step4 snap_grid") {
+  throw "CANONICAL ARTIFACT INVALID -- unexpected snap metrics tool '$($snapReport.tool)'"
+}
+if ($relaxReport.tool -ne "scroll_unroll step5 relax_grid") {
+  throw "CANONICAL ARTIFACT INVALID -- unexpected relax metrics tool '$($relaxReport.tool)'"
+}
+$reviewIndex = Join-Path $Out "CANONICAL_OUTPUTS.md"
+@"
+# Canonical review outputs
+
+| State | Preview | Readable strip | Full resolution | Metrics |
+|---|---|---|---|---|
+| CT-snapped surface | [preview](snap_relax/${reviewId}_step4_snap_rawtex_preview.png) | [PNG](snap_relax/${reviewId}_step4_snap_rawtex_strip.png) | [TIF](snap_relax/${reviewId}_step4_snap_rawtex.tif) | [JSON](snap_relax/${reviewId}_step4_snap_stats.json) |
+| Final-relaxed surface | [preview](snap_relax/${reviewId}_step5_relax_rawtex_preview.png) | [PNG](snap_relax/${reviewId}_step5_relax_rawtex_strip.png) | [TIF](snap_relax/${reviewId}_step5_relax_rawtex.tif) | [JSON](snap_relax/${reviewId}_step5_relax_stats.json) |
+"@ | Set-Content -LiteralPath $reviewIndex -Encoding utf8
+RequireArtifact "canonical review index" $reviewIndex
+Add-Content -Path $summary -Value "snap_preview=$snapPreview"
+Add-Content -Path $summary -Value "snap_strip=$snapStrip"
+Add-Content -Path $summary -Value "snap_tif=$snapTif"
+Add-Content -Path $summary -Value "snap_stats=$snapStats"
+Add-Content -Path $summary -Value "relax_preview=$relaxPreview"
+Add-Content -Path $summary -Value "relax_strip=$relaxStrip"
+Add-Content -Path $summary -Value "relax_tif=$relaxTif"
+Add-Content -Path $summary -Value "relax_stats=$relaxStats"
+Add-Content -Path $summary -Value "review_index=$reviewIndex"
+Log "  snapped review     -> $snapPreview"
+Log "  relaxed review     -> $relaxPreview"
+Log "  review index       -> $reviewIndex"
+
 if ($useTiledAtlas) {
   Log "Atlas mode: bounded tiles for ${zCount}x${yCount}x${xCount} grid"
   $tiledOut = "$Out\tiled_atlas"

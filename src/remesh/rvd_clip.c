@@ -47,11 +47,11 @@ static inline double tri_area(const double A[3], const double B[3], const double
 Rvd_T Rvd_new(Arena_T arena, const double *verts, size_t nv,
               const int32_t *faces, size_t nf) {
     if (!arena || !verts || !faces || nv < 3 || nf < 1) return NULL;
-    Rvd_T r = (Rvd_T)ARENA_ALLOC(arena, (long)sizeof(*r));
+    Rvd_T r = (Rvd_T)ARENA_ALLOC(arena, (size_t)sizeof(*r));
     r->arena = arena; r->nv = nv; r->nf = nf;
-    r->verts = (double *)ARENA_ALLOC(arena, (long)(nv*3*sizeof(double)));
+    r->verts = (double *)ARENA_ALLOC(arena, (size_t)(nv*3*sizeof(double)));
     memcpy(r->verts, verts, nv*3*sizeof(double));
-    r->faces = (int32_t *)ARENA_ALLOC(arena, (long)(nf*3*sizeof(int32_t)));
+    r->faces = (int32_t *)ARENA_ALLOC(arena, (size_t)(nf*3*sizeof(int32_t)));
     memcpy(r->faces, faces, nf*3*sizeof(int32_t));
     r->mesh_area = 0.0;
     for (size_t f=0; f<nf; f++) {
@@ -192,11 +192,11 @@ int Rvd_accumulate(Rvd_T r, const double *sites, size_t nsites,
     int32_t *raw = NULL;
     size_t   nraw = 0;
     if (out_dual_tris)
-        raw = (int32_t *)ARENA_ALLOC(r->arena, (long)(dual_cap * 6 * sizeof(int32_t)));
+        raw = (int32_t *)ARENA_ALLOC(r->arena, (size_t)(dual_cap * 6 * sizeof(int32_t)));
 
     Arena_Mark mark = Arena_save(r->arena);
 
-    float *sf = (float *)ARENA_ALLOC(r->arena, (long)(nsites*3*sizeof(float)));
+    float *sf = (float *)ARENA_ALLOC(r->arena, (size_t)(nsites*3*sizeof(float)));
     for (size_t i = 0; i < nsites; i++) {
         sf[i*3+0]=(float)sites[i*3+0]; sf[i*3+1]=(float)sites[i*3+1]; sf[i*3+2]=(float)sites[i*3+2];
     }
@@ -206,12 +206,12 @@ int Rvd_accumulate(Rvd_T r, const double *sites, size_t nsites,
     for (size_t i = 0; i < nsites; i++)
         (void)AttenePred_explicit(ctx, sites[i*3+0], sites[i*3+1], sites[i*3+2]);
 
-    int32_t *cand = (int32_t *)ARENA_ALLOC(r->arena, (long)(RVD_MAX_CAND*sizeof(int32_t)));
+    int32_t *cand = (int32_t *)ARENA_ALLOC(r->arena, (size_t)(RVD_MAX_CAND*sizeof(int32_t)));
     PV poly[RVD_MAX_POLY];
     /* Propagation scratch: per-triangle visited marker (generation stamp, never reset)
      * + owner queue. Owners are a connected subset of `cand`, bounded by RVD_MAX_CAND. */
-    int32_t *owner_gen = (int32_t *)ARENA_CALLOC(r->arena, (long)nsites, (long)sizeof(int32_t));
-    int32_t *owner_q   = (int32_t *)ARENA_ALLOC(r->arena, (long)(RVD_MAX_CAND*sizeof(int32_t)));
+    int32_t *owner_gen = (int32_t *)ARENA_CALLOC(r->arena, (size_t)nsites, (size_t)sizeof(int32_t));
+    int32_t *owner_q   = (int32_t *)ARENA_ALLOC(r->arena, (size_t)(RVD_MAX_CAND*sizeof(int32_t)));
     int32_t cur_gen = 0;
 
     for (size_t f = 0; f < r->nf; f++) {
@@ -345,7 +345,7 @@ int Rvd_accumulate(Rvd_T r, const double *sites, size_t nsites,
     /* Dedup the dual triples (each Voronoi vertex is seen once per incident cell). */
     if (out_dual_tris && nraw > 0) {
         qsort(raw, nraw, 6*sizeof(int32_t), cmp_triple);
-        int32_t *tris = (int32_t *)ARENA_ALLOC(r->arena, (long)(nraw*3*sizeof(int32_t)));
+        int32_t *tris = (int32_t *)ARENA_ALLOC(r->arena, (size_t)(nraw*3*sizeof(int32_t)));
         size_t nt = 0;
         for (size_t i = 0; i < nraw; i++) {
             if (i > 0 && cmp_triple(&raw[i*6], &raw[(i-1)*6]) == 0) continue;

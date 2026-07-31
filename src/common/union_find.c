@@ -9,8 +9,8 @@ UnionFind UF_new(Arena_T arena, int32_t n)
 
     uf.n     = n;
     uf.count = n;
-    uf.parent = (int32_t *)ARENA_ALLOC(arena, (long)n * (long)sizeof(int32_t));
-    uf.rank   = (int32_t *)ARENA_CALLOC(arena, (long)n, (long)sizeof(int32_t));
+    uf.parent = (int32_t *)ARENA_ALLOC(arena, (size_t)n * (size_t)sizeof(int32_t));
+    uf.rank   = (int32_t *)ARENA_CALLOC(arena, (size_t)n, (size_t)sizeof(int32_t));
 
     for (int32_t i = 0; i < n; i++) {
         uf.parent[i] = i;

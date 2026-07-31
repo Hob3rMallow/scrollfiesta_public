@@ -128,7 +128,7 @@ void Weld_verts(Arena_T arena,
     int do_guard = (guard_orient && nf > 0) ? 1 : 0;
     double *vn = NULL;
     if (do_guard) {
-        vn = (double *)ARENA_CALLOC(arena, (long)nv * 3L, (long)sizeof(double));
+        vn = (double *)ARENA_CALLOC(arena, (size_t)nv * 3L, (size_t)sizeof(double));
         for (size_t f = 0; f < nf; f++) {
             int32_t i0 = faces[f*3+0], i1 = faces[f*3+1], i2 = faces[f*3+2];
             const float *p0 = &verts[(size_t)i0*3];
@@ -220,17 +220,17 @@ void Weld_verts(Arena_T arena,
 
     /* -------- Accumulate centroid (and optional normals) per group -------- */
     /* Final output arrays live on the caller's arena; allocate now. */
-    float *welded = (float *)ARENA_ALLOC(arena, (long)(n_new * 3 * sizeof(float)));
+    float *welded = (float *)ARENA_ALLOC(arena, (size_t)(n_new * 3 * sizeof(float)));
     float *welded_n = NULL;
     if (out_normals && in_normals) {
-        welded_n = (float *)ARENA_ALLOC(arena, (long)(n_new * 3 * sizeof(float)));
+        welded_n = (float *)ARENA_ALLOC(arena, (size_t)(n_new * 3 * sizeof(float)));
     }
-    double *acc = (double *)ARENA_CALLOC(arena, (long)n_new * 3L, (long)sizeof(double));
+    double *acc = (double *)ARENA_CALLOC(arena, (size_t)n_new * 3L, (size_t)sizeof(double));
     double *acc_n = NULL;
     if (welded_n) {
-        acc_n = (double *)ARENA_CALLOC(arena, (long)n_new * 3L, (long)sizeof(double));
+        acc_n = (double *)ARENA_CALLOC(arena, (size_t)n_new * 3L, (size_t)sizeof(double));
     }
-    int32_t *count = (int32_t *)ARENA_CALLOC(arena, (long)n_new, (long)sizeof(int32_t));
+    int32_t *count = (int32_t *)ARENA_CALLOC(arena, (size_t)n_new, (size_t)sizeof(int32_t));
 
     for (size_t i = 0; i < nv; i++) {
         int32_t k = new_idx[i];

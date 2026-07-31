@@ -40,11 +40,11 @@ int OrientMesh_consistent(Arena_T arena,
     if (hsz < 1024) { hsz = 1024; }
     uint64_t hmask = (uint64_t)(hsz - 1);
 
-    int *bk = (int *)ARENA_ALLOC(arena, (long)(hsz * sizeof(int)));
+    int *bk = (int *)ARENA_ALLOC(arena, (size_t)(hsz * sizeof(int)));
     memset(bk, 0xFF, hsz * sizeof(int)); /* -1 in every slot */
 
     typedef struct { int32_t lo, hi, f0, f1, next; } Edge;
-    Edge *ed = (Edge *)ARENA_ALLOC(arena, (long)(ne_max * sizeof(Edge)));
+    Edge *ed = (Edge *)ARENA_ALLOC(arena, (size_t)(ne_max * sizeof(Edge)));
     size_t en = 0;
 
     for (size_t f = 0; f < nf; f++) {
@@ -73,7 +73,7 @@ int OrientMesh_consistent(Arena_T arena,
     }
 
     /* CSR face adjacency over exactly-2-face (manifold) edges */
-    int *deg = (int *)ARENA_CALLOC(arena, (long)nf, (long)sizeof(int));
+    int *deg = (int *)ARENA_CALLOC(arena, (size_t)nf, (size_t)sizeof(int));
     for (size_t i = 0; i < en; i++) {
         if (ed[i].f1 >= 0) { deg[ed[i].f0]++; deg[ed[i].f1]++; }
     }
@@ -82,8 +82,8 @@ int OrientMesh_consistent(Arena_T arena,
     off[0] = 0;
     for (size_t i = 0; i < nf; i++) { off[i + 1] = off[i] + (size_t)deg[i]; }
     size_t adj_n = off[nf];
-    int *adjf = (int *)ARENA_ALLOC(arena, (long)(adj_n * sizeof(int)));
-    size_t *cur = (size_t *)ARENA_ALLOC(arena, (long)(nf * sizeof(size_t)));
+    int *adjf = (int *)ARENA_ALLOC(arena, (size_t)(adj_n * sizeof(int)));
+    size_t *cur = (size_t *)ARENA_ALLOC(arena, (size_t)(nf * sizeof(size_t)));
     memcpy(cur, off, nf * sizeof(size_t));
     for (size_t i = 0; i < en; i++) {
         if (ed[i].f1 >= 0) {
@@ -93,8 +93,8 @@ int OrientMesh_consistent(Arena_T arena,
     }
 
     /* ---- Phase B: BFS orient (live windings); Phase C: anchor sign ---- */
-    uint8_t *vis = (uint8_t *)ARENA_CALLOC(arena, (long)nf, 1);
-    int *q = (int *)ARENA_ALLOC(arena, (long)(nf * sizeof(int)));
+    uint8_t *vis = (uint8_t *)ARENA_CALLOC(arena, (size_t)nf, 1);
+    int *q = (int *)ARENA_ALLOC(arena, (size_t)(nf * sizeof(int)));
     size_t flips = 0, comps = 0;
 
     for (size_t s = 0; s < nf; s++) {

@@ -637,8 +637,8 @@ int SeamBandCvt_process(Arena_T arena,
     for (size_t f = 0; f < nf; f++) if (!face_replaced[f]) keep++;
     size_t fin_nf = keep + rep_nf;
     size_t fin_nv = nv + n_newv;
-    float *fv = (float *)ARENA_ALLOC(arena, (long)(fin_nv*3*sizeof(float)));
-    int32_t *ff = (int32_t *)ARENA_ALLOC(arena, (long)(fin_nf*3*sizeof(int32_t)));
+    float *fv = (float *)ARENA_ALLOC(arena, (size_t)(fin_nv*3*sizeof(float)));
+    int32_t *ff = (int32_t *)ARENA_ALLOC(arena, (size_t)(fin_nf*3*sizeof(int32_t)));
     int32_t *fsrc = (int32_t *)ARENA_ALLOC(arena,
                         (long)((n_newv ? n_newv : 1)*sizeof(int32_t)));
     memcpy(fv, verts, nv*3*sizeof(float));

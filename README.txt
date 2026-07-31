@@ -117,6 +117,12 @@ END-TO-END USAGE
    --export-tifxyz and --export-atlas outputs are documented by
    scroll_unroll --help.
 
+   `scripts/run_canonical_grid.ps1` runs this five-stage review alongside the
+   atlas/ribbon path. A canonical run is considered incomplete unless the
+   step4 snapped and step5 final-relaxed full TIFs, readable strips, preview
+   PNGs, and metrics JSON files exist under `snap_relax/`. They are linked from
+   `CANONICAL_OUTPUTS.md`, and their paths are recorded in `logs/SUMMARY.txt`.
+
 4. Resolve atlas overlaps. Registration fixes where each chart sits WITHIN a
    winding; this decides WHICH winding it sits on. --rounds alternates a tabu
    search over the integer winding depths with a continuous per-chart relayout,

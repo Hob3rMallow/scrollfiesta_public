@@ -186,18 +186,18 @@ static int seam_refine_process_impl(Arena_T arena,
             size_t add_f = 2*int_this + bnd_this;
             size_t new_nv = cnv + nreq, new_nf = cnf + add_f;
             float   *nV = (float *)ARENA_ALLOC(arena,
-                              (long)(new_nv*3*sizeof(float)));
+                              (size_t)(new_nv*3*sizeof(float)));
             int32_t *nF = (int32_t *)ARENA_ALLOC(arena,
-                              (long)(new_nf*3*sizeof(int32_t)));
+                              (size_t)(new_nf*3*sizeof(int32_t)));
             memcpy(nV, cV, cnv*3*sizeof(float));
             memcpy(nF, cF, cnf*3*sizeof(int32_t));
             if (nsrc + nreq > src_cap) {
                 size_t ncap = src_cap ? src_cap : 1024;
                 while (ncap < nsrc + nreq) ncap <<= 1;
                 int32_t *ns0 = (int32_t *)ARENA_ALLOC(arena,
-                                  (long)(ncap*sizeof(int32_t)));
+                                  (size_t)(ncap*sizeof(int32_t)));
                 int32_t *ns1 = (int32_t *)ARENA_ALLOC(arena,
-                                  (long)(ncap*sizeof(int32_t)));
+                                  (size_t)(ncap*sizeof(int32_t)));
                 if (src0) memcpy(ns0, src0, nsrc*sizeof(int32_t));
                 if (src1) memcpy(ns1, src1, nsrc*sizeof(int32_t));
                 src0 = ns0; src1 = ns1; src_cap = ncap;

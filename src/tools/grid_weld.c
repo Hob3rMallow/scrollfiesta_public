@@ -135,7 +135,7 @@ static void cubelist_push(Arena_T arena, CubeList *cl, const char *id)
     if (cl->n >= cl->cap) {
         size_t new_cap = cl->cap == 0 ? 16 : cl->cap * 2;
         char **new_ids = (char **)ARENA_ALLOC(arena,
-                            (long)(new_cap * sizeof(char *)));
+                            (size_t)(new_cap * sizeof(char *)));
         if (cl->ids) {
             memcpy(new_ids, cl->ids, cl->n * sizeof(char *));
         }
@@ -143,7 +143,7 @@ static void cubelist_push(Arena_T arena, CubeList *cl, const char *id)
         cl->cap = new_cap;
     }
     size_t len = strlen(id);
-    char *copy = (char *)ARENA_ALLOC(arena, (long)(len + 1));
+    char *copy = (char *)ARENA_ALLOC(arena, (size_t)(len + 1));
     memcpy(copy, id, len + 1);
     cl->ids[cl->n++] = copy;
 }
@@ -321,7 +321,7 @@ static ManifoldStats manifold_audit(Arena_T arena,
     ManifoldStats s = {0, 0, 0, 0};
     if (nf == 0) return s;
     size_t hn = nf * 3;
-    DHE *he = (DHE *)ARENA_ALLOC(arena, (long)hn * (long)sizeof(DHE));
+    DHE *he = (DHE *)ARENA_ALLOC(arena, (size_t)hn * (size_t)sizeof(DHE));
     for (size_t f = 0; f < nf; f++) {
         int32_t v0 = faces[f * 3 + 0];
         int32_t v1 = faces[f * 3 + 1];
@@ -400,7 +400,7 @@ static void emit_nonmanifold_neighborhood(Arena_T arena,
      *    keep face indices so we can map runs back to faces. */
     typedef struct { int32_t a0, a1; int32_t face; } DHE2;
     size_t hn = nf * 3;
-    DHE2 *he = (DHE2 *)ARENA_ALLOC(arena, (long)hn * (long)sizeof(DHE2));
+    DHE2 *he = (DHE2 *)ARENA_ALLOC(arena, (size_t)hn * (size_t)sizeof(DHE2));
     for (size_t f = 0; f < nf; f++) {
         int32_t v[3] = { faces[f*3+0], faces[f*3+1], faces[f*3+2] };
         for (int e = 0; e < 3; e++) {
@@ -414,7 +414,7 @@ static void emit_nonmanifold_neighborhood(Arena_T arena,
     qsort(he, hn, sizeof(DHE2), cmp_dhe_undirected);
 
     /* 2) Mark every face that owns at least one non-manifold edge. */
-    uint8_t *nm_face = (uint8_t *)ARENA_CALLOC(arena, (long)nf, 1L);
+    uint8_t *nm_face = (uint8_t *)ARENA_CALLOC(arena, (size_t)nf, 1L);
     size_t i = 0;
     while (i < hn) {
         size_t j = i + 1;
@@ -429,14 +429,14 @@ static void emit_nonmanifold_neighborhood(Arena_T arena,
     /* 3) Vert use map: 1 = belongs to a non-manifold face (priority),
      *    2 = belongs to a 1-ring neighbour face only.
      *    A vert can be reached by both — keep the lower (1 wins). */
-    uint8_t *vert_use = (uint8_t *)ARENA_CALLOC(arena, (long)nv, 1L);
+    uint8_t *vert_use = (uint8_t *)ARENA_CALLOC(arena, (size_t)nv, 1L);
     for (size_t f = 0; f < nf; f++) {
         if (!nm_face[f]) continue;
         for (int k = 0; k < 3; k++) vert_use[faces[f*3+k]] = 1;
     }
     /* 1-ring neighbours: faces that share at least one vert with a
      *  non-manifold face. */
-    uint8_t *ring_face = (uint8_t *)ARENA_CALLOC(arena, (long)nf, 1L);
+    uint8_t *ring_face = (uint8_t *)ARENA_CALLOC(arena, (size_t)nf, 1L);
     for (size_t f = 0; f < nf; f++) {
         if (nm_face[f]) continue;
         for (int k = 0; k < 3; k++) {
@@ -452,7 +452,7 @@ static void emit_nonmanifold_neighborhood(Arena_T arena,
     }
 
     /* 4) Compact verts that we'll emit, build old->new remap. */
-    int32_t *remap = (int32_t *)ARENA_ALLOC(arena, (long)nv * (long)sizeof(int32_t));
+    int32_t *remap = (int32_t *)ARENA_ALLOC(arena, (size_t)nv * (size_t)sizeof(int32_t));
     size_t out_nv = 0;
     for (size_t v = 0; v < nv; v++) {
         if (vert_use[v]) { remap[v] = (int32_t)(out_nv++); }
@@ -536,7 +536,7 @@ static size_t repair_winding(Arena_T arena,
     /* Build per-face edge list with face-id back-pointer. */
     size_t hn = nf * 3;
     EdgeEntry *edges = (EdgeEntry *)ARENA_ALLOC(arena,
-                          (long)hn * (long)sizeof(EdgeEntry));
+                          (size_t)hn * (size_t)sizeof(EdgeEntry));
     for (size_t f = 0; f < nf; f++) {
         int32_t v0 = faces[f * 3 + 0];
         int32_t v1 = faces[f * 3 + 1];
@@ -550,15 +550,15 @@ static size_t repair_winding(Arena_T arena,
     /* For each face, find its 3 adjacent (via shared-edge) faces via
      * the sorted edge list. Adjacency map: face -> up to 3 neighbors. */
     int32_t *adj = (int32_t *)ARENA_ALLOC(arena,
-                       (long)nf * 3L * (long)sizeof(int32_t));
+                       (size_t)nf * 3L * (size_t)sizeof(int32_t));
     /* Edge keeper: which edge does each adjacency entry use, expressed
      * as the (v0, v1) of the parent face's edge. */
     int32_t *adj_edge_u = (int32_t *)ARENA_ALLOC(arena,
-                              (long)nf * 3L * (long)sizeof(int32_t));
+                              (size_t)nf * 3L * (size_t)sizeof(int32_t));
     int32_t *adj_edge_v = (int32_t *)ARENA_ALLOC(arena,
-                              (long)nf * 3L * (long)sizeof(int32_t));
+                              (size_t)nf * 3L * (size_t)sizeof(int32_t));
     int32_t *adj_count = (int32_t *)ARENA_CALLOC(arena,
-                             (long)nf, (long)sizeof(int32_t));
+                             (size_t)nf, (size_t)sizeof(int32_t));
     for (size_t i = 0; i < hn; ) {
         size_t j = i + 1;
         int32_t au = (edges[i].v0 < edges[i].v1) ? edges[i].v0 : edges[i].v1;
@@ -590,9 +590,9 @@ static size_t repair_winding(Arena_T arena,
     }
 
     /* BFS per connected component. */
-    uint8_t *visited = (uint8_t *)ARENA_CALLOC(arena, (long)nf, 1L);
+    uint8_t *visited = (uint8_t *)ARENA_CALLOC(arena, (size_t)nf, 1L);
     int32_t *queue = (int32_t *)ARENA_ALLOC(arena,
-                         (long)nf * (long)sizeof(int32_t));
+                         (size_t)nf * (size_t)sizeof(int32_t));
     size_t n_flipped = 0;
     size_t n_components = 0;
 
@@ -661,7 +661,7 @@ static size_t cull_tiny_components(Arena_T arena, int32_t *faces, size_t nf,
 
     size_t hn = nf * 3;
     EdgeEntry *edges = (EdgeEntry *)ARENA_ALLOC(arena,
-                          (long)hn * (long)sizeof(EdgeEntry));
+                          (size_t)hn * (size_t)sizeof(EdgeEntry));
     for (size_t f = 0; f < nf; f++) {
         int32_t v0 = faces[f*3+0], v1 = faces[f*3+1], v2 = faces[f*3+2];
         edges[f*3+0].v0=v0; edges[f*3+0].v1=v1; edges[f*3+0].face=(int32_t)f;
@@ -671,9 +671,9 @@ static size_t cull_tiny_components(Arena_T arena, int32_t *faces, size_t nf,
     qsort(edges, hn, sizeof(EdgeEntry), cmp_edge_undirected);
 
     int32_t *adj = (int32_t *)ARENA_ALLOC(arena,
-                       (long)nf * 3L * (long)sizeof(int32_t));
+                       (size_t)nf * 3L * (size_t)sizeof(int32_t));
     int32_t *adj_count = (int32_t *)ARENA_CALLOC(arena,
-                             (long)nf, (long)sizeof(int32_t));
+                             (size_t)nf, (size_t)sizeof(int32_t));
     for (size_t i = 0; i < hn; ) {
         size_t j = i + 1;
         int32_t au = (edges[i].v0 < edges[i].v1) ? edges[i].v0 : edges[i].v1;
@@ -696,20 +696,20 @@ static size_t cull_tiny_components(Arena_T arena, int32_t *faces, size_t nf,
 
     /* BFS components; record each face's component and the comp's vert count. */
     int32_t *comp = (int32_t *)ARENA_ALLOC(arena,
-                        (long)nf * (long)sizeof(int32_t));
+                        (size_t)nf * (size_t)sizeof(int32_t));
     for (size_t f = 0; f < nf; f++) { comp[f] = -1; }
     int32_t *queue = (int32_t *)ARENA_ALLOC(arena,
-                         (long)nf * (long)sizeof(int32_t));
+                         (size_t)nf * (size_t)sizeof(int32_t));
     /* vert -> last comp that counted it, so each vert is tallied once per comp */
     size_t max_v = 0;
     for (size_t k = 0; k < nf * 3; k++) {
         if ((size_t)faces[k] + 1 > max_v) { max_v = (size_t)faces[k] + 1; }
     }
     int32_t *vseen = (int32_t *)ARENA_ALLOC(arena,
-                         (long)max_v * (long)sizeof(int32_t));
+                         (size_t)max_v * (size_t)sizeof(int32_t));
     for (size_t v = 0; v < max_v; v++) { vseen[v] = -1; }
     size_t *comp_verts = (size_t *)ARENA_ALLOC(arena,
-                             (long)nf * (long)sizeof(size_t)); /* <=nf comps */
+                             (size_t)nf * (size_t)sizeof(size_t)); /* <=nf comps */
 
     size_t n_comp = 0;
     for (size_t seed = 0; seed < nf; seed++) {
@@ -782,7 +782,7 @@ static void dump_stage(Arena_T arena, const char *dir, const char *prefix,
     static const float GREY[3] = { 0.85f, 0.85f, 0.85f };
     Arena_Mark m = Arena_save(arena);
     float *colors = (float *)ARENA_ALLOC(arena,
-                       (long)(nv * 3L * (long)sizeof(float)));
+                       (size_t)(nv * 3L * (size_t)sizeof(float)));
     /* Default: colour by CONNECTED COMPONENT (wrap shatter / fusion shows on
      * load). Set GW_COLOR_BY=cube for the old per-cube provenance palette
      * (useful for seam-weld debugging). */
@@ -1018,12 +1018,12 @@ int main(int argc, char **argv)
         /* Cap at 32-bit alloc limit: vert_cap * 12 bytes < 2 GB --> 178M. */
         if (vert_cap > 150000000) vert_cap = 150000000;
         out_verts = (float *)ARENA_ALLOC(arena,
-                       (long)(vert_cap * 3L * (long)sizeof(float)));
+                       (size_t)(vert_cap * 3L * (size_t)sizeof(float)));
         /* Track which cube first inserted each vert (for per-cube
          * color assignment in the output OBJ). int16 supports up to 32K
          * cubes -- well beyond any realistic grid we'd put in memory. */
         int16_t *vert_cube_idx = (int16_t *)ARENA_ALLOC(arena,
-                                     (long)vert_cap * (long)sizeof(int16_t));
+                                     (size_t)vert_cap * (size_t)sizeof(int16_t));
         /* Weld bitmap: 1 if this vert was inserted by one cube and later
          * reused by a different cube (i.e., an actual cross-cube weld).
          * Distinct from "vert is near a cube-boundary plane" -- the latter
@@ -1031,7 +1031,7 @@ int main(int argc, char **argv)
          * verts on standalone components that don't extend across the
          * boundary. We only want the former. */
         uint8_t *vert_is_weld = (uint8_t *)ARENA_CALLOC(arena,
-                                    (long)vert_cap, 1L);
+                                    (size_t)vert_cap, 1L);
         /* Cube-index -> palette-index map. Use the integer cube-grid
          * coordinates (cz, cy, cx) with primes per axis that don't share
          * factors with the palette size (16). Adjacent cubes (differ by
@@ -1039,7 +1039,7 @@ int main(int argc, char **argv)
          * neighbors visually contrast. Deterministic across runs and
          * grids. */
         int8_t *cube_palette = (int8_t *)ARENA_ALLOC(arena,
-                                   (long)cubes.n * (long)sizeof(int8_t));
+                                   (size_t)cubes.n * (size_t)sizeof(int8_t));
         for (size_t i = 0; i < cubes.n; i++) {
             int64_t vz = 0, vy = 0, vx = 0;
             (void)parse_cube_origin(cubes.ids[i], &vz, &vy, &vx);
@@ -1064,7 +1064,7 @@ int main(int argc, char **argv)
         /* Cap at 32-bit alloc limit: face_cap * 24 bytes < 2 GB --> 87M. */
         if (face_cap > 80000000) face_cap = 80000000;
         all_faces = (SortedFace *)ARENA_ALLOC(arena,
-                       (long)(face_cap * (long)sizeof(SortedFace)));
+                       (size_t)(face_cap * (size_t)sizeof(SortedFace)));
 
         /* Process each cube. */
         Arena_T scratch = Arena_new();
@@ -1119,7 +1119,7 @@ int main(int argc, char **argv)
              * Per-cube OBJs are already in source-voxel WORLD coords. */
             (void)vz; (void)vy; (void)vx;
             int32_t *remap = (int32_t *)ARENA_ALLOC(scratch,
-                                (long)nv_in * (long)sizeof(int32_t));
+                                (size_t)nv_in * (size_t)sizeof(int32_t));
             if (out_nv + nv_in > vert_cap) {
                 fprintf(stderr,
                     "grid_weld: vert capacity %zu exceeded\n", vert_cap);
@@ -1217,7 +1217,7 @@ int main(int argc, char **argv)
 
         /* Run manifold audit on welded mesh. */
         int32_t *flat_faces = (int32_t *)ARENA_ALLOC(arena,
-                                  (long)n_unique_faces * 3L * (long)sizeof(int32_t));
+                                  (size_t)n_unique_faces * 3L * (size_t)sizeof(int32_t));
         for (size_t f = 0; f < n_unique_faces; f++) {
             flat_faces[f * 3 + 0] = all_faces[f].orig0;
             flat_faces[f * 3 + 1] = all_faces[f].orig1;
@@ -1286,7 +1286,7 @@ int main(int argc, char **argv)
              * band edges are already <= target, so this no-ops. SEAM_NO_REFINE
              * disables; SEAM_REFINE_TARGET tunes. */
             if (!getenv("SEAM_NO_REFINE")) {
-                uint8_t *rf_used = (uint8_t *)ARENA_CALLOC(arena, (long)out_nv, 1L);
+                uint8_t *rf_used = (uint8_t *)ARENA_CALLOC(arena, (size_t)out_nv, 1L);
                 for (size_t f = 0; f < n_unique_faces; f++) {
                     rf_used[flat_faces[f*3+0]] = 1;
                     rf_used[flat_faces[f*3+1]] = 1;
@@ -1707,10 +1707,10 @@ int main(int argc, char **argv)
             double lmax = 0.05f; float zone = 4.0f;
             { const char *e = getenv("SEAM_LAMBDA_MAX");  if (e) { double v=atof(e); if (v>0) lmax=v; } }
             { const char *e = getenv("SEAM_LAMBDA_ZONE"); if (e) { double v=atof(e); if (v>0) zone=(float)v; } }
-            double *lam = (double *)ARENA_ALLOC(arena, (long)(out_nv*sizeof(double)));
+            double *lam = (double *)ARENA_ALLOC(arena, (size_t)(out_nv*sizeof(double)));
             if (Develop_vertex_energy(arena, out_verts, out_nv, flat_faces,
                                       n_unique_faces, lam) == 0) {
-                unsigned char *cut = (unsigned char *)ARENA_CALLOC(arena, (long)out_nv, 1L);
+                unsigned char *cut = (unsigned char *)ARENA_CALLOC(arena, (size_t)out_nv, 1L);
                 size_t ncut = 0;
                 for (size_t v = 0; v < out_nv; v++)
                     if (lam[v] > lmax && near_cube_boundary(&out_verts[v*3], zone)) {
@@ -1768,11 +1768,11 @@ int main(int argc, char **argv)
                         "+ SEAM_WRAP_PITCH)\n");
             } else {
                 double *lam = (double *)ARENA_ALLOC(arena,
-                                  (long)(out_nv * sizeof(double)));
+                                  (size_t)(out_nv * sizeof(double)));
                 double *ww = (double *)ARENA_ALLOC(arena,
-                                  (long)(out_nv * sizeof(double)));
+                                  (size_t)(out_nv * sizeof(double)));
                 double *rr = (double *)ARENA_ALLOC(arena,
-                                  (long)(out_nv * sizeof(double)));
+                                  (size_t)(out_nv * sizeof(double)));
                 if (Develop_vertex_energy(arena, out_verts, out_nv, flat_faces,
                                           n_unique_faces, lam) == 0) {
                     double rmin = ps_rmin_p * ps_pitch;
@@ -1792,7 +1792,7 @@ int main(int argc, char **argv)
                      * The span uses the same wrapped-dtheta phase as the gate:
                      * evaluate all 3 edges, take the max |dw|. */
                     uint8_t *cand = (uint8_t *)ARENA_CALLOC(arena,
-                                        (long)n_unique_faces, 1L);
+                                        (size_t)n_unique_faces, 1L);
                     for (size_t f = 0; f < n_unique_faces; f++) {
                         int32_t t[3] = { flat_faces[f*3+0], flat_faces[f*3+1],
                                          flat_faces[f*3+2] };
@@ -1818,12 +1818,12 @@ int main(int argc, char **argv)
                      * and its vertex set touches high lambda -- the attach
                      * lines of a junction membrane are non-developable. */
                     int32_t *fpar = (int32_t *)ARENA_ALLOC(arena,
-                                        (long)(n_unique_faces * sizeof(int32_t)));
+                                        (size_t)(n_unique_faces * sizeof(int32_t)));
                     for (size_t f = 0; f < n_unique_faces; f++)
                         fpar[f] = (int32_t)f;
                     /* map vert -> one candidate face, to union share-a-vert faces */
                     int32_t *vf = (int32_t *)ARENA_ALLOC(arena,
-                                      (long)(out_nv * sizeof(int32_t)));
+                                      (size_t)(out_nv * sizeof(int32_t)));
                     for (size_t v = 0; v < out_nv; v++) vf[v] = -1;
                     for (size_t f = 0; f < n_unique_faces; f++) {
                         if (!cand[f]) continue;
@@ -1841,12 +1841,12 @@ int main(int argc, char **argv)
                     size_t removed = 0, n_clusters = 0, n_cut_clusters = 0;
                     /* count sizes + lambda touch per root (two passes) */
                     int32_t *croot = (int32_t *)ARENA_ALLOC(arena,
-                                         (long)(n_unique_faces * sizeof(int32_t)));
+                                         (size_t)(n_unique_faces * sizeof(int32_t)));
                     size_t *csize = (size_t *)ARENA_CALLOC(arena,
-                                        (long)n_unique_faces,
-                                        (long)sizeof(size_t));
+                                        (size_t)n_unique_faces,
+                                        (size_t)sizeof(size_t));
                     uint8_t *chot = (uint8_t *)ARENA_CALLOC(arena,
-                                        (long)n_unique_faces, 1L);
+                                        (size_t)n_unique_faces, 1L);
                     for (size_t f = 0; f < n_unique_faces; f++) {
                         if (!cand[f]) { croot[f] = -1; continue; }
                         int32_t x = (int32_t)f;
@@ -2030,7 +2030,7 @@ int main(int argc, char **argv)
             double r_band = 6.0;
             { const char *rbe = getenv("SEAM_BAND");
               if (rbe) { double v = atof(rbe); if (v > 0) r_band = v; } }
-            uint8_t *r_used = (uint8_t *)ARENA_CALLOC(arena, (long)out_nv, 1L);
+            uint8_t *r_used = (uint8_t *)ARENA_CALLOC(arena, (size_t)out_nv, 1L);
             for (size_t f = 0; f < n_unique_faces; f++) {
                 r_used[flat_faces[f*3+0]] = 1;
                 r_used[flat_faces[f*3+1]] = 1;
@@ -2085,7 +2085,7 @@ int main(int argc, char **argv)
             double bc_band = 6.0;
             { const char *bce = getenv("SEAM_BAND");
               if (bce) { double v = atof(bce); if (v > 0) bc_band = v; } }
-            uint8_t *bc_used = (uint8_t *)ARENA_CALLOC(arena, (long)out_nv, 1L);
+            uint8_t *bc_used = (uint8_t *)ARENA_CALLOC(arena, (size_t)out_nv, 1L);
             for (size_t f = 0; f < n_unique_faces; f++) {
                 bc_used[flat_faces[f*3+0]] = 1;
                 bc_used[flat_faces[f*3+1]] = 1;

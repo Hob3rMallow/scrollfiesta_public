@@ -122,14 +122,14 @@ static double face_normal_d(const float *vp, int32_t a, int32_t b, int32_t c,
 /* Build vertex -> incident-face CSR (off[nv+1], inc[3*nf]). */
 static void build_vert_faces(Arena_T arena, const int32_t *faces, size_t nf,
                              size_t nv, size_t **out_off, int **out_inc) {
-    size_t *off = (size_t *)ARENA_CALLOC(arena, (long)(nv + 1),
+    size_t *off = (size_t *)ARENA_CALLOC(arena, (size_t)(nv + 1),
                                          (long)sizeof(size_t));
     for (size_t f = 0; f < nf; f++) {
         for (int k = 0; k < 3; k++) { off[(size_t)faces[f * 3 + k] + 1]++; }
     }
     for (size_t v = 0; v < nv; v++) { off[v + 1] += off[v]; }
-    int *inc = (int *)ARENA_ALLOC(arena, (long)(off[nv] * sizeof(int)));
-    size_t *cur = (size_t *)ARENA_ALLOC(arena, (long)(nv * sizeof(size_t)));
+    int *inc = (int *)ARENA_ALLOC(arena, (size_t)(off[nv] * sizeof(int)));
+    size_t *cur = (size_t *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(size_t)));
     memcpy(cur, off, nv * sizeof(size_t));
     for (size_t f = 0; f < nf; f++) {
         for (int k = 0; k < 3; k++) {
@@ -178,7 +178,7 @@ static void close_bowtie_gaps(Arena_T arena, ComponentMesh *cm,
 
     size_t *off = NULL; int *inc = NULL;
     build_vert_faces(arena, faces, nf, nv, &off, &inc);
-    int *uf = (int *)ARENA_ALLOC(arena, (long)(nf * sizeof(int)));
+    int *uf = (int *)ARENA_ALLOC(arena, (size_t)(nf * sizeof(int)));
 
     /* fill triangles (original vertex indices); <= total incidence slots. */
     int32_t *fill = (int32_t *)ARENA_ALLOC(arena,
@@ -392,7 +392,7 @@ static size_t split_pinch_verts(Arena_T arena, ComponentMesh *cm,
     size_t *off = NULL; int *inc = NULL;
     build_vert_faces(arena, faces, nf, nv, &off, &inc);
 
-    int *uf = (int *)ARENA_ALLOC(arena, (long)(nf * sizeof(int)));
+    int *uf = (int *)ARENA_ALLOC(arena, (size_t)(nf * sizeof(int)));
     /* root_of_slot[j] = fan root (a face id) for incident slot j */
     int *root_of_slot = (int *)ARENA_ALLOC(arena,
                                            (long)(off[nv] * sizeof(int)));
@@ -436,8 +436,8 @@ static size_t split_pinch_verts(Arena_T arena, ComponentMesh *cm,
     if (extra == 0) { if (out_splits) { *out_splits = 0; } return nv; }
 
     /* sub-pass 2: assign output ids per fan root; fill newid[slot] */
-    int *newid = (int *)ARENA_ALLOC(arena, (long)(off[nv] * sizeof(int)));
-    int *src_of_new = (int *)ARENA_ALLOC(arena, (long)(extra * sizeof(int)));
+    int *newid = (int *)ARENA_ALLOC(arena, (size_t)(off[nv] * sizeof(int)));
+    int *src_of_new = (int *)ARENA_ALLOC(arena, (size_t)(extra * sizeof(int)));
     size_t next_new = nv, nsplit = 0;
     for (size_t v = 0; v < nv; v++) {
         size_t s = off[v], e = off[v + 1];
@@ -480,7 +480,7 @@ static size_t split_pinch_verts(Arena_T arena, ComponentMesh *cm,
     }
     uint8_t *nv_pin = NULL;
     if (cm->pin_mask) {
-        nv_pin = (uint8_t *)ARENA_ALLOC(arena, (long)(nv_new * sizeof(uint8_t)));
+        nv_pin = (uint8_t *)ARENA_ALLOC(arena, (size_t)(nv_new * sizeof(uint8_t)));
         memcpy(nv_pin, cm->pin_mask, nv * sizeof(uint8_t));
     }
     for (size_t i = 0; i < extra; i++) {
@@ -551,9 +551,9 @@ static void fill_small_loops(Arena_T arena, ComponentMesh *cm,
     size_t hsz = next_pow2(nf * 3 * 2);
     if (hsz < 1024) { hsz = 1024; }
     uint64_t hmask = (uint64_t)(hsz - 1);
-    int *bk = (int *)ARENA_ALLOC(arena, (long)(hsz * sizeof(int)));
+    int *bk = (int *)ARENA_ALLOC(arena, (size_t)(hsz * sizeof(int)));
     memset(bk, 0xFF, hsz * sizeof(int));
-    E *ed = (E *)ARENA_ALLOC(arena, (long)(nf * 3 * sizeof(E)));
+    E *ed = (E *)ARENA_ALLOC(arena, (size_t)(nf * 3 * sizeof(E)));
     size_t en = 0;
 
     /* face -> connected component (union across every shared edge). Lets us
@@ -561,7 +561,7 @@ static void fill_small_loops(Arena_T arena, ComponentMesh *cm,
      * rim, so the component has >=2 boundary loops) from the sole rim of a tiny
      * island (its component's ONLY loop) — the latter must never be capped into
      * a closed bubble. */
-    int *cuf = (int *)ARENA_ALLOC(arena, (long)(nf * sizeof(int)));
+    int *cuf = (int *)ARENA_ALLOC(arena, (size_t)(nf * sizeof(int)));
     for (size_t f = 0; f < nf; f++) { cuf[f] = (int)f; }
 
     for (size_t f = 0; f < nf; f++) {
@@ -595,9 +595,9 @@ static void fill_small_loops(Arena_T arena, ComponentMesh *cm,
         if (out_skipped) { *out_skipped = 0; }
         return;
     }
-    int *he_src = (int *)ARENA_ALLOC(arena, (long)(nb * sizeof(int)));
-    int *he_dst = (int *)ARENA_ALLOC(arena, (long)(nb * sizeof(int)));
-    int *he_face = (int *)ARENA_ALLOC(arena, (long)(nb * sizeof(int)));
+    int *he_src = (int *)ARENA_ALLOC(arena, (size_t)(nb * sizeof(int)));
+    int *he_dst = (int *)ARENA_ALLOC(arena, (size_t)(nb * sizeof(int)));
+    int *he_face = (int *)ARENA_ALLOC(arena, (size_t)(nb * sizeof(int)));
     size_t hn = 0;
     for (size_t f = 0; f < nf; f++) {
         for (int e = 0; e < 3; e++) {
@@ -616,21 +616,21 @@ static void fill_small_loops(Arena_T arena, ComponentMesh *cm,
     }
 
     /* per-vertex outgoing boundary half-edges (CSR) */
-    size_t *voff = (size_t *)ARENA_CALLOC(arena, (long)(nv + 1),
+    size_t *voff = (size_t *)ARENA_CALLOC(arena, (size_t)(nv + 1),
                                           (long)sizeof(size_t));
     for (size_t i = 0; i < nb; i++) { voff[(size_t)he_src[i] + 1]++; }
     for (size_t v = 0; v < nv; v++) { voff[v + 1] += voff[v]; }
-    int *vhe = (int *)ARENA_ALLOC(arena, (long)(nb * sizeof(int)));
-    size_t *vcur = (size_t *)ARENA_ALLOC(arena, (long)(nv * sizeof(size_t)));
+    int *vhe = (int *)ARENA_ALLOC(arena, (size_t)(nb * sizeof(int)));
+    size_t *vcur = (size_t *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(size_t)));
     memcpy(vcur, voff, nv * sizeof(size_t));
     for (size_t i = 0; i < nb; i++) { vhe[vcur[(size_t)he_src[i]]++] = (int)i; }
 
-    uint8_t *used = (uint8_t *)ARENA_CALLOC(arena, (long)nb, 1);
+    uint8_t *used = (uint8_t *)ARENA_CALLOC(arena, (size_t)nb, 1);
     int loop[PINHOLE_MAX_LOOP + 2];
 
     /* fill triangles buffer: <= nb triangles added (each boundary edge
      * becomes interior, contributing at most one new fan triangle). */
-    int32_t *fill = (int32_t *)ARENA_ALLOC(arena, (long)(nb * 3 * sizeof(int32_t)));
+    int32_t *fill = (int32_t *)ARENA_ALLOC(arena, (size_t)(nb * 3 * sizeof(int32_t)));
     size_t nfill = 0, filled = 0, skipped = 0;
 
     /* triangle-existence set over the existing faces, kept live as fills are
@@ -640,7 +640,7 @@ static void fill_small_loops(Arena_T arena, ComponentMesh *cm,
     size_t tsz = next_pow2((nf + nb) * 2);
     if (tsz < 1024) { tsz = 1024; }
     uint64_t tmask = (uint64_t)(tsz - 1);
-    uint64_t *tset = (uint64_t *)ARENA_CALLOC(arena, (long)tsz,
+    uint64_t *tset = (uint64_t *)ARENA_CALLOC(arena, (size_t)tsz,
                                               (long)sizeof(uint64_t));
     for (size_t f = 0; f < nf; f++) {
         tri_add(tset, tmask, faces[f * 3 + 0], faces[f * 3 + 1],
@@ -652,7 +652,7 @@ static void fill_small_loops(Arena_T arena, ComponentMesh *cm,
      * island's component has only its own rim (1 loop) and must not be capped
      * into a closed bubble. Walk consumes the same half-edges the fill pass
      * will, so each distinct boundary cycle/chain is counted once. */
-    size_t *loops_per_comp = (size_t *)ARENA_CALLOC(arena, (long)nf,
+    size_t *loops_per_comp = (size_t *)ARENA_CALLOC(arena, (size_t)nf,
                                                     (long)sizeof(size_t));
     for (size_t i0 = 0; i0 < nb; i0++) {
         if (used[i0]) { continue; }

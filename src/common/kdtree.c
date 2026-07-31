@@ -157,7 +157,7 @@ KDTree_T KDTree_new(Arena_T arena, const float *points, size_t n)
 
     assert(points);
 
-    tree->nodes = (KDNode *)ARENA_ALLOC(arena, (long)(n * sizeof(KDNode)));
+    tree->nodes = (KDNode *)ARENA_ALLOC(arena, (size_t)(n * sizeof(KDNode)));
 
     /* Initialize all nodes */
     memset(tree->nodes, 0, n * sizeof(KDNode));

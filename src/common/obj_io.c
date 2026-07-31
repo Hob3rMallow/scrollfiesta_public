@@ -182,11 +182,11 @@ int ObjIO_read(Arena_T arena, const char *path,
 
     if (nv > 0) {
         verts = (float *)ARENA_ALLOC(arena,
-                                      (long)(nv * 3 * sizeof(float)));
+                                      (size_t)(nv * 3 * sizeof(float)));
     }
     if (nf > 0) {
         faces = (int32_t *)ARENA_ALLOC(arena,
-                                        (long)(nf * 3 * sizeof(int32_t)));
+                                        (size_t)(nf * 3 * sizeof(int32_t)));
     }
 
     /* Second pass: read data */

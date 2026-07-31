@@ -338,7 +338,7 @@ int SeamWeld_bridge(Arena_T arena,
                                   (double)band, planes, 64);
     if (np == 0) {
         /* Nothing to bridge -- return faces unchanged. */
-        int32_t *out = (int32_t *)ARENA_ALLOC(arena, (long)(nf*3*sizeof(int32_t)));
+        int32_t *out = (int32_t *)ARENA_ALLOC(arena, (size_t)(nf*3*sizeof(int32_t)));
         memcpy(out, faces, nf*3*sizeof(int32_t));
         *out_faces = out; *out_nf = nf;
         free(normals); free(used_any);
@@ -592,7 +592,7 @@ int SeamWeld_bridge(Arena_T arena,
     }
 
     if (n_init == 0) {
-        int32_t *out = (int32_t *)ARENA_ALLOC(arena, (long)((nf ? nf : 1)*3*sizeof(int32_t)));
+        int32_t *out = (int32_t *)ARENA_ALLOC(arena, (size_t)((nf ? nf : 1)*3*sizeof(int32_t)));
         memcpy(out, faces, nf*3*sizeof(int32_t));
         *out_faces = out; *out_nf = nf;
         free(normals); free(used_any); free(he); free(init); free(excl);
@@ -698,7 +698,7 @@ int SeamWeld_bridge(Arena_T arena,
     }
 
     size_t total = nf + n_bridge;
-    int32_t *out = (int32_t *)ARENA_ALLOC(arena, (long)((total ? total : 1) * 3 * sizeof(int32_t)));
+    int32_t *out = (int32_t *)ARENA_ALLOC(arena, (size_t)((total ? total : 1) * 3 * sizeof(int32_t)));
     memcpy(out, faces, nf * 3 * sizeof(int32_t));
     size_t outn = nf, accepted = 0, rej_long = 0, rej_fold = 0;
     for (size_t f = 0; f < n_bridge; f++) {

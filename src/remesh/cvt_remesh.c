@@ -124,7 +124,7 @@ static void extract_boundary(Arena_T a, const double *V, const int32_t *F,
                              size_t nf, size_t nv, Boundary *bd) {
     memset(bd, 0, sizeof(*bd));
     size_t ne = nf*3;
-    int32_t *E = (int32_t*)ARENA_ALLOC(a, (long)(ne*2*sizeof(int32_t)));
+    int32_t *E = (int32_t*)ARENA_ALLOC(a, (size_t)(ne*2*sizeof(int32_t)));
     for (size_t f=0; f<nf; f++)
         for (int e=0; e<3; e++) {
             int32_t u=F[f*3+e], w=F[f*3+(e+1)%3];
@@ -134,8 +134,8 @@ static void extract_boundary(Arena_T a, const double *V, const int32_t *F,
     qsort(E, ne, 2*sizeof(int32_t), cmp_edge);
 
     /* boundary edges = runs of length 1 */
-    int32_t *nbr0=(int32_t*)ARENA_ALLOC(a,(long)(nv*sizeof(int32_t)));
-    int32_t *nbr1=(int32_t*)ARENA_ALLOC(a,(long)(nv*sizeof(int32_t)));
+    int32_t *nbr0=(int32_t*)ARENA_ALLOC(a,(size_t)(nv*sizeof(int32_t)));
+    int32_t *nbr1=(int32_t*)ARENA_ALLOC(a,(size_t)(nv*sizeof(int32_t)));
     for (size_t i=0;i<nv;i++){ nbr0[i]=-1; nbr1[i]=-1; }
     size_t nbnd=0;
     /* first pass: count boundary edges */
@@ -146,7 +146,7 @@ static void extract_boundary(Arena_T a, const double *V, const int32_t *F,
         i=j;
     }
     bd->nseg=nbnd;
-    bd->seg=(double*)ARENA_ALLOC(a,(long)(nbnd*6*sizeof(double)));
+    bd->seg=(double*)ARENA_ALLOC(a,(size_t)(nbnd*6*sizeof(double)));
     size_t si=0;
     for (size_t i=0;i<ne;) {
         size_t j=i+1;
@@ -165,9 +165,9 @@ static void extract_boundary(Arena_T a, const double *V, const int32_t *F,
     }
 
     /* chain into loops */
-    uint8_t *vis=(uint8_t*)ARENA_CALLOC(a,(long)nv,1);
-    bd->loopv=(int32_t*)ARENA_ALLOC(a,(long)((nbnd+1)*sizeof(int32_t)));
-    bd->loopoff=(int32_t*)ARENA_ALLOC(a,(long)((nbnd+2)*sizeof(int32_t)));
+    uint8_t *vis=(uint8_t*)ARENA_CALLOC(a,(size_t)nv,1);
+    bd->loopv=(int32_t*)ARENA_ALLOC(a,(size_t)((nbnd+1)*sizeof(int32_t)));
+    bd->loopoff=(int32_t*)ARENA_ALLOC(a,(size_t)((nbnd+2)*sizeof(int32_t)));
     int nloops=0; int32_t w=0; bd->loopoff[0]=0;
     for (size_t s=0; s<nv; s++) {
         if (nbr0[s]<0 || vis[s]) continue;
@@ -229,7 +229,7 @@ int CVT_remesh(Arena_T arena,
     uint32_t rng = o.seed ? o.seed : 12345u;
     size_t N = target_nsites;
 
-    double *V = (double *)ARENA_ALLOC(arena, (long)(in_nv*3*sizeof(double)));
+    double *V = (double *)ARENA_ALLOC(arena, (size_t)(in_nv*3*sizeof(double)));
     for (size_t i = 0; i < in_nv*3; i++) V[i] = (double)in_verts[i];
 
     Rvd_T r = Rvd_new(arena, V, in_nv, in_faces, in_nf);
@@ -239,7 +239,7 @@ int CVT_remesh(Arena_T arena,
 
     /* Projection acceleration: KD-tree over triangle centroids (+ the max
      * centroid-to-vertex radius, so the ball query is a provable superset). */
-    float *tc = (float *)ARENA_ALLOC(arena, (long)(in_nf*3*sizeof(float)));
+    float *tc = (float *)ARENA_ALLOC(arena, (size_t)(in_nf*3*sizeof(float)));
     double max_tri_r = 0.0;
     for (size_t f = 0; f < in_nf; f++) {
         const double *A=&V[(size_t)in_faces[f*3+0]*3];
@@ -254,13 +254,13 @@ int CVT_remesh(Arena_T arena,
         if (rr>max_tri_r) max_tri_r=rr;
     }
     KDTree_T proj_kd = KDTree_new(arena, tc, in_nf);
-    int32_t *proj_cand = (int32_t *)ARENA_ALLOC(arena, (long)(1024*sizeof(int32_t)));
+    int32_t *proj_cand = (int32_t *)ARENA_ALLOC(arena, (size_t)(1024*sizeof(int32_t)));
 
     /* Seeding CDF over triangles. Uniform (field==NULL): weight = area, so sampling
      * is area-weighted. Graded (field!=NULL): weight = area / h(centroid)^2, so seed
      * density ~ 1/h^2 (spacing ~ h); the weighted total then DERIVES the site count
      * N = round(2 * sum(area/h^2)) -- the generalization of the uniform N = 2A/h^2. */
-    double *cum = (double *)ARENA_ALLOC(arena, (long)(in_nf*sizeof(double)));
+    double *cum = (double *)ARENA_ALLOC(arena, (size_t)(in_nf*sizeof(double)));
     double tot = 0.0;
     for (size_t f = 0; f < in_nf; f++) {
         const double *A=&V[(size_t)in_faces[f*3+0]*3];
@@ -288,8 +288,8 @@ int CVT_remesh(Arena_T arena,
     Boundary bd; extract_boundary(arena, V, in_faces, in_nf, in_nv, &bd);
     double spacing = sqrt(2.0*surf_area/(double)N);   /* approx target edge length */
 
-    double *sites = (double *)ARENA_ALLOC(arena, (long)(N*3*sizeof(double)));
-    uint8_t *bflag = (uint8_t *)ARENA_CALLOC(arena, (long)N, 1);
+    double *sites = (double *)ARENA_ALLOC(arena, (size_t)(N*3*sizeof(double)));
+    uint8_t *bflag = (uint8_t *)ARENA_CALLOC(arena, (size_t)N, 1);
     size_t ns = 0;
 
     /* boundary seeds first (constrained to their loop) */
@@ -348,10 +348,10 @@ int CVT_remesh(Arena_T arena,
         sites[ns*3+0]=pos[0]; sites[ns*3+1]=pos[1]; sites[ns*3+2]=pos[2];
     }
 
-    double *area = (double *)ARENA_ALLOC(arena, (long)(N*sizeof(double)));
-    double *cent = (double *)ARENA_ALLOC(arena, (long)(N*3*sizeof(double)));
-    double *NA   = (double *)ARENA_ALLOC(arena, (long)(N*6*sizeof(double)));
-    double *bNA  = (double *)ARENA_ALLOC(arena, (long)(N*3*sizeof(double)));
+    double *area = (double *)ARENA_ALLOC(arena, (size_t)(N*sizeof(double)));
+    double *cent = (double *)ARENA_ALLOC(arena, (size_t)(N*3*sizeof(double)));
+    double *NA   = (double *)ARENA_ALLOC(arena, (size_t)(N*6*sizeof(double)));
+    double *bNA  = (double *)ARENA_ALLOC(arena, (size_t)(N*3*sizeof(double)));
     double lna = (double)o.lambda_na;
 
     for (int it = 0; it < o.n_iters; it++) {
@@ -405,7 +405,7 @@ int CVT_remesh(Arena_T arena,
      * doesn't affect it, so pass NULL (the area/centroid outputs here are scratch). */
     if (Rvd_accumulate(r, sites, N, area, cent, NULL, NULL, &tris, &nt, NULL) != 0) return -5;
 
-    float *ov = (float *)ARENA_ALLOC(arena, (long)(N*3*sizeof(float)));
+    float *ov = (float *)ARENA_ALLOC(arena, (size_t)(N*3*sizeof(float)));
     for (size_t i = 0; i < N*3; i++) ov[i] = (float)sites[i];
 
     *out_verts = ov; *out_nv = N;
@@ -453,7 +453,7 @@ int CVT_remesh_pinned(Arena_T arena,
     CvtOpts o; if (opts) o = *opts; else CVT_default_opts(&o);
     uint32_t rng = o.seed ? o.seed : 12345u;
 
-    double *V = (double *)ARENA_ALLOC(arena, (long)(in_nv*3*sizeof(double)));
+    double *V = (double *)ARENA_ALLOC(arena, (size_t)(in_nv*3*sizeof(double)));
     for (size_t i = 0; i < in_nv*3; i++) V[i] = (double)in_verts[i];
 
     Rvd_T r = Rvd_new(arena, V, in_nv, in_faces, in_nf);
@@ -468,7 +468,7 @@ int CVT_remesh_pinned(Arena_T arena,
     if (n_pin < 3) return -6;
 
     /* Per-segment length, for the scale-aware clearance. */
-    double *seglen = (double *)ARENA_ALLOC(arena, (long)(bd.nseg*sizeof(double)));
+    double *seglen = (double *)ARENA_ALLOC(arena, (size_t)(bd.nseg*sizeof(double)));
     for (size_t s = 0; s < bd.nseg; s++) {
         double dz=bd.seg[s*6+3]-bd.seg[s*6+0];
         double dy=bd.seg[s*6+4]-bd.seg[s*6+1];
@@ -481,7 +481,7 @@ int CVT_remesh_pinned(Arena_T arena,
     size_t N = n_pin + n_int;
 
     /* Projection acceleration (as CVT_remesh). */
-    float *tc = (float *)ARENA_ALLOC(arena, (long)(in_nf*3*sizeof(float)));
+    float *tc = (float *)ARENA_ALLOC(arena, (size_t)(in_nf*3*sizeof(float)));
     double max_tri_r = 0.0;
     for (size_t f = 0; f < in_nf; f++) {
         const double *A=&V[(size_t)in_faces[f*3+0]*3];
@@ -496,10 +496,10 @@ int CVT_remesh_pinned(Arena_T arena,
         if (rr>max_tri_r) max_tri_r=rr;
     }
     KDTree_T proj_kd = KDTree_new(arena, tc, in_nf);
-    int32_t *proj_cand = (int32_t *)ARENA_ALLOC(arena, (long)(1024*sizeof(int32_t)));
+    int32_t *proj_cand = (int32_t *)ARENA_ALLOC(arena, (size_t)(1024*sizeof(int32_t)));
 
     /* Area CDF for interior seeding (uniform). */
-    double *cum = (double *)ARENA_ALLOC(arena, (long)(in_nf*sizeof(double)));
+    double *cum = (double *)ARENA_ALLOC(arena, (size_t)(in_nf*sizeof(double)));
     double tot = 0.0;
     for (size_t f = 0; f < in_nf; f++) {
         const double *A=&V[(size_t)in_faces[f*3+0]*3];
@@ -512,8 +512,8 @@ int CVT_remesh_pinned(Arena_T arena,
         cum[f] = tot;
     }
 
-    double *sites = (double *)ARENA_ALLOC(arena, (long)(N*3*sizeof(double)));
-    int32_t *src  = (int32_t *)ARENA_ALLOC(arena, (long)(N*sizeof(int32_t)));
+    double *sites = (double *)ARENA_ALLOC(arena, (size_t)(N*3*sizeof(double)));
+    int32_t *src  = (int32_t *)ARENA_ALLOC(arena, (size_t)(N*sizeof(int32_t)));
 
     /* Pinned sites: exact boundary verts, loop order, bit-exact positions. */
     for (size_t i = 0; i < n_pin; i++) {
@@ -558,10 +558,10 @@ int CVT_remesh_pinned(Arena_T arena,
         src[ns] = -1;
     }
 
-    double *area = (double *)ARENA_ALLOC(arena, (long)(N*sizeof(double)));
-    double *cent = (double *)ARENA_ALLOC(arena, (long)(N*3*sizeof(double)));
-    double *NA   = (double *)ARENA_ALLOC(arena, (long)(N*6*sizeof(double)));
-    double *bNA  = (double *)ARENA_ALLOC(arena, (long)(N*3*sizeof(double)));
+    double *area = (double *)ARENA_ALLOC(arena, (size_t)(N*sizeof(double)));
+    double *cent = (double *)ARENA_ALLOC(arena, (size_t)(N*3*sizeof(double)));
+    double *NA   = (double *)ARENA_ALLOC(arena, (size_t)(N*6*sizeof(double)));
+    double *bNA  = (double *)ARENA_ALLOC(arena, (size_t)(N*3*sizeof(double)));
     double lna = (double)o.lambda_na;
 
     for (int it = 0; it < o.n_iters; it++) {
@@ -605,7 +605,7 @@ int CVT_remesh_pinned(Arena_T arena,
     if (Rvd_accumulate(r, sites, N, area, cent, NULL, NULL, &tris, &nt, NULL) != 0) return -5;
     if (nt == 0) return -7;
 
-    float *ov = (float *)ARENA_ALLOC(arena, (long)(N*3*sizeof(float)));
+    float *ov = (float *)ARENA_ALLOC(arena, (size_t)(N*3*sizeof(float)));
     for (size_t i = 0; i < N*3; i++) ov[i] = (float)sites[i];
 
     *out_verts = ov; *out_nv = N;
@@ -635,8 +635,8 @@ int CVT_projection_selftest(void) {
         int giant = (kind == 2);
         size_t nv = base_nv + (giant ? 3 : 0);
         size_t nf = base_nf + (giant ? 1 : 0);
-        double  *V = (double *)ARENA_ALLOC(a, (long)(nv*3*sizeof(double)));
-        int32_t *F = (int32_t *)ARENA_ALLOC(a, (long)(nf*3*sizeof(int32_t)));
+        double  *V = (double *)ARENA_ALLOC(a, (size_t)(nv*3*sizeof(double)));
+        int32_t *F = (int32_t *)ARENA_ALLOC(a, (size_t)(nf*3*sizeof(int32_t)));
 
         for (int i=0;i<side;i++) for (int j=0;j<side;j++) {
             size_t idx=(size_t)i*side+j;
@@ -661,7 +661,7 @@ int CVT_projection_selftest(void) {
         }
 
         /* build the projection KD-tree exactly as CVT_remesh does */
-        float *tc = (float *)ARENA_ALLOC(a, (long)(nf*3*sizeof(float)));
+        float *tc = (float *)ARENA_ALLOC(a, (size_t)(nf*3*sizeof(float)));
         double max_tri_r = 0.0;
         for (size_t f=0; f<nf; f++) {
             const double *A=&V[(size_t)F[f*3+0]*3], *B=&V[(size_t)F[f*3+1]*3], *C=&V[(size_t)F[f*3+2]*3];
@@ -674,7 +674,7 @@ int CVT_projection_selftest(void) {
             if (rr>max_tri_r) max_tri_r=rr;
         }
         KDTree_T kd = KDTree_new(a, tc, nf);
-        int32_t *cand = (int32_t *)ARENA_ALLOC(a, (long)((nf+1)*sizeof(int32_t)));
+        int32_t *cand = (int32_t *)ARENA_ALLOC(a, (size_t)((nf+1)*sizeof(int32_t)));
 
         for (int q=0; q<3000; q++) {
             double p[3] = { psr(-6.0,6.0), psr(-45.0,65.0), psr(-45.0,65.0) };

@@ -1657,7 +1657,7 @@ int BallPivot_reconstruct_gated(Arena_T arena,
         analyze_holes(es, g, V, N, rho, n);
     }
 
-    int32_t *out = (int32_t *)ARENA_ALLOC(arena, (long)((size_t)b.nf * 3 * sizeof(int32_t)));
+    int32_t *out = (int32_t *)ARENA_ALLOC(arena, (size_t)((size_t)b.nf * 3 * sizeof(int32_t)));
     for (int i = 0; i < b.nf*3; i++) out[i] = (int32_t)b.F[i];
     *out_faces = out;
     *out_nf = (size_t)b.nf;
@@ -1864,7 +1864,7 @@ int BallPivot_bridge(Arena_T arena,
                 b.dbg_facecoh, b.dbg_retry_saved, b.dbg_all_cand_failed);
     }
 
-    int32_t *out = (int32_t *)ARENA_ALLOC(arena, (long)((size_t)b.nf * 3 * sizeof(int32_t)));
+    int32_t *out = (int32_t *)ARENA_ALLOC(arena, (size_t)((size_t)b.nf * 3 * sizeof(int32_t)));
     /* Final winding filter: drop any completed bridge face carrying a cross-wrap
      * edge the per-glue gate missed (span accumulated over several glue steps --
      * the divot "wall" that connects a sheet UP to the next wrap at a Z-seam).

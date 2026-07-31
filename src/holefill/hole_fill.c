@@ -294,7 +294,7 @@ static size_t chain_into_loops(Arena_T arena,
                                BoundaryLoop **out_loops)
 {
     /* Build adjacency: boundary_adj[v] = list of boundary neighbors */
-    int32_t *degree = (int32_t *)ARENA_CALLOC(arena, (long)nv,
+    int32_t *degree = (int32_t *)ARENA_CALLOC(arena, (size_t)nv,
                                                (long)sizeof(int32_t));
     for (size_t i = 0; i < n_edges; i++) {
         degree[edges[i].v0]++;
@@ -321,7 +321,7 @@ static size_t chain_into_loops(Arena_T arena,
         adj_list[cursor[b]++] = a;
     }
 
-    uint8_t *edge_used = (uint8_t *)ARENA_CALLOC(arena, (long)n_edges,
+    uint8_t *edge_used = (uint8_t *)ARENA_CALLOC(arena, (size_t)n_edges,
                                                    (long)sizeof(uint8_t));
 
     /* Phase 1: walk maximal chains (both directions from each seed edge).
@@ -2450,7 +2450,7 @@ static size_t repair_mesh_orientation(Arena_T arena,
     }
 
     /* Build face→adj_list using CSR-like structure */
-    int32_t *f_degree = (int32_t *)ARENA_CALLOC(arena, (long)nf,
+    int32_t *f_degree = (int32_t *)ARENA_CALLOC(arena, (size_t)nf,
                                                    (long)sizeof(int32_t));
     for (size_t ei = 0; ei < n_adj; ei++) {
         f_degree[adj_f[ei * 2 + 0]]++;
@@ -2481,9 +2481,9 @@ static size_t repair_mesh_orientation(Arena_T arena,
 
     /* BFS from face 0.  Track whether each face should be flipped
      * relative to face 0 (which we define as "correct"). */
-    uint8_t *visited = (uint8_t *)ARENA_CALLOC(arena, (long)nf,
+    uint8_t *visited = (uint8_t *)ARENA_CALLOC(arena, (size_t)nf,
                                                   (long)sizeof(uint8_t));
-    uint8_t *should_flip = (uint8_t *)ARENA_CALLOC(arena, (long)nf,
+    uint8_t *should_flip = (uint8_t *)ARENA_CALLOC(arena, (size_t)nf,
                                                       (long)sizeof(uint8_t));
     int32_t *queue = (int32_t *)ARENA_ALLOC(arena,
                         (long)nf * (long)sizeof(int32_t));
@@ -2799,7 +2799,7 @@ size_t split_pinched_loop(Arena_T arena,
     if (n < 3 || max_subs == 0) return 0;
 
     /* Canonical position id per slot: smallest j<=i at the same position. */
-    int32_t *cid = (int32_t *)ARENA_ALLOC(arena, (long)n * (long)sizeof(int32_t));
+    int32_t *cid = (int32_t *)ARENA_ALLOC(arena, (size_t)n * (size_t)sizeof(int32_t));
     float eps2 = eps * eps;
     int any_pinch = 0;
     for (size_t i = 0; i < n; i++) {
@@ -2819,8 +2819,8 @@ size_t split_pinched_loop(Arena_T arena,
 
     /* Peel simple cycles with a stack of slot indices; stack_pos[cid] is the
      * slot's stack position or -1. cid in [0,n), so size stack_pos by n. */
-    int32_t *stack     = (int32_t *)ARENA_ALLOC(arena, (long)n * (long)sizeof(int32_t));
-    int32_t *stack_pos = (int32_t *)ARENA_ALLOC(arena, (long)n * (long)sizeof(int32_t));
+    int32_t *stack     = (int32_t *)ARENA_ALLOC(arena, (size_t)n * (size_t)sizeof(int32_t));
+    int32_t *stack_pos = (int32_t *)ARENA_ALLOC(arena, (size_t)n * (size_t)sizeof(int32_t));
     for (size_t i = 0; i < n; i++) stack_pos[i] = -1;
     size_t top = 0, n_sub = 0;
 
@@ -2848,7 +2848,7 @@ size_t split_pinched_loop(Arena_T arena,
     }
     /* The walk is closed, so the residual stack is the outermost cycle. */
     if (top >= 3 && n_sub < max_subs) {
-        int32_t *sub = (int32_t *)ARENA_ALLOC(arena, (long)top * (long)sizeof(int32_t));
+        int32_t *sub = (int32_t *)ARENA_ALLOC(arena, (size_t)top * (size_t)sizeof(int32_t));
         for (size_t t = 0; t < top; t++) sub[t] = loop_verts[stack[t]];
         out_sub[n_sub] = sub; out_len[n_sub] = top; n_sub++;
     }
@@ -2874,7 +2874,7 @@ static void hf_eidx_build(Arena_T arena, const int32_t *faces, size_t nf,
 {
     memset(out, 0, sizeof(*out));
     if (nf == 0 || n_bdry == 0 || nv == 0) return;
-    uint8_t *isb = (uint8_t *)ARENA_CALLOC(arena, (long)nv, 1L);
+    uint8_t *isb = (uint8_t *)ARENA_CALLOC(arena, (size_t)nv, 1L);
     for (size_t e = 0; e < n_bdry; e++) {
         isb[bdry_edges[e].v0] = 1;
         isb[bdry_edges[e].v1] = 1;

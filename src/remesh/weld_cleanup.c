@@ -92,7 +92,7 @@ static void detect_boundary(Arena_T arena, const int32_t *faces, size_t nf,
 {
     Arena_Mark mark = Arena_save(arena);
     size_t n_he = nf*3, i = 0;
-    HE *he = (HE *)ARENA_ALLOC(arena, (long)(n_he*sizeof(HE)));
+    HE *he = (HE *)ARENA_ALLOC(arena, (size_t)(n_he*sizeof(HE)));
     for (i=0;i<nf;i++){
         int32_t f0=faces[i*3+0], f1=faces[i*3+1], f2=faces[i*3+2];
         int32_t tri[3]={f0,f1,f2};
@@ -186,7 +186,7 @@ static size_t flip_pass(Arena_T arena, const float *V, int32_t *faces,
 {
     Arena_Mark mark = Arena_save(arena);
     size_t n_he=nf*3, f=0, i=0, n_flipped=0;
-    MHE *mhe = (MHE *)ARENA_ALLOC(arena, (long)(n_he*sizeof(MHE)));
+    MHE *mhe = (MHE *)ARENA_ALLOC(arena, (size_t)(n_he*sizeof(MHE)));
     for (f=0;f<nf;f++){
         int32_t v[3]={faces[f*3+0],faces[f*3+1],faces[f*3+2]};
         int e;
@@ -198,8 +198,8 @@ static size_t flip_pass(Arena_T arena, const float *V, int32_t *faces,
         }
     }
     qsort(mhe, n_he, sizeof(MHE), mhe_cmp);
-    uint8_t *vused=(uint8_t*)ARENA_ALLOC(arena,(long)(nv*sizeof(uint8_t)));
-    uint8_t *fused=(uint8_t*)ARENA_ALLOC(arena,(long)(nf*sizeof(uint8_t)));
+    uint8_t *vused=(uint8_t*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(uint8_t)));
+    uint8_t *fused=(uint8_t*)ARENA_ALLOC(arena,(size_t)(nf*sizeof(uint8_t)));
     memset(vused,0,nv*sizeof(uint8_t));
     memset(fused,0,nf*sizeof(uint8_t));
     i=0;
@@ -240,7 +240,7 @@ static size_t flip_rounds(Arena_T arena, const float *V, int32_t *faces,
                           size_t nf, size_t nv, int max_rounds)
 {
     Arena_Mark mark = Arena_save(arena);
-    uint8_t *bnd=(uint8_t*)ARENA_ALLOC(arena,(long)(nv*sizeof(uint8_t)));
+    uint8_t *bnd=(uint8_t*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(uint8_t)));
     size_t total=0; int r;
     detect_boundary(arena, faces, nf, nv, bnd);  /* boundary stable across flips */
     for (r=0;r<max_rounds;r++){
@@ -259,14 +259,14 @@ static size_t flip_rounds(Arena_T arena, const float *V, int32_t *faces,
 static void build_vf(Arena_T arena, const int32_t *faces, size_t nf, size_t nv,
                      int32_t **out_off, int32_t **out_idx)
 {
-    int32_t *off=(int32_t*)ARENA_ALLOC(arena,(long)((nv+1)*sizeof(int32_t)));
-    int32_t *idx=(int32_t*)ARENA_ALLOC(arena,(long)((nf?nf*3:1)*sizeof(int32_t)));
+    int32_t *off=(int32_t*)ARENA_ALLOC(arena,(size_t)((nv+1)*sizeof(int32_t)));
+    int32_t *idx=(int32_t*)ARENA_ALLOC(arena,(size_t)((nf?nf*3:1)*sizeof(int32_t)));
     size_t i;
     memset(off, 0, (nv+1)*sizeof(int32_t));
     for (i=0;i<nf*3;i++) off[(size_t)faces[i]+1]++;
     for (i=0;i<nv;i++) off[i+1]+=off[i];
     {
-        int32_t *cur=(int32_t*)ARENA_ALLOC(arena,(long)((nv)*sizeof(int32_t)));
+        int32_t *cur=(int32_t*)ARENA_ALLOC(arena,(size_t)((nv)*sizeof(int32_t)));
         size_t f;
         memcpy(cur, off, nv*sizeof(int32_t));
         for (f=0;f<nf;f++)
@@ -390,9 +390,9 @@ static size_t collapse_round(Arena_T arena, const float *V,
 {
     Arena_Mark mark = Arena_save(arena);
     int32_t *off=NULL, *idx=NULL;
-    uint8_t *bnd=(uint8_t*)ARENA_ALLOC(arena,(long)(nv*sizeof(uint8_t)));
-    uint8_t *locked=(uint8_t*)ARENA_ALLOC(arena,(long)(nv*sizeof(uint8_t)));
-    int32_t *remap=(int32_t*)ARENA_ALLOC(arena,(long)(nv*sizeof(int32_t)));
+    uint8_t *bnd=(uint8_t*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(uint8_t)));
+    uint8_t *locked=(uint8_t*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(uint8_t)));
+    int32_t *remap=(int32_t*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(int32_t)));
     size_t f, ncoll=0, w=0, i;
     build_vf(arena, faces, *nf, nv, &off, &idx);
     detect_boundary(arena, faces, *nf, nv, bnd);
@@ -498,7 +498,7 @@ int WeldCleanup_process(Arena_T arena, ComponentMesh *cm,
     if (stats) stats->targets_in = count_targets(cm->verts, cm->faces, nf, &p);
 
     /* Working face array (flips mutate in place; collapse compacts in place). */
-    wf = (int32_t *)ARENA_ALLOC(arena, (long)(nf*3*sizeof(int32_t)));
+    wf = (int32_t *)ARENA_ALLOC(arena, (size_t)(nf*3*sizeof(int32_t)));
     memcpy(wf, cm->faces, nf*3*sizeof(int32_t));
 
     /* Pass 1: flip-first (clear cap slivers, no vertex removed). */
@@ -576,7 +576,7 @@ int WeldCleanup_recoarsen_seam(Arena_T arena, ComponentMesh *cm,
     ctx.band = p.band;
     ctx.collapse_below = p.collapse_below;
 
-    wf = (int32_t *)ARENA_ALLOC(arena, (long)(nf*3*sizeof(int32_t)));
+    wf = (int32_t *)ARENA_ALLOC(arena, (size_t)(nf*3*sizeof(int32_t)));
     memcpy(wf, cm->faces, nf*3*sizeof(int32_t));
 
     /* Collapse rounds to fixpoint, with one interleaved boundary-frozen flip

@@ -13,8 +13,10 @@ Usage: render_mesh.py <obj-or-placed-dir> <out.png> [W H "dz,dy,dx" zcut spp]
   spp        surface samples per projected pixel (default 3.0)
 
 Flags: --components colours each connected component from a fixed palette
-(instead of normal shading); --min-comp=N drops components below N faces;
---box=z,y,x,size crops faces to a cube-aligned box before rendering.
+(instead of normal shading); --vcolors uses OBJ per-vertex RGB (e.g. the
+canonical_best groups_xyz.obj atlas-group colours); --min-comp=N drops
+components below N faces; --box=z,y,x,size crops faces to a cube-aligned box
+before rendering.
 
 The submission figures were produced with:
   render_mesh.py output/repro_10x_preserved_production/atlas_bake.obj \
@@ -40,16 +42,17 @@ def load_obj(fp):
         elif line.startswith(b'f '):
             flines.append(line[2:].replace(b'/', b' '))
     if not vlines or not flines:
-        return None, None
+        return None, None, None
     vcol = len(vlines[0].split())          # 3, or 6 with RGB vertex colours
-    verts = np.array(b' '.join(vlines).split(), dtype=np.float64)
-    verts = verts.reshape(-1, vcol)[:, :3]
+    varr = np.array(b' '.join(vlines).split(), dtype=np.float64).reshape(-1, vcol)
+    verts = varr[:, :3]
+    vcols = varr[:, 3:6].astype(np.float32) if vcol >= 6 else None
     ncol = len(flines[0].split())
     ftok = np.array(b' '.join(flines).split(), dtype=np.int64)
     faces = ftok.reshape(-1, ncol)
     step = ncol // 3
     faces = faces[:, [0, step, 2 * step]] - 1
-    return verts.astype(np.float32), faces.astype(np.int64)
+    return verts.astype(np.float32), faces.astype(np.int64), vcols
 
 
 PALETTE = np.array([
@@ -183,7 +186,7 @@ def bbox_of_files(files):
     for fp in files:
         m = pat.search(fp)
         if not m:
-            v, f = load_obj(fp)
+            v, f, _ = load_obj(fp)
             if v is None:
                 continue
             lo = np.minimum(lo, v.min(0)); hi = np.maximum(hi, v.max(0))
@@ -217,6 +220,9 @@ def main():
     by_component = '--components' in sys.argv
     if by_component:
         sys.argv.remove('--components')
+    by_vcolors = '--vcolors' in sys.argv
+    if by_vcolors:
+        sys.argv.remove('--vcolors')
     min_comp_faces = 0
     box = None
     for arg in list(sys.argv):
@@ -245,7 +251,7 @@ def main():
 
     lo, hi = bbox_of_files(files) if len(files) > 1 else (None, None)
     if lo is None:
-        v, f = load_obj(files[0])
+        v, f, _ = load_obj(files[0])
         lo, hi = v.min(0), v.max(0)
     if box is not None:
         lo = np.array(box[:3]); hi = lo + box[3]
@@ -256,7 +262,7 @@ def main():
     rn.set_camera(cd, (1.0, 0, 0), c, hw, hh)
 
     for i, fp in enumerate(files):
-        v, f = load_obj(fp)
+        v, f, vc = load_obj(fp)
         if v is None:
             continue
         if box is not None:
@@ -276,6 +282,8 @@ def main():
             print(f'{counts.size} components, {int(keep_comp.sum())} kept '
                   f'(>= {min_comp_faces} faces)')
             cols = PALETTE[comp % len(PALETTE)]
+        elif by_vcolors and vc is not None:
+            cols = vc[f].mean(1)
         tris = v[f]                                     # (M,3,3)
         if zcut < 1.0:
             cz = tris[:, :, 0].mean(1)

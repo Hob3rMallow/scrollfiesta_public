@@ -27,7 +27,7 @@ static void edge_audit(Arena_T arena, const int32_t *F, size_t nf,
                        MeshManifoldStats *out) {
     if (nf == 0) return;
     size_t hn = nf * 3;
-    DHE *he = (DHE *)ARENA_ALLOC(arena, (long)(hn * sizeof(DHE)));
+    DHE *he = (DHE *)ARENA_ALLOC(arena, (size_t)(hn * sizeof(DHE)));
     for (size_t f = 0; f < nf; f++) {
         int32_t v0 = F[f*3+0], v1 = F[f*3+1], v2 = F[f*3+2];
         he[f*3+0].src = v0; he[f*3+0].dst = v1;
@@ -73,20 +73,20 @@ static int32_t lf_find(int32_t *p, int32_t x) {
 static void vertex_audit(Arena_T arena, size_t nv, const int32_t *F, size_t nf,
                          MeshManifoldStats *out, uint8_t *out_mask) {
     if (nv == 0 || nf == 0) return;
-    size_t *deg = (size_t *)ARENA_CALLOC(arena, (long)nv, (long)sizeof(size_t));
+    size_t *deg = (size_t *)ARENA_CALLOC(arena, (size_t)nv, (size_t)sizeof(size_t));
     for (size_t f = 0; f < nf; f++)
         for (int k = 0; k < 3; k++) deg[F[f*3+(size_t)k]]++;
 
-    size_t *off = (size_t *)ARENA_CALLOC(arena, (long)(nv + 1), (long)sizeof(size_t));
+    size_t *off = (size_t *)ARENA_CALLOC(arena, (size_t)(nv + 1), (size_t)sizeof(size_t));
     size_t maxdeg = 0;
     for (size_t v = 0; v < nv; v++) {
         off[v+1] = off[v] + deg[v];
         if (deg[v] > maxdeg) maxdeg = deg[v];
     }
     size_t total = off[nv];                              /* == 3*nf */
-    int32_t *cn0 = (int32_t *)ARENA_ALLOC(arena, (long)(total * sizeof(int32_t)));
-    int32_t *cn1 = (int32_t *)ARENA_ALLOC(arena, (long)(total * sizeof(int32_t)));
-    size_t  *cur = (size_t  *)ARENA_ALLOC(arena, (long)(nv * sizeof(size_t)));
+    int32_t *cn0 = (int32_t *)ARENA_ALLOC(arena, (size_t)(total * sizeof(int32_t)));
+    int32_t *cn1 = (int32_t *)ARENA_ALLOC(arena, (size_t)(total * sizeof(int32_t)));
+    size_t  *cur = (size_t  *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(size_t)));
     for (size_t v = 0; v < nv; v++) cur[v] = off[v];
     for (size_t f = 0; f < nf; f++) {
         int32_t a = F[f*3+0], b = F[f*3+1], c = F[f*3+2];
@@ -96,8 +96,8 @@ static void vertex_audit(Arena_T arena, size_t nv, const int32_t *F, size_t nf,
     }
 
     size_t cap = (maxdeg > 0 ? maxdeg : 1);
-    int32_t *parent = (int32_t *)ARENA_ALLOC(arena, (long)(cap * sizeof(int32_t)));
-    NbrPair *pairs  = (NbrPair *)ARENA_ALLOC(arena, (long)(cap * 2 * sizeof(NbrPair)));
+    int32_t *parent = (int32_t *)ARENA_ALLOC(arena, (size_t)(cap * sizeof(int32_t)));
+    NbrPair *pairs  = (NbrPair *)ARENA_ALLOC(arena, (size_t)(cap * 2 * sizeof(NbrPair)));
     for (size_t v = 0; v < nv; v++) {
         size_t s = off[v], e = off[v+1];
         size_t k = e - s;

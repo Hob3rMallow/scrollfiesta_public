@@ -45,7 +45,7 @@ CSR_T CSR_from_faces(Arena_T arena, const int32_t *faces, size_t nf,
     assert(faces);
 
     /* Pass 1: count degree (overcount: 2 neighbors per face vertex) */
-    int32_t *degree = (int32_t *)ARENA_CALLOC(arena, (long)nv,
+    int32_t *degree = (int32_t *)ARENA_CALLOC(arena, (size_t)nv,
                                                (long)sizeof(int32_t));
 
     for (size_t f = 0; f < nf; f++) {
