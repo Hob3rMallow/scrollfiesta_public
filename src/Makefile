@@ -27,7 +27,7 @@ CXXFLAGS = -std=c++17 -O2 -Wno-register
 # System libs + local deps (pre-installed on the target; see CLAUDE.md).
 LDFLAGS  = -lm -ltiff -fopenmp -lpthread
 EXT_INC  = -I../deps/include -I../deps/src/graph/include -I../docs/research/gco-v3.0
-EXT_LIB  = -L../deps/lib -ltriangle -lClipper2 -lClipper2Z -lstdc++
+EXT_LIB  = -L../deps/lib -ltriangle -lClipper2 -lstdc++
 
 DEBUG_FLAGS   = -g -O0 -fsanitize=address,undefined -DVESUVIUS_DEBUG
 RELEASE_FLAGS = -O2 -DNDEBUG -fopenmp
