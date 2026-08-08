@@ -64,6 +64,31 @@ SHA-256 digests are respectively
 `495b6cbbafd744aa628a253ed91b77cdb43692fc25b750fc09222e285e6bbd1a` and
 `157d240f09ae26aedb87c2089000ffb05555aed3fa38c020e2df900e1e057916`.
 
+## Qualitative checks
+
+The fixed held-out-band midpoint, z=4800, was chosen without searching slices.
+The following plot assembles all 25 RAW tiles at that z and intersects both
+shared-topology meshes with the same plane. Both contours visibly follow the
+papyrus layers without an obvious cross-sheet jump in this slice. This is a
+qualitative check, not a validated sheet-jump metric.
+
+![Held-out midpoint RAW CT cross-section with both mesh contours](images/pherc0139_snap_cross_section_z4800.png)
+
+The texture crop below was selected without looking at either stage-4 arm. A
+fixed 768-pixel window scans the common stage-2 RAW texture every 256 pixels;
+windows need at least 90% coverage and are ranked by a disclosed combination of
+coverage, local structure-tensor coherence, and robust gradient energy. The two
+stage-2 TIFFs were byte-identical. The winning window was `[35328,36096)` with
+97.72% coverage. Fine coherent papyrus-fiber striations are visible in both
+stage-4 outputs. The panel does not claim that fiber visibility is better in
+one arm or that either image establishes text legibility.
+
+![Deterministically selected PHerc0139 RAW texture crop](images/pherc0139_snap_high_structure_texture.png)
+
+The two PNG SHA-256 digests are respectively
+`d3a255296d20a8837cd91f589251aabf218553848595afaf5db255e103b64244`
+and `b2e138e6a451117e7ca2e0cdf1f2dbb084da9f376f1670ef0c4a7a7cd1952001`.
+
 ## Reproduce
 
 Carve the aligned fixture using the repository's existing Zarr-to-grid tool:
@@ -106,6 +131,22 @@ py -m uv run --project python python/scripts/score_snap_ridge.py score \
 
 The scorer verifies the CT-cache digest and refuses changed topology, face
 indices, UVs, cube ranges, duplicate arm names, or an unnamed test candidate.
+
+Reproduce the qualitative figures from the same exported meshes and normal
+stage-2/stage-4 RAW texture outputs:
+
+```text
+py -m uv run --project python python/scripts/plot_snap_cross_section.py \
+  --raw-dir GRID/cubes_RAW --repair-obj OUT/iter0.obj \
+  --recto-obj OUT/iter4.obj --z 4800 \
+  --out docs/images/pherc0139_snap_cross_section_z4800.png
+
+py -m uv run --project python python/scripts/select_fiber_texture_crop.py \
+  --common-pre OUT/iter0/iter0_r3_step2_join_rawtex.tif \
+  --repair OUT/iter0/iter0_r3_step4_snap_rawtex.tif \
+  --recto OUT/iter4/iter4_r3_step4_snap_rawtex.tif \
+  --out docs/images/pherc0139_snap_high_structure_texture.png
+```
 
 ## Decision
 
