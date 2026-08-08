@@ -89,18 +89,26 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
-# Vendored dependency: Clipper2 (+Z variant) via its own CMake.
+# Vendored dependency: the 2-D Clipper2 ABI via its own CMake.
+#
+# Do not build or link Clipper2Z here.  Its public USINGZ definition changes
+# Point64 (and therefore Path64/Vertex) layout, while the Z and non-Z archives
+# export the same C++ symbol names.  Linking both lets a USINGZ-compiled caller
+# resolve AddPaths_ from the non-Z archive, causing an out-of-bounds write on
+# self-intersecting hole boundaries.  ScrollFiesta's wrapper is deliberately
+# 2-D and never consumes Clipper Z values.
+#
 # Always static and folded into our library, regardless of BUILD_SHARED_LIBS.
 # ---------------------------------------------------------------------------
 set(CLIPPER2_UTILS    OFF CACHE BOOL   "" FORCE)
 set(CLIPPER2_EXAMPLES OFF CACHE BOOL   "" FORCE)
 set(CLIPPER2_TESTS    OFF CACHE BOOL   "" FORCE)
-set(CLIPPER2_USINGZ   "ON" CACHE STRING "" FORCE)
+set(CLIPPER2_USINGZ   "OFF" CACHE STRING "" FORCE)
 set(_sf_saved_build_shared ${BUILD_SHARED_LIBS})
 set(BUILD_SHARED_LIBS OFF)
 add_subdirectory(${SF_DEPS}/src/Clipper2/CPP clipper2 EXCLUDE_FROM_ALL)
 set(BUILD_SHARED_LIBS ${_sf_saved_build_shared})
-set_target_properties(Clipper2 Clipper2Z PROPERTIES POSITION_INDEPENDENT_CODE ON)
+set_target_properties(Clipper2 PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # ---------------------------------------------------------------------------
 # TIFF (only when SCROLLFIESTA_WITH_TIFF).
@@ -240,7 +248,7 @@ target_include_directories(scrollfiesta_core PUBLIC
     ${SF_DEPS}/src/attene-predicates
     ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/gco-v3.0)
 target_link_libraries(scrollfiesta_core PRIVATE
-    sf_triangle Clipper2 Clipper2Z ${SF_TIFF_LIBS})
+    sf_triangle Clipper2 ${SF_TIFF_LIBS})
 set_target_properties(scrollfiesta_core PROPERTIES
     POSITION_INDEPENDENT_CODE ON
     C_STANDARD 17
