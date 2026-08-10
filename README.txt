@@ -103,6 +103,13 @@ END-TO-END USAGE
     build\Release\scroll_unroll.exe output\run_placed output\run_unroll \
         --raw GRID\cubes_RAW --steps 12345 --id run
 
+   Stage 4 defaults to the conservative dark-region repair only. The optional
+   global recto-boundary objective targets the outward dark-to-bright CT edge,
+   which is physically different from the CT intensity ridge; enable the prior
+   four-iteration behaviour explicitly with `--snap-recto-iters 4`. A frozen
+   PHerc0139 75/25-cube A/B and the target distinction are documented in
+   `docs/SNAP_RIDGE_ABLATION.md`.
+
    The unroll directory contains, for every stage:
 
      *_rawtex.tif             full-resolution grayscale texture

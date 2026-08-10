@@ -28,6 +28,7 @@
  *       [--stretch-ratio F] [--stretch-floor F] [--max-edge F]
  *       [--strip-w N] [--dark-thresh N] [--seam-top N]
  *       [--no-diag] [--no-preview]
+ *       [--export-mesh PATH]
  *   scroll_unroll --selftest
  *
  *   --steps S: stage subset as a digit string (default "12345"; stages not
@@ -216,6 +217,97 @@ static int write_xyz_face_category_obj(const char *path,
     return 0;
 }
 
+/* Persist the exact in-memory PieceSet for controlled geometry comparisons.
+ * OBJ records retain ScrollFiesta's source-space z,y,x coordinate order; vt
+ * and vn share the vertex index, so independent scorers can compare the same
+ * vertex before/after a stage without reconstructing pipeline state. */
+static int write_pieceset_obj(const char *path, const PieceSet *ps)
+{
+    if (path == NULL || ps == NULL || ps->verts == NULL || ps->uv == NULL ||
+        ps->normals == NULL || ps->faces == NULL ||
+        (ps->n_cubes > 0 && (ps->ids == NULL || ps->cube_voff == NULL)))
+        return -1;
+    if (ves_ensure_parent_dir(path) != 0) return -1;
+    FILE *fp = fopen(path, "wb");
+    if (fp == NULL) return -1;
+    fprintf(fp,
+            "# scroll_unroll in-memory PieceSet\n"
+            "# v and vn coordinate order: z y x; vt order: u v\n"
+            "# vertex/vt/vn indices are identical\n"
+            "# vertices=%zu faces=%zu cubes=%zu\n",
+            ps->nv, ps->nf, ps->n_cubes);
+    for (size_t cube = 0; cube < ps->n_cubes; cube++)
+        fprintf(fp, "# cube %s vertex_range_0based [%zu,%zu)\n",
+                ps->ids[cube], ps->cube_voff[cube], ps->cube_voff[cube + 1]);
+    for (size_t i = 0; i < ps->nv; i++)
+        fprintf(fp, "v %.9g %.9g %.9g\n",
+                (double)ps->verts[i * 3 + 0],
+                (double)ps->verts[i * 3 + 1],
+                (double)ps->verts[i * 3 + 2]);
+    for (size_t i = 0; i < ps->nv; i++)
+        fprintf(fp, "vt %.9g %.9g\n",
+                (double)ps->uv[i * 2 + 0],
+                (double)ps->uv[i * 2 + 1]);
+    for (size_t i = 0; i < ps->nv; i++)
+        fprintf(fp, "vn %.9g %.9g %.9g\n",
+                (double)ps->normals[i * 3 + 0],
+                (double)ps->normals[i * 3 + 1],
+                (double)ps->normals[i * 3 + 2]);
+    for (size_t face = 0; face < ps->nf; face++) {
+        int32_t a = ps->faces[face * 3 + 0] + 1;
+        int32_t b = ps->faces[face * 3 + 1] + 1;
+        int32_t c = ps->faces[face * 3 + 2] + 1;
+        fprintf(fp, "f %d/%d/%d %d/%d/%d %d/%d/%d\n",
+                a, a, a, b, b, b, c, c, c);
+    }
+    return fclose(fp) == 0 ? 0 : -1;
+}
+
+static int write_pieceset_obj_selftest(void)
+{
+    const char *path = "output/_selftest_scroll_unroll/export_mesh.obj";
+    float verts[9] = { 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    float uv[6] = { 10, 11, 12, 13, 14, 15 };
+    float normals[9] = { 0, 1, 0, 0, 1, 0, 0, 1, 0 };
+    int32_t faces[3] = { 0, 1, 2 };
+    char ids[1][48] = { "z00000_y00000_x00000" };
+    size_t cube_voff[2] = { 0, 3 };
+    PieceSet ps;
+    memset(&ps, 0, sizeof(ps));
+    ps.verts = verts;
+    ps.uv = uv;
+    ps.normals = normals;
+    ps.faces = faces;
+    ps.ids = ids;
+    ps.cube_voff = cube_voff;
+    ps.nv = 3;
+    ps.nf = 1;
+    ps.n_cubes = 1;
+    int fail = write_pieceset_obj(path, &ps) != 0;
+    FILE *fp = fail ? NULL : fopen(path, "rb");
+    if (fp == NULL) fail = 1;
+    size_t n_v = 0, n_vt = 0, n_vn = 0, n_f = 0, n_cube = 0;
+    char line[256];
+    while (fp != NULL && fgets(line, sizeof(line), fp) != NULL) {
+        if (strncmp(line, "v ", 2) == 0) n_v++;
+        else if (strncmp(line, "vt ", 3) == 0) n_vt++;
+        else if (strncmp(line, "vn ", 3) == 0) n_vn++;
+        else if (strncmp(line, "f ", 2) == 0) {
+            n_f++;
+            if (strcmp(line, "f 1/1/1 2/2/2 3/3/3\n") != 0) fail = 1;
+        } else if (strncmp(line, "# cube ", 7) == 0) {
+            n_cube++;
+            if (strstr(line, "vertex_range_0based [0,3)") == NULL) fail = 1;
+        }
+    }
+    if (fp != NULL && fclose(fp) != 0) fail = 1;
+    if (n_v != 3 || n_vt != 3 || n_vn != 3 || n_f != 1 || n_cube != 1)
+        fail = 1;
+    fprintf(stderr, "write_pieceset_obj_selftest: %s\n",
+            fail ? "FAIL" : "PASS");
+    return fail;
+}
+
 static int write_ownership_split_objs(const char *out_dir, const char *id,
                                       const PieceSet *ps,
                                       const SeamOwnResult *ownership)
@@ -326,6 +418,7 @@ static void usage(void)
         "       [--apply-ownership]  (unsafe legacy face deletion; default is\n"
         "                              diagnostic-only ownership)\n"
         "       [--no-diag] [--no-preview] [--no-xyzmap]\n"
+        "       [--export-mesh PATH]\n"
         "       [--export-tifxyz DIR] [--tifxyz-du F] [--tifxyz-dv F]\n"
         "       [--tifxyz-flip-u] [--tifxyz-flip-v] [--tifxyz-winding]\n"
         "       [--export-atlas DIR] [--atlas-wraps N] [--atlas-slab F]\n"
@@ -340,17 +433,22 @@ static void usage(void)
         "  --max-edge F  optional 3D-edge cap for real/source faces (default\n"
         "              disabled; their valid scale follows the remesher)\n"
         "  --synth-max-edge F  synthetic-fill membrane cap (default 6 vox)\n"
+        "  --snap-recto-iters N  optional oriented recto-boundary refinement;\n"
+        "              default 0 (repair-only). Pass 4 for the prior opt-in\n"
+        "              behaviour. This target is not the CT intensity ridge\n"
         "  --steps S   stage digits, default 12345 (1 bake, 2 join =\n"
         "              weld+relax, 3 overlap, 4 snap, 5 final relax);\n"
         "              unbuilt stages are skipped; --steps 0 runs NO stages\n"
-        "              (valid only with --export-tifxyz: export the placed\n"
-        "              dir's registered UVs as-is, no bake)\n"
+        "              (valid with an export option: export the placed dir's\n"
+        "              registered state as-is, no bake)\n"
         "  --export-tifxyz DIR  after the last stage, write the strip as a\n"
         "              VC3D tifxyz segment (x/y/z.tif + mask.tif + meta.json)\n"
         "              into DIR (meta uuid = DIR basename); --tifxyz-du/-dv\n"
         "              set the segment grid step (default --du/--dv),\n"
         "              --tifxyz-flip-u/-v mirror the grid, --tifxyz-winding\n"
-        "              adds winding.tif = phi/2pi\n");
+        "              adds winding.tif = phi/2pi\n"
+        "  --export-mesh PATH  after the last stage, write the exact in-memory\n"
+        "              PieceSet as OBJ (v/vn=z,y,x; vt=u,v; shared indices)\n");
 }
 
 /* one row of the end summary + one JSON block */
@@ -529,6 +627,7 @@ int main(int argc, char **argv)
     if (argc >= 2 && strcmp(argv[1], "--selftest") == 0) {
         int f = write_json_string_selftest();
         f += PieceSet_selftest();
+        f += write_pieceset_obj_selftest();
         f += ScrollRaster_selftest();
         f += StripMetrics_selftest();
         f += StripPreview_selftest();
@@ -558,7 +657,7 @@ int main(int argc, char **argv)
     int seam_top = 8;
     int do_preview = 1;
     double snap_tensor_weight = 0.0, snap_tensor_radius = 2.0;
-    int snap_recto_iters = 4;
+    int snap_recto_iters = 0;
     double snap_recto_range = 3.0;
     double own_radius_gate = 0.0, own_cell = 0.0;
     long own_region_cap = 0;
@@ -566,6 +665,7 @@ int main(int argc, char **argv)
     int own_rehome = 1;
     int own_apply = 0;
     const char *tifxyz_dir = NULL;
+    const char *export_mesh = NULL;
     double tifxyz_du = 0.0, tifxyz_dv = 0.0;   /* 0 = inherit --du/--dv */
     int tifxyz_flip_u = 0, tifxyz_flip_v = 0, tifxyz_winding = 0;
     const char *atlas_dir = NULL;              /* L3 export atlas root */
@@ -641,6 +741,8 @@ int main(int argc, char **argv)
             own_apply = 1;
         else if (strcmp(argv[i], "--no-xyzmap") == 0)
             ro.write_xyzmap = 0;
+        else if (strcmp(argv[i], "--export-mesh") == 0 && i + 1 < argc)
+            export_mesh = argv[++i];
         else if (strcmp(argv[i], "--export-tifxyz") == 0 && i + 1 < argc)
             tifxyz_dir = argv[++i];
         else if (strcmp(argv[i], "--tifxyz-du") == 0 && i + 1 < argc)
@@ -690,7 +792,8 @@ int main(int argc, char **argv)
         }
     int export_only = 0;
     if (!want[1] && !want[2] && !want[3] && !want[4] && !want[5]) {
-        if ((tifxyz_dir != NULL || atlas_dir != NULL) && strcmp(steps, "0") == 0) {
+        if ((export_mesh != NULL || tifxyz_dir != NULL || atlas_dir != NULL) &&
+            strcmp(steps, "0") == 0) {
             export_only = 1;   /* --steps 0: export the placed UVs as-is */
         } else {
             fprintf(stderr, "ERROR: no runnable stages in --steps %s\n", steps);
@@ -1247,6 +1350,15 @@ int main(int argc, char **argv)
 
     /* ---- optional tifxyz export (VC3D segment handoff) --------------------- */
     int export_failed = 0;
+    if (export_mesh != NULL) {
+        if (write_pieceset_obj(export_mesh, &ps) != 0) {
+            logf_both("[mesh] ERROR: export to %s failed\n", export_mesh);
+            export_failed = 1;
+        } else {
+            logf_both("[mesh] wrote %s: %zu vertices, %zu faces\n",
+                      export_mesh, ps.nv, ps.nf);
+        }
+    }
     if (tifxyz_dir != NULL) {
         double te = ves_clock_sec();
         TifxyzOpts to;
@@ -1335,7 +1447,7 @@ int main(int argc, char **argv)
                   r->rs.skip_own, r->secs);
     }
     logf_both("scroll_unroll: %s (total %.1fs)\n",
-              export_failed ? "DONE with tifxyz export FAILURE" : "OK",
+              export_failed ? "DONE with export FAILURE" : "OK",
               ves_clock_sec() - t_all);
     if (g_log) fclose(g_log);
     Arena_dispose(&arena);

@@ -87,7 +87,10 @@ void SnapGridOpts_default(SnapGridOpts *o)
     o->cg_max_iter = 96;
     o->cg_tol = 1e-4;
     o->max_disp = 8.0;
-    o->recto_iters = 4;
+    /* The oriented recto-boundary objective is intentionally opt-in. It is
+     * physically different from ridge-centred surface placement and remains
+     * available through recto_iters > 0 for workflows that require it. */
+    o->recto_iters = 0;
     o->recto_inner_iters = 48;
     o->recto_range = 3.0;
     o->recto_max_total = 3.0;
@@ -720,11 +723,14 @@ int SnapGrid_selftest(void)
     int32_t *gid = (int32_t *)sg_xcalloc(VCAP, sizeof(int32_t));
     int32_t *faces = (int32_t *)sg_xmalloc(FCAP * 3 * sizeof(int32_t));
     int32_t *face_cube = (int32_t *)sg_xmalloc(FCAP * sizeof(int32_t));
+    float before[VCAP * 3];
     size_t cube_voff[3] = { 0, 0, 0 };
     long org[2][3] = { { 0, 0, 0 }, { 0, 0, 0 } };
 
     SnapGridOpts o;
     SnapGridOpts_default(&o);
+    sg_check(o.recto_iters == 0,
+             "default keeps experimental recto refinement opt-in", &fails);
     o.axis_point[0] = 0.0f;
     o.axis_point[1] = 0.0f;
     o.axis_point[2] = 0.0f;
@@ -757,6 +763,7 @@ int SnapGrid_selftest(void)
             sg_check(0, "t1 cubetable", &fails);
         } else {
             cubetable_prewarm_all(&ct);
+            memcpy(before, verts, nv * 3 * sizeof(float));
             SnapGridStats st;
             int rc = SnapGrid_run(arena, &ps, &ct, &o, &st);
             sg_check(rc == 0, "t1 rc", &fails);
@@ -765,14 +772,17 @@ int SnapGrid_selftest(void)
                      "t1 fixable island", &fails);
             sg_check(st.n_moved > 0 && st.n_reverted == 0,
                      "t1 moved, none reverted", &fails);
-            /* island verts (x in the pocket) moved up; rim stayed */
+            /* Classify by the saved PRE-snap x coordinate. Using the output x
+             * here mislabels a legitimately moved island vertex as rim when
+             * its across-sheet direction carries it beyond x=24. */
             double ymax_isl = 0.0, ymove_rim = 0.0;
             for (size_t i = 0; i < nv; i++) {
-                double x = verts[i * 3 + 2], yv = verts[i * 3 + 1];
-                if (x >= 17.0 && x <= 21.0) {
+                double x0 = before[i * 3 + 2], y0 = before[i * 3 + 1];
+                double yv = verts[i * 3 + 1];
+                if (x0 >= 16.0 && x0 <= 22.0) {
                     if (yv > ymax_isl) ymax_isl = yv;
-                } else if (x < 14.0 || x > 24.0) {
-                    double dy = fabs(yv - 28.0);
+                } else if (x0 < 14.0 || x0 > 24.0) {
+                    double dy = fabs(yv - y0);
                     if (dy > ymove_rim) ymove_rim = dy;
                 }
             }
@@ -788,8 +798,11 @@ int SnapGrid_selftest(void)
 
     /* t2: same misplaced patch, but ANOTHER cube's sheet sits at y=30.5
      * between it and the bright side: the +y probe is BLOCKED (occupancy)
-     * and -y is dark -> CRACK, nothing moves across the blocker */
+     * and -y is dark -> CRACK, nothing moves across the blocker. Opt the
+     * recto pass in here so its occupancy guard remains covered even though
+     * the production default is now repair-only. */
     {
+        o.recto_iters = 4;
         sg_check(sg_write_raw(1) == 0, "t2 bright blocker fixture", &fails);
         size_t nv = 0, nf = 0;
         sg_st_grid(28.0f, 8, 2.0, 0, verts, uv, normals, faces, face_cube,
@@ -830,6 +843,7 @@ int SnapGrid_selftest(void)
                     st.recto_max_disp);
         }
         sg_check(sg_write_raw(0) == 0, "restore base RAW fixture", &fails);
+        o.recto_iters = 0;
     }
 
     /* t3: empty */
@@ -876,6 +890,7 @@ int SnapGrid_selftest(void)
             size_t nv2 = 0, nf2 = 0;
             sg_st_grid(28.0f, 8, 2.0, 0, verts, uv, normals, faces,
                        face_cube, &nv2, &nf2);
+            memcpy(before, verts, nv2 * 3 * sizeof(float));
             for (size_t f = 0; f < nf2; f++)
                 face_cube[f] = f < nf2 / 2 ? 0 : 1;
             o.global_mode = 1;
@@ -887,11 +902,12 @@ int SnapGrid_selftest(void)
                      "t4b global dark+moved", &fails);
             double ymax_isl = 0.0, ymove_rim = 0.0;
             for (size_t i = 0; i < nv2; i++) {
-                double x = verts[i * 3 + 2], yv = verts[i * 3 + 1];
-                if (x >= 17.0 && x <= 21.0) {
+                double x0 = before[i * 3 + 2], y0 = before[i * 3 + 1];
+                double yv = verts[i * 3 + 1];
+                if (x0 >= 16.0 && x0 <= 22.0) {
                     if (yv > ymax_isl) ymax_isl = yv;
-                } else if (x < 14.0 || x > 24.0) {
-                    double dy = fabs(yv - 28.0);
+                } else if (x0 < 14.0 || x0 > 24.0) {
+                    double dy = fabs(yv - y0);
                     if (dy > ymove_rim) ymove_rim = dy;
                 }
             }
