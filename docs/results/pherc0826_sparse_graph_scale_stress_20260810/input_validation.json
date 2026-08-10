@@ -1,0 +1,5708 @@
+{
+  "core_bbox_l0_zyx": [
+    12672,
+    13056,
+    4352,
+    5248,
+    3712,
+    4608
+  ],
+  "file_rows_canonical_sha256": "47e4a0e5bf12d7f3858852f9460b3500881c844960d7387b03bd4375d0cd122b",
+  "files": [
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04224_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 521586,
+      "sha256": "17fdece574508a98dfab67d78424109de3458ecc46b9d1bb9fff06cbae8841e4"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04224_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 501196,
+      "sha256": "d2da5dfb376a3d5c65dc1c52127702bd7f5a9a6ec089d891673c117148ac9423"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04224_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 480550,
+      "sha256": "0d5f2e579bed68c6798248a520e3906c9665c633a30a57d3871cf23d7358f314"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04224_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 481374,
+      "sha256": "7805b7638cd775646ea2dd36e9c375f5911bce9df9195fce3fec3516ab753e76"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04224_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 473719,
+      "sha256": "117a1aa239eaf90fbc7c59313bf4d907f5e87e26bc4bd82982bfc54a6148304d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04224_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 488138,
+      "sha256": "1e55805803623c72f174a68c80be4ca1900ce52b1057f1bd8d04dde095ee0061"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04224_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 405380,
+      "sha256": "38e73328aeee0284b50d06388a5073e3337be0632621a2e54afade10ac9983ca"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04224_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 326159,
+      "sha256": "7a8b9d13de0881852092963e0f57f6dea5545a5879061b968f3ac6ee69ab39ec"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04224_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 289545,
+      "sha256": "3f9775c47a3c8b1a59b1a944605cc6106f962e06f472f952f8e397b593da2b28"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04352_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 561242,
+      "sha256": "a32ef60420392f44055a0fcd146eb9b4ed1d17bb07d070b3b57fb233efef0ebf"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04352_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 513977,
+      "sha256": "c8fc6001b1607182e81edae2ea4628d9bafc6a29c615d1dbee219a39d5537bd4"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04352_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 514388,
+      "sha256": "7879f76560c0c67417038ac5ee5a7c4dc72151666ce0675267c05de30181f947"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04352_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 563474,
+      "sha256": "29c72ba19ac766d0e89d781f8946575cbc1346beeef7db1d47f9f1410452a05e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04352_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 527638,
+      "sha256": "0cbfad2a33bd3e931be9611ecbfb3a27ffd10cec5d108048050906be51427fc6"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04352_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 565334,
+      "sha256": "6c3a7736909c3651b93dddd1a76d27ec1c02e79496a0deaca71eadc023862ef1"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04352_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 522465,
+      "sha256": "b03fbcb66a751125d0b7f3fdb2a494703c25129c6b1097ae2c792b6f4ad38dbe"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04352_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 498562,
+      "sha256": "c12265c434b16918f44b5ecc1b37afdfb38bb10cba0db8231524696436e067c7"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04352_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 505037,
+      "sha256": "81430a376013359b350beb6c73c6b89c2a64624b819bf4b40a0ddaf1567d36c1"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04480_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 531707,
+      "sha256": "28c97c601591c75c5b78117bbcc9e3ef3ff17fcc48baa913fe4e312df60ee76e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04480_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 518154,
+      "sha256": "746e4f67340f72aa37d901bde9d5a2c2a8e23a4323ac8cd3ee808b4e7bc12e9a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04480_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 470722,
+      "sha256": "fc7b8cfe5092081151011b67d80c03ddcc7fb71cc8d42829075a451c883eb129"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04480_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 450688,
+      "sha256": "42eca6c3a5ebbb1ab8ba2704753f70ac54d4fc51d67686e1e6bb3324c94de55c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04480_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 486975,
+      "sha256": "89fc2fb501b7f7e66b7a2f1ece0e9402a155b25d6f96aae26c587fb6f80e0362"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04480_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 585833,
+      "sha256": "44a81f9a3f5ae302ca30fe5ed7b0c0b1e86dba1f5b981efc0b3bc16f4133d957"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04480_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 601657,
+      "sha256": "7e28fd144f2378919c900bbc9dbdf816afd77f23fbd3b97da364e9ca80816898"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04480_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 585334,
+      "sha256": "e1f7dfcac2a1bdb379a981d0854e612e6c3820ed61e7c5b8bc7b674711389911"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04480_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 543267,
+      "sha256": "316dc46fadf9100ca4950f50a2f0a0f7cc925fcc664cc44a3e4c71b976a9773c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04608_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 471452,
+      "sha256": "4f1e2cf74abc778ec118d98a90534d0b99af47a9bec69d9fe0fed2e6fc843457"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04608_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 476625,
+      "sha256": "a90cd6104964c8fe397967e3ac0aed9306d3ac1aebaa65e28b9e9e6224244fbd"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04608_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 490814,
+      "sha256": "d84b897c3b6aa7339dd68b6ad4bb864ecde9870a9d739be929b24c6eb11784fb"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04608_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 494773,
+      "sha256": "f4dad4a8027ea6cccface4d1ea8c48c6fd3647e0da382588eccfae0a207d6963"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04608_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 502343,
+      "sha256": "281938563691e91d1a34bf4f9d9a5b4a0b8001ff2ade0c3f7117a5636504b89d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04608_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 532530,
+      "sha256": "68ff36de363f04c85cb26f027000bfa5e9cab6648cdc163b66b31d2ddd5be4af"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04608_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 534926,
+      "sha256": "dfb6464f6999268baa398e79419f1b381160342d7fb842d9e554c2105c18f7cc"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04608_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 532990,
+      "sha256": "5312d798954b44fa904ee99a5c9a440a609934ff6a166ca814e0802b3ab7a1ed"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04608_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 531855,
+      "sha256": "8340c7bf317da9d4c7ce5de8070c3602360d42dc77118bc7caaeee6ecc136a01"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04736_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 520292,
+      "sha256": "b4eb611b25a07eb8a51720581b28f88c382cc469899ad5be71fba9cd991934a7"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04736_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 497324,
+      "sha256": "29d4ddb75f0ddf21bec6e5bfa12c3fbae174bd7be680541a716ed519945fdd27"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04736_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 537034,
+      "sha256": "b039a85a4fe322d0de1b2b6093301bb36f73777ce5e3edbb3e8b4541bfb7b3a2"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04736_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 561340,
+      "sha256": "515ffbe423ee4f18df37a252e87430a9b439e98b218f444473a440f25033c257"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04736_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 509479,
+      "sha256": "606ddbc99d4217cec14e4629c69bc2987aac534cc9d5f512ab92260e8bc081cf"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04736_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 489434,
+      "sha256": "ed3555697764d7c12e495907eb4cda715f6edb393b63ed70d40bef3d73044513"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04736_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 515325,
+      "sha256": "828f6d6fd14dc575affc0056e4f1d42842e265630dffea3e7e0579b95c7ce5f4"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04736_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 537823,
+      "sha256": "45fed1249a9681e7937c090884d295e133f0dab32c485446734d8b56361d9013"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04736_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 528299,
+      "sha256": "2b45740a74ea4e0523c736976ee36710bf389c954cb1515925573b0677a471e9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04864_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 574744,
+      "sha256": "f90e24df650e9675c565dc7990cb2379d94448c8b40097433e4cdf6a1a255be4"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04864_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 460144,
+      "sha256": "b5b6eba1404a25365fc03b5d3105fbe9b07db89715729f121f26a1d71c713f0d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04864_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 304596,
+      "sha256": "9cd3845c584f1b342b1eca8199c3fa15c8c9685d95f6a91defbfd32eb38bff67"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04864_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 263529,
+      "sha256": "ab603bd87fd064ad96ae7c1491c4d7b02df274b3e3ab8b74989fcdd871524b17"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04864_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 390653,
+      "sha256": "34113ebb50efcb6d0568403124eb1df50e9ba496c05bd0faa9a8775355dbd070"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04864_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 510654,
+      "sha256": "3468cdccdcbe2efe3613e3b26b00acf2a6070dd46365af1b9222fb94ab5f8c9e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04864_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 509473,
+      "sha256": "a0736982d86fc506b1c9b03b861e44fd061e0408e701998d62ebcdd40f932f03"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04864_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 438640,
+      "sha256": "5522417f341c19728edf0d7da5d1be5c80e00d3f5eca3956cb99506aaef5e14b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04864_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 324510,
+      "sha256": "c8ac730d1e7e7f844b7e3038f3d392b3705310e7d15a050df012c0ee58e18182"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04992_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 496720,
+      "sha256": "b606c7314f3e581668d282523a46529adf7a14631747cf443a7dc0c211575e82"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04992_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 508782,
+      "sha256": "d7d57723262c1b1290e59db9e31a1eca7de8d3095cc2c13a50e76ed7f19910f6"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04992_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 500321,
+      "sha256": "68d78158e423d05c856fcc93931a5f153ff9e50c6edc5569a8ac2f9283078a5a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04992_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 462867,
+      "sha256": "1a46d510343da6b5ec14ea0ddfeacc4f1c80429aede4bf03cad29ebb1a994d6b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04992_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 517577,
+      "sha256": "8e19cf9c339c05c315b2a16466200e4ea30d86dc9db7c5c60ec853f9ef59e537"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04992_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 481405,
+      "sha256": "5742cf938d325b0a347b465a6e118ceb852773190d0205b19e029d8cced50663"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04992_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 474412,
+      "sha256": "ab50e3283bc9cdfc7589fcaf139542e44bfc584d676b1bbc6bbf94e92d525d06"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04992_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 448441,
+      "sha256": "0c3905727086f09969572ea22c200be4f1bb918bcebd06dc56506ad001b07a23"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04992_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 474153,
+      "sha256": "ddd33e9646b917005af151ca9854773f4d925194658811fd99209ca22fb5a819"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05120_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 567614,
+      "sha256": "302798a56b25cb857ef979be603dd9b84c227c49b4f730300303a25234536b18"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05120_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 595821,
+      "sha256": "e025ea4543a3eab354235119bb03e2ef555ac0dfb38541072762dd910b1a2c26"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05120_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 552682,
+      "sha256": "dc8224c995d7419539cb00ca65f727df50ba160d69e2237cb7829ec61957d91d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05120_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 559519,
+      "sha256": "135555a4438714c35e234aaeacf4b74c2caa3023e3a64bb3346cb7a1296a4afd"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05120_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 600307,
+      "sha256": "deca0c87c11cc396c9b81174b3d83e931ac45534afe1891c775464a22e2bf1be"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05120_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 498795,
+      "sha256": "b896eb3e2788c13ebcb18c9628a6ed7f9408e8d0447cdfa58b7138b207d12541"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05120_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 460078,
+      "sha256": "7e6d2e39e6d66013bfa21f2ae6e7325e83696078c7a284a8e9dba79b3b816846"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05120_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 441999,
+      "sha256": "c4d1ddd3691bfcb0575d61defde96ea749fdc233d4c9a20edc1ede9770486ba3"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05120_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 404985,
+      "sha256": "a631ce1394d6388cc9568c075c06a14c785013dee3e4b02ed016d214ff160043"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05248_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 510596,
+      "sha256": "5867a9bb4aecf5a8ce02549b27ab021dc9b8f181794307cc57f9a19b55f2df72"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05248_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 542130,
+      "sha256": "4e4b8e30b7be799f23794f64523a73e520d4652c1e6517e99cab722f41957c79"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05248_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 598636,
+      "sha256": "c9f1a7fb076a57f2d64e6afabd16569e4549410c05c4f92c6b078bc5880fadb5"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05248_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 612513,
+      "sha256": "3da19db565a0f2a0893a51b7a06920f6b05054f0c64c0deed1b92236f7b8540c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05248_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 589493,
+      "sha256": "d1f72dcf365ac9d8848dc68945b62a939c07d3c38fd9b56b9f50b3774e48017c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05248_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 538257,
+      "sha256": "6fa868a71cd4b24b5fce3abc4b7018234a457a7fdc11e099e6494806c684ff57"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05248_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 438123,
+      "sha256": "ee8689f5d7713076efbe1b0c64306f8d756ee68f8cf1d90fa39eaf6aeadd64e4"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05248_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 402835,
+      "sha256": "f3526e4775fed8e9e7d3d394d94e5ac57f2d17333b87b7e48a0c0c669abafc93"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05248_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 464251,
+      "sha256": "1251e8d2a7d0bc1707d72e80b231acfdff149e5484abd228452e9aa61d4a8517"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04224_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 518597,
+      "sha256": "5f3904ec1c3a2a5cf96ce615cc42c2acd49ddcf8846d4293ce1c82327e82b2dd"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04224_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 509355,
+      "sha256": "60a499c7c88709cc134b82cd890790d003abac6adc686a9d6bd61ae823a61190"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04224_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 527309,
+      "sha256": "4c91a5cf2b9260065d47e96bb734426af5bcb7c629a6939ddd3ca5f60dbb2c26"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04224_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 493495,
+      "sha256": "bdaf0712e97e4e58c19f4a24ee779e948356530cd52f2833b9c829a43805d074"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04224_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 459707,
+      "sha256": "5d3425061b120d6743e975e4b02554434ed43887e140b0bb9c87fd08318ab96f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04224_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 485951,
+      "sha256": "6cda441eb4c42a126b05a9aa891191c77b95fe4afbd448c5a1408e1343bf4d21"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04224_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 508637,
+      "sha256": "42eb21b757bbd42ebfd7de427b712331817bcb1a46775b8e2b8c044695d969c7"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04224_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 408068,
+      "sha256": "94f256402e3c2855b77c113f50a0a3f0634c33a3dcc4b269b4fbb4d2c1a258bc"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04224_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 423178,
+      "sha256": "2a208aa5cb1fcb113dc20cb0d97a5e3a7f1962d8369747c9904a3f2635987cbf"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04352_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 546151,
+      "sha256": "456c4576d28b38112b18b73167fc162a3a5a3b92e69fd50599413138f642a7a4"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04352_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 533946,
+      "sha256": "ae000b0e3f31de13d303e4b05a035bcaca76394851bdeaa520553fdb3250a15f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04352_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 545006,
+      "sha256": "8c1ac9c863a8a5c1ee89f0fc023df2f2c05fd814e06604c57b6fd46b6863eba9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04352_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 502520,
+      "sha256": "b1afd74d1b906484096e663de1a442d1f9bb18f28b0e5317ac3a9d7e20350c50"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04352_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 577392,
+      "sha256": "8e10dcbed8bff07f95b312817e32bcba4e59f4866d4d676ce2885a57b7432a7e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04352_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 535953,
+      "sha256": "84cb3671b8fd59c59a76ef4f65c95249328eb8c89a56e35313bf23df17098e8d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04352_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 520182,
+      "sha256": "c058602d7683b760bdb57ce64eb4a0ab42f05174e1b336b0db8c0b6d3d0d46a2"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04352_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 537347,
+      "sha256": "56cf28b7ce87a0fb42b5dbb45b0f3cfb2106c0240b7b7751ba7fc50c4086359d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04352_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 532680,
+      "sha256": "dca6b9d1d76e621657e66812a598cf4562ec00c26e33a4fc26a9ae2611eb03df"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04480_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 517158,
+      "sha256": "56481f79118e61212a790436cedc1ed56e63155017baf29bab39027c2ebd1965"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04480_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 524975,
+      "sha256": "05d50989531d33683d0d5b4a374d7155ccf2d454d10fe9b2a36e163ea1929b82"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04480_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 509807,
+      "sha256": "d18ad9c5878978b2eba688afd4118a4e397fd9d2af7b8eac9382b459765dc428"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04480_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 474427,
+      "sha256": "5784490d90c3d3f7da610a68c1acdae0be08be8202c98556963e8384b1f61723"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04480_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 462902,
+      "sha256": "412cc7b291bf9191fef19c7da6c9dd936e73e4f482931fe7c41844628dca529d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04480_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 576093,
+      "sha256": "781974b077894edf1b2e08942bc0b17fa2e719058f329afaa785eb80f784ef92"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04480_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 576885,
+      "sha256": "6ade8de32d58588b8586e15d2ab88eda617c9af2e03279d64c65a34ecfdefd30"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04480_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 526857,
+      "sha256": "b097f00aae95224478af5d67d5ed8fe499cbcb5cf12570d93959f8c517d206dc"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04480_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 569261,
+      "sha256": "7235a71dd5e7d63bbaa0d0d1b069ac355a77a07a6422474888893562ef3c97f4"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04608_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 532212,
+      "sha256": "340691099f16e02148a1e1566e99b431d95b753398851d299b9210622a30aed9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04608_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 468858,
+      "sha256": "f460769b035be60b4f192e3a415f6ddfeaabcc217f5058a2dbec9b3c44e34a28"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04608_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 485648,
+      "sha256": "2a0699275cde096e03baa85f9e7aee67bbe069dd07a96df1122c235ac7498f99"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04608_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 515769,
+      "sha256": "1b67c6c7ab84189dc8f98640929797e69727755b149e6b8ce8c4d22363863bdb"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04608_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 467781,
+      "sha256": "3f7a7c7f99c11928070c745be8de200f1e0d07173f20f68de98d5119508a7d0d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04608_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 504953,
+      "sha256": "d135b86f74572a37a27c12502e579f7a219397263d76fa2f179fd19c045e082a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04608_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 507986,
+      "sha256": "e5369184fc003ea1d5fa47621ac463b8cfcfaed059a9b7636053439733d688a6"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04608_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 564721,
+      "sha256": "30793a5f13440f91bdd45e6718f862e07a5665c8344cba3da83aec06302e3fe2"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04608_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 450307,
+      "sha256": "30e16aec4f0937f86634e8b663744b2ca313765ddad1b01e87949832ea362728"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04736_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 439268,
+      "sha256": "36862a4657376f1dd4be58967eebf8da5d7825b7907938551348eb073fddfc2f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04736_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 454227,
+      "sha256": "b0edf9a309c3fe9a4a4294412a2089b61c706a60be2ccfd3a3cba6e90ec9eebf"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04736_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 458607,
+      "sha256": "6549e1345f1bff7520dfc9d3b3b678e4a4c6c04715edc2d8989e62ad52350025"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04736_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 421376,
+      "sha256": "97b8955973f7ca8b1b8a67ed6961fb0b9cf520de03f08e4c6744bfd550b8bb36"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04736_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 452995,
+      "sha256": "e2d9d7ee9de185187da7a263ce8275ea805e0372d038903ce608e487f972155b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04736_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 485838,
+      "sha256": "fe5daae67d2b56194ce5084381a1e0074396b346c308aca849ed8bb6e7101a47"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04736_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 566597,
+      "sha256": "8ffca027dc6da6ca3e703c07bcd1481eb92c818d4eebe294afb25a1c5db47ba1"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04736_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 520583,
+      "sha256": "261a7f55e3ef05bfca3885f53b4f3631894a2b6b020e9f4fa03e6030ee4006c9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04736_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 504459,
+      "sha256": "a4d00e9e1307a90e61597bf53cd11afc03af7f8183dcc1dbb5848e998d46ee55"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04864_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 558621,
+      "sha256": "8a81fcf25e0b0beb96ed03ff481571719f5a5e00183657513cfed317904f5ee4"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04864_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 442766,
+      "sha256": "39404edf5c55dd0484d353a3331beb86132f014ca95c2aa8be4037679570fb73"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04864_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 373238,
+      "sha256": "6bff0f167bf18d6e2cbe5b784106ad29c19c2e7ae20d9925a933976efb5d05eb"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04864_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 330125,
+      "sha256": "cfdcab1f89b1956d4c5c01eb966f49bdab22134dc73c8245193cf4e21b4efea0"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04864_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 421694,
+      "sha256": "234ff70ab067c23b71b0116053d6e22108844e6dd289a43f2aea4f876f9e2dc4"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04864_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 542936,
+      "sha256": "6b0d30673cf9ea70f4447a9c37caebeca274c72eaafa2be2c46c4db61dc75fef"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04864_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 557998,
+      "sha256": "5fdddbdf60cad527a5d838a407c53cc1582431ed0c7eff012afaf6447d64e3cc"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04864_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 496139,
+      "sha256": "0b87f2c07cbe9611122c9b24f7c6b14867b7a092f0e01f099718bd545f9c935b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04864_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 382420,
+      "sha256": "bfb46a0178e3129cb646ffc82aa3123505e220370ba46300fe95a10cb5ce7e63"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04992_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 476549,
+      "sha256": "150ead6a82ee9450d594b90692314e66be4ee4257a42ab6741704c8b5c538b23"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04992_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 513995,
+      "sha256": "d4bbaf50f593a717260ef7ac5fcf0544fa3cc8570b889cea27d0a7e1bf32b38e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04992_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 489362,
+      "sha256": "2eb56aa3efed59527d80ce22446dd5f4042946b75493bd530f042020b13c6ce5"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04992_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 476046,
+      "sha256": "c73b7533d69f4b640001fe7ae91472f4ba00b141be10cd848a632016383597f4"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04992_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 487634,
+      "sha256": "f761daefeb1cb0dc66413ad737004e3246c2d6e03de5224a22f4436e92f43cc8"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04992_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 475112,
+      "sha256": "299d9c032aac642955639b8f1e78052db343f895ef49068e8e1b57b6f54cf96a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04992_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 468278,
+      "sha256": "c487cd1b26f43ad11f0061dc4e404bf9426a854adc23429a6424b638ebf53544"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04992_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 407723,
+      "sha256": "9eb90b35261a3973c95bff6b4612c48cb227ef0632304c59c61dc811305e9721"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04992_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 401367,
+      "sha256": "d09717303e32f0fdfae446b2a02ffb23bc87ca3e339cdeb14a4cf767a855a1d9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05120_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 571534,
+      "sha256": "4581ef9cd73ad1a4ed38644de73f48a6bd6bccc212be5465d756580c5bb7c5a0"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05120_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 522993,
+      "sha256": "e9e1edf29bf0b8e7399df66c3bc17c42b82f3cc3d030073a49cde92e1667998e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05120_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 499060,
+      "sha256": "244601e46d9938cb1ffabde0c966c53cbcb4a481e635c89780dbd4a25842b6a3"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05120_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 501018,
+      "sha256": "41f568ecf951d8758458d5680196ec914bc6405ff0839779ac3986915c2e0232"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05120_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 573950,
+      "sha256": "79eb8f48480034427c9f22a444beb17051ead3cd984246da0b58fe3280e82c94"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05120_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 551641,
+      "sha256": "3697cd26589ccee66ea634559109ce9294b8cfa629cbf0b8e9ddd695038ff211"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05120_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 457808,
+      "sha256": "16b5be403426b4dd596aff4a69aca89d1a1402b5f4d8fde9a30f7c402530a9db"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05120_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 456919,
+      "sha256": "a7bf2f514fc7ae8c99fc296b839a87966588b811e22da371ac40df133b3e42e9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05120_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 469121,
+      "sha256": "f567b96b633b437dee16b86b2e8456fa98ad392769658ae1cf1388e9abf759d1"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05248_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 502229,
+      "sha256": "bc2d09196eda2b22c2a8a4e4959a0f79132333e74b652055c70883f5f06c17b9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05248_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 560406,
+      "sha256": "b9b1cefeac08b3aace32e5df6f5d22d5413c630ac81038d16d210a43f545a09a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05248_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 562383,
+      "sha256": "dd944d6724b41751637d470eb2d9131c903b4a583854562ccbeeac70e82a7d77"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05248_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 597320,
+      "sha256": "b4b93e0e5dfa680397fd3dc71e48f02d9682cd52ef2cf3369d0af4bdc62151a1"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05248_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 561448,
+      "sha256": "872763657a58207287e669ac8394f13a98f91c58b36ff0d605c102e23bf756a4"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05248_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 507931,
+      "sha256": "fdd712cdd6ae94c77d4892b64f9b573313ce27360853ec5b9dde11166d1d76c4"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05248_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 441009,
+      "sha256": "dd564fd7decbe2d123b55496631df59daf9ef401096e150067798c15137a9305"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05248_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 391966,
+      "sha256": "f8e84d7e1f9ebccf935ff159726cb0505a3d6d39c3e0fb4ccdee35d72e1addb1"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05248_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 537959,
+      "sha256": "86f092cec17eaee88e3109bc247bf63834561cf39e92267fbe9230946da8d621"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04224_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 538103,
+      "sha256": "dfdd10f3eba163e96c2f2598e60070aec44c165fd9e58b7a80ebf3eee9e4ddd8"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04224_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 529092,
+      "sha256": "4bad0ce3d240b938d6ba28ffc3e76431dcd803ef75f0fa31ee3329f8ec73a375"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04224_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 541964,
+      "sha256": "33ec78aa6a7afb78ce751c6e995725cbf1290298da6c5d7c19f5df2c4f570083"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04224_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 491352,
+      "sha256": "4f753a97c566cbeaaccbe0b6ca4520aa644a5099f72249fd2351cf649f3b6e8e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04224_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 518024,
+      "sha256": "dc0c287e71991828cd7bf10b19fe255e46df94379f0796f1742d3a228b68d994"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04224_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 481149,
+      "sha256": "7692e1aa8fb4b921cbb56b53f4d4269c71010018550397753eabab63f397a655"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04224_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 520044,
+      "sha256": "5ba3951d965489eee12045446120ca4b4e47764206c9e045dab3ed124827db8d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04224_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 475449,
+      "sha256": "c30a440a0ac3280c13be737ef985671fc1702b8e72881d651714b1926d2327ba"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04224_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 513577,
+      "sha256": "8000f8f0c3eeb30accc53efeeedc5565e8428af00ea761f162590985c6f7bdec"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04352_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 552790,
+      "sha256": "5d91deb5bdd80a7100af5808b7ab4a604565986cb12c84231a3cbc98e95c2ec9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04352_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 542868,
+      "sha256": "c09b073db57cd40ae4d0e76924abb3c5e647d42a55919b8c285b021369c08767"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04352_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 569082,
+      "sha256": "bbe86d1643bf0ccc38ad705b84fb51ea411d7c544d83577563ac91f6a63fd3ad"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04352_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 546213,
+      "sha256": "d31bb9b89e1f35b0f0b010d4cfb190d0c9317e033ad2ba39c568b764863c5420"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04352_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 530096,
+      "sha256": "0d93f541823acd419d8d12c4778dbaeab491b2ed961f28edbd1bd5e6ec177fed"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04352_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 600768,
+      "sha256": "5becef35334a9a532d4569311810c935cded849a68aab71f3ccb72f2a356063c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04352_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 557606,
+      "sha256": "ae8d11ddd9385620d36dcac5b10184e933d67ebe2cbbe424f6c8913d63235eb7"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04352_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 530244,
+      "sha256": "7374d315c588d9111048bf1fb8f42a94d33568cd43cade39662657bdd0ab7d03"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04352_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 531540,
+      "sha256": "da70e96a38743e1fc470b7e147b65cc4d775b93128a71eae6562646bc03593ce"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04480_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 533531,
+      "sha256": "36fb4453261a0da2c821482348aa740a005d93dce8704cfcde719b99a6055ed6"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04480_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 539420,
+      "sha256": "90ef9eead9c1b7245a434ee4ed69ea13deb1886a27cd7aab80a6d40126778d3d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04480_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 544633,
+      "sha256": "8aeafa09289eb05b01b58a49cc3a6444517d8759b65f095bb32d1b3ffeedbfd8"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04480_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 520307,
+      "sha256": "a54845e6dec55f543d35658773b209bf39adc0c54b7a3bffeee70578e7cea1ca"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04480_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 517983,
+      "sha256": "99975c18ef447dccc888618809d42f7be83f1358dd08d144caa3cacd1bb24b80"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04480_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 502648,
+      "sha256": "e4a3de0fd3c6a7ec1c4470e444f78615377ab208ac1c62c2e49d6600a8e0109c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04480_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 548879,
+      "sha256": "e10760887871acfe63a1f5717659212fd2a97c4690b0d1676f22b6b28b9bc180"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04480_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 558293,
+      "sha256": "303944fa71a8adb78a305606399bb1bbe51bd0210392ff5666e3da86223b8b06"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04480_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 522143,
+      "sha256": "60694fa34f705b88e4b0ab52a47e4f7ab7728a3bad4931d635f7d467285be4d3"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04608_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 542366,
+      "sha256": "578a54fdccb3a53e75742fd44d5ffaca104277beb7f2a0405d25019182f623ad"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04608_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 459755,
+      "sha256": "c8647864e8357b7c01933f034c012b199015b31e0be5aafa28eb3299f51ad995"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04608_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 497782,
+      "sha256": "4b50e1292349d51ee76d5a3db979c7af2029a895ae651139157899710af5c16f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04608_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 525693,
+      "sha256": "abf6a6ea62b5825f0aa5ffa81e614d7dba862a501ee59135903817eb1dd7349a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04608_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 564039,
+      "sha256": "7ee7449f9cca312ebb374bc5c5aa976c0c4ad5ed27a7f72dfae98d12d74d94e6"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04608_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 547861,
+      "sha256": "d3cf40fc1832ff8f54f7e4b97074f50c70739d7b3023b4199f41df39c76a94ce"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04608_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 496866,
+      "sha256": "fc8b339681a4018b0cb3c797b3a762aa135bd7a5261254f3bb80877612a11590"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04608_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 520268,
+      "sha256": "c3f99648f9dbb9771f0dd7bba116c1eee509a42c550d34b00454ce9cf418f5aa"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04608_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 521194,
+      "sha256": "e3bbbc990d1b9e1dfd609efb5ed2f07b0872dce825a96bbd82cc9de024a20500"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04736_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 436778,
+      "sha256": "eeb64ba7c370edc99161b5d7df875812db46ab884b423508424770490de0b160"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04736_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 406324,
+      "sha256": "4d7cb3b34baef90075f0a298802fb4bff041d00f7b8ee800dd30586522ccde96"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04736_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 412318,
+      "sha256": "c815b53dd4a217cc8bfc20dab7144ccb2b72f4850d33397decfe9bdf4938e483"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04736_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 302067,
+      "sha256": "e349ff903d7bc8384209e296c2530eff04b18a1aeb5022ccc08571715e166545"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04736_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 318032,
+      "sha256": "ab60afa2e55f4b751f0994a9b32030d750c088646b04b2762c475bc03245e015"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04736_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 446611,
+      "sha256": "6d4e69cc453c349366943520acb82762975c20bfd62a81b5dd80c69593611c27"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04736_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 426325,
+      "sha256": "09e714f0182085a3ba3edfb6203898459dd0001b31c0dc1c9072bb3421b43799"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04736_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 472493,
+      "sha256": "87ca5458640b3adb38c2d7758164ee95eab588f74ac66e2859b6a6b38def4a9e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04736_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 487496,
+      "sha256": "31a09d8e5ad6e05034a640128b2a2145f521398b904a6d14022c88855c45b7e1"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04864_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 460073,
+      "sha256": "f9478ba359a48eadf4dc6e9c127ded69893728bd8f756e7003ed9dd3e027ce13"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04864_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 539946,
+      "sha256": "276c66509592d16ded45f3ea6489c5c406add19ac6f3133948b171ad7607d963"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04864_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 495085,
+      "sha256": "576bfd7592ad9f3cc7dace843035d7fd708b5fe824778300f14511d466accc03"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04864_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 520874,
+      "sha256": "46aa4ddeddeb85c828edb94a5809592bfd862cf0441eb408487103d4a3d7f7dd"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04864_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 590757,
+      "sha256": "bd225e3c1341717d35e7f6baf3b1dedb0d5f5f5a70221cbe05d70cff6ad944fa"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04864_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 581694,
+      "sha256": "34ad19a77a85adb6f518f4db6ad973b30f3044acf05d55662a408ee4fa42bb14"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04864_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 595034,
+      "sha256": "1f4228835ffafa243da9c85326a5326883e28004a030cc15b9eef49482c58398"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04864_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 505700,
+      "sha256": "15da71bfb66b6c94883094e84b7f75a0d114e0348acc696e2d33b6c848e9a086"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04864_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 337878,
+      "sha256": "667766766666698e1a7fbdf425698c7553c9f09390806ea668d59de5b3c634be"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04992_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 537554,
+      "sha256": "c9ac12da34922b38a9a5f8777aac4f05f644c2c89ec06815b735a5dfcd171a20"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04992_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 501270,
+      "sha256": "dee9bff2ea287c92ab819c6c915df70d054844be6b5d723a27a8a641b41a5d62"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04992_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 515544,
+      "sha256": "4a4b7701a32e727c76eae5d25ad38fe223b1c93fcc2ec0632ff522744a476a76"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04992_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 497898,
+      "sha256": "ae37c7ae08f6bdc910e7d0d4357cb7ada20032467208af024259b76c10fc19da"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04992_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 460728,
+      "sha256": "aef142ff1d90511e230b6f8826cd90010f03929d0c3ed5abb520008aca4d73f3"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04992_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 535165,
+      "sha256": "4b824bfd65930eb398b6e0911ffbddd7ce1904b1f4dbc9bdd680a3bc6570c0a7"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04992_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 471070,
+      "sha256": "d0326ea0f53abe7b88e50e07b159256945981353794211d0223e14651917b9ea"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04992_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 386565,
+      "sha256": "adf49a34af9a4bf9145e452e59b48992e27ae7e7ef3806d6759f821996c11bc5"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04992_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 386168,
+      "sha256": "d05c9be313746d5463112af84e1389401bf53e7b46ebd3d4dfc0985e10905ae3"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05120_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 501532,
+      "sha256": "4f9bc9e22b6228fe95ed35b95cff329c54ddb2e609ae0d47ff7e8be231da8b46"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05120_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 521388,
+      "sha256": "ac7893807abcac82d477af7c9cdaa5cf548c4456e493cae31f041748607475cc"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05120_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 502170,
+      "sha256": "be767f797c68003c5509400f3856e76a1964a70bfee5c279254106a0ab2da30d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05120_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 546433,
+      "sha256": "f789912ca192b66a7020e30c1d67d5c10e6003ed78d431e698ece3cbd19cdcdc"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05120_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 563546,
+      "sha256": "8ca39292bf3ea96d6a8cd5d317a8f2e52af0e56704c93df6e341123e61dad236"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05120_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 523528,
+      "sha256": "b205637127eeb00f4aa3a2c625ce50bb8d2f95d86608194f2d0261974f7a300f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05120_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 517397,
+      "sha256": "a182cba11c5c1643d47e7e8cf70a9054273f3c4403db29293230045f1208aad7"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05120_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 512415,
+      "sha256": "f2225e75d35e30a85a001bbb0af46241475b7fdbbb8f3a8272e4844919ad0fed"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05120_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 503381,
+      "sha256": "a0a7e4c708382fb1f60fd8cb0bb0d1392fcd0e76c5baba2d4837ab1dae393d92"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05248_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 437886,
+      "sha256": "ce82f7e27cc8c61c0d688cf23c302c45769d8ad9789762dd3e1034b67a29e5ef"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05248_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 475250,
+      "sha256": "990ff8124478f7647409e880ac0481141e643cc5a6757a82b32c3d54842d8314"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05248_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 516068,
+      "sha256": "64cf667701e256554893af25db3f3264cfbfe710a65e9ceb9c48b0bfd35371db"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05248_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 538506,
+      "sha256": "ed81534a9bbc9e40841b9b13778603360c93de10ac6f2d43b38f6ea349066d2a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05248_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 489782,
+      "sha256": "405b263ad08cc0286fe420985141fadb02b32cd3f5ead6dc527f27b24ccf50e0"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05248_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 516958,
+      "sha256": "71e245035259f33db436bc0c426bc53ba2d7f4c5ae216ddae5f496c37f653dec"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05248_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 529557,
+      "sha256": "3a88d3514e3739aeb3beb87dd780939dd47bca80e7931c2f043d8c9c3dcedf3e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05248_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 452960,
+      "sha256": "e1770d6263d03cbc9d31c773ba2c697d2361ee38b7d6c02d7655bf56c56f6ddd"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05248_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 524606,
+      "sha256": "ec151071ed96dcbdb9cc39b4e03fc2e6f560b42dbee16c5348637cdc399d44da"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04224_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 538674,
+      "sha256": "a53ed56f61c228c8c4a0c2c9bddd730cfc24a0f2d738a491cfe25509a25992b9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04224_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 598048,
+      "sha256": "19e2f1f2cc9bbc67da8493c2c17bbe48b2b16105b1c18d8322c07b2495c8f90b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04224_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 573360,
+      "sha256": "f3585f3aa802d49f17cdb72a65c93d7d761f5fb56f365d84fd37a4f70534026d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04224_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 527490,
+      "sha256": "ea59019e22bb6df272e02032fad0c59a0ad7b919487e55c81940660ff5717e8c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04224_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 498575,
+      "sha256": "799d3d6c8e1d2e2827721dfb6dac6b70632c278ac64e36ad543ab4f43109b267"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04224_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 487392,
+      "sha256": "f2f1e23ff1b830f86f10714648e9759897567197656f0169b52b0df2ddd50f1a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04224_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 433402,
+      "sha256": "a87e62ca73ee512fe4c36fcf1ca95b78e32d032ffeba39fc14c9f8fbc644cfe4"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04224_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 448654,
+      "sha256": "dd00909acdca957c66c2893def6c24ddf38ceaba7801ee3a47c82f558fc5c066"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04224_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 481939,
+      "sha256": "14b98afc17c74b5bb83c626dfad7bfe9267e6bd3d1e1147f7c9c9c56b9246949"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04352_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 595017,
+      "sha256": "2cefc0f055c09953aea1b2adc6b5193789a3b3b3b30949e620c1e8e5d3c4da45"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04352_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 494589,
+      "sha256": "3ce611e705ad4c8d28feb89fad0a2709bb2191e5cb2049fdc3456448c82d3a50"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04352_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 505292,
+      "sha256": "9c6e082befca73297e3cb208f861fdc6d40b0b513d2ce05e26375e44cae84904"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04352_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 559391,
+      "sha256": "2ff39bf3931dca37498cf78f4ebb213ce8bb2d3d6e57fd8eaa78c9bed718be2d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04352_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 564594,
+      "sha256": "780753a363a14d6228cd2cf70ae91ea369f781ba05175b4fa74c98064ca95d90"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04352_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 609755,
+      "sha256": "2be65e451d5e249bb5076ecdc29428310c67fea9cf3dad480e5b40434c853efc"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04352_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 521119,
+      "sha256": "13cc64e89cc82e120dff130e2bd01bc2412c766b06c017fafd92d37516b00f3d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04352_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 494489,
+      "sha256": "45e950272ec6634e965745ef5e89ef036f8e80210e76f1b1951cf82c256ba929"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04352_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 477077,
+      "sha256": "ad8f98a34be263484dc798780363a94ff81ce5f152146390630f83df3b225de9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04480_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 508082,
+      "sha256": "2d9a12eb24e70c80b2616eff51fc487a6a423815af24c43871338652a1254dc0"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04480_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 502432,
+      "sha256": "dcf5abb726a3dce7b4f03945eb7a0e237519be2a6b8d1705dc34f268da8d8e53"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04480_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 542753,
+      "sha256": "fe8a584c275875345ca769473f866d6ea5f1c3d3a0d002ae184c753e539470bf"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04480_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 479011,
+      "sha256": "ec340854c48f536d3b14cdb841aaf0f69944896078567be506665120da37c280"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04480_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 516776,
+      "sha256": "fbbead788bbc3c7b0405a393a4a580fb6cf59c4c936a84b0ce8d22b3f9131ce3"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04480_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 466169,
+      "sha256": "899a39741730b0f983794a8a8f615700f7eb05e9a38b6a940ddcbf8da709e317"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04480_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 511513,
+      "sha256": "f58c042d9682d0dbb04acf499d018eccbb17ac21c1bcaa2b645f7f98b14454da"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04480_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 527333,
+      "sha256": "772facbc0f07b559ecb9c168af0224300f35eee3b9fa165690d88b1b8339667e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04480_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 529709,
+      "sha256": "98458ae18178213542bca7eef238209b0c1fc275e9b6725312c9e22adbf3759b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04608_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 478218,
+      "sha256": "bbe1ebe451bb69510341e0c816bc3b972f1134051fdbbbfa1829b3726148cc1f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04608_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 535206,
+      "sha256": "932cccea1f914bb885181e44a2f425a97bdd7147e452eb0751bbf213c39c5a81"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04608_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 535606,
+      "sha256": "ba8c13a6a40a3db451561bb666b9c828629b1ea839dbd81a0a23f6cd38b930f3"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04608_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 551445,
+      "sha256": "bfc294d7d0a9bd03f0528bee0c6b0b348b71cb25fe7999c3bc539bf2e271028d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04608_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 576701,
+      "sha256": "b6df2c54ac3274e42834b2ad7248bdc6eda068df3deba59e00b3ca837134d3ce"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04608_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 553968,
+      "sha256": "bc75d143d8df39c6ee4077234d7a1a76694be4de7187f27bbf110f70e884bfa5"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04608_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 530119,
+      "sha256": "7897c93e9a533bd9b6743d6610df55912f5a0aee75969fdb170047ddb6ce8fd3"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04608_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 481210,
+      "sha256": "3a0735e826e67b27587a6145bdbc221da5da7313837149ebe5b9a7042ad7cc10"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04608_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 471127,
+      "sha256": "66129192342c388c974cef63ce95da09db1dc3a31cce1a9d0d4cbbc2755bf54c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04736_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 551216,
+      "sha256": "a255355fe49b2985edd93616d67a016580ab7f98e3ee215f3f59bf7a2293a4f0"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04736_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 438653,
+      "sha256": "1575e0d6a1323b578a37c547cd19acd90fcb2494484f2c0c9b5a7ee27b43832a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04736_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 338249,
+      "sha256": "e026b1b75a0557182c92a6140b3ef635fe718613224a572f7421fff225c2d4ad"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04736_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 235659,
+      "sha256": "113419e9f60479072ef7b045c6698917b8dfe49742b52dd6e225e4a314d70264"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04736_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 253661,
+      "sha256": "38d28b5005d3583869a6404a9e7cc1a77bf585e4055b9b46122414321e7e7026"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04736_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 449455,
+      "sha256": "ad699bac2891cdd592a0e8286c81667c2bf5ccc9b08b331257232c607d913a46"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04736_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 396852,
+      "sha256": "c64c6ceecc2f6ab17f72dc2ab79aac2533168379add09a68922576a9618de7c8"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04736_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 451707,
+      "sha256": "9acf36b7340864fda8338d7c03117a508b8acac5dd537a266c5b7eab59da553d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04736_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 520951,
+      "sha256": "d214f4993af648497d3474daab0e5b75a733391ec3cee50a6ae611abe0872f91"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04864_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 440367,
+      "sha256": "42e2ec228cf580a3b0e3567cba64e2151abd92fe57dc3afb4c510a92e8adbd9b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04864_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 524893,
+      "sha256": "efdb7433203cd0f737335587804543f9abbbda2df30ed9ad723f868d8e74204f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04864_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 513124,
+      "sha256": "29213223814be9e30ad412be97ba5380fea5c62496d9d85f70d6f9a4c960bd1b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04864_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 542088,
+      "sha256": "8184a1597b254d3aae1d65bb017acdf4df023269e371e8faff748e77b1f81cb9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04864_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 563727,
+      "sha256": "7deee2dbc29b633a2d4ef09924f0aea8e6aa7416e2941e70f51ab28c1ae33c0f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04864_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 550216,
+      "sha256": "0e4099d0b06c987e6a072c10a0eb040514629d7180b34732ff9f24d0f3e21dfe"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04864_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 613110,
+      "sha256": "2e6a4ba5c93e1089f267bcf53325570a66e491f56731cf1252b10572143fbfab"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04864_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 519216,
+      "sha256": "9206bebca0858b3e207514c3a5a2bd394da1b9a5d2715097a4635684f61d6974"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04864_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 350988,
+      "sha256": "153c7017f37db762061de278625a7e33ae99a4c76e8b68ea97e293f52a9f232a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04992_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 507954,
+      "sha256": "d26e1eb8b898b0dfb44a929863c3727219608d89c0eef32705e7212e6c7bc773"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04992_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 519864,
+      "sha256": "6280ae96253c1df52987d486cea6abd2421b0317ca2d6a685ee757c217ea984d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04992_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 488409,
+      "sha256": "f270018da86a8fdd4ac0037411cff035c7333ec139cf339a606ce74117c65319"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04992_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 500986,
+      "sha256": "aa214096d58e256a4a44d468f0b329aad76273a4cb78d365a5c7d3f802d0b060"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04992_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 524249,
+      "sha256": "cf650a31d3787cbddd63e44639c0ae8d393572c76116fdbdd78257f8b670f7f2"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04992_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 548985,
+      "sha256": "90ccc7f3d2f49edf572025f2306d1806100ab9ebbfc6de09b8e47e68a517dfd1"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04992_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 469686,
+      "sha256": "2a154c04c68ef4b4cb603cdf2ecc6752b03226b612337f6b00db96634f06c8cb"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04992_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 420638,
+      "sha256": "2fbb2ddca7dcd90f5fd95c37fff2eb68ae27323a9e0b2a3b83e93201d796eabe"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04992_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 446309,
+      "sha256": "c8f437ae36dcd57c834aee8dab834d3d4080162cb03c67c86c33478ef29fb66f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05120_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 535738,
+      "sha256": "3a1009afa42b56505729cfc0f3c42f76fba534cd48714603bbba6321f63b48b0"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05120_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 502217,
+      "sha256": "3195a5a8baf610eab65745b5563297e714d41d8b68cae3081aa060d3b00d35df"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05120_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 567473,
+      "sha256": "b474a20e809c2a9fb4bd0e51ee02a141f520aad5e72c1c569b98920eeb2bb339"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05120_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 578749,
+      "sha256": "878ad4bc298b6330299f1a5cabd65733934ed6d3d82008568b59dcda4c0f1ba8"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05120_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 500641,
+      "sha256": "e7a8284bdd0390f27b39076f89a491d4e26717dcbc462cfe540f8970aa213be1"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05120_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 522270,
+      "sha256": "f4449393bdbaa57155faff4b73bf89917689a8ba5d6f438c3d6de61f558674d2"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05120_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 504698,
+      "sha256": "50bad0349489c3e25475c35fe4436fbdcb6e71e5a3cb731352f16d7de52dfacc"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05120_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 505077,
+      "sha256": "7a0665e9b281b8384361573df2a0ced0c109a0e1c3f3af5d3a263706b9e60b35"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05120_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 451770,
+      "sha256": "05d2e1c2be6e08445c37a68b28310dab16959c240516d7ca5a9a1c787185f233"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05248_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 386135,
+      "sha256": "e3d822e348d1243415054a03c25aabd1351982c0e4cb4c096f6f7263179ef65b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05248_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 475358,
+      "sha256": "8d61ecd18703169a6b81364215a8737fbebd0f5a81192fb84a9dd597adecec0d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05248_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 478560,
+      "sha256": "b57e17c7b664e827980c82c2ba94feac3d5baa2d93fa95adfabf395b5b8e7c1b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05248_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 464457,
+      "sha256": "f5ea90082196357ce949fb6890c8a7b7875b3ccff6ebef09c5206a439add4ed5"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05248_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 508238,
+      "sha256": "8547f6feac61db6051746e44a7b8bfa265a1a36cf056387b8ea6c0a8ef11c538"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05248_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 489695,
+      "sha256": "9ac9882e39f3d86cae1e0700b154806a9a4cf65a551e0cdeacb7130bc5797675"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05248_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 528924,
+      "sha256": "45933ce6978dcb94dc4fed7dacbcf8a3361ea99abfaa184174ca643cd36e725a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05248_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 445374,
+      "sha256": "d4e9d5fea81570add0b2d82f824c0ff019ea46c6665361c53029fe3ef294315c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05248_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 458622,
+      "sha256": "d157ffd1885709e3af14c532883b301abd9c0dd78ba51629333e913045d84f0e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04224_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 524852,
+      "sha256": "3f7ac9b2ccbf3c21a0006ad653c829f16fdc4ed72c86c3d2ba48affdd65a2cb4"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04224_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 592767,
+      "sha256": "559e9316d2d6513737804fb59bd0b8e99e3b41f36b8fa0547806b0bfcae8de97"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04224_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 561728,
+      "sha256": "d12b2aa7cac3c165e0c88be5642b7d1dc08f74274621c4fbfd21dce93aabd161"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04224_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 524658,
+      "sha256": "ebcbb4375b5684fd6c792275615d2d57fdbe2f2295c781635ec9892264b74dda"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04224_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 485978,
+      "sha256": "c43d68c8e847bc0efe969930a659d95433a93e3d97bf7f49bdd14d365304a45b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04224_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 513191,
+      "sha256": "f36ac797561330308637b98e5a8ea8d560c2944120ee888f2fbe07f5573587da"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04224_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 455288,
+      "sha256": "a7345481b4e6bcf5f5f8a72c7e85306f17a81e215b8bf14de9dcb36d90d4cc19"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04224_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 446720,
+      "sha256": "4fda318f0277cb72dc8114552890f6776a33e73682f95eee62c90a3186f13820"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04224_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 503318,
+      "sha256": "d6afd76e662fc41cf0f4debf6e695a6349013772fdf4ffa0e6c1e91a7f3e6f1d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04352_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 532142,
+      "sha256": "4a8bffc858d52f860e7f63f0a56775a50377a94bc3d174631b452a315a8d38b4"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04352_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 530737,
+      "sha256": "8172d1ce6dbe047339ed7513095b84382c02c65c7b1766195cbe0d9badca13d2"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04352_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 571330,
+      "sha256": "4ff8ae14558f1ed25d98ec3160ff65000cc5cc533862f2509c4497a0c5675d59"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04352_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 540310,
+      "sha256": "5fb4d6b79295e154a9ea376901e1f0c2fe2d98103821ce9dd73c80c654eede15"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04352_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 515369,
+      "sha256": "98432c3dd835387f66a99fc9daa6ce82c398c9797cf63b689533492fa3e61643"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04352_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 579869,
+      "sha256": "cf8381254c9942b8325b59d0de48e64ff8f0eee30cdd5aeb5f672777e0d4ca35"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04352_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 546837,
+      "sha256": "fe5a33e52d46cea5a2cbb0528ba2bb50cc61e83d16935e16ee4c374713037176"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04352_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 508552,
+      "sha256": "81fd65bf84d14784480b47100463b1737c21e0e3e871535dc0fc56b83b15aec2"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04352_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 499853,
+      "sha256": "23e390630ba56a61dbb99ee2fcb422dd031bdb8baaafc9d5770d24826941d63c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04480_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 555732,
+      "sha256": "45c6a4ddb47d9798e96643f6c4992bf7274b80162ec2f687204d6d2235a0bdc0"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04480_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 496563,
+      "sha256": "a547778b327fea8f194fe976973b733c292143f739db9b02cacd9b58d346d704"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04480_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 500398,
+      "sha256": "88f79071e94eeb9550be87c65f3adeea8c3cfdb817d129323fbc7265c50038f5"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04480_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 527534,
+      "sha256": "2c637a97108a4b64c61e0e9914cb3afda714dabd2854c83c239167251089b357"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04480_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 526412,
+      "sha256": "3d516d7b0689d3833051f9a5cbfb2a599ad39850a87d3756c534f45e1369550f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04480_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 507692,
+      "sha256": "7523060e5e84ab03252e5c9df632908f6be6ce60dadd57b8d0234e21b1c4c9d0"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04480_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 464097,
+      "sha256": "dc2ca2ae6be06e65b95ca1682e22437b3e3073aa919f54f74b7c37003cacf200"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04480_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 486861,
+      "sha256": "b05f088060eda2874985c28a4f0bf0d6cd52b2c58bae3dbb60a18543cd150c2d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04480_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 505633,
+      "sha256": "b981eb20d8115a8bc13ff0830d7b06c49e0c051bd0ee2e5d6fca39cfbaaf2d53"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04608_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 477953,
+      "sha256": "4d2eddc6b6c65af0c32b761304d035b0273e67785388f17034854f2daea182d5"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04608_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 505182,
+      "sha256": "a838090ace23e69df43930541a56024e2fbce6c5691fb99842ca596a7bf43cc6"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04608_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 565926,
+      "sha256": "33b886a53461355548ac25e016d63a9b307deb222d756e609cc4196387160aaf"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04608_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 494307,
+      "sha256": "a8a258fd8d83ba8a1a7ce206aef7177cf99f532f6701888ba42439f4f378b7a1"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04608_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 559452,
+      "sha256": "ce5708db6eb0fbc25e4e1b40d12a7b906fd66168b4d6ef28d204bfcc76c17df9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04608_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 522456,
+      "sha256": "73a0cb321e3a1b19dd05016c7813628edc7074b652ac6ed8ecd94d6e0773c624"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04608_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 577543,
+      "sha256": "2db0dd1570a7cc110c440689f808e6e4bb65da66f955289b8cd4c22696378a74"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04608_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 512468,
+      "sha256": "efcfd568495c25e1c7da9d8a3b69bfd7ba7bfe8c0c5f7271a12c4a4f4de496c3"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04608_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 430896,
+      "sha256": "0412ef7e4fd5e405f1e956d612d01162b1f9971e392d364a6177de6e692f6d8b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04736_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 580498,
+      "sha256": "b5d6ea8c1b38deeac02137da0ffe22c36700ce706b525b150f532614b90b0d31"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04736_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 505298,
+      "sha256": "b81d1f6bd5d65f43d310cd71a6fdca4d4867181f83205ae5ea9857e675f95583"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04736_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 401420,
+      "sha256": "0101fcfb267c48b75a820899ad5e8c0ff239190b8c8d52b7be009d2e2b8cfc81"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04736_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 268221,
+      "sha256": "def6a9e3aad1507258caf2a755961df0df8e1907444712633955135391fde3b6"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04736_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 223433,
+      "sha256": "da97b8d87e001e61d3c4ec6ddf3ec2383805f2a7a8183c4205625aa7e655141e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04736_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 417895,
+      "sha256": "bee17a2430ca41d104888436cd23e3c419bab282c00cefc38c470a11a8a71056"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04736_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 426510,
+      "sha256": "1bd758010e07cddaf48950dd5ec4b9d8dce8743c47cb4f68bfa4bb63782ed663"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04736_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 447625,
+      "sha256": "9a08386724d708e653e73333212f373713af04de834413d1a3294d289f0601d2"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04736_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 476827,
+      "sha256": "358602f8e13c058eeea8582af6c98e03583b3f1389b19beddd53494c87d1a1a7"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04864_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 476868,
+      "sha256": "c8023e008b64375bc6c6d644c12b615e621a5221cd7c9f13b5958561da5f2b2b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04864_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 532727,
+      "sha256": "ada501af7d72fcf5b33af0f7610835c81d664a75becb1757253f78b38a1d5d69"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04864_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 546648,
+      "sha256": "fb43e49c85ba3450e45a679b334ca89e0be7ec715f3534b3304ced7c0b84b8a6"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04864_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 548800,
+      "sha256": "44f97af0da4b90818bdf02925fcdcce137688c0ac547969c8ed2e5943c9baa77"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04864_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 527904,
+      "sha256": "2367c2e675aa0bdff377654799324b2bb87c60dd79a026d50c19db2fde4c5dc9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04864_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 537583,
+      "sha256": "a08af78d096ba4828eae16dcd13f7c88135103890024110ea7a2984fb8df6b2e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04864_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 558448,
+      "sha256": "fb930f41eb3c77f830e25f5315e322ce895c0d2e0ebf41ecdcd9b56e3000d7b1"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04864_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 578076,
+      "sha256": "9abc965f3b008ebadde63b8a5368fed3d2bc50a48ddeb4e5f455ac6e4f318d21"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04864_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 455910,
+      "sha256": "2b5dfb65a77dc102678c0f16e610d06cb47d8e40aa0706e882813d790b90cdd1"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04992_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 492855,
+      "sha256": "d9f23166db39c651ad959870d276829a019f3451676e35afadb173b18a0b0120"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04992_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 501052,
+      "sha256": "c1c00760a10b919ea4b1f2aac072c021b03b0a3e56b5d0d9061a6cf7f32d7412"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04992_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 520103,
+      "sha256": "e5e6b7e0847a617395925394d814d02ade3a383a78d2a9b32a16a10fd6733677"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04992_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 512230,
+      "sha256": "1aeb978d8f130a3bdeba6026812b8c0c796e76c5f9d138d354bb17281de1e88e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04992_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 534444,
+      "sha256": "42c5041c14fd9f5d7a73d65342b763531fada416d6b488461b7932d7c1190bb7"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04992_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 566297,
+      "sha256": "f8e91b8d57b687e8fb037c250d62e46ff91c4e424b6e3d77fc7f1077d201ea85"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04992_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 547963,
+      "sha256": "391ef1c30300bbf5727f81115d05b935312dc88328d38c3cfd091bcd47e49354"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04992_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 467636,
+      "sha256": "19dd1bbf2510f24017620cae9ab463c6acae1a9c50dcb47bd0d64dcced37a596"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04992_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 433359,
+      "sha256": "8e236bdf5647787e2b0fdf754d7e10e14a96b24561a91f496e975876d3b615a4"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05120_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 509788,
+      "sha256": "a417d7580f16714c57cc406850472264f6c7cf4312497fe06bc7cf99a7f6615d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05120_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 460297,
+      "sha256": "2a6d3602e810d60ed5e285078c5230726d8efdba68d128cae35ce214baaafb0f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05120_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 502976,
+      "sha256": "35403053d7d8845f6974fbf80d63b70026feb2d551f4dc6f4ae442d2fe5f331c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05120_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 563506,
+      "sha256": "5d6622c7508a21356bba2c45f0a0c58d18645081ab322fdb13d12e7fd641e606"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05120_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 588770,
+      "sha256": "b2b1eb73d3d7927f062e30731559e9ab4101688c66ac73638f219ed527700821"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05120_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 533823,
+      "sha256": "7d238f5198490dfffb43a33e7a3bb55d06fc90a9b710ec1b7868344bdb99badb"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05120_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 542470,
+      "sha256": "924de8656b7577fb800c3a692a832e2adca1752b7c148e301f1ea4bf46e27d43"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05120_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 564262,
+      "sha256": "d7e80d30f44247fa62db54fee0e6de4689ae11617eb2a8b0484391d33a3eb9d4"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05120_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 484985,
+      "sha256": "259867ff44a2a7e2a424f26b39ab7983eafa0d2ca8467964a77dea20773b7ef6"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05248_x03584",
+      "kind": "PRED",
+      "nonzero_voxels": 404669,
+      "sha256": "59929659f886573fa35fde2425e0956b69c95edfe01dbb141ee1b31c543ed275"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05248_x03712",
+      "kind": "PRED",
+      "nonzero_voxels": 441804,
+      "sha256": "fbb501e66c9eeea1ccb062932983ebb6cf598c6547dbd8fcd18204232e4c09b4"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05248_x03840",
+      "kind": "PRED",
+      "nonzero_voxels": 470862,
+      "sha256": "6d96ea62177860cc2774bdc09603a9b933202b669545706ba36d8a3d4d750862"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05248_x03968",
+      "kind": "PRED",
+      "nonzero_voxels": 527148,
+      "sha256": "0bbd69ec3eb8c6fbe68c06a24b3988e703a30b5161e79ce3fc12e649368a3969"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05248_x04096",
+      "kind": "PRED",
+      "nonzero_voxels": 524581,
+      "sha256": "2662750f6cea60d0d9fd3b501584091cb7703a1408765510fa699517271b1967"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05248_x04224",
+      "kind": "PRED",
+      "nonzero_voxels": 502401,
+      "sha256": "e069fa550a2d9f3e78d81d9d7b3d6a06ed2d6ad49b5b7502755fca69e414db76"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05248_x04352",
+      "kind": "PRED",
+      "nonzero_voxels": 496719,
+      "sha256": "4a9783b47fc5ff02c6d080a2222e2c6a91f93f716dbc29fb4f9c9234ab62e9ee"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05248_x04480",
+      "kind": "PRED",
+      "nonzero_voxels": 470919,
+      "sha256": "5e9da28188a9444209743a2e9a0bc7d11f969d6027ccd254bbd8d8c5cdfb2242"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05248_x04608",
+      "kind": "PRED",
+      "nonzero_voxels": 473211,
+      "sha256": "29ba2d213904ade2be65f8619445d322b57540a9f6c58ed9318da457b15d8b57"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04224_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097129,
+      "sha256": "38a8513eb4aa161de1367007cf66ecc789289731a191dfce0f7224c25c6bb04e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04224_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097118,
+      "sha256": "cf1522cc6287af05dcc46a6d60f2df3a70941bc8f75e4ffb35cd77bdce1a8ff5"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04224_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097122,
+      "sha256": "cb5855a1a86bcebbd86b82eb9004acade3776ee99d820be8fba485cbd8903e4b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04224_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097001,
+      "sha256": "23eb9080440fb14b42f7486fab0dd36673132950940db3ca014f2a62b3b55429"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04224_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097057,
+      "sha256": "3b3db0d0f1c2fa942bd498d6560599056a07b953406e5d31eabc7bd38a8a009c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04224_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2096974,
+      "sha256": "205d55a4abd954fc0bd0c9026b8b34930d2d36a6d9361a0175481707f0b864c0"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04224_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097059,
+      "sha256": "3f2bc929dcfbf3fc83bd97ecaebfcf6f48642005dc876428889bfc2c6ce15f9d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04224_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097067,
+      "sha256": "ab2bab918134c9475bbdd507629b8d3276cb1b13d6abcfb260b20939f7384b5a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04224_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097001,
+      "sha256": "9fbb4536785d64912db82f979c2ad0da38c6161396b9468d821fa7160c343935"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04352_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097088,
+      "sha256": "7991be615d2b69f804f2d9fc5cbac15705c5b6c97f3fa5118d269650956256c4"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04352_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097130,
+      "sha256": "b5f6c1480792d9627794de83126a5ab42ddab5750da565669580e304969c2f41"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04352_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097121,
+      "sha256": "f4558ccfcee3783002289ee8e9923590638d1a377d07050550e3775722d50b1d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04352_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097108,
+      "sha256": "4c529387d1e439d838d79905326a813c35b5b61cbc2beb661b2e3e4e74532cfa"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04352_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097127,
+      "sha256": "61f56c93c11e6b37c72c3c7d48090c6d923ae35e724d03fd562a1bab3c038d44"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04352_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097114,
+      "sha256": "3e858963ea617d410f4921a6bae55da74082554298ac648b3c505056feb20b23"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04352_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097116,
+      "sha256": "46a5e4def535f1518d9d99d3c7e64a1154f166b27347392b86696db937f0169b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04352_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097136,
+      "sha256": "a29f2167314ab1524765d00719224b1e131386640dcc07d4b9c22ec7fd70cf75"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04352_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097117,
+      "sha256": "d3d958efdff25a02c460b46b1a550bdbc95ec7a465f9879169883897f54d3c2b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04480_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097129,
+      "sha256": "bd2b53b54c3400a4e952cbe0017b66b308e056cf30462a505c730df706d4da28"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04480_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097091,
+      "sha256": "1cbb16ceb8e3f5b7c72f8ee5fdf6ffb99c2639ceed95387909caed413d11a596"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04480_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097087,
+      "sha256": "9145a6dd861e68c0f93994cc0e16167a548007c612fa4bea42d3331bc5fced65"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04480_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2096878,
+      "sha256": "68e33b8b1778574d97b4ac88c9cff190f41381e51c20dce4beb675e7793af911"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04480_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2095733,
+      "sha256": "2001b6d31c2bc0e0e51a1ff9b318ba4b829dac91b99973242ffc5a711c4d74d3"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04480_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097128,
+      "sha256": "6e7a15fa32f63773f6482b159256d5b53dc80638679275b6da702320ba21fe7b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04480_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097107,
+      "sha256": "3966c7f508ba8d8569304b20b7147ba6300c7b940babbd0f67c3cbe000a1058e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04480_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097025,
+      "sha256": "7b748f23dffdc0523f966f6b3a562287312e31faa5fe99645515af9befa8a887"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04480_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097123,
+      "sha256": "6073b37b0a727bd94c8fcf7e9b6d5c2dba81bf29f881cacc8528bb43a90dce6c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04608_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097113,
+      "sha256": "bc31a21260fa0e4d35058ffd723e609e7bd2d984017dc774890a4e8a7702d9bd"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04608_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097085,
+      "sha256": "c428d83480a22ebce9e4b99aad5615cfe812205aec68f054bb1edf8295723a58"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04608_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097128,
+      "sha256": "17cbc5c052952fbdd8009ff1d7914a011cc733e77f4035617accaaedc59ad81f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04608_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097132,
+      "sha256": "7a2d884d17e67b48ca2eb2df0ff4083ffef2da4911d712b5b42e082cf57ed6ea"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04608_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097128,
+      "sha256": "55cd94afd6ebc0aedb6698d4c5dc861b46076deddba9b7a88d01c85e657c42b1"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04608_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097075,
+      "sha256": "c0bcab897a71e6c695e675e266bb946d73e237bff51cdc023994e7787ec05825"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04608_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097125,
+      "sha256": "20cf6d6e180121d0d7688f7c8c57b3513bd4a2c0bcda063e0036a86de5bb2075"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04608_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097126,
+      "sha256": "fe887ed7b100fb93219a25e7c0c4cec91ab53c13b35493f8d9aaf1884acf356c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04608_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097131,
+      "sha256": "80f7e5deacfe3e2aafeb6d9afd9318eebd30a2587862bae09dd97d2a1bcc3e27"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04736_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097095,
+      "sha256": "2de3471975fe94b71ff35b21041f229a1d8fab588c147c77ac347b23d36f2eea"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04736_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097134,
+      "sha256": "4930a855055474091ed4bfb9455ac5a1e86ea140e0632d772f74231e05d2b5a6"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04736_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097103,
+      "sha256": "cebdcec58155cebcf56d11197cc67c88aac38808da0777ed30446cc4e0a2d4f6"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04736_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2095875,
+      "sha256": "bc3425676429fd311539c2257dfe8cc6129fc088d1245a144d0ecd91e2ec1b11"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04736_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097112,
+      "sha256": "1524814acaa591e71c2c150b2bd9353596991873bd9da226d58be08f80db1f62"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04736_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097045,
+      "sha256": "226e46d559cfcb71a58c21146eb5b6a1abfc1af62df953c32501918e01340c22"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04736_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097116,
+      "sha256": "782d53d904d08d32d7c3e73898a442428575c3935cb26d565af6e3f6a8990231"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04736_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097095,
+      "sha256": "e9bef229af902ebdacd969b7d5909a0e75ed7a8b350205fe860773ae098475e6"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04736_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097140,
+      "sha256": "07cce87e41f9ba735e76f7f629f44de0e2a46a3ae66d8777bff78ab09bebfd00"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04864_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097125,
+      "sha256": "f59c738913c6ad7eeb16e946812c81ca15e3803c1eeeb9d1ee5deb15846baa20"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04864_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097123,
+      "sha256": "a90b53b3d20714d23cd7c756ad8f5924b46a884d5919145c46194b67d9fcc53e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04864_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2096844,
+      "sha256": "a63d30645bdf6c035de9a45859f316c2c174de6da6826e7763bbcd80bc1144dc"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04864_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2095023,
+      "sha256": "f4761f2c796f669a3a3b365fd7d7be8af6c9b38c3b0149c5c02ee6a53d8edad1"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04864_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2096948,
+      "sha256": "e36a4c192dcd9a405d29f7324d1a3fb1a6e2914eb4d045e24a0ceebedaff60dc"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04864_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097093,
+      "sha256": "a3515c69c373e8f6aaeeeba7ffdf18644ea629c7466959521041b847ad5a1ba2"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04864_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097085,
+      "sha256": "4cc8c2e76f391f9fdea03cc2759c7987d49c04f1a06265b5ac6d0b4a8ae01515"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04864_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097032,
+      "sha256": "bc38b493aeeb5ca96c5a1d5e895ad158456451ad5fd85d3dc12633342b7eab40"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04864_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2096967,
+      "sha256": "d201f09ccdad800cde5391542d84b0ef97e74132c055a4865af5efa8538b5ee9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04992_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097147,
+      "sha256": "1144c1eddbf9d8ec47b48b4aa0b569b9fdebac55da6756ed235f7096d8c0b9f9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04992_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097121,
+      "sha256": "c83e7711e1a7a28ef3c6f891b5947ff347db3e1cd157ed33e02f628608cfcedf"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04992_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097136,
+      "sha256": "87ec49120ffbe71e6a04c9272ced73679d7135e2d7902fb30bef1019de13d36b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04992_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097133,
+      "sha256": "1754ca61c4a3681ca421e4905fe10556770fb7c8197ff93f6cea81ecbdf23a4c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04992_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097071,
+      "sha256": "f8d095e56937e7cfb366099e6b92a92abf601c8cf869f36ebe32417e796c467d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04992_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097113,
+      "sha256": "a63c5534962f566a5d59bb0517f9abc0695b091c44997b2bf110471c8c5eddb9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04992_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097105,
+      "sha256": "9e86cef9b5d2c4c6eb4f981ed9893e8d1a813a25c86bf01fdd74fc22dafc707f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04992_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097038,
+      "sha256": "e1ceacae1fa0c10bfb0b2cc25493c6f47bc517648dece46bd230acb61d59a3df"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y04992_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097048,
+      "sha256": "397e4c1797605439946f479623f91f4a28de442ebcd3ccdc4ecfe263ce7568e4"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05120_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097097,
+      "sha256": "91c3257b6c9c7013a51c91db383526e0c28c5be7894f043d39814bd83b221d9c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05120_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097122,
+      "sha256": "668dccbb98bf2a5ac94a7e72d6da7a51b084b59f2a61acaf08298aa6c482215c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05120_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097151,
+      "sha256": "72d3d51dd37c78f695bd7996dbba5550db221fe4e7cac6071f4898893ba59261"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05120_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097130,
+      "sha256": "18597d6471ef652f4b2e644f74fb4cbbb51c2c3e2efe21a3baacef76c5e1bf5f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05120_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097138,
+      "sha256": "a66550a926566658aec9f61d136b13c711ac708619a45b6f7aaa97be38856951"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05120_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097151,
+      "sha256": "9365bfaa942c7779bf6c022f27109373ac0c028bb8ab8db9302ddbd802b7f74c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05120_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097087,
+      "sha256": "d957b39ef12a6a1288a755ba9b4f1b778c7c75d97d3932dd10d896418447893a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05120_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097031,
+      "sha256": "d2585808ef5c82c99e8edebc68c8984e78ccad2c413f687567439c79df1d2b4e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05120_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097109,
+      "sha256": "3777ff9afac35f7edc01a2844926309ecccc58e0888ba2d01f0974c6bb01be5c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05248_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097141,
+      "sha256": "33ff00bc717fb6888d4f2049fb768f53fdfa0a47aa518e93d66326b69ba806a9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05248_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097137,
+      "sha256": "940a342efb1c232afd51b5f8770c8262c676a915b1c25b26b21a4675e6a9bff3"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05248_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097132,
+      "sha256": "7bf7e26ae25fde384f1141e6b2aa81eafde04a69f588c2d4e03689eb03ffcaa9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05248_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097147,
+      "sha256": "2e7004a688364588581d49244d4820256c9d6bd7c9b95eee1c0b50b8d68bb38d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05248_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097146,
+      "sha256": "2f822484cec555971332f313864f73958e72110e5b93dd553f7dcc2caff1a1d7"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05248_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097144,
+      "sha256": "e6c870f361f7fc152b186fe2a39259ae43325096b09bd24dd01cb3b67afda7bc"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05248_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2096838,
+      "sha256": "bdbaefb14302946355330ca51f6bb0d733b2d8c9687722da48cf6f4d1d24c80a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05248_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097060,
+      "sha256": "66fd3d00b75182b62d704a2165434d2c53fa8df5dfe05c745b5f75ead57f6260"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12544_y05248_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097106,
+      "sha256": "319eb6385a95d485f3a43f324a464086e98fbddd5e52765a37927df801728238"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04224_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097131,
+      "sha256": "5fd158c8b9c90f08eb6b6df9dbad35004fef084e61bdf6cad44401d7b2830b7a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04224_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097052,
+      "sha256": "69dcecce8d2121e120d9c578c3e30fd2cd748b54561169fc1ff45cbc2e455335"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04224_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2096945,
+      "sha256": "f057f874a2709151c723bfde4fd4a7d17b02da5a55ad10317ba10645b0eac6cf"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04224_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2096749,
+      "sha256": "8e40f5781ef79a62609c9a5465856c4b8ca52a2a4a4d59dee6a59e1cb0841ffa"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04224_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2096891,
+      "sha256": "61900e1e984ea2f18ec88bd9e277dfe3f9bc84c7c58b6af8ee5cf7c02b5a963e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04224_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097029,
+      "sha256": "b51f629bb6e4b1aa238323f07574e53695e914b6b9abed97d55a1f80f05ab1f7"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04224_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097124,
+      "sha256": "23430f2e4652b2b201127dff8de8b2f33e7a4149fb4e3260c56d4e95ce682e04"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04224_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097070,
+      "sha256": "fd8ac5861daedc932fd0ba98c39296e4218e7a9287b0c598d79aeb8816fd3b38"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04224_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2096729,
+      "sha256": "cd6acf33c0c889e2c453cb0e9d5883623596f5d71851c4650a36363832d8ea5c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04352_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097084,
+      "sha256": "90f10088522aea5bacbc61c40ee9f35181e21919e37a4d4cd3ee2d6bf4929888"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04352_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097088,
+      "sha256": "81118993c29027c93e4c17f93fab6766c8410a86aaf81bf5143d0b906ab04b1f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04352_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097002,
+      "sha256": "69fda68733d99af2b3f58c014b711097e01a38a19a29e42725e4f06ab1d933c9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04352_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097086,
+      "sha256": "874b019c8541ae9e7305040289ecddb799fa751feca16bbca6d0517d450070f0"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04352_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097064,
+      "sha256": "6adf5390b90ffac344445c07a214a58ba289891a969fb10a37fa97becae9e7a0"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04352_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097053,
+      "sha256": "0473ae9a980f1edde9fcc47475184aaa9ac7358aaa942ff3b6086b4f685dbdc9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04352_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097066,
+      "sha256": "4af1c8eada742e163fb9e8193f68bdd7657e18f702e64150576b2c86c76b65df"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04352_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097095,
+      "sha256": "18cca374a0aef81360780af16b25464036017e65a20971d5c707be9583d9ead6"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04352_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097094,
+      "sha256": "5515f14dc3fb26fa6eaf8a42ae79303b47d9bb50d4df79d34958e16032f1a2b0"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04480_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097136,
+      "sha256": "3cd37afab87bb362dcce8d9111e344feb813098697bb5e1edd50494ae51716ca"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04480_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097110,
+      "sha256": "cb810259c3b0fb60ae111510a7e802d70f8db2181dafbe667bbd48921c0debd5"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04480_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2096985,
+      "sha256": "8a4506263b1320a3a7d9aa7d25567d73ff700f1b66a850d51c76806d6cad8f6e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04480_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097022,
+      "sha256": "a0009ea92c289fb2c955a0c9c3f6277102dc728498a32e47f4d2e3fa6b142cbb"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04480_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2095250,
+      "sha256": "f5ed10583083eed9b6eaf2031cd0cd2fba4a06398a10d9dd5eff4758e59f2ac1"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04480_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097132,
+      "sha256": "ed31144d37ddc4ab29ccb3f6dcede25e4e79cfe52665b55ee5d1ae1628eb00ad"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04480_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097060,
+      "sha256": "b32377b45bb8df386d35c199b83e56a824ea4c4f6af7180a295b2c2aff3014f5"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04480_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097118,
+      "sha256": "434030e13cedb83c9d7dd76a1239a62dcb7c2e71ac9870024d09f3f9b729c9ae"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04480_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097145,
+      "sha256": "13199552a5bf8c1a4054d264c9ff49425d2bb58938722fc17f873c2576eedd34"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04608_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097138,
+      "sha256": "316be95902b4b18df5805f4bcb325d8117b814198ed482a06f2cbf621b8973bb"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04608_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097143,
+      "sha256": "4811f3caa5eaff99e1ed8455373f23cd169ebb27c7fb8f6293f103d1ecb5f710"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04608_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097127,
+      "sha256": "bbeec2330efd2d8c9b9e6ccfd51ad2f582f6740dfe53f7ee8663ae72198e915c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04608_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097051,
+      "sha256": "443a766dcec3226db4a14146085892b7a8d597d727911084040f89d2f54b9d6e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04608_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097112,
+      "sha256": "e72f557227f5b8f75924618634641bd223b716cd63abb6786c230988efc2caad"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04608_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097124,
+      "sha256": "93953fa2d6675d02ea8cd8a9569cbc6eb9fd9ebc42eea92dc212fc5699a6b25b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04608_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097131,
+      "sha256": "aebbe1f5cff5ec8a2ef96705a71dd6352bed2f2b8f61c853ed021a28dd6f1b29"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04608_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097093,
+      "sha256": "452d904a7af30e9722aabf87de931d2a6b6b43a3ffb6c162e52aaa64bcce2d68"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04608_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097105,
+      "sha256": "94f109f5bdc0d89c45218a26a1e84b688d245bf451477fce419324f4ceb4d0bd"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04736_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097088,
+      "sha256": "d202a89d7dbbe579e0e0b7293371a5d7229bfa8b6d3c765ec09b84b64d424cc0"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04736_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097133,
+      "sha256": "063efefc6115ac92e24be44cf8326737902b838dca7eb9c20070e900055990f9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04736_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097006,
+      "sha256": "3d3ee6f6d1b7699a670f42828bc540dcfc09bf1d8d6206c994277bb0acbff0d8"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04736_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2095857,
+      "sha256": "521ee417b860f2977d1d92c091057f5b0773924a8f027ad03dabbc82ff90dcc5"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04736_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097004,
+      "sha256": "243eb61dbdb0715c73fd90b5246ec3b9ba6ba87ecd4ee4f8825c7df42e15d908"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04736_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097141,
+      "sha256": "9ff2d030c064e141d8e9c12d42dfb413b4fb1789ab468d29fea23fbc63eedd1c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04736_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097055,
+      "sha256": "a2fe7e48257d3818e1a8a96bd17339e8566e65255cd224f794ba6b9c7348f7f7"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04736_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097134,
+      "sha256": "0a503d902255bce436b7ad413b7eae506a525c1a1906e3a01aaa650da1718a51"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04736_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097106,
+      "sha256": "db2e1c8f101ce4d1cc79cdad5945b5e3c5a822c1c0d11d84e964492db12b7cd1"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04864_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097139,
+      "sha256": "12c7682aae5edefc389f4055b7e3494005ff24b3d4659a2810c9e2b6e0cd158a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04864_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097137,
+      "sha256": "e06dd68cf9deddeb8fb7b824ac06df613d41362981910aa4289292002ca09af8"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04864_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2096871,
+      "sha256": "502ebb44956d5966c6f5f439b5389381c6cf9abd6c386c997ab4c71ade0c164e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04864_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2096305,
+      "sha256": "a19272b35bbde082bb8f21f93fd42fc366e885f19b2614e2c1dd3ac80fe8e97b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04864_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2096883,
+      "sha256": "a1c333d4933dcff0aaeb3861285f021ce0e24603ddbfc9438e7da18b35366b97"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04864_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097124,
+      "sha256": "c35c24ad2097455eba4e982fa4425d290fb28b31890d351ceb735350c17503c3"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04864_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097136,
+      "sha256": "eb6830798b433fc433708a41e1737589ed21a5ae61998ac35cefbd62c8c0b533"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04864_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097047,
+      "sha256": "1d7daae44a9e6d1337176d4be346e1959418b6096dfd235b8d9987756cf9cabc"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04864_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2096998,
+      "sha256": "de3a23d879d7708c15dfb2c7a9ec2f32795c261c7451a148fb9abbe9c8ace273"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04992_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097109,
+      "sha256": "1242eddb4e60d352c7623c4988e1f2123a7137c017da36a903820ea80bcfbd7b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04992_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097093,
+      "sha256": "3d136ffb547b200b525062ed29a043060345aac8e9708372d7554863e17e2be9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04992_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097148,
+      "sha256": "3b52e0982229aeeb07a2fd0bebc77429dcb04fe90dc922345e3c0477034bd2d0"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04992_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097131,
+      "sha256": "a89f8aac9e175e08f0b09e7e8c953377178f847134d59b457b5297390e165994"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04992_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097144,
+      "sha256": "a1b6206631e7218200b60addbaa0607e0646faef7ee41f8e9dc95e520fa85dbb"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04992_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097118,
+      "sha256": "1adbb0f4656dc8b41567ef616d20769d30b92cb349f39993065a71f92cfdb144"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04992_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097140,
+      "sha256": "bee25f48be2ce2d979e8ad69de9522d1e2b4d1277861b07c88324ba0e28150a7"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04992_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097105,
+      "sha256": "7ea6bcad2b9ac16c491434f29e4c90096728b2ec04948c1e46144f5ab3a5ecce"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y04992_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097124,
+      "sha256": "584ca81cf7d6a20051c49addc5e3d0113e8c28b960aa5a1a6d5f64fa960498bd"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05120_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097119,
+      "sha256": "5b0915c2e4e9b94284bb15fc73dfe50728d883053b176f1b504dc35c77daee03"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05120_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097120,
+      "sha256": "a7cd2f5c036977627f6086d82d934065699482b2584c42ae0d826903108f51fe"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05120_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097124,
+      "sha256": "52a4c0afb01b483bbd33a4134cda43ec1dfabb78db29550cd13fc09e0970f2a5"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05120_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097150,
+      "sha256": "e252639bb354f2fd3e07f9b22db58e5ae554216031c031c934301054b163ca0f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05120_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097151,
+      "sha256": "929198a5394acd54d3644889067487e2fdcdea26110e9aef39af15138c1ee438"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05120_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097150,
+      "sha256": "618d24cbd30fbcf509e102b282de51059f899d71ebaa7ac33f8a7969f834be8c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05120_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097119,
+      "sha256": "f64857d8686e816d94f363f8599b32d8a43782b17dba7266069af3ee1ce3fa2b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05120_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097128,
+      "sha256": "2ac8ba61cf65c23da2d9e5a665c8abb426b35d5926bf27a9f9d429eecbd5256f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05120_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097142,
+      "sha256": "d772ded8e46a157169a6a0d0fd0a637777717b05197e911d13923b3443586c1f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05248_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097122,
+      "sha256": "6f2165cd29933a8bedeebbf8710c44d1c4619ad1b74e57e0bd1520ab30362021"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05248_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097145,
+      "sha256": "bde84912dd52913a8507f0cacdc8352cf1ff264ac9321879ee7a4310b1ccf0e2"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05248_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097151,
+      "sha256": "7a31b733f8df2d30468bde75655d0c6727e046ec3b94e0f9942e9b2514138d56"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05248_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097146,
+      "sha256": "114f07b77361d0087d3075f4c5d072660b42b16b23dc06797ac67d8e15d92dff"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05248_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097142,
+      "sha256": "4f66a0f035a95841a633b7fd160d7b19b3b0b46f60138957717efde99c591b6f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05248_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097151,
+      "sha256": "8b30e3cc5bd3ae9472cc72c8211523c99577905893619aa5558abb7e3290fc64"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05248_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2096771,
+      "sha256": "dd610e7fc1b1255f26a3ad659280dd2c225b54c4d34f7342d64e26ef6174b4eb"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05248_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097128,
+      "sha256": "7641e3aa9b2201102af1a7edc1367f52347e5071e5ad7947b69128ee303f7765"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12672_y05248_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097106,
+      "sha256": "3d58514efc0a7357892ddebda69286c5512654c64c9daabf45a4f5a8cd050ec3"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04224_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097119,
+      "sha256": "7dd33c82d268262c53b83987187661d90f7b400ec2f0f234debaa2b9208ea964"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04224_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097076,
+      "sha256": "8e8ea4a6988974ac529f4298c8a465a9f59ec50a4f1f1ea9f3a669844f55fa1d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04224_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097060,
+      "sha256": "8b8c1407de1f78e4093b435d59b4bf99ee002133bddf59eb54fa09da73e8d70b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04224_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2096736,
+      "sha256": "b5b3a93174651f7d0933a0b4be9ad8286932ebf244ae0dfd006b3e02483c5339"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04224_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2096294,
+      "sha256": "a1545353dd1b5a3d8efd066279654eb30c6b014081ec49b73725ef73fe885b7b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04224_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097052,
+      "sha256": "0d9965185238f80fdb09ea85edbd24c8996500a6b9302bfdb10ab7118a907acf"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04224_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2096987,
+      "sha256": "cd0ef984870a7fa1c79bf4ccb0b3fceb8dcb79422f002744d7b473ea0f381f2e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04224_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097100,
+      "sha256": "f1dc90b072d1322c0fe66ac149a1402b56186a67eb10979b1ef8003e1bacf155"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04224_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097136,
+      "sha256": "069153f5a10d4e9ae9d170f870bd6d40b07325fc5c30d3ca6f382fb5ad8bde96"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04352_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097143,
+      "sha256": "5cc067578866301bb0bf2abb26cbc34d79dc044a036e58fa342a4f038e918be2"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04352_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097102,
+      "sha256": "965005bc18a6b5ddd8c1f9eae4fade88a59271676262ece7d9c26f4ec3463ed6"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04352_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097131,
+      "sha256": "76a548856ae88847b21928a148e0e6772329224973ce8fcefa296a4bb446b750"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04352_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097038,
+      "sha256": "8dfed3753016281223280535b82d5e9b219f0ee2dee3cf15ca0eff2a25a58a76"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04352_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097132,
+      "sha256": "9ccaf8d8107a793ba7b43c1e4d5b0894b1bba88cf71a1112001f85a854f5137f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04352_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097103,
+      "sha256": "47fb1ce1a61e72e22b92dcf7a5dbfeb7ccd1927fcec6448a9b66fe9d3f6e5b97"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04352_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097118,
+      "sha256": "07eeb1c308dee85f6a6296c0315b747428f419e20d223603f7ceff51a5e06c48"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04352_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097124,
+      "sha256": "c2b6d069700681f57a7929250302d2de876f4a32a1fb39b9becc4de5e5502b78"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04352_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097147,
+      "sha256": "3d5b15b2fa93c826c45e585512ebf5b2ac994fd4de945cf70c8a388da8fac9fa"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04480_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097108,
+      "sha256": "23be69af4ceab02c3e2165d82bee23054c01519880ec3f90770cfc9202596a01"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04480_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097093,
+      "sha256": "3725319640595a1bdc1ff92c41db2deee8a7a565cbaba15273f15e5994225d9f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04480_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097133,
+      "sha256": "0003216bbaf0d2a278cde3ae81f062c4412fd0090eccf09a50f11307156ff886"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04480_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097134,
+      "sha256": "efd7b240e6a64a081c2cdf24cfae5a7ce0707599880f2026c1dd35dc8eab10dc"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04480_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2096800,
+      "sha256": "cf9a217c7d2d354124980874d61a5286209f23376a6bdb5e3c2d9867223a6ab2"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04480_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097133,
+      "sha256": "47cbf02581259440c1907214654eff3993a0d76fe7f70a6aff1cbdbeb1403149"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04480_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097121,
+      "sha256": "d9682f5c1793fe16a1b7246ae732d14ed1cd6f1af5c9ddd62fa5683efda2db62"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04480_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097131,
+      "sha256": "66a78dd0628e931ab56d010341b9f1f6323544d54b5125267ad51516fbf7ceba"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04480_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097141,
+      "sha256": "f62d03c94201e898aa4a4d155d004cdd5b1b5a67cb4742da3c52b27468014563"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04608_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2096999,
+      "sha256": "1eda5a7c48b2dcbae8921321a97322cd1f9dc2b6de75920264c815ba3b512fbf"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04608_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097107,
+      "sha256": "46e7482e9c9370b3aace4c6153913e3c5b579f856d049d3d151d13344b24c37b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04608_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097122,
+      "sha256": "243f12dc44fe6dc41c5aa52141a6ef6d5b170f516621989ab21bf39cb67b1d5b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04608_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097108,
+      "sha256": "f05e2598b0ab78169b152a9bedba2aee7fe41b570e25f302d93ad3c2be9e0261"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04608_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097135,
+      "sha256": "408b8f61bfdd0823ff794baf16f530597dd93dead67e6a8ea0b30567c7c54e4f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04608_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097082,
+      "sha256": "36ca98672aba996ca6d609eccee146baf2eaea69774a26e390e4093bdbe52860"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04608_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097149,
+      "sha256": "f703ef1ecb919407c798c8790814179689cff259acbcda9e52908209f68d6267"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04608_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097149,
+      "sha256": "92daa6d9fe50ead1c081fd1f7fbc207e8ffe879074e67d77bef5ae5fabbb5f73"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04608_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097109,
+      "sha256": "59a7e5ebd325df224fde8aa02d0a94d6cc32a7f2c08373e4c0da8e7a560f2744"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04736_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097092,
+      "sha256": "fd954f4f05c56e4fd6f38b82ae80c85adc3941fff9179957ff706cc188f764d1"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04736_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097090,
+      "sha256": "36e0293d11b08500ae68f9b56259b9ec997bd454acbf37331d0250b8a62a8a66"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04736_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2096805,
+      "sha256": "12cc6417a83a075238059aaa7c6204d72f7e2de2435e29b3a05a3faefd73af04"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04736_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2095246,
+      "sha256": "8d9b08c8d76c21e729434cf54400ae95ca84b867b6ec5017dbd3b41d11453ed2"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04736_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2095536,
+      "sha256": "a0381076bac04cd2cb350f9b0ea0ef3970b2dc1be04ec8203d8b4b8fe3688482"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04736_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2096899,
+      "sha256": "6a8f0ccb7d7c1d830b3a6949b155eed9bef9baa3a04bdd98c896deeb36128cee"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04736_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097082,
+      "sha256": "a1c8ec0bba84273129ff4b3af48ecbd8c0de805bef3f2a5c163a7a5c81e60d25"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04736_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097117,
+      "sha256": "57e4ec260f257c968f6263ca4fce9087ac8cf01e8c9c28b4a190508f80207140"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04736_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097073,
+      "sha256": "a6b4afc4100f36da2881f90c116d13dcd2d75eea9203814e607d21beb3091fa0"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04864_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097135,
+      "sha256": "4a2b207cf28bc536971001757b31b6ae63400db174e3fb2a7fb593575b6ebbbd"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04864_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097140,
+      "sha256": "a217b7b338f66a836acb7f0b986b4f7203134a35c55bb9173c54ea262f4927d5"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04864_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097075,
+      "sha256": "20840bce61156b47e1477faa8283cd6d940262845564e328350cb1d150b876da"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04864_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2096978,
+      "sha256": "42d5aeafb65e242c0034f4a8837dc0eb7013a53ae3388b0a071c605d7be7b0a1"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04864_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097041,
+      "sha256": "bf024038c82ab2179c77d905a77c7ec1df464bf8ee8a3179710bc496a69b5db4"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04864_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097110,
+      "sha256": "369dd0cc9d5eb6728db8cfc0b366613a7ad4a9623c5fe6cbe4a63f867ec2059e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04864_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097143,
+      "sha256": "b2c32b36767ed214acad647d8278507fd089dc02a4c8a9df58a354ed1995f350"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04864_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097100,
+      "sha256": "e8e95feb9e64f8630ce62583a221ea93e7d4ada2664adf3539af2872ca1eb3b4"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04864_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097125,
+      "sha256": "fa941ece0a37f8633699408f6cf338446e725a8f0dece3252fca58c5155ec913"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04992_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097098,
+      "sha256": "b6f7938747b48b58bbdbce0be5a8c0ba17c92f7cbf883fc9886b757121819d19"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04992_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097138,
+      "sha256": "b2cbb8cdaf020aed8a92b5c93d7734ff3d366c2f020eb062a852222cb0869103"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04992_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097047,
+      "sha256": "38ca5667c8056cde5afa731a91f2fd33747a2857ceeee843294ea51d543fde38"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04992_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097143,
+      "sha256": "24602637c95a492253cfecf150b9f5297543b1e432f1ffcdee45fe01e78af776"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04992_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097146,
+      "sha256": "1210fe333861d44cd511d136ae4901347c3ce92f523cf6c87c160d7eacdb1f26"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04992_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097089,
+      "sha256": "e8fc3e3da05bbdc7d035788ba55844ee0794ea03c855621bfa62e36395603d9e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04992_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097129,
+      "sha256": "c0f5ee0a48e3d639b6e7d7fc9f580cea3eb3b482a5d496253a106bde13c35731"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04992_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097139,
+      "sha256": "beef397cf7630c5a18c9146171f25cb5d801c063e92c651e56684b5540fc7255"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y04992_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097139,
+      "sha256": "44c47c350c609ccc01a33c07fe6e7f903008f2104e0100e0c339861b4043c1e6"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05120_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097125,
+      "sha256": "4141ffb91bb691e379a8d459b6429ec093fa298a2836824dc04db73a2b43e2bd"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05120_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097133,
+      "sha256": "fca7e9b550dbcb594a3c4ce31a0b6b3ea82042081a44c8e971e470c43aaf082e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05120_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097146,
+      "sha256": "0aa7579a3ca47d162721f00f722246e653902729045e06d703b0f50e8a0a1dfa"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05120_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097136,
+      "sha256": "7f1070c6ce743f926a3db0e453244045752196212f49385204326021cd559aaf"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05120_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097116,
+      "sha256": "5e4e0d472c793ebad9bfaea7cc1da7784d935b3b199439e41d66f11279717878"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05120_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097146,
+      "sha256": "d6fc76c265c8dd4af61d54ad9d0640afbe83c969a01b65700e5900cbb5723491"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05120_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097131,
+      "sha256": "b5966de064bc8b56b1ca32f0f75ad3058dc57ee9a7ca6b91467f0b0892f2bbba"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05120_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097102,
+      "sha256": "8f04e304c78d9623f1fbbc8df50ee193ed43955f7dd02d17b42122b89f6b21bc"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05120_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097102,
+      "sha256": "32d9275fca7b60d6d80d062535db15400e3acda706093f15e3fd14dd225e76a5"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05248_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097145,
+      "sha256": "6c5e01fe02a42e4af94102fabb438400348bb4807f2a0ce2d297ab6cf482ea7e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05248_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097098,
+      "sha256": "768a22e9867f2b254261b59ab72d40014032790c362f8929a843152e6da2d656"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05248_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097126,
+      "sha256": "b54e914f13a9d6e03e56b29baeaf9177d770ef98049e37ecf09150e3df9bd2bc"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05248_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097146,
+      "sha256": "77cb2f78981d055e788b8c485fbfc5e5202f715c9cd7dc47ba1c7a9b9deb945b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05248_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097144,
+      "sha256": "7629fe140230c578b66804185c6d9b755d3c7901b0e75d405320ee7ac3b8b230"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05248_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097150,
+      "sha256": "b6321a25f1b42248f0b6f14109b1b497d16af71c86be5033fee6e862b5021b18"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05248_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097104,
+      "sha256": "f9461f4370922daa6e35735cd2ab11ead2bd8d5e88b2941510fdca5d45ff4d54"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05248_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097082,
+      "sha256": "468b30c6910a7c48d2b803dd0825212e6c3b468a6c5087280ebf718542d99968"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12800_y05248_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097110,
+      "sha256": "a5ce43c2bc3f8978e4f316bffdf85e541979756cfb6d0f8f311792a84862c175"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04224_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097102,
+      "sha256": "17fbfc387c49d68e9376c2d9fb0514e228125e2daffbea033d118941105b2909"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04224_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2096963,
+      "sha256": "6ff2a90202af8c13b295f8713a84f8c9a9c87f45970820896f446947b880c65b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04224_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097101,
+      "sha256": "e334b7b40ee09fc92f7ced940f118efe1413054ffa1efe57752b1b9aef53a0b7"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04224_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097011,
+      "sha256": "a3130cf5966f32cd00d43608da79ddb685463da116257aa8205e32d06d0114f9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04224_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097077,
+      "sha256": "5b3762480269d4fb40549cc2b93c7931a4c183df8515a40bb81173a8ad4e9684"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04224_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097040,
+      "sha256": "68a216318f255a3fe96b6890103a60b6a75be5d9f5b78cd7126c7392f55d7d46"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04224_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097131,
+      "sha256": "36477ba43fa905a3d334b2f879ed39758f63976ea4e81d498d31803486abeb49"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04224_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097131,
+      "sha256": "7e415145de20b8df620e384bdf2e46d0b4434d81cfc6a84c245274c035a78811"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04224_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097112,
+      "sha256": "6571757d8972c3ad097d44b4929da76289060161727bcc356662170fdc676680"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04352_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097119,
+      "sha256": "0ca9d71d146e6019440f4eadbabbbd44a04603c057fd73c7261fd4497210eb38"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04352_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097137,
+      "sha256": "1f721774d3808769099a80762e6b0ac604e12aa897fcd89690b5617385d7199b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04352_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097135,
+      "sha256": "5930d124b7e0ba3258f2ec83501c03148b932f3a1fddf8d0cafbdd3885666134"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04352_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097146,
+      "sha256": "701065c9ddbeead6e81221f98245d75ae435941735f0e902de032a4f97fbd9f1"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04352_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097103,
+      "sha256": "3dd17ea5d5eb1cce2c9f02d266227184bd9f1a2458cbf8e2f2654796b1fb7a72"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04352_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097052,
+      "sha256": "8c22bfa082071f528b6e60712b660bcf0729aad0e597deef67071a68e53fb7a7"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04352_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097099,
+      "sha256": "e1e943958d02d22b427c6561f859d0c6820a3183256e08ad0d22c655abf3374f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04352_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097138,
+      "sha256": "e2ff204e43796990ea062093a8aa45242d07a89bafecf3a69c029ca784af8a11"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04352_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097133,
+      "sha256": "b01ac40cc666793ca63801b556ae1f69407ef0bfb22c243225d09f0032dfeef9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04480_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097135,
+      "sha256": "a02cdcfa388bfcd6c1216245693409cf9805cc46f3f591734e6ac0d5c1b90f38"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04480_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097136,
+      "sha256": "a35bb160de593d5cb523d35a3c90acfe9cd9842c4063a1f22582b423b3b76aaf"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04480_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097059,
+      "sha256": "2474943758737093f47d17847c9eaaf452b82fa655afc2e1048c857d81fe614c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04480_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097124,
+      "sha256": "eec547d2c5555befae860b5cede2e9e19456cad2cfd5bf7c33ac3834bfc6b65c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04480_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097092,
+      "sha256": "1a73cf24af51ce8aebde6ecdbccdf8ecb6c40367b147e7dd7cdcd25bbdcf2bcd"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04480_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097097,
+      "sha256": "15eaa93444736921b727a737767337e7e4ef2fddbe3e34fb749af62005232aa9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04480_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097140,
+      "sha256": "e81564555e36ced2b56fae8019e735053cc239b31daf7257db61d44f448c376d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04480_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097125,
+      "sha256": "b1357cc2708f8bd8a29792a06dca0d90752490073097fafc942d1aedc641a393"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04480_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097080,
+      "sha256": "07345ddb1a4c7a6b74ad2baaf27eed9917698b1fddae049cd1c78fc4a91d2930"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04608_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097147,
+      "sha256": "c9c7c481ef4a2fb098340a54b6188331f6321bffeeace2777ecbf083a344f2a9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04608_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097129,
+      "sha256": "92c4d31e4ce23c5fac27ca5def53f87193d3d865d6fd06325ae29b6358b39d20"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04608_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097147,
+      "sha256": "0361c2ea1e25628d9f9d7271b619d97e9f1ad484222130be7d46e5afd4e6662a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04608_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097141,
+      "sha256": "cc5076c1ea18e69be0fd47f766f8fb734748bf7c78df4bddd093475604e7a976"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04608_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097102,
+      "sha256": "332e3d23e78b9e80176b3df5360bc6ae8639e4f98e1d51ab48909217384352f8"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04608_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097140,
+      "sha256": "8c05525ef02f7f160a0c438c3cb1926cb1cb53ecc9aef56c3a6133aef54036d1"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04608_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097144,
+      "sha256": "ffbcddb11e2a3207bf9913327522fa339dd033a05d7166f79a89a9cebe1d36ab"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04608_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097146,
+      "sha256": "e470dd4c0c76d71b02879e7c27fd565fa3c992ef00bd3fbf0198d922f3b4135a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04608_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097130,
+      "sha256": "b3b9c8f5ff36a717c9c663064f190e1fcf6267ea9acca206ec85537b25628eeb"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04736_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097087,
+      "sha256": "76ab779953e91ea29f10a59fce41edae6ed68417866e600a62822961cc049d1f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04736_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097024,
+      "sha256": "378e02f40e6faa873389ff1c3057d9ccd82ee573ef47f696aff64cdd16f28362"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04736_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097000,
+      "sha256": "d901f2c60fb36019d02a390e932659296d4387468307a7dbeff0318ec10e2894"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04736_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2095379,
+      "sha256": "77df854dfc79d173b0c0e064d17b9fa8a7009e971e252c2135b30c478004f51f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04736_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2094898,
+      "sha256": "7405ae631ec522626c19d283ad5104f69614f28d760d1ad4d2f5a65c47f7283e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04736_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2096926,
+      "sha256": "c0997bfe7d6865cf0afec8807e1ef6a46ad2d97eebed091a5cbbbfbaef055ce7"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04736_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097089,
+      "sha256": "167c52ec75d4b963ce6eac3bbb2fd7e17271446e74dfad881c541723cf93641d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04736_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097121,
+      "sha256": "5471bc07f2a9f5d541c32a710cfb1f21798ddc7c810c050d4ebaf8d60510ba3e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04736_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097106,
+      "sha256": "3a47ce132aeef73898cfdf541530a68ac6b3ca11b827c67f1d7cb53277f14bc2"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04864_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097146,
+      "sha256": "354bdf00f2dc6f916116dc01aa5c352b1dbb9f2dd3ab94824c83805b14ef6d6e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04864_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097144,
+      "sha256": "342a1cbcb86b527db91022d46ace0b6b0d77f6d18bfd3e3d45a4ffc2d2fa8d35"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04864_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097137,
+      "sha256": "720e957c71448c4dda72984f65751d992931c21de14a2c01a3a0c30df481819b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04864_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097141,
+      "sha256": "1252c28ec0fd76965bb674fb84776a198826ca8a71886fd426ebcd4153c4120e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04864_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097116,
+      "sha256": "4a9e7ea5a967ba1104a4b6a968ed16ac0ce087f1a3ff2a454894c982cb78a42d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04864_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097085,
+      "sha256": "6bd3c3bf2ebf461690cccee30df0f3268391671f6e29a0c353fbe3ead4775fc8"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04864_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097133,
+      "sha256": "0e2b433c63c6dbd1abdd5a61328c00d2a77a55555f7fad0d6422ca0239ffe914"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04864_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097127,
+      "sha256": "6f94217dd011a03228a844aa3eb84810c937ac10d142301e6e3554cd0d36d889"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04864_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097129,
+      "sha256": "3120383edea0a8a7f193011391fa02d7cdd682a9f8db74a4465111893b8e3d38"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04992_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097096,
+      "sha256": "32d3397c19b93c2ffc154a09124fcbedd3c1a6487cddd34f7d3c7608398f5e4d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04992_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097093,
+      "sha256": "269534b86fb680f34b794b7a72bf4ef9adb11a4ff655a1432a5a0480f2e05191"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04992_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097139,
+      "sha256": "8a5d10527cb1cb3935928eebe5e50a55844845944f99b7a6e1fe605010c32a27"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04992_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097135,
+      "sha256": "bfe25e48649c4a7ba915d25709a4e1965dd8c69fe70519807b5a4966d465a27f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04992_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097133,
+      "sha256": "baee59f62c41c080ba93141a072fdf2b2499bdc26458bf90cfd3c2cc16877e58"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04992_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097144,
+      "sha256": "7e0f9f3c73736b4e41b9fd9bc1a447945784d449249856c683903285557b9392"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04992_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097149,
+      "sha256": "4a2b9e7c46cf123bdaa36b839770dfa8d4ffe07d88a6bf7837d299f8a1ba5731"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04992_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097151,
+      "sha256": "f3eb0db78b050c0d3f45edc514b5d1a41de48600f1c2d7877ea7cdb03b193f52"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y04992_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097143,
+      "sha256": "da2c71d2ad5cbaec227377f4210de7fbca884f43d1c6d3e1aff5bb1aedf0ab7a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05120_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097082,
+      "sha256": "a75cd30bafc089febb66eadfef234c7b68b1da8f1969db6d60dc6607b1a9de53"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05120_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097147,
+      "sha256": "9602ce68555b0a01178868bfd0ce867bb599fab8e9067d3d90557d6b360e157c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05120_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097100,
+      "sha256": "cd74e4c2099bedc09b1cce0d4eb10e2798c44236a259da9e61952f35077f5e50"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05120_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097148,
+      "sha256": "04bd2614d4f58970ab07b6f20d24c4352752c39e2aa8ad512fc7884ce1a71440"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05120_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097132,
+      "sha256": "c02a78acb4b8d47d35e05ad6d7ad570019a63850bbf6d20d77d2abd2a36a298e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05120_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097151,
+      "sha256": "657bd01d43be89a90b69b02a2d7187fa763f1eaf3dc3b35683fa3abc66069dc5"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05120_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097122,
+      "sha256": "662146c571b3b23aa1750bc3406e251967666fc82a3a2cfc8744faa45215090f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05120_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097122,
+      "sha256": "70799abb2f8f7327d536878dfecf31adf32230f1de0e9ec56d34147850372820"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05120_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097152,
+      "sha256": "4fd66468ed7ad9c1198c5ef113334bef4e2a2dbc97d7eab7d9306cb0422de00f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05248_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097089,
+      "sha256": "fbb51d226bf3f0a0d690d6e34500704b647d80895590283fb9ef396589ec7b4e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05248_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097123,
+      "sha256": "5663fbb2f05f4ec8875b8ff4ea605ad0dc8703fa611944f8a0e217dbfef1866c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05248_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097002,
+      "sha256": "9d35caec2260215e8ae3bf93ed71091c5e3b240e82a697d6057ff5ecc9763a64"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05248_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097148,
+      "sha256": "ad11b2243a03a9dd240af886523952a2145bc692edd6b2e2e144703e5e92a3b6"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05248_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097147,
+      "sha256": "3fcf885f367160da4c3c9583b255964b226eb4b8ce7342041634ff9234af2013"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05248_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097147,
+      "sha256": "401b99d3954186c9497a96132966b4d4ec17411c29244faa87b7c5cc2c3831c6"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05248_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097099,
+      "sha256": "08fe0a9a7f3201fdc2273ce28da3db40b17359c496e60880568bac3e45aa3160"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05248_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097096,
+      "sha256": "e8e053283181a0e4872e2e1e88f7b7230beeea3856b23688a795bcc5fe344264"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z12928_y05248_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097151,
+      "sha256": "f21992eea93b5a1cb4b25afdb856072c2c338df5f9d234ec657dadf0cd51f5ab"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04224_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097133,
+      "sha256": "e3e6aaa74ae54fcf285a1f141807e06daad40aa602debcc0d6562f970d1435ed"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04224_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097093,
+      "sha256": "23e4317b535f21383cb8e02e091f79c54930debfe891b7ac013d0d70118789a2"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04224_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097092,
+      "sha256": "32f6dac13b69f474c4ec446c73d5e6490985226cec07e89e4d7d04a538307886"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04224_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097086,
+      "sha256": "a8ef597db6ca0aaaf4477d0b700afc016d5758378be194d8f3a4922b073fa11e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04224_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097099,
+      "sha256": "1403fdccaf5ecac1d14b2d36805031a5677a3628f606de1d957e8171d564cd7b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04224_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097095,
+      "sha256": "f7dad1a8635fe3f4033679cada8bc60a20907972dd059af911c24e3b8d27914a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04224_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097123,
+      "sha256": "b4e1fbd84f052267fb6a684cdbfc85d7d95720a74065e23e923a0f1bf7b069e1"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04224_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097118,
+      "sha256": "6a3310ed149c92688501ba7d05f7eb7260d102211e713b5687b5df617fdb4b93"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04224_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097092,
+      "sha256": "5f86db0c5cfc033d9fd51dc0e625f4455c9b9edd80ed8cda3805331a985dd861"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04352_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097088,
+      "sha256": "5013991223ab13a801db87ebb6b435d06415457254334b939b5845e6b40c47b9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04352_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097139,
+      "sha256": "a0fcef6507bf6fa0107055481fded199adf8119c274a554c0816e02dbfeb886e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04352_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097103,
+      "sha256": "b34aee69a2bd70c432ea6ff7b39e241e80f415c1240fbbab49958ed63b728f10"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04352_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097116,
+      "sha256": "ac1cbe4cc10fc043635a803bf172ed5b78983a87432eb046c81f8c1cfa59ad1d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04352_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097144,
+      "sha256": "3727a79516dbd74b0bb5311e3860c3ced9bb593a54273ae1ec73457028670fcc"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04352_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097069,
+      "sha256": "99d5e934f9be59542ee475630fbd6034228a4221e403863b7e4d5eab190eea93"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04352_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097129,
+      "sha256": "89d49c81f07e58166b735c624bfa9804a98de7dd6d7944eb9ba8d12c76a6f608"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04352_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097126,
+      "sha256": "c5bfecf95ede160c0c666b7d3c35cd18c40e187c61e59a99f886db8265d040f5"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04352_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097132,
+      "sha256": "1f51fc3c754ffb05657d0de18902d465d8c32e483dc61e1053faeef9fb6ae015"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04480_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097130,
+      "sha256": "4ed2197ce96f84d75ff489e1b3b2045a2c750b753c688327d67bd8e0c86e15f0"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04480_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097121,
+      "sha256": "840734f1857bc9ec0775ca0b3ed8583f4c4e5c87ea357692e5e6697e628814b1"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04480_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097147,
+      "sha256": "eb53e9a88d0e7f212f1e7613ead027621069b8f6f10d35e96c6f1e396e19ec76"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04480_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097146,
+      "sha256": "c25366c2b37a6f5225a975521814dc3356a21895bd0cf180141b15726586ee3f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04480_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097135,
+      "sha256": "8b947e34e93938b7538575a6f00188c56180133080c2c576104647d14b655a78"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04480_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097071,
+      "sha256": "eaab45bcdff33a8ff94f5e2146e321b8cdab1966cc55720c7b95267ec9d7818c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04480_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097131,
+      "sha256": "7856ab6a9898d42751b6a106d7bfa7c2d7a4f04b895c64b9a4176f8b47a47393"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04480_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097102,
+      "sha256": "0f126573b2ba021f46710b01f09dcf313d1c78d3eb07ab160ba751e2f8fbfb37"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04480_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097112,
+      "sha256": "af3b7ce8aea95709a4046d5e4e5778caab3608f9ce91b054f3af19a7cec05df6"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04608_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097038,
+      "sha256": "033538ab0ff340e4848d741fd60dbd310b45081ce861c52541e603c435381762"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04608_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097116,
+      "sha256": "b46b2cb2c687f44e9c4acce3cbbc79810c1b3672299c6dd0d6a972f59acfa4c9"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04608_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097152,
+      "sha256": "972129a3bcba13aca62242c5a6139d0a304bdfdd3a3cbf27899664cefc10ce79"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04608_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097142,
+      "sha256": "d86ff8c4c22c2dbd9f7833c0339a85d18a89e5c1f17ead80a1c8a2151b90650b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04608_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097132,
+      "sha256": "69fed46f30abed30164f5f8ab04dac8f9732fd9c1d92ee91fa654a1b48f5ebc7"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04608_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097147,
+      "sha256": "fd0d9674eb0ad125bf84ed3c4585abf800553129778db8c60ee90b5a07088dd2"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04608_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097130,
+      "sha256": "e39af0c98423d95ab39ffe61cc68c37256530834e327ced97c438c0f78935a03"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04608_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097151,
+      "sha256": "da9f5dfe77d828e0e61b45a64868ed7c437f498b198de89cd7233fd0503d015f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04608_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097086,
+      "sha256": "9acd0e031c8f8443fed0558efed9db87e2820b2d8af5ecbd78da48252ca0a68d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04736_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2096873,
+      "sha256": "f6111a32b12356ea7fac120b3e914ce170a138900787ab3c90bfa8710508de8a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04736_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2096976,
+      "sha256": "1a4e44cf6cdd5b1fae865804f5078349c917e1f4d78f12f5884ac48f8edd2f05"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04736_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097075,
+      "sha256": "605aa78b03365794db0b419f7bcff79040e2573eee7c03c6a658b038b5541b1f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04736_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2096567,
+      "sha256": "31b038b6872fd05f2529bb781b9f28a4310e9f0e4823207f8d01f7a08a68cc2d"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04736_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2095706,
+      "sha256": "1dc70af5d5f108eb1ee23026f7e2b35d332bca5e832bab16ba757f026609fc6a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04736_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097066,
+      "sha256": "c67c7e58b42b6595e65de911b93604817b463026a2fc9caf0b6c65b3555f7d8b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04736_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097094,
+      "sha256": "df9e05956d088c327fe7e50a0b48907610cf1d5a1e2ed96d3a8932c13ead27dc"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04736_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097149,
+      "sha256": "67aab174cadf9a63d5bfffde966cf3cc6feb6ef1b06a394a7aa7f0bfe1a39d06"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04736_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097137,
+      "sha256": "4361abdf4ba1f38845beb6a28b2e42edbb4b5757dc21e061a0033af6811494d0"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04864_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097080,
+      "sha256": "8ee3626501f223ea34e656443990e8456055d56a6f4d0986659afb738583a3b2"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04864_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097122,
+      "sha256": "64c24cbcf1309ad4418bde22c3cfab7a766700711cc16efefc8a4afc6eaf0d3a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04864_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097083,
+      "sha256": "f59649dbaf011ecc4b92d2fbe08fd78961a969212c21bfbad9161a89fed03ced"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04864_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097148,
+      "sha256": "27cb99d1ff1107c6ecd66fe0012964cc7f4e57921cbfe4c9abd5b131f63ecb4b"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04864_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097141,
+      "sha256": "5c19e282bf73613bbeec75bc236aee1bd056ad69db2605616f2af45a6a78373c"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04864_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097099,
+      "sha256": "6032c67632b5be365420cc8c7a255b3aa44c92b98bd525a0a84eea67b2ca8ace"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04864_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097138,
+      "sha256": "e18a1a0131a21801245f8aa08bf34833fee44a4322fe28add0537363fd0f243e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04864_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097138,
+      "sha256": "506ea46e2f72ad23f65454850a7ee1e526d100b8d9b5ae965f0a6579adf510cc"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04864_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097110,
+      "sha256": "4a2584ae873625a9427bc1cf62d21ff5647ed6d12ceed6a0a48d084bd5678ee8"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04992_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097095,
+      "sha256": "ff0eb7b895d7517d6c5c3f8ab24d701da9c62bd7f93c23374414db741da05a70"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04992_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097093,
+      "sha256": "50ab823cfebdccbbe96dcfa93909c994ae6aac0ec0210242c8886435667a4190"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04992_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097083,
+      "sha256": "0fbc6a5ed15ce0b1c61ac6f618d17c979b4e3fe7a8de595c730cb969c2da494e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04992_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097145,
+      "sha256": "5d69b31ee5f3af0d3b845f2ea3acc4dc1e3ad5dbf60f59e28662160937ed46c7"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04992_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097143,
+      "sha256": "f18df05e435cbdf8062681d04e1eaad10daf4820a86ccc2207bec8b132662223"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04992_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2096909,
+      "sha256": "ca56b4e02e99e2b2550f93aecc9e668cc86cacf24a8e1e54110742651dd27cb2"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04992_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097150,
+      "sha256": "5a3f8e7d0a0412ee99c54c3ad8a847adbc89ad7439913fd28812d9491fde7cca"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04992_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097120,
+      "sha256": "43263fbb52619228fcf84f1b55025452410b539658e14900703714e24e71282e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y04992_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097125,
+      "sha256": "e573861c2f11b840591fb186c413cbd6aebdf34bc258fd5f72ea00e1a1dd932a"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05120_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2097045,
+      "sha256": "2b909e5b363a848084605f75bb0820111c5df1c38d8c55ebeb19feb5520d9f92"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05120_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2097075,
+      "sha256": "6b34ea9dd72a8c4b7d6bc6583c1b91bcaea3d4bd0960ddca9b59074cfeb88657"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05120_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097127,
+      "sha256": "bd0d17a96f8aca279e4defbfd1133bd7258702a1d19d0cdb14d9054bb85d55d3"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05120_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097143,
+      "sha256": "8692a7a3c68e8aee675afea5aca09742e1ec04432c37d8e7e2db7c86001ff6c0"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05120_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097125,
+      "sha256": "082ad5dd03512ca6a4ea2758891ecb5b6f1ea34595b053c1a4a98fce6f1f594e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05120_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097128,
+      "sha256": "2974d8dcbd3a45890f5bdb47df5a1a5ce90e115d8f393b4fc119947f1652d874"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05120_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097151,
+      "sha256": "ae3a7a9088ef85f2950456633122ec0dc5cc145e777cf4abe44013cbb1eb17ef"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05120_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097073,
+      "sha256": "766dcd5b860f645a6ca9da53f6356ca9d6fb9732a2b22bc7212eb0b123b55408"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05120_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097121,
+      "sha256": "413f8c10a239e9c5c82be92ae8fb1d816c95fe6b4b84854a36cce2642f82e9d2"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05248_x03584",
+      "kind": "RAW",
+      "nonzero_voxels": 2096592,
+      "sha256": "6c96ae6dc1c3d2bdaa94aceea09cb1b1ae57e01bff6a97c75bfab40d32b1a47e"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05248_x03712",
+      "kind": "RAW",
+      "nonzero_voxels": 2096960,
+      "sha256": "a9f65321f92b821d3e23f2d2510fb443ce8715c400198bc4e1129b94edf167c6"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05248_x03840",
+      "kind": "RAW",
+      "nonzero_voxels": 2097045,
+      "sha256": "14301f3cf72fb5b03653d70f5bb44a7b88379284f3988ff55768a9a4a9c44fcd"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05248_x03968",
+      "kind": "RAW",
+      "nonzero_voxels": 2097122,
+      "sha256": "6176ba03192fb473a6080ecbfd8ac2792ecdc2f50fca984eea8bd53a50611249"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05248_x04096",
+      "kind": "RAW",
+      "nonzero_voxels": 2097143,
+      "sha256": "8a87935323c59e7895ba6985a7dbe403b42275141c5ca680d4c029685645258f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05248_x04224",
+      "kind": "RAW",
+      "nonzero_voxels": 2097132,
+      "sha256": "0398cfcf9afe4b2a084ace2a5bae3d466b66e605b6ce6a54d37b30a7e7259102"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05248_x04352",
+      "kind": "RAW",
+      "nonzero_voxels": 2097061,
+      "sha256": "f51914db6c30b1d8bce40af3eb36bc7f95620dfc7982db7785e9fc1eda6bf833"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05248_x04480",
+      "kind": "RAW",
+      "nonzero_voxels": 2097057,
+      "sha256": "d491942fbf9422c515f710824fff66e44722c24afa62f799085b21acdc9d772f"
+    },
+    {
+      "bytes": 2118490,
+      "id": "z13056_y05248_x04608",
+      "kind": "RAW",
+      "nonzero_voxels": 2097149,
+      "sha256": "8900515aaacb4bd1ac54b95a6c221a8dba9faa99c5a404c594ae7c0399745cf2"
+    }
+  ],
+  "format": "scrollfiesta-winding-scale-input-v1",
+  "halo_bbox_l0_zyx": [
+    12544,
+    13184,
+    4224,
+    5376,
+    3584,
+    4736
+  ],
+  "halo_lattice_cubes": 405,
+  "manifest_sha256": "7ea17de255e99cf04646b3ed33a2d46bc7b3aad05eeac8d7b5e79f82a58ca1bc",
+  "pred_cubes_in_core": 147,
+  "pred_cubes_in_halo": 405,
+  "raw_all_zero_cubes": 0,
+  "raw_cubes": 405,
+  "required_pred_bbox_l0_zyx": [
+    12800,
+    12928,
+    4480,
+    5120,
+    3840,
+    4480
+  ],
+  "required_pred_cubes": 25,
+  "status": "PASS"
+}

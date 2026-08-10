@@ -1,0 +1,10 @@
+[reregister] 25 cubes; pitch=6.486 (auto) pair_gate=3.50 spiral a=0.003215 b=-6.485687 sense=-1
+[reregister] graph: 348 nodes, 164 edges (pairs used=1074, rej radius/frac=1/1) (0.0s)
+[group_graph] nodes=348 edges=164 comps=198 energy=0.0 frustrated=0 moves=2 anchor=0.0089209 redundancy=0.093 gauge radius/raw=69/129 pairs used=1074 rej r/frac=1/1 edges rej dr/prior=5/0
+[reregister] solve (forest; k-gauge=consensus, du-gauge=seam, anchor=0.00892085): 198 component(s), energy=0.0, frustrated=0 edges, moves=2, gauge radius/raw=69/129 (0.0s)
+[reregister] polish sweep 1: 20 accepted cube integer changes; 16 graph-supported group proposals preserved
+[reregister] polish sweep 2: 0 accepted cube integer changes; 16 graph-supported group proposals preserved
+[reregister] polish done in 0.0s
+[uwarp] APPLIED: 1068 springs, 172 nodes (90 scalar, 6 turn-off gated, 41 likelihood-downweighted); mismatch median 0.627 -> 0.525 vox (p95 8.011 -> 3.161); max|warp|=11.90 (0.0s)
+[reregister] finalize done (0 failed) in 0.1s
+[reregister] index rewritten (output\experiments\pherc0826_sparse_graph_holdout_20260810\candidate_repeat/placed_index.json kept as .bak); u span 107493 vox (0.2s total)

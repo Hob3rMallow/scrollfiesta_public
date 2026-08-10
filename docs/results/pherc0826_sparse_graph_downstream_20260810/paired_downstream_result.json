@@ -1,0 +1,696 @@
+{
+  "candidate_repeat": {
+    "metrics_equal_excluding_timing_and_paths": true,
+    "pass": true,
+    "required_artifacts_byte_identical": true
+  },
+  "comparability": {
+    "n_cubes": true,
+    "nf": true,
+    "nv": true,
+    "pass": true,
+    "stage_names": true
+  },
+  "decision": "DOWNSTREAM_COMPATIBILITY_ONLY",
+  "efficacy_gates": {
+    "pass": false,
+    "stage1_raw_seam_nonincrease": true,
+    "stage1_seam_excess_reduction": false
+  },
+  "evidence": {
+    "figure_png": {
+      "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\complete_unroll_strips.png",
+      "sha256": "508085dfb9d660c6c131c0d01c1393c3c3ece8ee654d7b9edad27b13ea3f90c2"
+    },
+    "figure_svg": {
+      "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\complete_unroll_strips.svg",
+      "sha256": "536c5ea6d5a512f296fa7ccf1338dad910c797c6a20ca076cb59dbfe37447255"
+    },
+    "pipeline_stats": {
+      "candidate": {
+        "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate\\candidate_pipeline_stats.json",
+        "sha256": "4b8c8e54774359051cb16c4c65b49f77192b589aca4c98ef729829abd5b7e1d9"
+      },
+      "candidate_repeat": {
+        "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate_repeat\\candidate_repeat_pipeline_stats.json",
+        "sha256": "90b1b512d0fc96b72de30046c070402a1f39bd839749db2ece69920dedfd324d"
+      },
+      "parent": {
+        "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\parent\\parent_pipeline_stats.json",
+        "sha256": "5670b57d695ddf5c1547a1e6360713de1465f3aa4ad87cd4d81f4f55c6405564"
+      }
+    },
+    "required_artifacts": {
+      "candidate": {
+        "step1_ribbon": {
+          "diagclass.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate\\candidate_step1_ribbon_diagclass.tif",
+            "sha256": "baa598d510ab0fe8be764e6a9be53b6b706728e0ce3b64e88eefcc59b9830ffc",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate\\candidate_step1_ribbon_rawtex.tif",
+            "sha256": "2b92171a936d7b657fe809799ff13e7e5e536cad74a64a62651c98f27c1a39db",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 163446,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate\\candidate_step1_ribbon_rawtex_preview.png",
+            "sha256": "3100c1f57d93189c37627fe8a66b0943ff6e4c7fd971424b689a530de34c648d"
+          },
+          "rawtex_strip.png": {
+            "bytes": 1045396,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate\\candidate_step1_ribbon_rawtex_strip.png",
+            "sha256": "77a5570d0ab7efc18d00b72fd88df4d5a7e78bec74ee9fae52f698e763349979"
+          }
+        },
+        "step2_join": {
+          "diagclass.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate\\candidate_step2_join_diagclass.tif",
+            "sha256": "dbf23afafd19067d40b10f42c86654b674a8a379d814d1f9ad0083119cee871b",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate\\candidate_step2_join_rawtex.tif",
+            "sha256": "83de91d47465510cde97fff51c727b7c7916c346f72a7a859e00c1f69cf297f8",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 167655,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate\\candidate_step2_join_rawtex_preview.png",
+            "sha256": "4c4eb81da3a9b69918f14240eebd694c4b6f66b614ed634cbb633aa064e40cd4"
+          },
+          "rawtex_strip.png": {
+            "bytes": 1070639,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate\\candidate_step2_join_rawtex_strip.png",
+            "sha256": "5d53f433f3304e80e3208c70677ec09f27c9a7e6dc03cbe2717c005ecc0e735b"
+          }
+        },
+        "step3_overlap": {
+          "diagclass.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate\\candidate_step3_overlap_diagclass.tif",
+            "sha256": "dbf23afafd19067d40b10f42c86654b674a8a379d814d1f9ad0083119cee871b",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate\\candidate_step3_overlap_rawtex.tif",
+            "sha256": "83de91d47465510cde97fff51c727b7c7916c346f72a7a859e00c1f69cf297f8",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 167655,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate\\candidate_step3_overlap_rawtex_preview.png",
+            "sha256": "4c4eb81da3a9b69918f14240eebd694c4b6f66b614ed634cbb633aa064e40cd4"
+          },
+          "rawtex_strip.png": {
+            "bytes": 1070639,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate\\candidate_step3_overlap_rawtex_strip.png",
+            "sha256": "5d53f433f3304e80e3208c70677ec09f27c9a7e6dc03cbe2717c005ecc0e735b"
+          }
+        },
+        "step4_snap": {
+          "diagclass.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate\\candidate_step4_snap_diagclass.tif",
+            "sha256": "dbf23afafd19067d40b10f42c86654b674a8a379d814d1f9ad0083119cee871b",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate\\candidate_step4_snap_rawtex.tif",
+            "sha256": "721dbf224864ec9454def828aa67d50390a7fdbae14a58807979ecc0ac998490",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 167898,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate\\candidate_step4_snap_rawtex_preview.png",
+            "sha256": "2b47614edc6f85c408cdb0c087de0165d555b77f6b76881e1004a0213cf8115d"
+          },
+          "rawtex_strip.png": {
+            "bytes": 1070774,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate\\candidate_step4_snap_rawtex_strip.png",
+            "sha256": "8fca61c6446b6bcc3c3dcd001375d94b5a699ad6e0745216bcbf3c674d902a3e"
+          }
+        },
+        "step5_relax": {
+          "diagclass.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate\\candidate_step5_relax_diagclass.tif",
+            "sha256": "b0cb0eed01d7c09ba53d4432a4c2d4eeaa2172c1ea4874797a978cac0a96d6e9",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate\\candidate_step5_relax_rawtex.tif",
+            "sha256": "8db50f47ef30148bf285cbbcfd2726e2b3aa05a9699e0d3e49e217c9a5cd4c2e",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 168121,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate\\candidate_step5_relax_rawtex_preview.png",
+            "sha256": "b962e32713a313e4ae58274a12fd68131adddb6b995bf8685dc726cc39acaedf"
+          },
+          "rawtex_strip.png": {
+            "bytes": 1070490,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate\\candidate_step5_relax_rawtex_strip.png",
+            "sha256": "4cf6ef9d0c6a6048e8978da450293179a2180a0a32c95587e0a509d04c787d06"
+          }
+        }
+      },
+      "candidate_repeat": {
+        "step1_ribbon": {
+          "diagclass.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate_repeat\\candidate_repeat_step1_ribbon_diagclass.tif",
+            "sha256": "baa598d510ab0fe8be764e6a9be53b6b706728e0ce3b64e88eefcc59b9830ffc",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate_repeat\\candidate_repeat_step1_ribbon_rawtex.tif",
+            "sha256": "2b92171a936d7b657fe809799ff13e7e5e536cad74a64a62651c98f27c1a39db",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 163446,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate_repeat\\candidate_repeat_step1_ribbon_rawtex_preview.png",
+            "sha256": "3100c1f57d93189c37627fe8a66b0943ff6e4c7fd971424b689a530de34c648d"
+          },
+          "rawtex_strip.png": {
+            "bytes": 1045396,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate_repeat\\candidate_repeat_step1_ribbon_rawtex_strip.png",
+            "sha256": "77a5570d0ab7efc18d00b72fd88df4d5a7e78bec74ee9fae52f698e763349979"
+          }
+        },
+        "step2_join": {
+          "diagclass.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate_repeat\\candidate_repeat_step2_join_diagclass.tif",
+            "sha256": "dbf23afafd19067d40b10f42c86654b674a8a379d814d1f9ad0083119cee871b",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate_repeat\\candidate_repeat_step2_join_rawtex.tif",
+            "sha256": "83de91d47465510cde97fff51c727b7c7916c346f72a7a859e00c1f69cf297f8",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 167655,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate_repeat\\candidate_repeat_step2_join_rawtex_preview.png",
+            "sha256": "4c4eb81da3a9b69918f14240eebd694c4b6f66b614ed634cbb633aa064e40cd4"
+          },
+          "rawtex_strip.png": {
+            "bytes": 1070639,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate_repeat\\candidate_repeat_step2_join_rawtex_strip.png",
+            "sha256": "5d53f433f3304e80e3208c70677ec09f27c9a7e6dc03cbe2717c005ecc0e735b"
+          }
+        },
+        "step3_overlap": {
+          "diagclass.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate_repeat\\candidate_repeat_step3_overlap_diagclass.tif",
+            "sha256": "dbf23afafd19067d40b10f42c86654b674a8a379d814d1f9ad0083119cee871b",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate_repeat\\candidate_repeat_step3_overlap_rawtex.tif",
+            "sha256": "83de91d47465510cde97fff51c727b7c7916c346f72a7a859e00c1f69cf297f8",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 167655,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate_repeat\\candidate_repeat_step3_overlap_rawtex_preview.png",
+            "sha256": "4c4eb81da3a9b69918f14240eebd694c4b6f66b614ed634cbb633aa064e40cd4"
+          },
+          "rawtex_strip.png": {
+            "bytes": 1070639,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate_repeat\\candidate_repeat_step3_overlap_rawtex_strip.png",
+            "sha256": "5d53f433f3304e80e3208c70677ec09f27c9a7e6dc03cbe2717c005ecc0e735b"
+          }
+        },
+        "step4_snap": {
+          "diagclass.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate_repeat\\candidate_repeat_step4_snap_diagclass.tif",
+            "sha256": "dbf23afafd19067d40b10f42c86654b674a8a379d814d1f9ad0083119cee871b",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate_repeat\\candidate_repeat_step4_snap_rawtex.tif",
+            "sha256": "721dbf224864ec9454def828aa67d50390a7fdbae14a58807979ecc0ac998490",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 167898,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate_repeat\\candidate_repeat_step4_snap_rawtex_preview.png",
+            "sha256": "2b47614edc6f85c408cdb0c087de0165d555b77f6b76881e1004a0213cf8115d"
+          },
+          "rawtex_strip.png": {
+            "bytes": 1070774,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate_repeat\\candidate_repeat_step4_snap_rawtex_strip.png",
+            "sha256": "8fca61c6446b6bcc3c3dcd001375d94b5a699ad6e0745216bcbf3c674d902a3e"
+          }
+        },
+        "step5_relax": {
+          "diagclass.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate_repeat\\candidate_repeat_step5_relax_diagclass.tif",
+            "sha256": "b0cb0eed01d7c09ba53d4432a4c2d4eeaa2172c1ea4874797a978cac0a96d6e9",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate_repeat\\candidate_repeat_step5_relax_rawtex.tif",
+            "sha256": "8db50f47ef30148bf285cbbcfd2726e2b3aa05a9699e0d3e49e217c9a5cd4c2e",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 168121,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate_repeat\\candidate_repeat_step5_relax_rawtex_preview.png",
+            "sha256": "b962e32713a313e4ae58274a12fd68131adddb6b995bf8685dc726cc39acaedf"
+          },
+          "rawtex_strip.png": {
+            "bytes": 1070490,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\candidate_repeat\\candidate_repeat_step5_relax_rawtex_strip.png",
+            "sha256": "4cf6ef9d0c6a6048e8978da450293179a2180a0a32c95587e0a509d04c787d06"
+          }
+        }
+      },
+      "parent": {
+        "step1_ribbon": {
+          "diagclass.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\parent\\parent_step1_ribbon_diagclass.tif",
+            "sha256": "37dc578628e767c7868efa538cf0b2b4731e2ffa2e8a4849bd2e7102b3bff1cd",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\parent\\parent_step1_ribbon_rawtex.tif",
+            "sha256": "2d606147619fd0f462db948ea5881e0549eced51de024ab4f5193f5bdb37685f",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 162230,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\parent\\parent_step1_ribbon_rawtex_preview.png",
+            "sha256": "d22fbf6310d7f0b979af890fd9ba7aa3e004e7cb083355fa661ef967753a7e83"
+          },
+          "rawtex_strip.png": {
+            "bytes": 1017515,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\parent\\parent_step1_ribbon_rawtex_strip.png",
+            "sha256": "36f72c62849d3cc98ac54382427c86d9f0cab0581c7d179544bffa989ab73f38"
+          }
+        },
+        "step2_join": {
+          "diagclass.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\parent\\parent_step2_join_diagclass.tif",
+            "sha256": "05147f24a5c976e83e1a5f40ef3278bb15138467ae92e4dfa53f452279babfa6",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\parent\\parent_step2_join_rawtex.tif",
+            "sha256": "5c8455e1c470d578be9f20803d942d9fc33fd7cad3c04498c1cad630b920c6de",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 166743,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\parent\\parent_step2_join_rawtex_preview.png",
+            "sha256": "73d01fcac13161d3f1ddae3b74ae652e93e475507bfbc99c138282129f632a64"
+          },
+          "rawtex_strip.png": {
+            "bytes": 1046954,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\parent\\parent_step2_join_rawtex_strip.png",
+            "sha256": "b044f897395f961cd9d6c25ef1950a2c74f34801304617607d7ac3bc2cdd4269"
+          }
+        },
+        "step3_overlap": {
+          "diagclass.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\parent\\parent_step3_overlap_diagclass.tif",
+            "sha256": "05147f24a5c976e83e1a5f40ef3278bb15138467ae92e4dfa53f452279babfa6",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\parent\\parent_step3_overlap_rawtex.tif",
+            "sha256": "5c8455e1c470d578be9f20803d942d9fc33fd7cad3c04498c1cad630b920c6de",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 166743,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\parent\\parent_step3_overlap_rawtex_preview.png",
+            "sha256": "73d01fcac13161d3f1ddae3b74ae652e93e475507bfbc99c138282129f632a64"
+          },
+          "rawtex_strip.png": {
+            "bytes": 1046954,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\parent\\parent_step3_overlap_rawtex_strip.png",
+            "sha256": "b044f897395f961cd9d6c25ef1950a2c74f34801304617607d7ac3bc2cdd4269"
+          }
+        },
+        "step4_snap": {
+          "diagclass.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\parent\\parent_step4_snap_diagclass.tif",
+            "sha256": "05147f24a5c976e83e1a5f40ef3278bb15138467ae92e4dfa53f452279babfa6",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\parent\\parent_step4_snap_rawtex.tif",
+            "sha256": "7c3f6e63d48dba5130434cba0fe5fc9e4f93aef2ed3449f9005b8e64fa334808",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 166659,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\parent\\parent_step4_snap_rawtex_preview.png",
+            "sha256": "acd1dfed923e91fe60802e2ea8383769d5641f00c693947e01b9f898620a5d8a"
+          },
+          "rawtex_strip.png": {
+            "bytes": 1047111,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\parent\\parent_step4_snap_rawtex_strip.png",
+            "sha256": "40d4743519606b13aab0fa66bed0c1f92d8ada8e57a6fa97483ba8f3b51c1ab6"
+          }
+        },
+        "step5_relax": {
+          "diagclass.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\parent\\parent_step5_relax_diagclass.tif",
+            "sha256": "f3bd8b227dc611960d0637e786d70c2971a2b441d3de42c7828008c292acc4b3",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 13040780,
+            "dtype": "uint8",
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\parent\\parent_step5_relax_rawtex.tif",
+            "sha256": "455115d3ab9f3e99a66fcd9478654a51e32cafce382e90493d2b8994c1cfae27",
+            "shape": [
+              129,
+              101090
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 167223,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\parent\\parent_step5_relax_rawtex_preview.png",
+            "sha256": "1571a628d49e330592f17be6d243ebc638aba31b72df8d915a0e91f904d033cd"
+          },
+          "rawtex_strip.png": {
+            "bytes": 1047117,
+            "path": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_downstream_20260810\\parent\\parent_step5_relax_rawtex_strip.png",
+            "sha256": "9867f038cb2d1413f8da56ee6a7fd43c395137d9e5e3d9b50de48dddc3c36b16"
+          }
+        }
+      }
+    },
+    "visual_scope": "Complete stage-1 and stage-5 readable-strip products are rendered; no seam, crop, or favorable window is selected."
+  },
+  "safety_gates": {
+    "final_canvas_bounded": true,
+    "final_fill_drop_within_pp": true,
+    "final_multi_increase_within_pp": true,
+    "final_seam_excess_not_worse": true,
+    "pass": true,
+    "stage1_canvas_bounded": true,
+    "stage1_fill_drop_within_pp": true
+  },
+  "schema_version": 1,
+  "scope": "Complete stage-1 and stage-5 readable strips; no seam, crop, or favorable window is selected. This is downstream texture evidence, not ink recovery.",
+  "stage_effects": {
+    "step1_ribbon": {
+      "candidate": {
+        "H": 129,
+        "W": 101090,
+        "base_dcol_mean": 11.834,
+        "fill": 0.0669,
+        "multi_frac": 0.4302,
+        "seam_dcol_mean": 13.723,
+        "seam_ratio": 1.16
+      },
+      "change": {
+        "canvas_area_ratio": 1.0,
+        "fill_pp": 0.22000000000000075,
+        "multi_pp": -5.1199999999999966,
+        "seam_dcol": -0.2679999999999989,
+        "seam_excess_reduction": 0.028000000000000025,
+        "seam_ratio": -0.028000000000000025
+      },
+      "parent": {
+        "H": 129,
+        "W": 101090,
+        "base_dcol_mean": 11.776,
+        "fill": 0.0647,
+        "multi_frac": 0.4814,
+        "seam_dcol_mean": 13.991,
+        "seam_ratio": 1.188
+      }
+    },
+    "step2_join": {
+      "candidate": {
+        "H": 129,
+        "W": 101090,
+        "base_dcol_mean": 11.514,
+        "fill": 0.0687,
+        "multi_frac": 0.4255,
+        "seam_dcol_mean": 12.961,
+        "seam_ratio": 1.126
+      },
+      "change": {
+        "canvas_area_ratio": 1.0,
+        "fill_pp": 0.1899999999999999,
+        "multi_pp": -5.049999999999999,
+        "seam_dcol": -0.26900000000000013,
+        "seam_excess_reduction": 0.029000000000000137,
+        "seam_ratio": -0.029000000000000137
+      },
+      "parent": {
+        "H": 129,
+        "W": 101090,
+        "base_dcol_mean": 11.452,
+        "fill": 0.0668,
+        "multi_frac": 0.476,
+        "seam_dcol_mean": 13.23,
+        "seam_ratio": 1.155
+      }
+    },
+    "step3_overlap": {
+      "candidate": {
+        "H": 129,
+        "W": 101090,
+        "base_dcol_mean": 11.514,
+        "fill": 0.0687,
+        "multi_frac": 0.4255,
+        "seam_dcol_mean": 12.961,
+        "seam_ratio": 1.126
+      },
+      "change": {
+        "canvas_area_ratio": 1.0,
+        "fill_pp": 0.1899999999999999,
+        "multi_pp": -5.049999999999999,
+        "seam_dcol": -0.26900000000000013,
+        "seam_excess_reduction": 0.029000000000000137,
+        "seam_ratio": -0.029000000000000137
+      },
+      "parent": {
+        "H": 129,
+        "W": 101090,
+        "base_dcol_mean": 11.452,
+        "fill": 0.0668,
+        "multi_frac": 0.476,
+        "seam_dcol_mean": 13.23,
+        "seam_ratio": 1.155
+      }
+    },
+    "step4_snap": {
+      "candidate": {
+        "H": 129,
+        "W": 101090,
+        "base_dcol_mean": 11.424,
+        "fill": 0.0687,
+        "multi_frac": 0.4255,
+        "seam_dcol_mean": 13.073,
+        "seam_ratio": 1.144
+      },
+      "change": {
+        "canvas_area_ratio": 1.0,
+        "fill_pp": 0.1899999999999999,
+        "multi_pp": -5.049999999999999,
+        "seam_dcol": -0.270999999999999,
+        "seam_excess_reduction": 0.030000000000000027,
+        "seam_ratio": -0.030000000000000027
+      },
+      "parent": {
+        "H": 129,
+        "W": 101090,
+        "base_dcol_mean": 11.364,
+        "fill": 0.0668,
+        "multi_frac": 0.476,
+        "seam_dcol_mean": 13.344,
+        "seam_ratio": 1.174
+      }
+    },
+    "step5_relax": {
+      "candidate": {
+        "H": 129,
+        "W": 101090,
+        "base_dcol_mean": 11.437,
+        "fill": 0.0686,
+        "multi_frac": 0.4245,
+        "seam_dcol_mean": 13.201,
+        "seam_ratio": 1.154
+      },
+      "change": {
+        "canvas_area_ratio": 1.0,
+        "fill_pp": 0.1799999999999996,
+        "multi_pp": -5.099999999999999,
+        "seam_dcol": -0.4559999999999995,
+        "seam_excess_reduction": 0.020000000000000018,
+        "seam_ratio": -0.020000000000000018
+      },
+      "parent": {
+        "H": 129,
+        "W": 101090,
+        "base_dcol_mean": 11.637,
+        "fill": 0.0668,
+        "multi_frac": 0.4755,
+        "seam_dcol_mean": 13.657,
+        "seam_ratio": 1.174
+      }
+    }
+  },
+  "thresholds": {
+    "canvas_area_ratio": [
+      0.95,
+      1.05
+    ],
+    "max_fill_drop_pp": 0.2,
+    "max_final_seam_excess_increase": 0.05,
+    "max_multi_increase_pp": 0.2,
+    "min_seam_excess_reduction": 0.05
+  }
+}

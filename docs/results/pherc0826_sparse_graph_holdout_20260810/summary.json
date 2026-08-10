@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "status": "independent_efficacy_pass",
+  "executed_local_interval": {
+    "start": "2026-08-10T20:25:46+01:00",
+    "paired_result_written": "2026-08-10T21:11:17+01:00"
+  },
+  "candidate": {
+    "commit": "a47a21c3a9d445c90d28e218b8f0fcbecd49c079",
+    "binary_sha256": "6624f7fe3ca062d10c03e7a799b1a32e275b8c2c61695a7f1f8360bc8539818e"
+  },
+  "parent": {
+    "commit": "e0cf51cab03f6fe84e43e8c7ff5be9051d951b1d",
+    "binary_sha256": "eb1445504d69375f36891081f39ee6aa7d65a8af22b46b164cc75bbabce2db8a"
+  },
+  "preregistration": {
+    "commit": "4ea1c89a9fed1e8d78d5f66f9a773a313c2e32d6",
+    "published_before_selected_slab_voxel_access": true
+  },
+  "scope": {
+    "scroll": "PHerc0826",
+    "bbox_l0_zyx": [12800, 12928, 4480, 5120, 3840, 4480],
+    "grid_zyx": [1, 5, 5],
+    "cubes": 25,
+    "pair_sets": 29,
+    "audit_pairs": 1076
+  },
+  "input_and_mesh": {
+    "input_gate_pass": true,
+    "prediction_files": 25,
+    "prediction_nonzero_voxels": 12435893,
+    "prediction_voxels": 52428800,
+    "raw_files": 25,
+    "raw_nonzero_voxels": 52423386,
+    "raw_voxels": 52428800,
+    "mesh_exit_zero": 25,
+    "mesh_failed": 0,
+    "mesh_rejected": 0,
+    "nonempty_final_directories": 25,
+    "final_obj_components": 773,
+    "input_validation_sha256": "1453720bd2c78f94d7316cb3818539b9afacb7123197bfa6c93f629eaaba5d2a",
+    "mesh_pipeline_summary_sha256": "2ea5e6b4e7c234e96836106874077dd2f7d099e4ed0a99523f63b0d6c70f0fcc"
+  },
+  "comparability": {
+    "pass": true,
+    "shared_initial_calibration": true,
+    "shared_cube_geometry": true,
+    "pair_keys_and_counts_equal": true,
+    "baseline_ok_skipped_low_conf": [25, 0, 0],
+    "candidate_ok_skipped_low_conf": [25, 0, 0]
+  },
+  "result": {
+    "decision": "INDEPENDENT_EFFICACY_PASS",
+    "baseline": {
+      "audit_status": "PASS",
+      "turn_off_pairs": 44,
+      "turn_off_fraction": 0.040892193308550186,
+      "join_lt2_fraction": 0.8625,
+      "join_lt6_fraction": 0.9331,
+      "collisions": 96
+    },
+    "candidate": {
+      "audit_status": "PASS",
+      "turn_off_pairs": 7,
+      "turn_off_fraction": 0.006505576208178439,
+      "join_lt2_fraction": 0.8978,
+      "join_lt6_fraction": 0.9675,
+      "collisions": 30
+    },
+    "effect": {
+      "turn_off_pairs_removed": 37,
+      "turn_off_absolute_reduction_pp": 3.4386617100371746,
+      "turn_off_relative_reduction": 0.8409090909090909,
+      "join_lt2_change_pp": 3.53,
+      "join_lt6_change_pp": 3.4399999999999986,
+      "collisions_removed": 66,
+      "pair_sets_improved_worse_equal": [15, 0, 14]
+    }
+  },
+  "mechanism_diagnostics": {
+    "baseline_graph_nodes_edges_components": [348, 123, 229],
+    "candidate_graph_nodes_edges_components": [348, 164, 198],
+    "candidate_graph_supported_polish_proposals_preserved": 16
+  },
+  "determinism": {
+    "candidate_runs": 2,
+    "audit_json_byte_identical": true,
+    "placed_index_json_byte_identical": true,
+    "registered_skin_files": 25,
+    "all_registered_skin_files_byte_identical": true,
+    "audit_sha256": "c3900e6dbb501ab51665a0b05a754fd47c5bf5b673e74923be225a1d5e41653a",
+    "placed_index_sha256": "405000fc1b99264c93a99413a7433fb1731fa8b3aef38b4dcebb0f28b64ca90f",
+    "skin_manifest_sha256": "ae59bfa798fb9e38cf73bbd211c6291350174e4d81e63c87fca5a3ba97844ea2",
+    "skin_manifest_hash_definition": "SHA-256 of UTF-8 sorted lines '<relative-path>\t<file-sha256>\n'"
+  },
+  "artifact_sha256": {
+    "baseline_audit.json": "450965d08d1a0c7bc1bfb25011265f75291685be351fd4efa92f1c061b17f159",
+    "baseline_placed_index.json": "22bab257ff3cde175aa29c9004dddc5e9b0d3243f70afa1588964a361d748f06",
+    "candidate_audit.json": "c3900e6dbb501ab51665a0b05a754fd47c5bf5b673e74923be225a1d5e41653a",
+    "candidate_placed_index.json": "405000fc1b99264c93a99413a7433fb1731fa8b3aef38b4dcebb0f28b64ca90f",
+    "paired_result.json": "b1b44cf7db64f362dfe1a1abe16c6c3d154cd31050b5294af57e8cba94a75c13",
+    "all_pair_seam_map.png": "d3de0836d53afe2ef0d5b1e5cebf9dc0da480fc3411524de178cd06f3f370d39",
+    "all_pair_seam_map.svg": "b69828cbda7db7e967a8db98432559b80fca8f8c6a1f732f2e15c98974476ea9"
+  },
+  "post_result_tests": {
+    "command": "python -m pytest python/tests -m 'not network'",
+    "passed": 58,
+    "skipped": 1,
+    "deselected": 4
+  },
+  "claim_limit": "One independently selected 1x5x5 PHerc0826 slab; cross-cube winding registration only, not a full-scroll tracing, surface-model, or ink-recovery evaluation."
+}

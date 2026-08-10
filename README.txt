@@ -96,6 +96,13 @@ END-TO-END USAGE
    The placed directory contains one *_placed.obj plus UV/skin/group records per
    usable cube, placed_index.json, audit.json, and logs.
 
+   The default multi-seed calibration and sparse observed-edge winding guard
+   have a preregistered held-out PHerc0826 A/B: whole-turn seam errors fell
+   from 44/1,076 to 7/1,076 on identical pairs, with 15 pair sets improved,
+   none worsened, and byte-identical repeat output. Protocol, complete seam
+   map, and machine results are in
+   `docs/PHERC0826_SPARSE_GRAPH_WINDING_RESULT.md`.
+
 3. Unroll, snap to the CT surface, and bake texture data. Stages 12345 are the
    default and mean base bake, seam join/relax, overlap ownership, snap, and
    final relax:

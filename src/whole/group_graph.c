@@ -53,11 +53,17 @@ void GroupGraphOpts_default(GroupGraphOpts *o)
     o->intra_prior = 0;      /* off: measured noisier than cross edges */
     o->intra_frac_max = 0.35;
     o->intra_conf = 128.0;
-    o->min_edge_pairs = 3;
+    /* A winding group can touch a trimmed cube seam in only one or two skin
+     * vertices.  Those sparse buckets still carry an exact-looking integer
+     * phase observation after the 3-D, radial, and fractional-phase gates.
+     * Dropping them leaves the corresponding nodes disconnected and makes
+     * their whole-turn gauge depend on the much noisier radius prior. */
+    o->min_edge_pairs = 1;
     o->conf_n_cap = 256;
     o->conf_mad0 = 0.02;
     o->prior_min_verts = 8;
     o->raw_component_gauge = 0;
+    o->consensus_component_gauge = 0;
     o->raw_du_gauge = 0;
     o->anchor_weight = 0.0;
     o->anchor_redundancy_ref = 0.0;
@@ -566,7 +572,9 @@ int GroupGraph_solve(Arena_T arena, GroupGraph *g, const GroupGraphOpts *opts)
      * components onto the same turns. The raw-chart option preserves all
      * forest-relative equations and chooses the component-wide shift whose
      * weighted median node correction is closest to k=0. */
-    if (opts->raw_component_gauge) {
+    g->components_radius_gauged = 0;
+    g->components_raw_gauged = 0;
+    if (opts->raw_component_gauge || opts->consensus_component_gauge) {
         typedef struct { int32_t v, w; } GgGaugeVote;
         for (int32_t cmp = 0; cmp < n_comp; cmp++) {
             Arena_Mark m2 = Arena_save(arena);
@@ -602,9 +610,36 @@ int GroupGraph_solve(Arena_T arena, GroupGraph *g, const GroupGraphOpts *opts)
                     break;
                 }
             }
+            int use_radius = 0;
+            if (opts->consensus_component_gauge
+                && !opts->raw_component_gauge) {
+                int have_radius = 0, unanimous = 1;
+                int32_t radius_shift = 0;
+                for (size_t i = 0; i < nn; i++) {
+                    const GGNode *nd = &g->nodes[i];
+                    if (nd->comp != cmp
+                        || nd->n_prior < opts->prior_min_verts)
+                        continue;
+                    int32_t want = (int32_t)lround(nd->prior
+                                                  - (double)nd->k);
+                    if (!have_radius) {
+                        radius_shift = want;
+                        have_radius = 1;
+                    } else if (want != radius_shift) {
+                        unanimous = 0;
+                        break;
+                    }
+                }
+                if (have_radius && unanimous) {
+                    shift = radius_shift;
+                    use_radius = 1;
+                }
+            }
             for (size_t i = 0; i < nn; i++)
                 if (g->nodes[i].comp == cmp)
                     g->nodes[i].k += shift;
+            if (use_radius) g->components_radius_gauged++;
+            else g->components_raw_gauged++;
             Arena_restore(arena, m2);
         }
     } else {
@@ -626,6 +661,7 @@ int GroupGraph_solve(Arena_T arena, GroupGraph *g, const GroupGraphOpts *opts)
             else if (nd->n_prior > 0)
                 nd->k += (int32_t)lround(nd->prior - (double)nd->k);
         }
+        g->components_radius_gauged = (size_t)n_comp;
     }
 
     /* (c) collective-shift min-cut moves. A fixed unary weight overwhelms a
@@ -772,10 +808,11 @@ int GroupGraph_solve(Arena_T arena, GroupGraph *g, const GroupGraphOpts *opts)
     if (opts->verbose)
         fprintf(stderr, "[group_graph] nodes=%zu edges=%zu comps=%d "
                 "energy=%.1f frustrated=%zu moves=%d anchor=%.5g "
-                "redundancy=%.3f pairs used=%zu "
+                "redundancy=%.3f gauge radius/raw=%zu/%zu pairs used=%zu "
                 "rej r/frac=%zu/%zu edges rej dr/prior=%zu/%zu\n", nn, ne,
                 g->n_comp, g->energy, g->n_frustrated, g->moves_applied,
                 g->anchor_weight_effective, g->edge_redundancy,
+                g->components_radius_gauged, g->components_raw_gauged,
                 g->pairs_used, g->pairs_rej_radius, g->pairs_rej_frac,
                 g->edges_rej_dr, g->edges_rej_prior);
 
@@ -1107,6 +1144,25 @@ int GroupGraph_selftest(void)
         if (r0.n_groups >= 1 && r1.n_groups >= 3)
             ggst_check(r0.g_wk[0] - r1.g_wk[2] == 1,
                        "t6 solved k difference = obs", &fails);
+
+        /* A single gated correspondence is enough for a sparse winding group
+         * under the production default. Raising the explicit floor still
+         * drops it, so callers can request the older conservative behavior. */
+        {
+            size_t sparse_nskin[2] = { 1, 1 };
+            GroupGraph gs;
+            GroupGraphOpts sparse = o;
+            int src = GroupGraph_build(arena, cn, 2, skins, sparse_nskin, ap,
+                                       a, b, pitch, &sparse, &gs);
+            ggst_check(src == 0 && gs.n_edges == 1 && gs.edges[0].n == 1,
+                       "t6b default admits one-pair sparse edge", &fails);
+            sparse.min_edge_pairs = 2;
+            GroupGraph gs2;
+            src = GroupGraph_build(arena, cn, 2, skins, sparse_nskin, ap,
+                                   a, b, pitch, &sparse, &gs2);
+            ggst_check(src == 0 && gs2.n_edges == 0,
+                       "t6b explicit two-pair floor drops sparse edge", &fails);
+        }
     }
 
     /* t8: raw-chart gauges preserve the globally pinned chart while keeping
@@ -1130,6 +1186,39 @@ int GroupGraph_selftest(void)
                    "t8 raw du gauge preserves continuous chart", &fails);
         ggst_check(g.n_frustrated == 0,
                    "t8 relative forest constraint remains exact", &fails);
+    }
+
+    /* t8b: the consensus gauge accepts an unambiguous component-wide radius
+     * shift but falls back to the raw chart when supported nodes disagree. */
+    {
+        GGNode nd[2] = {
+            ggst_node(0, 0, 10.0, 100), ggst_node(1, 0, 9.0, 100)
+        };
+        GGEdge ed[1] = { ggst_edge(0, 1, 1, 100, 0.0) };
+        int32_t cn0[3] = { 0, 1, 2 };
+        GroupGraph g;
+        GroupGraphOpts hybrid = o;
+        hybrid.consensus_component_gauge = 1;
+        ggst_wire(&g, nd, 2, ed, 1, cn0, 2);
+        GroupGraph_solve(arena, &g, &hybrid);
+        ggst_check(nd[0].k == 10 && nd[1].k == 9,
+                   "t8b unanimous radius gauge accepted", &fails);
+        ggst_check(g.components_radius_gauged == 1
+                   && g.components_raw_gauged == 0,
+                   "t8b unanimous gauge diagnostic", &fails);
+
+        GGNode nd2[2] = {
+            ggst_node(0, 0, 10.0, 100), ggst_node(1, 0, 8.0, 100)
+        };
+        GGEdge ed2[1] = { ggst_edge(0, 1, 1, 100, 0.0) };
+        GroupGraph g2;
+        ggst_wire(&g2, nd2, 2, ed2, 1, cn0, 2);
+        GroupGraph_solve(arena, &g2, &hybrid);
+        ggst_check(nd2[0].k == 0 && nd2[1].k == -1,
+                   "t8b disputed radius gauge preserves raw chart", &fails);
+        ggst_check(g2.components_radius_gauged == 0
+                   && g2.components_raw_gauged == 1,
+                   "t8b disputed gauge diagnostic", &fails);
     }
 
     /* t9: the anchored collective cut may reject a false seam bridge without

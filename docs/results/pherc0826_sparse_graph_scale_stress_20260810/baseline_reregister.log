@@ -1,0 +1,11 @@
+[reregister] 147 cubes; pitch=6.478 (auto) pair_gate=3.50 spiral a=-0.983229 b=6.477509 sense=1
+[reregister] graph: 2015 nodes, 1138 edges (pairs used=10197, rej radius/frac=7/81) (0.1s)
+[reregister] solve (forest; k-gauge=consensus, du-gauge=seam, anchor=0.0177483): 1184 component(s), energy=677.3, frustrated=36 edges, moves=28, gauge radius/raw=410/774 (0.1s)
+[reregister] polish sweep 1: 114 integer changes
+[reregister] polish sweep 2: 15 integer changes
+[reregister] polish sweep 3: 4 integer changes
+[reregister] polish sweep 4: 0 integer changes
+[reregister] polish done in 0.2s
+[uwarp] APPLIED: 9644 springs, 1182 nodes (509 scalar, 553 turn-off gated, 751 likelihood-downweighted); mismatch median 1.136 -> 0.710 vox (p95 14.164 -> 6.820); max|warp|=32.56 (0.1s)
+[reregister] finalize done (0 failed) in 0.4s
+[reregister] index rewritten (output\experiments\pherc0826_sparse_graph_scale_stress_20260810\baseline/placed_index.json kept as .bak); u span 199394 vox (0.9s total)

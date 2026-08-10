@@ -1,0 +1,165 @@
+{
+  "schema_version": 1,
+  "status": "posthoc_development",
+  "candidate_commit": "a47a21c3a9d445c90d28e218b8f0fcbecd49c079",
+  "parent_commit": "e0cf51cab03f6fe84e43e8c7ff5be9051d951b1d",
+  "frozen_publicly_before_next_holdout": true,
+  "mechanism": {
+    "old_min_edge_pairs": 3,
+    "new_min_edge_pairs": 1,
+    "polish_rule": "preserve k and du for every graph-supported group; polish graph-isolated groups only",
+    "pherc0211_firstseed_residual_errors": 54,
+    "errors_in_buckets_with_fewer_than_3_pairs": 54,
+    "errors_in_buckets_with_at_least_3_pairs": 0
+  },
+  "aggregate": {
+    "pair_sets": 484,
+    "pairs": 15437,
+    "before_turn_off": 501,
+    "before_turn_off_fraction": 0.0324544924531969,
+    "after_turn_off": 271,
+    "after_turn_off_fraction": 0.0175552244607113,
+    "absolute_reduction_percentage_points": 1.48992679924856,
+    "relative_reduction_fraction": 0.459081836327345,
+    "before_collisions": 1250,
+    "after_collisions": 721
+  },
+  "datasets": [
+    {
+      "dataset": "pherc0139_original",
+      "pair_sets": 234,
+      "pairs": 6441,
+      "pair_inventory_unchanged": true,
+      "before": {
+        "turn_off": 167,
+        "turn_off_fraction": 0.025927650985871759,
+        "join_lt2": 0.8305,
+        "join_lt6": 0.9334,
+        "collisions": 416,
+        "status": "PASS",
+        "audit_sha256": "3ac58d18bc2e7d8865d04ecd9d066593d5f625fcdcb915c09247f6863ee5b524"
+      },
+      "after": {
+        "turn_off": 126,
+        "turn_off_fraction": 0.019562179785747556,
+        "join_lt2": 0.8343,
+        "join_lt6": 0.937,
+        "collisions": 257,
+        "status": "PASS",
+        "audit_sha256": "98e3a7f7fc8f64c0267700d422c179d61a4e71201a68d7ceecefe906ad183d2f"
+      }
+    },
+    {
+      "dataset": "pherc0139_adjacent",
+      "pair_sets": 37,
+      "pairs": 1024,
+      "pair_inventory_unchanged": true,
+      "before": {
+        "turn_off": 12,
+        "turn_off_fraction": 0.01171875,
+        "join_lt2": 0.8975,
+        "join_lt6": 0.9746,
+        "collisions": 88,
+        "status": "PASS",
+        "audit_sha256": "d537dff628891aebc488b700c490654add39d8756073a938efad218a8e220788"
+      },
+      "after": {
+        "turn_off": 4,
+        "turn_off_fraction": 0.00390625,
+        "join_lt2": 0.9043,
+        "join_lt6": 0.9814,
+        "collisions": 74,
+        "status": "PASS",
+        "audit_sha256": "9aee37eb4068759f17de4ef8417b48f21f4b131ceb9459a27fb214ef299233c3"
+      }
+    },
+    {
+      "dataset": "pherc0332",
+      "pair_sets": 149,
+      "pairs": 5875,
+      "pair_inventory_unchanged": true,
+      "before": {
+        "turn_off": 223,
+        "turn_off_fraction": 0.037957446808510639,
+        "join_lt2": 0.7849,
+        "join_lt6": 0.9173,
+        "collisions": 531,
+        "status": "PASS",
+        "audit_sha256": "81521f7e2e3723290f752adec215589266ec1754a2216ba1063ff121a9675b51"
+      },
+      "after": {
+        "turn_off": 113,
+        "turn_off_fraction": 0.019234042553191489,
+        "join_lt2": 0.8036,
+        "join_lt6": 0.9355,
+        "collisions": 299,
+        "status": "PASS",
+        "audit_sha256": "61fad554df2796f1b027e09f4a21bdae0f2cad4903d708046d922ddedf0ee0c7"
+      }
+    },
+    {
+      "dataset": "pherc1203",
+      "pair_sets": 30,
+      "pairs": 1268,
+      "pair_inventory_unchanged": true,
+      "before": {
+        "turn_off": 42,
+        "turn_off_fraction": 0.033123028391167195,
+        "join_lt2": 0.8021,
+        "join_lt6": 0.873,
+        "collisions": 96,
+        "status": "PASS",
+        "audit_sha256": "71a5bf55b1a426a8b3f926d051253db37e9445de3f8b63a27bc83cff7e0ace65"
+      },
+      "after": {
+        "turn_off": 23,
+        "turn_off_fraction": 0.018138801261829655,
+        "join_lt2": 0.8218,
+        "join_lt6": 0.892,
+        "collisions": 65,
+        "status": "PASS",
+        "audit_sha256": "c0665f7b9f0dbf1e5ded9264decb660e326315b71353cc8cfb6749d4561d3971"
+      }
+    },
+    {
+      "dataset": "pherc0211",
+      "pair_sets": 34,
+      "pairs": 829,
+      "pair_inventory_unchanged": true,
+      "before": {
+        "turn_off": 57,
+        "turn_off_fraction": 0.068757539203860074,
+        "join_lt2": 0.848,
+        "join_lt6": 0.9216,
+        "collisions": 119,
+        "status": "FAIL",
+        "audit_sha256": "51ea67d956dc47cd5f807935509d2a18de1d9dab570968d28d37cd45256352bf"
+      },
+      "after": {
+        "turn_off": 5,
+        "turn_off_fraction": 0.0060313630880579009,
+        "join_lt2": 0.9107,
+        "join_lt6": 0.9831,
+        "collisions": 26,
+        "status": "PASS",
+        "audit_sha256": "938c1d9484aa08824754fe5e00e8ebef0bd16d17ba0a80a9fe0c40140f30e230"
+      }
+    }
+  ],
+  "determinism": {
+    "dataset": "pherc0211",
+    "runs": 2,
+    "audit_json_byte_identical": true,
+    "placed_index_json_byte_identical": true,
+    "registered_skin_files": 25,
+    "all_registered_skin_files_byte_identical": true,
+    "audit_sha256": "938c1d9484aa08824754fe5e00e8ebef0bd16d17ba0a80a9fe0c40140f30e230",
+    "placed_index_sha256": "9dd35ed57523223d46812cb1f6171de0c07762068527d95ccd97df03f3d0e32a"
+  },
+  "build": {
+    "configuration": "MSVC Release x64",
+    "scroll_whole_sha256": "6624f7fe3ca062d10c03e7a799b1a32e275b8c2c61695a7f1f8360bc8539818e",
+    "selftest": "PASS"
+  },
+  "claim_limit": "All five blocks are development data for this change; a separate preregistered heldout scroll/slab is required before an upstream efficacy claim."
+}

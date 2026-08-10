@@ -1,0 +1,159 @@
+scroll_whole: dump=output\experiments\pherc0826_sparse_graph_scale_stress_20260810\mesh\dump out=output\experiments\pherc0826_sparse_graph_scale_stress_20260810\candidate stage=step12_final chunk=128 pitch=auto axis=(0,4829,4118) gate=3.5 skin=4.0 concurrent=8
+[cal/candidate 1/25] z12672_y04480_x03840: a=1.336 b=5.4501 r2=0.599 sense=+1
+[cal/candidate 2/25] z12800_y04480_x03840: a=0.312 b=6.4178 r2=0.756 sense=+1
+[cal/candidate 3/25] z12928_y04480_x03840: a=-1.975 b=10.6712 r2=0.764 sense=+1
+[cal/candidate 4/25] z12672_y04480_x03968: a=-1.899 b=5.8168 r2=0.807 sense=+1
+[cal/candidate 5/25] z12800_y04480_x03968: a=0.393 b=5.8871 r2=0.699 sense=+1
+[cal/candidate 6/25] z12928_y04480_x03968: a=-0.348 b=6.9754 r2=0.810 sense=+1
+[cal/candidate 7/25] z12672_y04352_x03968: a=-0.983 b=6.4775 r2=0.867 sense=+1
+[cal/candidate 8/25] z12672_y04352_x04096: a=-0.017 b=10.3377 r2=0.980 sense=+1
+[cal/candidate 9/25] z12800_y04352_x04096: a=0.825 b=10.8864 r2=0.931 sense=+1
+[cal/candidate 10/25] z12928_y04352_x04096: a=-1.088 b=11.3186 r2=0.888 sense=+1
+[cal/candidate 11/25] z12800_y04352_x03968: a=0.289 b=7.3858 r2=0.800 sense=+1
+[cal/candidate 12/25] z12928_y04352_x03968: a=-0.435 b=6.1615 r2=0.794 sense=+1
+[cal/candidate 13/25] z12672_y04480_x04096: a=-0.608 b=-9.6368 r2=0.961 sense=-1
+[cal/candidate 14/25] z12672_y04480_x04224: a=0.069 b=-7.4987 r2=0.810 sense=-1
+[cal/candidate 15/25] z12800_y04480_x04224: a=-2.679 b=-8.5378 r2=0.632 sense=-1
+[cal/candidate 16/25] z12928_y04480_x04224: a=-0.472 b=-8.4751 r2=0.673 sense=-1
+[cal/candidate 17/25] z12672_y04480_x04352: a=-0.463 b=-5.2716 r2=0.627 sense=-1
+[cal/candidate 18/25] z12672_y04608_x04352: a=-1.010 b=-7.3671 r2=0.649 sense=-1
+[cal/candidate 19/25] z12800_y04608_x04352: a=-1.017 b=-6.3694 r2=0.600 sense=-1
+[cal/candidate 20/25] z12928_y04608_x04352: a=-0.409 b=-4.2228 r2=0.341 sense=-1
+[cal/candidate 21/25] z12800_y04480_x04352: a=-1.211 b=-5.1466 r2=0.612 sense=-1
+[cal/candidate 22/25] z12928_y04480_x04352: a=-1.832 b=-7.6189 r2=0.537 sense=-1
+[cal/candidate 23/25] z12672_y04736_x04352: a=-0.573 b=-29.9316 r2=0.964 sense=-1
+[cal/candidate 24/25] z12672_y04864_x04352: a=0.516 b=9.0200 r2=0.973 sense=+1
+[cal/candidate 25/25] z12672_y04992_x04352: a=0.055 b=6.2462 r2=0.858 sense=+1
+[cal/consensus] 25/25 usable; sense=+1 support=14/25; median pitch=6.7264
+[cal] seed z12672_y04352_x03968: spiral a=-0.983 b=6.4775 r2=0.867 sense=+1 (pitch estimated 6.478)
+[pitch] auto-estimated 6.4775 vox/turn from seed z12672_y04352_x03968; rebuilding spiral schedule
+[schedule] 147 cubes, 1 flood component(s), seed=z12672_y04352_x03968 r=422 pitch=6.4775 (auto)
+[unwrap 25/147] z12672_y04736_x04096 status=0 nv=1744 skin=291 r2=0.848 (1.7s elapsed)
+[unwrap 50/147] z12672_y05120_x03712 status=0 nv=2367 skin=581 r2=0.528 (4.1s elapsed)
+[unwrap 75/147] z12800_y04480_x04352 status=0 nv=3035 skin=700 r2=0.607 (5.7s elapsed)
+[unwrap 100/147] z12800_y05120_x04096 status=0 nv=2672 skin=639 r2=0.852 (7.9s elapsed)
+[unwrap 125/147] z12928_y04864_x04352 status=0 nv=1842 skin=47 r2=0.982 (9.1s elapsed)
+[unwrap] done: 147 cubes (0 reused, 0 degenerate/failed) in 11.1s
+[register] 66647 skins loaded (1.8 MB)
+[register] z12800_y04352_x03968: wk_cube=-2 du=1.16 pairs=42 groups=19(direct 5) mad=0.0071/4.25 (comp 0)
+[register] z12928_y04352_x03968: wk_cube=-5 du=14.74 pairs=50 groups=22(direct 7) mad=0.0044/2.14 (comp 0)
+[register] z12672_y04352_x04096: wk_cube=+3 du=-0.02 pairs=36 groups=16(direct 8) mad=0.0041/0.23 (comp 0)
+[register] z12800_y04352_x04096: wk_cube=+1 du=-1.01 pairs=97 groups=15(direct 8) mad=0.0046/4.18 (comp 0)
+[register] z12928_y04352_x04096: wk_cube=-3 du=-4.86 pairs=282 groups=19(direct 6) mad=0.0048/1.04 (comp 0)
+[register] z12672_y04352_x04224: wk_cube=+0 du=-7.42 pairs=38 groups=15(direct 6) mad=0.0025/0.25 (comp 0)
+[register] z12800_y04352_x04224: wk_cube=-3 du=-0.68 pairs=131 groups=17(direct 7) mad=0.0045/1.06 (comp 0)
+[register] z12928_y04352_x04224: wk_cube=-2 du=-7.98 pairs=119 groups=26(direct 4) mad=0.0059/14.62 (comp 0)
+[register] z12672_y04352_x03840: wk_cube=-9 du=2.95 pairs=31 groups=13(direct 4) mad=0.0024/0.66 (comp 0)
+[register] z12800_y04352_x03840: wk_cube=-9 du=1.52 pairs=119 groups=31(direct 5) mad=0.0081/3.30 (comp 0)
+[register] z12928_y04352_x03840: wk_cube=-14 du=32.69 pairs=115 groups=17(direct 9) mad=0.0034/1.09 (comp 0)
+[register] z12672_y04480_x03712: wk_cube=-3 du=-0.85 pairs=33 groups=35(direct 3) mad=0.0039/0.57 (comp 0)
+[register] z12800_y04480_x03840: wk_cube=-3 du=15.34 pairs=80 groups=31(direct 6) mad=0.0111/5.94 (comp 0)
+[register] z12928_y04480_x03840: wk_cube=-6 du=18.16 pairs=65 groups=17(direct 4) mad=12.5603/4231.80 (comp 0)
+[register] z12800_y04992_x03712: wk_cube=+3 du=18.81 pairs=74 groups=14(direct 8) mad=0.0038/1.37 (comp 0)
+[register] z12928_y04992_x03712: wk_cube=+9 du=30.46 pairs=101 groups=24(direct 7) mad=0.0028/1.49 (comp 0)
+[register] z12928_y04864_x03712: wk_cube=+3 du=56.05 pairs=58 groups=28(direct 7) mad=0.0034/1.92 (comp 0)
+[register] z12672_y05120_x03840: wk_cube=+12 du=25.89 pairs=54 groups=11(direct 5) mad=0.0023/1.62 (comp 0)
+[register] z12800_y05120_x03840: wk_cube=+16 du=40.19 pairs=149 groups=13(direct 6) mad=0.0031/1.36 (comp 0)
+[register] z12928_y05120_x03840: wk_cube=+17 du=40.93 pairs=38 groups=16(direct 5) mad=0.0033/2.60 (comp 0)
+[register] z12672_y05120_x03968: wk_cube=+21 du=52.21 pairs=34 groups=16(direct 6) mad=0.0027/0.29 (comp 0)
+[register] z12800_y05120_x03968: wk_cube=+24 du=51.34 pairs=86 groups=13(direct 5) mad=0.0067/5.84 (comp 0)
+[register] z12928_y05120_x03968: wk_cube=+18 du=39.97 pairs=372 groups=16(direct 8) mad=0.0059/1.67 (comp 0)
+[register] z12672_y05120_x04096: wk_cube=+21 du=51.20 pairs=44 groups=12(direct 2) mad=0.0037/14.25 (comp 0)
+[register] z12672_y05120_x04224: wk_cube=+17 du=55.01 pairs=41 groups=14(direct 7) mad=0.0031/0.58 (comp 0)
+[register] z12800_y05120_x04224: wk_cube=+18 du=55.27 pairs=50 groups=18(direct 6) mad=0.0043/2.54 (comp 0)
+[register] z12928_y05120_x04224: wk_cube=+19 du=50.41 pairs=47 groups=17(direct 4) mad=0.0041/2.74 (comp 0)
+[register] z12672_y05120_x04352: wk_cube=+13 du=65.81 pairs=33 groups=17(direct 6) mad=0.0021/0.76 (comp 0)
+[register] z12800_y05120_x04352: wk_cube=+9 du=81.34 pairs=31 groups=33(direct 4) mad=0.0020/1.70 (comp 0)
+[register] z12800_y05120_x04096: wk_cube=+23 du=65.13 pairs=209 groups=12(direct 6) mad=0.0037/4.65 (comp 0)
+[register] z12928_y05120_x04096: wk_cube=+24 du=43.42 pairs=235 groups=16(direct 10) mad=0.0056/3.45 (comp 0)
+[register] z12800_y05120_x03712: wk_cube=+4 du=20.15 pairs=121 groups=22(direct 8) mad=0.0031/3.79 (comp 0)
+[register] z12928_y05120_x03712: wk_cube=+8 du=26.10 pairs=179 groups=18(direct 10) mad=0.0075/9.64 (comp 0)
+[register] z12672_y04352_x04352: wk_cube=-9 du=-19.94 pairs=26 groups=12(direct 6) mad=0.0024/0.18 (comp 0)
+[register] z12672_y04480_x04352: wk_cube=-10 du=-1028.60 pairs=75 groups=27(direct 5) mad=0.0040/112.75 (comp 0)
+[register] z12800_y04480_x04352: wk_cube=-12 du=-1040.98 pairs=68 groups=31(direct 4) mad=0.0054/3.13 (comp 0)
+[register] z12928_y04480_x04352: wk_cube=-17 du=-1056.56 pairs=81 groups=14(direct 6) mad=0.0037/2.05 (comp 0)
+[register] z12800_y04352_x04352: wk_cube=-10 du=-1035.07 pairs=158 groups=11(direct 8) mad=0.0043/3.90 (comp 0)
+[register] z12928_y04352_x04352: wk_cube=-10 du=-1038.63 pairs=261 groups=23(direct 11) mad=0.0040/1.50 (comp 0)
+[register] z12672_y04480_x04480: wk_cube=-19 du=-30.99 pairs=34 groups=50(direct 6) mad=0.0022/0.31 (comp 0)
+[register] z12800_y04480_x04480: wk_cube=-13 du=-1046.81 pairs=169 groups=39(direct 5) mad=0.0032/0.74 (comp 0)
+[register] z12928_y04480_x04480: wk_cube=-27 du=-1070.82 pairs=34 groups=34(direct 5) mad=0.0029/3.54 (comp 0)
+[register] z12800_y04608_x04352: wk_cube=-4 du=-2.13 pairs=65 groups=15(direct 5) mad=0.0034/0.82 (comp 0)
+[register] z12928_y04608_x04352: wk_cube=-8 du=-21.05 pairs=29 groups=25(direct 3) mad=56.5469/18932.73 (comp 0)
+[register] z12672_y04480_x04224: wk_cube=-4 du=-1029.92 pairs=106 groups=18(direct 8) mad=0.0092/1.99 (comp 0)
+[register] z12800_y04480_x04224: wk_cube=-7 du=-1006.59 pairs=165 groups=14(direct 9) mad=0.0052/2.51 (comp 0)
+[register] z12928_y04480_x04224: wk_cube=+1 du=-3.17 pairs=275 groups=13(direct 6) mad=0.0040/1.03 (comp 0)
+[register] z12672_y04992_x03840: wk_cube=+9 du=42.15 pairs=208 groups=18(direct 8) mad=0.0039/1.30 (comp 0)
+[register] z12800_y04992_x03840: wk_cube=+15 du=50.67 pairs=98 groups=17(direct 8) mad=0.0030/3.28 (comp 0)
+[register] z12928_y04992_x03840: wk_cube=+19 du=65.51 pairs=140 groups=19(direct 11) mad=0.0036/1.84 (comp 0)
+[register] z12672_y04352_x03712: wk_cube=-19 du=17.77 pairs=64 groups=20(direct 7) mad=0.0055/0.50 (comp 0)
+[register] z12800_y04352_x03712: wk_cube=-18 du=13.38 pairs=131 groups=33(direct 8) mad=0.0035/0.75 (comp 0)
+[register] z12928_y04352_x03712: wk_cube=-22 du=42.70 pairs=62 groups=34(direct 9) mad=0.0019/0.66 (comp 0)
+[register] z12672_y04480_x03968: wk_cube=+1 du=-0.83 pairs=119 groups=14(direct 7) mad=0.0035/0.72 (comp 0)
+[register] z12800_y04480_x03968: wk_cube=+6 du=-4.48 pairs=169 groups=19(direct 6) mad=0.0071/11.41 (comp 0)
+[register] z12928_y04480_x03968: wk_cube=+2 du=12.73 pairs=138 groups=17(direct 7) mad=0.0051/3.33 (comp 0)
+[register] z12672_y04480_x04096: wk_cube=+4 du=-1003.27 pairs=70 groups=9(direct 7) mad=25.1359/9515.86 (comp 0)
+[register] z12800_y04480_x04096: wk_cube=+6 du=-978.88 pairs=173 groups=18(direct 7) mad=0.0070/6.41 (comp 0)
+[register] z12928_y04480_x04096: wk_cube=+5 du=3.68 pairs=242 groups=14(direct 8) mad=0.0056/19.90 (comp 0)
+[register] z12672_y04992_x04224: wk_cube=+8 du=-24.03 pairs=28 groups=14(direct 5) mad=0.0045/2.15 (comp 0)
+[register] z12800_y04992_x04224: wk_cube=+22 du=47.75 pairs=101 groups=12(direct 7) mad=0.0073/3.47 (comp 0)
+[register] z12928_y04992_x04224: wk_cube=+24 du=36.46 pairs=94 groups=15(direct 7) mad=0.0062/2.57 (comp 0)
+[register] z12800_y04608_x03840: wk_cube=+0 du=7.49 pairs=59 groups=20(direct 3) mad=0.0037/1.18 (comp 0)
+[register] z12672_y04352_x04480: wk_cube=-19 du=-49.75 pairs=53 groups=14(direct 6) mad=0.0032/0.99 (comp 0)
+[register] z12800_y04352_x04480: wk_cube=-20 du=-1065.83 pairs=93 groups=14(direct 6) mad=0.0050/3.54 (comp 0)
+[register] z12928_y04352_x04480: wk_cube=-23 du=-59.06 pairs=84 groups=20(direct 9) mad=0.0028/2.69 (comp 0)
+[register] z12672_y04992_x03968: wk_cube=+25 du=56.27 pairs=74 groups=13(direct 6) mad=0.0091/1.16 (comp 0)
+[register] z12800_y04992_x03968: wk_cube=+27 du=66.26 pairs=110 groups=12(direct 7) mad=0.0154/11.30 (comp 0)
+[register] z12928_y04992_x03968: wk_cube=+29 du=88.97 pairs=186 groups=14(direct 9) mad=0.0109/12.63 (comp 0)
+[register] z12800_y04864_x03840: wk_cube=+12 du=44.12 pairs=46 groups=12(direct 5) mad=0.0059/1.31 (comp 0)
+[register] z12928_y04864_x03840: wk_cube=+14 du=72.99 pairs=64 groups=22(direct 6) mad=0.0048/2.55 (comp 0)
+[register] z12672_y04992_x04096: wk_cube=+24 du=78.56 pairs=147 groups=14(direct 10) mad=0.0108/2.88 (comp 0)
+[register] z12800_y04992_x04096: wk_cube=+31 du=57.76 pairs=158 groups=10(direct 8) mad=0.0131/23.84 (comp 0)
+[register] z12928_y04992_x04096: wk_cube=+33 du=72.99 pairs=156 groups=13(direct 7) mad=0.0093/14.71 (comp 0)
+[register] z12800_y04608_x04224: wk_cube=-2 du=-22.99 pairs=70 groups=23(direct 9) mad=0.0142/162.74 (comp 0)
+[register] z12928_y04608_x04224: wk_cube=-5 du=-44.91 pairs=62 groups=17(direct 8) mad=0.0122/3.31 (comp 0)
+[register] z12672_y04864_x04224: wk_cube=+1 du=-0.03 pairs=34 groups=36(direct 3) mad=0.0084/0.67 (comp 0)
+[register] z12672_y04608_x03968: wk_cube=+13 du=-30.59 pairs=97 groups=15(direct 6) mad=0.0054/1.84 (comp 0)
+[register] z12800_y04608_x03968: wk_cube=+10 du=-19.75 pairs=118 groups=18(direct 6) mad=0.0110/9.60 (comp 0)
+[register] z12928_y04608_x03968: wk_cube=+9 du=-18.91 pairs=176 groups=16(direct 10) mad=0.0052/1.67 (comp 0)
+[register] z12672_y04608_x04096: wk_cube=+12 du=-35.82 pairs=53 groups=16(direct 7) mad=0.0068/0.62 (comp 0)
+[register] z12800_y04608_x04096: wk_cube=+8 du=22.85 pairs=199 groups=19(direct 11) mad=0.0126/7.77 (comp 0)
+[register] z12928_y04608_x04096: wk_cube=+8 du=-42.96 pairs=117 groups=16(direct 10) mad=0.0207/54.67 (comp 0)
+[register] z12672_y04864_x03968: wk_cube=+26 du=58.61 pairs=126 groups=10(direct 6) mad=0.0059/1.23 (comp 0)
+[register] z12800_y04864_x03968: wk_cube=+26 du=61.98 pairs=117 groups=16(direct 7) mad=0.0152/3.00 (comp 0)
+[register] z12928_y04864_x03968: wk_cube=+32 du=125.71 pairs=106 groups=12(direct 7) mad=0.0145/7.33 (comp 0)
+[register] z12672_y04864_x04096: wk_cube=+26 du=60.19 pairs=123 groups=13(direct 8) mad=0.0159/18.47 (comp 0)
+[register] z12800_y04864_x04096: wk_cube=+30 du=72.91 pairs=311 groups=16(direct 9) mad=0.0243/6.67 (comp 0)
+[register] z12928_y04864_x04096: wk_cube=+23 du=107.77 pairs=185 groups=26(direct 10) mad=0.0156/5.94 (comp 0)
+[register] z12800_y04736_x03968: wk_cube=+1 du=-1.71 pairs=238 groups=24(direct 6) mad=0.0139/1.04 (comp 0)
+[register] z12928_y04736_x03968: wk_cube=+12 du=-29.76 pairs=127 groups=12(direct 3) mad=0.0190/2.98 (comp 0)
+[register] z12672_y04736_x04096: wk_cube=+3 du=-6.46 pairs=52 groups=23(direct 8) mad=0.0255/1.27 (comp 0)
+[register] z12800_y04736_x04096: wk_cube=+4 du=13.41 pairs=108 groups=17(direct 9) mad=12.5717/825.20 (comp 0)
+[register] z12928_y04736_x04096: wk_cube=+6 du=17.41 pairs=88 groups=11(direct 7) mad=0.0069/1.19 (comp 0)
+[register/defer] z12672_y04480_x03840: wk_cube=+0 du=-0.73 pairs=176
+[register/defer] z12800_y04480_x03712: wk_cube=+0 du=-1.10 pairs=81
+[register/defer] z12928_y04480_x03712: wk_cube=+0 du=1.96 pairs=34
+[register/defer] z12672_y04992_x03712: wk_cube=+0 du=-2.02 pairs=208
+[register/defer] z12800_y04864_x03712: wk_cube=+0 du=1.03 pairs=62
+[register/defer] z12672_y05120_x03712: wk_cube=+0 du=-0.92 pairs=113
+[register/defer] z12672_y04992_x04352: wk_cube=+0 du=1.82 pairs=28
+[register/defer] z12800_y04992_x04352: wk_cube=+16 du=56.58 pairs=27
+[register/defer] z12928_y04992_x04352: wk_cube=+5 du=-21.01 pairs=75
+[register/defer] z12800_y04608_x04480: wk_cube=-1 du=0.67 pairs=42
+[register/defer] z12672_y04608_x04352: wk_cube=-10 du=-1022.36 pairs=42
+[register/defer] z12928_y04608_x03840: wk_cube=+0 du=-1.52 pairs=48
+[register/defer] z12672_y04864_x03840: wk_cube=+11 du=35.56 pairs=52
+[register/defer] z12672_y04608_x04224: wk_cube=+0 du=1.90 pairs=48
+[register/defer] z12800_y04864_x04224: wk_cube=+13 du=-53.39 pairs=45
+[register/defer] z12928_y04864_x04224: wk_cube=+25 du=72.45 pairs=29
+[register/defer] z12800_y04736_x04224: wk_cube=+0 du=22.56 pairs=28
+[register/defer] z12672_y04736_x03968: wk_cube=+0 du=-0.02 pairs=91
+[register] 147 cubes registered, 52 low-conf (20 recovered in 2nd pass), 112 whole-turn corrections, 0.1s
+[register] sweep 1: 116/147 cubes re-solved, 98 integer changes
+[register] sweep 2: 116/147 cubes re-solved, 42 integer changes
+[register] sweep 3: 116/147 cubes re-solved, 19 integer changes
+[register] sweep 4: 116/147 cubes re-solved, 9 integer changes
+[register] sweep 5: 116/147 cubes re-solved, 3 integer changes
+[register] sweep 6: 116/147 cubes re-solved, 0 integer changes
+[finalize] done (0 failed) in 0.3s
+[index] output\experiments\pherc0826_sparse_graph_scale_stress_20260810\candidate/placed_index.json: 147 ok / 0 skipped / 31 low-conf / 113 turn-corrected; u span 200042 vox, v span 384 vox
+scroll_whole: OK (total 19.0s)

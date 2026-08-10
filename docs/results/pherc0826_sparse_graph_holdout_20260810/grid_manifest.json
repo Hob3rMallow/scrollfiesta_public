@@ -1,0 +1,25 @@
+{
+ "chunk_size": 128,
+ "bbox_l0_zyx": [
+  12800,
+  12928,
+  4480,
+  5120,
+  3840,
+  4480
+ ],
+ "n_chunks": [
+  1,
+  5,
+  5
+ ],
+ "sources": {
+  "pred": "s3://vesuvius-challenge-open-data/PHerc0826/representations/predictions/surfaces/20250821151701-surface-20260413222639-surface-m7-L0-th0.2.zarr",
+  "raw": "s3://vesuvius-challenge-open-data/PHerc0826/volumes/20250821151701-9.362um-1.2m-113keV-masked.zarr"
+ },
+ "umbilicus_yx": [
+  4829.0,
+  4118.0
+ ],
+ "created_by": "carve_grid_tifs.py"
+}

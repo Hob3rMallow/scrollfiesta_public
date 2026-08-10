@@ -1,0 +1,696 @@
+{
+  "candidate_repeat": {
+    "metrics_equal_excluding_timing_and_paths": true,
+    "pass": true,
+    "required_artifacts_byte_identical": true
+  },
+  "comparability": {
+    "n_cubes": true,
+    "nf": true,
+    "nv": true,
+    "pass": true,
+    "stage_names": true
+  },
+  "decision": "DOWNSTREAM_REGRESSION",
+  "efficacy_gates": {
+    "pass": false,
+    "stage1_raw_seam_nonincrease": true,
+    "stage1_seam_excess_reduction": false
+  },
+  "evidence": {
+    "figure_png": {
+      "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\complete_unroll_strips.png",
+      "sha256": "69f553b3e70aafed2b6ac3e0b88bea81f432c2189737efa7cf0cac8e5afd9911"
+    },
+    "figure_svg": {
+      "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\complete_unroll_strips.svg",
+      "sha256": "89e74cc6ed8eb27fb70afca84f541de289d7666174882f9e7bb90fbd2a7d3d2c"
+    },
+    "pipeline_stats": {
+      "candidate": {
+        "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate\\candidate_pipeline_stats.json",
+        "sha256": "ba34a60d16ad2e1bc58aaffb67a90ce99b50944e7209d62e21177ceedf8ca421"
+      },
+      "candidate_repeat": {
+        "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate_repeat\\candidate_repeat_pipeline_stats.json",
+        "sha256": "d135be9258a05425854d8a11779ac323271d5ecbbee000e319198c0223220468"
+      },
+      "parent": {
+        "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\parent\\parent_pipeline_stats.json",
+        "sha256": "8a9d23740cd6be26597c58ce3265bff4a8625e07561292dd87eeea3e6ac5f791"
+      }
+    },
+    "required_artifacts": {
+      "candidate": {
+        "step1_ribbon": {
+          "diagclass.tif": {
+            "bytes": 73601776,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate\\candidate_step1_ribbon_diagclass.tif",
+            "sha256": "7bfab8479ba4f638d37acb6a5aacf51ff3b9af2f14ac825b9d4a5a87c4671ceb",
+            "shape": [
+              385,
+              191173
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 73601776,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate\\candidate_step1_ribbon_rawtex.tif",
+            "sha256": "0f4e9e5fa8bcecad398b20862d06aee6fada48742a0a064b6536e1c500f0aacd",
+            "shape": [
+              385,
+              191173
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 723347,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate\\candidate_step1_ribbon_rawtex_preview.png",
+            "sha256": "26308395d40877ce71a46a79f8465db58b9eee69ed86405061e2effc217d7ca1"
+          },
+          "rawtex_strip.png": {
+            "bytes": 4460428,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate\\candidate_step1_ribbon_rawtex_strip.png",
+            "sha256": "a08d46aab953ab1f6c74a100bd45f6de74413af6c30c53031e6b4a10a1841855"
+          }
+        },
+        "step2_join": {
+          "diagclass.tif": {
+            "bytes": 73601776,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate\\candidate_step2_join_diagclass.tif",
+            "sha256": "b147e23a71525f4b7105bbe6ae6a9c8af736a0720b677a325f8dba14abf90966",
+            "shape": [
+              385,
+              191173
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 73601776,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate\\candidate_step2_join_rawtex.tif",
+            "sha256": "bd9d861b4a7bb375202b4fa751d87aac0ebd3ba4ab7f415d0d7d3dae83faf36d",
+            "shape": [
+              385,
+              191173
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 735379,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate\\candidate_step2_join_rawtex_preview.png",
+            "sha256": "b5aab14a2bf1fb185d9770ed46352571c7797731321bc4b4929fdd052a79a456"
+          },
+          "rawtex_strip.png": {
+            "bytes": 4530808,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate\\candidate_step2_join_rawtex_strip.png",
+            "sha256": "e13a1ec1ce52c8f3757b4efb3e4f2da36282ce8631c794155cf4ea22bb0eccc0"
+          }
+        },
+        "step3_overlap": {
+          "diagclass.tif": {
+            "bytes": 73601776,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate\\candidate_step3_overlap_diagclass.tif",
+            "sha256": "b147e23a71525f4b7105bbe6ae6a9c8af736a0720b677a325f8dba14abf90966",
+            "shape": [
+              385,
+              191173
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 73601776,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate\\candidate_step3_overlap_rawtex.tif",
+            "sha256": "bd9d861b4a7bb375202b4fa751d87aac0ebd3ba4ab7f415d0d7d3dae83faf36d",
+            "shape": [
+              385,
+              191173
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 735379,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate\\candidate_step3_overlap_rawtex_preview.png",
+            "sha256": "b5aab14a2bf1fb185d9770ed46352571c7797731321bc4b4929fdd052a79a456"
+          },
+          "rawtex_strip.png": {
+            "bytes": 4530808,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate\\candidate_step3_overlap_rawtex_strip.png",
+            "sha256": "e13a1ec1ce52c8f3757b4efb3e4f2da36282ce8631c794155cf4ea22bb0eccc0"
+          }
+        },
+        "step4_snap": {
+          "diagclass.tif": {
+            "bytes": 73601776,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate\\candidate_step4_snap_diagclass.tif",
+            "sha256": "b147e23a71525f4b7105bbe6ae6a9c8af736a0720b677a325f8dba14abf90966",
+            "shape": [
+              385,
+              191173
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 73601776,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate\\candidate_step4_snap_rawtex.tif",
+            "sha256": "ef2809b8469cd151da9dbe3d08041d03554df88ce9d23e761facc28b99a037ab",
+            "shape": [
+              385,
+              191173
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 736170,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate\\candidate_step4_snap_rawtex_preview.png",
+            "sha256": "59b90de5df480955094966f920e425e54a8944cb2f257f7f4d8f0b4dcc4b49e3"
+          },
+          "rawtex_strip.png": {
+            "bytes": 4531450,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate\\candidate_step4_snap_rawtex_strip.png",
+            "sha256": "2b9ff9044c2ade728885c3a2be17c73730934fcca8d941b36c8f67cd5a486354"
+          }
+        },
+        "step5_relax": {
+          "diagclass.tif": {
+            "bytes": 73601776,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate\\candidate_step5_relax_diagclass.tif",
+            "sha256": "95f447d84ed69ba32131d72e11f9e677fa3a07e19a2c6436d4339c12f9849087",
+            "shape": [
+              385,
+              191173
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 73601776,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate\\candidate_step5_relax_rawtex.tif",
+            "sha256": "b5cae4c6455657b00f7faa8dc2ec376d474484543430436a08a2e66823afff73",
+            "shape": [
+              385,
+              191173
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 736886,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate\\candidate_step5_relax_rawtex_preview.png",
+            "sha256": "af5e9fea8a0b58aab0d1eef8d55629d84c241b6ca077f5b83d60d116fb1648d6"
+          },
+          "rawtex_strip.png": {
+            "bytes": 4537048,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate\\candidate_step5_relax_rawtex_strip.png",
+            "sha256": "1ddcc81f7a230317345187c1c3f25bb0f48e4c9cca6eec905cddb9c31c690901"
+          }
+        }
+      },
+      "candidate_repeat": {
+        "step1_ribbon": {
+          "diagclass.tif": {
+            "bytes": 73601776,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate_repeat\\candidate_repeat_step1_ribbon_diagclass.tif",
+            "sha256": "7bfab8479ba4f638d37acb6a5aacf51ff3b9af2f14ac825b9d4a5a87c4671ceb",
+            "shape": [
+              385,
+              191173
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 73601776,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate_repeat\\candidate_repeat_step1_ribbon_rawtex.tif",
+            "sha256": "0f4e9e5fa8bcecad398b20862d06aee6fada48742a0a064b6536e1c500f0aacd",
+            "shape": [
+              385,
+              191173
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 723347,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate_repeat\\candidate_repeat_step1_ribbon_rawtex_preview.png",
+            "sha256": "26308395d40877ce71a46a79f8465db58b9eee69ed86405061e2effc217d7ca1"
+          },
+          "rawtex_strip.png": {
+            "bytes": 4460428,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate_repeat\\candidate_repeat_step1_ribbon_rawtex_strip.png",
+            "sha256": "a08d46aab953ab1f6c74a100bd45f6de74413af6c30c53031e6b4a10a1841855"
+          }
+        },
+        "step2_join": {
+          "diagclass.tif": {
+            "bytes": 73601776,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate_repeat\\candidate_repeat_step2_join_diagclass.tif",
+            "sha256": "b147e23a71525f4b7105bbe6ae6a9c8af736a0720b677a325f8dba14abf90966",
+            "shape": [
+              385,
+              191173
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 73601776,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate_repeat\\candidate_repeat_step2_join_rawtex.tif",
+            "sha256": "bd9d861b4a7bb375202b4fa751d87aac0ebd3ba4ab7f415d0d7d3dae83faf36d",
+            "shape": [
+              385,
+              191173
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 735379,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate_repeat\\candidate_repeat_step2_join_rawtex_preview.png",
+            "sha256": "b5aab14a2bf1fb185d9770ed46352571c7797731321bc4b4929fdd052a79a456"
+          },
+          "rawtex_strip.png": {
+            "bytes": 4530808,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate_repeat\\candidate_repeat_step2_join_rawtex_strip.png",
+            "sha256": "e13a1ec1ce52c8f3757b4efb3e4f2da36282ce8631c794155cf4ea22bb0eccc0"
+          }
+        },
+        "step3_overlap": {
+          "diagclass.tif": {
+            "bytes": 73601776,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate_repeat\\candidate_repeat_step3_overlap_diagclass.tif",
+            "sha256": "b147e23a71525f4b7105bbe6ae6a9c8af736a0720b677a325f8dba14abf90966",
+            "shape": [
+              385,
+              191173
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 73601776,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate_repeat\\candidate_repeat_step3_overlap_rawtex.tif",
+            "sha256": "bd9d861b4a7bb375202b4fa751d87aac0ebd3ba4ab7f415d0d7d3dae83faf36d",
+            "shape": [
+              385,
+              191173
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 735379,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate_repeat\\candidate_repeat_step3_overlap_rawtex_preview.png",
+            "sha256": "b5aab14a2bf1fb185d9770ed46352571c7797731321bc4b4929fdd052a79a456"
+          },
+          "rawtex_strip.png": {
+            "bytes": 4530808,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate_repeat\\candidate_repeat_step3_overlap_rawtex_strip.png",
+            "sha256": "e13a1ec1ce52c8f3757b4efb3e4f2da36282ce8631c794155cf4ea22bb0eccc0"
+          }
+        },
+        "step4_snap": {
+          "diagclass.tif": {
+            "bytes": 73601776,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate_repeat\\candidate_repeat_step4_snap_diagclass.tif",
+            "sha256": "b147e23a71525f4b7105bbe6ae6a9c8af736a0720b677a325f8dba14abf90966",
+            "shape": [
+              385,
+              191173
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 73601776,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate_repeat\\candidate_repeat_step4_snap_rawtex.tif",
+            "sha256": "ef2809b8469cd151da9dbe3d08041d03554df88ce9d23e761facc28b99a037ab",
+            "shape": [
+              385,
+              191173
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 736170,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate_repeat\\candidate_repeat_step4_snap_rawtex_preview.png",
+            "sha256": "59b90de5df480955094966f920e425e54a8944cb2f257f7f4d8f0b4dcc4b49e3"
+          },
+          "rawtex_strip.png": {
+            "bytes": 4531450,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate_repeat\\candidate_repeat_step4_snap_rawtex_strip.png",
+            "sha256": "2b9ff9044c2ade728885c3a2be17c73730934fcca8d941b36c8f67cd5a486354"
+          }
+        },
+        "step5_relax": {
+          "diagclass.tif": {
+            "bytes": 73601776,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate_repeat\\candidate_repeat_step5_relax_diagclass.tif",
+            "sha256": "95f447d84ed69ba32131d72e11f9e677fa3a07e19a2c6436d4339c12f9849087",
+            "shape": [
+              385,
+              191173
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 73601776,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate_repeat\\candidate_repeat_step5_relax_rawtex.tif",
+            "sha256": "b5cae4c6455657b00f7faa8dc2ec376d474484543430436a08a2e66823afff73",
+            "shape": [
+              385,
+              191173
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 736886,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate_repeat\\candidate_repeat_step5_relax_rawtex_preview.png",
+            "sha256": "af5e9fea8a0b58aab0d1eef8d55629d84c241b6ca077f5b83d60d116fb1648d6"
+          },
+          "rawtex_strip.png": {
+            "bytes": 4537048,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\candidate_repeat\\candidate_repeat_step5_relax_rawtex_strip.png",
+            "sha256": "1ddcc81f7a230317345187c1c3f25bb0f48e4c9cca6eec905cddb9c31c690901"
+          }
+        }
+      },
+      "parent": {
+        "step1_ribbon": {
+          "diagclass.tif": {
+            "bytes": 73602160,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\parent\\parent_step1_ribbon_diagclass.tif",
+            "sha256": "67e734a6b8d6668aac675336df49e0dd05fcc8d9ea3f6da30c1b882152c64ea7",
+            "shape": [
+              385,
+              191174
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 73602160,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\parent\\parent_step1_ribbon_rawtex.tif",
+            "sha256": "e23685d2f8442e61fcddce20f71c753fc7140040f2a7d80f7912bc69e47f4c79",
+            "shape": [
+              385,
+              191174
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 756011,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\parent\\parent_step1_ribbon_rawtex_preview.png",
+            "sha256": "032a866dfe8bacbd05f29d4f04c895393783a87c031be20ca0f5d783d3dce3be"
+          },
+          "rawtex_strip.png": {
+            "bytes": 4628604,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\parent\\parent_step1_ribbon_rawtex_strip.png",
+            "sha256": "d83ce5cb67192e7b9b763b185e4bd5a77c2847bdb5b666a8c1fd37a4eb28bf3d"
+          }
+        },
+        "step2_join": {
+          "diagclass.tif": {
+            "bytes": 73602160,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\parent\\parent_step2_join_diagclass.tif",
+            "sha256": "94e6714984862907a55c2b815db95317219e7f5949119cbc374256c753887d77",
+            "shape": [
+              385,
+              191174
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 73602160,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\parent\\parent_step2_join_rawtex.tif",
+            "sha256": "49cc5a59dca644f8f87d4db34d4e9a379b7d7c1535482e5ebe95d0a52b36a466",
+            "shape": [
+              385,
+              191174
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 767926,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\parent\\parent_step2_join_rawtex_preview.png",
+            "sha256": "47c9de865e658e6d40b767847d19807eeee6b7e398565c7aea15cb44d8db5a6c"
+          },
+          "rawtex_strip.png": {
+            "bytes": 4688102,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\parent\\parent_step2_join_rawtex_strip.png",
+            "sha256": "7e5ded2b8ae584bd1e98ee1796a3d7e573e9c45d281cebd79a54499bfab3d045"
+          }
+        },
+        "step3_overlap": {
+          "diagclass.tif": {
+            "bytes": 73602160,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\parent\\parent_step3_overlap_diagclass.tif",
+            "sha256": "94e6714984862907a55c2b815db95317219e7f5949119cbc374256c753887d77",
+            "shape": [
+              385,
+              191174
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 73602160,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\parent\\parent_step3_overlap_rawtex.tif",
+            "sha256": "49cc5a59dca644f8f87d4db34d4e9a379b7d7c1535482e5ebe95d0a52b36a466",
+            "shape": [
+              385,
+              191174
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 767926,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\parent\\parent_step3_overlap_rawtex_preview.png",
+            "sha256": "47c9de865e658e6d40b767847d19807eeee6b7e398565c7aea15cb44d8db5a6c"
+          },
+          "rawtex_strip.png": {
+            "bytes": 4688102,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\parent\\parent_step3_overlap_rawtex_strip.png",
+            "sha256": "7e5ded2b8ae584bd1e98ee1796a3d7e573e9c45d281cebd79a54499bfab3d045"
+          }
+        },
+        "step4_snap": {
+          "diagclass.tif": {
+            "bytes": 73602160,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\parent\\parent_step4_snap_diagclass.tif",
+            "sha256": "94e6714984862907a55c2b815db95317219e7f5949119cbc374256c753887d77",
+            "shape": [
+              385,
+              191174
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 73602160,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\parent\\parent_step4_snap_rawtex.tif",
+            "sha256": "65c37f256f11de4f664564195268bed43a2336e91b7b99ccc9b0c275767d39a1",
+            "shape": [
+              385,
+              191174
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 768212,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\parent\\parent_step4_snap_rawtex_preview.png",
+            "sha256": "d18afa90b7a7d6e433878a18ebb679d487ecd94bebfc7fc3be4333a120b3c475"
+          },
+          "rawtex_strip.png": {
+            "bytes": 4689458,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\parent\\parent_step4_snap_rawtex_strip.png",
+            "sha256": "666f7e0d3f4466bc43fe72365fb78184ad1746e503934989922e921a52297801"
+          }
+        },
+        "step5_relax": {
+          "diagclass.tif": {
+            "bytes": 73602160,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\parent\\parent_step5_relax_diagclass.tif",
+            "sha256": "a67c4ad888f6c1408cc73d572295e3fbbc7f3474072c7a14a072cd4ebb444a87",
+            "shape": [
+              385,
+              191174
+            ]
+          },
+          "rawtex.tif": {
+            "bytes": 73602160,
+            "dtype": "uint8",
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\parent\\parent_step5_relax_rawtex.tif",
+            "sha256": "8c7a67cd73ac441124feec9f3b2f028a40075ae57e42fdcfa2e6eeb1167cf37f",
+            "shape": [
+              385,
+              191174
+            ]
+          },
+          "rawtex_preview.png": {
+            "bytes": 768949,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\parent\\parent_step5_relax_rawtex_preview.png",
+            "sha256": "e5a9a59516a4ba42a9a10576144eb4b657cac4a8fa438d6ede4f51221035f4bd"
+          },
+          "rawtex_strip.png": {
+            "bytes": 4684919,
+            "path": "output\\experiments\\pherc0826_sparse_graph_scale_stress_20260810\\downstream\\parent\\parent_step5_relax_rawtex_strip.png",
+            "sha256": "536bf89f258a1b225439bbed95c932568509d3a4538dbf53267ae36888a83da0"
+          }
+        }
+      }
+    },
+    "visual_scope": "Complete stage-1 and stage-5 readable-strip products are rendered; no seam, crop, or favorable window is selected."
+  },
+  "safety_gates": {
+    "final_canvas_bounded": true,
+    "final_fill_drop_within_pp": true,
+    "final_multi_increase_within_pp": false,
+    "final_seam_excess_not_worse": true,
+    "pass": false,
+    "stage1_canvas_bounded": true,
+    "stage1_fill_drop_within_pp": false
+  },
+  "schema_version": 1,
+  "scope": "Complete stage-1 and stage-5 readable strips; no seam, crop, or favorable window is selected. This is downstream texture evidence, not ink recovery.",
+  "stage_effects": {
+    "step1_ribbon": {
+      "candidate": {
+        "H": 385,
+        "W": 191173,
+        "base_dcol_mean": 10.1,
+        "fill": 0.0489,
+        "multi_frac": 0.5813,
+        "seam_dcol_mean": 12.679,
+        "seam_ratio": 1.255
+      },
+      "change": {
+        "canvas_area_ratio": 0.9999947691631708,
+        "fill_pp": -0.20000000000000018,
+        "multi_pp": 6.800000000000006,
+        "seam_dcol": -0.29100000000000037,
+        "seam_excess_reduction": -0.008999999999999897,
+        "seam_ratio": 0.008999999999999897
+      },
+      "parent": {
+        "H": 385,
+        "W": 191174,
+        "base_dcol_mean": 10.408,
+        "fill": 0.0509,
+        "multi_frac": 0.5133,
+        "seam_dcol_mean": 12.97,
+        "seam_ratio": 1.246
+      }
+    },
+    "step2_join": {
+      "candidate": {
+        "H": 385,
+        "W": 191173,
+        "base_dcol_mean": 10.269,
+        "fill": 0.0498,
+        "multi_frac": 0.5785,
+        "seam_dcol_mean": 12.487,
+        "seam_ratio": 1.216
+      },
+      "change": {
+        "canvas_area_ratio": 0.9999947691631708,
+        "fill_pp": -0.1800000000000003,
+        "multi_pp": 6.900000000000006,
+        "seam_dcol": -0.3520000000000003,
+        "seam_excess_reduction": -0.008999999999999897,
+        "seam_ratio": 0.008999999999999897
+      },
+      "parent": {
+        "H": 385,
+        "W": 191174,
+        "base_dcol_mean": 10.638,
+        "fill": 0.0516,
+        "multi_frac": 0.5095,
+        "seam_dcol_mean": 12.839,
+        "seam_ratio": 1.207
+      }
+    },
+    "step3_overlap": {
+      "candidate": {
+        "H": 385,
+        "W": 191173,
+        "base_dcol_mean": 10.269,
+        "fill": 0.0498,
+        "multi_frac": 0.5785,
+        "seam_dcol_mean": 12.487,
+        "seam_ratio": 1.216
+      },
+      "change": {
+        "canvas_area_ratio": 0.9999947691631708,
+        "fill_pp": -0.1800000000000003,
+        "multi_pp": 6.900000000000006,
+        "seam_dcol": -0.3520000000000003,
+        "seam_excess_reduction": -0.008999999999999897,
+        "seam_ratio": 0.008999999999999897
+      },
+      "parent": {
+        "H": 385,
+        "W": 191174,
+        "base_dcol_mean": 10.638,
+        "fill": 0.0516,
+        "multi_frac": 0.5095,
+        "seam_dcol_mean": 12.839,
+        "seam_ratio": 1.207
+      }
+    },
+    "step4_snap": {
+      "candidate": {
+        "H": 385,
+        "W": 191173,
+        "base_dcol_mean": 10.279,
+        "fill": 0.0498,
+        "multi_frac": 0.5785,
+        "seam_dcol_mean": 12.51,
+        "seam_ratio": 1.217
+      },
+      "change": {
+        "canvas_area_ratio": 0.9999947691631708,
+        "fill_pp": -0.1800000000000003,
+        "multi_pp": 6.900000000000006,
+        "seam_dcol": -0.3520000000000003,
+        "seam_excess_reduction": -0.007000000000000117,
+        "seam_ratio": 0.007000000000000117
+      },
+      "parent": {
+        "H": 385,
+        "W": 191174,
+        "base_dcol_mean": 10.626,
+        "fill": 0.0516,
+        "multi_frac": 0.5095,
+        "seam_dcol_mean": 12.862,
+        "seam_ratio": 1.21
+      }
+    },
+    "step5_relax": {
+      "candidate": {
+        "H": 385,
+        "W": 191173,
+        "base_dcol_mean": 10.413,
+        "fill": 0.0498,
+        "multi_frac": 0.5778,
+        "seam_dcol_mean": 12.694,
+        "seam_ratio": 1.219
+      },
+      "change": {
+        "canvas_area_ratio": 0.9999947691631708,
+        "fill_pp": -0.17,
+        "multi_pp": 6.819999999999993,
+        "seam_dcol": -0.3089999999999993,
+        "seam_excess_reduction": -0.0020000000000000018,
+        "seam_ratio": 0.0020000000000000018
+      },
+      "parent": {
+        "H": 385,
+        "W": 191174,
+        "base_dcol_mean": 10.687,
+        "fill": 0.0515,
+        "multi_frac": 0.5096,
+        "seam_dcol_mean": 13.003,
+        "seam_ratio": 1.217
+      }
+    }
+  },
+  "thresholds": {
+    "canvas_area_ratio": [
+      0.95,
+      1.05
+    ],
+    "max_fill_drop_pp": 0.2,
+    "max_final_seam_excess_increase": 0.05,
+    "max_multi_increase_pp": 0.2,
+    "min_seam_excess_reduction": 0.05
+  }
+}

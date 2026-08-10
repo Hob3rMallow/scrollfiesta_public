@@ -1,0 +1,99 @@
+{
+  "format": "scrollfiesta-pherc0211-placement-validation-v1",
+  "decision": "INCONCLUSIVE",
+  "claim": "No held-out efficacy or production-default claim",
+  "preregistration": {
+    "commit": "0b5493cfbfc6f287a4ecbb0813db07fb4bc33195",
+    "url": "https://github.com/TAUIL-Abd-Elilah/scrollfiesta_public/commit/0b5493cfbfc6f287a4ecbb0813db07fb4bc33195"
+  },
+  "candidate_algorithm_commit": "19152e49acf855d2bbe215329050ab0cc0085b5e",
+  "data": {
+    "scroll": "PHerc0211",
+    "bbox_l0_zyx": [5888, 6016, 3584, 4224, 3200, 3840],
+    "axis_point_zyx": [0.0, 3905.0, 3527.0],
+    "axis_dir_zyx": [1.0, 0.0, 0.0],
+    "input_sha256_manifest": "ce034435a2ec98e67cec656383c67827fb77777fbf9e1cae5dadf157e2fd307e",
+    "input_validation_sha256": "2af7224c09c13b50b6dee3dec228b03e4835b265854e4fa4a1cf1f9046dcdd13"
+  },
+  "input_gate": {
+    "pass": true,
+    "prediction_cubes": 25,
+    "raw_cubes": 25,
+    "prediction_nonzero_fraction": 0.22413867950439453,
+    "raw_nonzero_fraction": 0.9999532318115234,
+    "ids_exact": true,
+    "shape_dtype_value_checks": true
+  },
+  "mesh_gate": {
+    "pass": true,
+    "cubes_exit_zero": 25,
+    "cubes_rejected": 0,
+    "cubes_failed": 0,
+    "complete_dry_run_skip": 25,
+    "complete_dry_run_run": 0,
+    "pipeline_summary_sha256": "9a5c962f7f6f4da5cfbd90e2367633e94a122cf8b847454062e53ca426f40477"
+  },
+  "comparability_gate": {
+    "pass": true,
+    "cube_ids_equal": true,
+    "mesh_vertex_face_skin_status_equal": true,
+    "audit_pair_keys_and_counts_equal": true,
+    "adjacent_pair_sets": 34,
+    "audit_pairs": 829,
+    "baseline_ok_skipped_low_conf": [25, 0, 0],
+    "candidate_ok_skipped_low_conf": [25, 0, 0]
+  },
+  "calibration_gate": {
+    "pass": false,
+    "supported_candidates": 25,
+    "selected_sign_support": 13,
+    "selected_sign_fraction": 0.52,
+    "required_sign_fraction": 0.60,
+    "positive_candidates": 13,
+    "negative_candidates": 12,
+    "absolute_pitch_min_q1_median_q3_max": [4.4350, 7.3431, 8.3661, 9.2877, 14.8074],
+    "baseline_pitch": 8.2617,
+    "candidate_pitch": 8.3661
+  },
+  "baseline": {
+    "audit_status": "FAIL",
+    "turn_off_pairs": 83,
+    "turn_off_fraction": 0.10012062726176116,
+    "join_lt2_fraction": 0.8227,
+    "join_lt6_fraction": 0.8951,
+    "collisions": 171,
+    "audit_sha256": "1cd070508123448d6a8a0489e99bb09b000214d5e687f5c5597ebbf24d6d610c",
+    "placed_index_sha256": "6defd7f0bd0059ebccf3c3b5b129668d80023ec80de0da383f7800491438694b"
+  },
+  "candidate": {
+    "audit_status": "FAIL",
+    "turn_off_pairs": 57,
+    "turn_off_fraction": 0.06875753920386007,
+    "join_lt2_fraction": 0.8480,
+    "join_lt6_fraction": 0.9216,
+    "collisions": 119,
+    "component_gauge": "consensus",
+    "radius_components": 74,
+    "raw_components": 116,
+    "audit_sha256": "51ea67d956dc47cd5f807935509d2a18de1d9dab570968d28d37cd45256352bf",
+    "placed_index_sha256": "17efa07120b6f73cfd5e894920f3818eda25543848ccfb5b5dafc3f21cc32210"
+  },
+  "paired_effect": {
+    "turn_off_pairs_removed": 26,
+    "turn_off_absolute_reduction_pp": 3.1363088057901085,
+    "turn_off_relative_reduction": 0.3132530120481928,
+    "join_lt2_change_pp": 2.529999999999999,
+    "join_lt6_change_pp": 2.649999999999997,
+    "collisions_removed": 52,
+    "pair_sets_improved_worse_equal": [13, 0, 21]
+  },
+  "frozen_primary_gates": {
+    "input_mesh_comparability": true,
+    "candidate_audit_pass": false,
+    "turn_off_reduction_at_least_1pp": true,
+    "join_lt2_not_worse_by_more_than_2pp": true,
+    "calibration_support_at_least_10": true,
+    "calibration_selected_sign_at_least_60pct": false
+  },
+  "reason": "The candidate improved every primary numerical comparison but still had 6.876% turn-off errors, above the fixed 5% audit ceiling, and its 13/25 winding-sign vote missed the fixed 60% stability floor."
+}

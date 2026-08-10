@@ -1,0 +1,69 @@
+{
+  "tool": "scroll_unroll",
+  "placed_dir": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_holdout_20260810\\candidate", "raw_dir": "..\\_sf_calibration\\output\\experiments\\pherc0826_sparse_graph_holdout_20260810\\grid\\cubes_RAW",
+  "n_cubes": 25, "nv": 61845, "nf": 61802,
+  "n_seam_cols": 728,
+  "stages": [
+    {
+      "name": "step1_ribbon",
+      "W": 101090, "H": 129, "bands": 4,
+      "window": [44.0, 184.0],
+      "fill": 0.0669, "filled_px": 872084, "multi_px": 375147,
+      "skip_uv_faces": 25, "skip_3d_faces": 0, "skip_own_faces": 0,
+      "multi_frac": 0.4302, "dark_frac": 0.0045,
+      "seam_dcol_mean": 13.723, "base_dcol_mean": 11.834, "seam_ratio": 1.160,
+      "vseam_gap_fill": 0.000, "vseam_ratio": 0.000, "n_vseam_rows": 0,
+      "synth_px": 0, "synth_frac": 0.0000, "fill_total": 0.0669,
+      "seconds": 1.20
+    },
+    {
+      "name": "step2_join",
+      "W": 101090, "H": 129, "bands": 4,
+      "window": [44.0, 184.0],
+      "fill": 0.0687, "filled_px": 895310, "multi_px": 380952,
+      "skip_uv_faces": 25, "skip_3d_faces": 0, "skip_own_faces": 0,
+      "multi_frac": 0.4255, "dark_frac": 0.0051,
+      "seam_dcol_mean": 12.961, "base_dcol_mean": 11.514, "seam_ratio": 1.126,
+      "vseam_gap_fill": 0.000, "vseam_ratio": 0.000, "n_vseam_rows": 0,
+      "synth_px": 0, "synth_frac": 0.0000, "fill_total": 0.0687,
+      "seconds": 12.76
+    },
+    {
+      "name": "step3_overlap",
+      "W": 101090, "H": 129, "bands": 4,
+      "window": [44.0, 184.0],
+      "fill": 0.0687, "filled_px": 895310, "multi_px": 380952,
+      "skip_uv_faces": 25, "skip_3d_faces": 0, "skip_own_faces": 0,
+      "multi_frac": 0.4255, "dark_frac": 0.0051,
+      "seam_dcol_mean": 12.961, "base_dcol_mean": 11.514, "seam_ratio": 1.126,
+      "vseam_gap_fill": 0.000, "vseam_ratio": 0.000, "n_vseam_rows": 0,
+      "synth_px": 0, "synth_frac": 0.0000, "fill_total": 0.0687,
+      "seconds": 2.50
+    },
+    {
+      "name": "step4_snap",
+      "W": 101090, "H": 129, "bands": 4,
+      "window": [44.0, 184.0],
+      "fill": 0.0687, "filled_px": 895310, "multi_px": 380952,
+      "skip_uv_faces": 25, "skip_3d_faces": 0, "skip_own_faces": 0,
+      "multi_frac": 0.4255, "dark_frac": 0.0028,
+      "seam_dcol_mean": 13.073, "base_dcol_mean": 11.424, "seam_ratio": 1.144,
+      "vseam_gap_fill": 0.000, "vseam_ratio": 0.000, "n_vseam_rows": 0,
+      "synth_px": 0, "synth_frac": 0.0000, "fill_total": 0.0687,
+      "seconds": 2.13
+    },
+    {
+      "name": "step5_relax",
+      "W": 101090, "H": 129, "bands": 4,
+      "window": [44.0, 184.0],
+      "fill": 0.0686, "filled_px": 894690, "multi_px": 379823,
+      "skip_uv_faces": 24, "skip_3d_faces": 0, "skip_own_faces": 0,
+      "multi_frac": 0.4245, "dark_frac": 0.0031,
+      "seam_dcol_mean": 13.201, "base_dcol_mean": 11.437, "seam_ratio": 1.154,
+      "vseam_gap_fill": 0.000, "vseam_ratio": 0.000, "n_vseam_rows": 0,
+      "synth_px": 0, "synth_frac": 0.0000, "fill_total": 0.0686,
+      "seconds": 12.41
+    }
+  ],
+  "total_seconds": 32.63
+}

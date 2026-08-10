@@ -215,6 +215,7 @@ typedef struct {
     int    rr_no_moves;
     int    rr_max_moves;     /* <=0 => GroupGraph default */
     int    rr_raw_component_gauge; /* anchor forest components to raw k chart */
+    int    rr_consensus_component_gauge; /* radius only on unanimous components */
     int    rr_raw_du_gauge;  /* preserve raw continuous-u chart */
     double rr_anchor_weight; /* soft physical-winding anchor in min-cut */
     int    rr_anchor_auto;   /* scale anchor by graph cycle redundancy */
@@ -222,6 +223,91 @@ typedef struct {
     int    uwarp;            /* --uwarp: ArcReg u-warp measure pass after solve */
     int    uwarp_knots;      /* --uwarp-knots (<=0 => default 5) */
 } WholeCfg;
+
+/* One bit per GroupGraph node: the node participates in at least one admitted
+ * cross-cube relation.  Such a node's integer and matching du must remain the
+ * graph solution during the later pooled-neighbour polish. */
+static uint8_t *graph_support_mask(Arena_T arena, const GroupGraph *g)
+{
+    assert(arena && g);
+    uint8_t *supported = (uint8_t *)ARENA_CALLOC(
+        arena, g->n_nodes > 0 ? g->n_nodes : 1, sizeof(uint8_t));
+    for (size_t e = 0; e < g->n_edges; e++) {
+        if (g->edges[e].a >= 0 && (size_t)g->edges[e].a < g->n_nodes)
+            supported[g->edges[e].a] = 1;
+        if (g->edges[e].b >= 0 && (size_t)g->edges[e].b < g->n_nodes)
+            supported[g->edges[e].b] = 1;
+    }
+    return supported;
+}
+
+/* Restore graph-supported group entries in a mutable CubeReg proposal.
+ * Returns the number of proposed integer changes that were rejected. */
+static size_t preserve_graph_supported_groups(const GroupGraph *g,
+                                               const uint8_t *supported,
+                                               size_t cube,
+                                               const PlacedReg *current,
+                                               PlacedReg *proposal)
+{
+    assert(g && supported && current && proposal && cube < g->n_cubes);
+    if (proposal->g_wk == NULL || proposal->g_du == NULL ||
+        current->g_wk == NULL || current->g_du == NULL)
+        return 0;
+
+    int32_t *new_wk = (int32_t *)proposal->g_wk;
+    double *new_du = (double *)proposal->g_du;
+    size_t rejected = 0;
+    int32_t q0 = g->cube_node0[cube], q1 = g->cube_node0[cube + 1];
+    for (int32_t q = q0; q < q1; q++) {
+        if (!supported[q]) continue;
+        int32_t gid = g->nodes[q].gid;
+        if (gid < 0 || gid >= proposal->n_groups ||
+            gid >= current->n_groups)
+            continue;
+        if (new_wk[gid] != current->g_wk[gid]) rejected++;
+        new_wk[gid] = current->g_wk[gid];
+        new_du[gid] = current->g_du[gid];
+    }
+    return rejected;
+}
+
+static int graph_polish_guard_selftest(void)
+{
+    Arena_T arena = Arena_new();
+    GGNode nodes[3];
+    memset(nodes, 0, sizeof(nodes));
+    nodes[0].cube = 0; nodes[0].gid = 0;  /* supported */
+    nodes[1].cube = 0; nodes[1].gid = 1;  /* isolated */
+    nodes[2].cube = 1; nodes[2].gid = 0;  /* supported */
+    GGEdge edge;
+    memset(&edge, 0, sizeof(edge));
+    edge.a = 0; edge.b = 2;
+    int32_t cube_node0[3] = { 0, 2, 3 };
+    GroupGraph g;
+    memset(&g, 0, sizeof(g));
+    g.nodes = nodes; g.n_nodes = 3;
+    g.edges = &edge; g.n_edges = 1;
+    g.cube_node0 = cube_node0; g.n_cubes = 2;
+
+    int32_t old_wk[2] = { 4, 7 }, new_wk[2] = { -3, 8 };
+    double old_du[2] = { 1.25, 2.5 }, new_du[2] = { 9.0, 3.5 };
+    PlacedReg current, proposal;
+    memset(&current, 0, sizeof(current));
+    memset(&proposal, 0, sizeof(proposal));
+    current.g_wk = old_wk; current.g_du = old_du; current.n_groups = 2;
+    proposal.g_wk = new_wk; proposal.g_du = new_du; proposal.n_groups = 2;
+
+    uint8_t *supported = graph_support_mask(arena, &g);
+    size_t rejected = preserve_graph_supported_groups(
+        &g, supported, 0, &current, &proposal);
+    int fail = !(rejected == 1 && new_wk[0] == 4 && new_du[0] == 1.25 &&
+                 new_wk[1] == 8 && new_du[1] == 3.5 &&
+                 supported[0] && !supported[1] && supported[2]);
+    fprintf(stderr, "graph_polish_guard_selftest: %s\n",
+            fail ? "FAIL" : "PASS");
+    Arena_dispose(&arena);
+    return fail;
+}
 
 enum {
     WHOLE_PITCH_AUTO = 0,
@@ -242,6 +328,106 @@ typedef struct {
     char   seed_id[48];
 } WholeCal;
 
+typedef struct {
+    double spiral_a, spiral_b, spiral_r2;
+    int    sense;
+    size_t order_rank;
+    char   seed_id[48];
+} CalCandidate;
+
+static int cmp_cal_pitch(const void *pa, const void *pb)
+{
+    double a = *(const double *)pa, b = *(const double *)pb;
+    return a < b ? -1 : (a > b ? 1 : 0);
+}
+
+/* A single 128^3 patch can expose only a few folded plies, so its radial-gap
+ * pitch and cov(phi,r) sign are both seed-order sensitive.  Select a
+ * representative calibration from the first schedule neighbourhood instead:
+ * majority sign, median pitch within that sign, then the observed candidate
+ * nearest the median (r2 and schedule rank are deterministic tie-breakers).
+ * Keeping a real candidate's (a,b) pair avoids inventing an intercept whose
+ * winding gauge was never observed together with the chosen slope. */
+static int select_calibration_candidate(const CalCandidate *c, size_t n,
+                                        CalCandidate *selected,
+                                        int *selected_sense,
+                                        size_t *sense_support,
+                                        double *median_pitch)
+{
+    if (c == NULL || n == 0 || selected == NULL) return -1;
+
+    size_t npos = 0, nneg = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (c[i].sense < 0) nneg++;
+        else npos++;
+    }
+    int sense = nneg > npos ? -1 : npos > nneg ? 1 : c[0].sense;
+    size_t ns = sense < 0 ? nneg : npos;
+    double pitch[25];
+    if (ns == 0 || ns > sizeof(pitch) / sizeof(pitch[0])) return -1;
+    size_t q = 0;
+    for (size_t i = 0; i < n; i++)
+        if (c[i].sense == sense) pitch[q++] = fabs(c[i].spiral_b);
+    qsort(pitch, q, sizeof(double), cmp_cal_pitch);
+    double med = q & 1 ? pitch[q / 2]
+                       : 0.5 * (pitch[q / 2 - 1] + pitch[q / 2]);
+
+    size_t best = (size_t)-1;
+    double best_dist = 1e300;
+    for (size_t i = 0; i < n; i++) {
+        if (c[i].sense != sense) continue;
+        double dist = fabs(fabs(c[i].spiral_b) - med);
+        if (best == (size_t)-1 || dist < best_dist - 1e-12
+            || (fabs(dist - best_dist) <= 1e-12
+                && (c[i].spiral_r2 > c[best].spiral_r2 + 1e-12
+                    || (fabs(c[i].spiral_r2 - c[best].spiral_r2) <= 1e-12
+                        && c[i].order_rank < c[best].order_rank)))) {
+            best = i;
+            best_dist = dist;
+        }
+    }
+    if (best == (size_t)-1) return -1;
+    *selected = c[best];
+    if (selected_sense) *selected_sense = sense;
+    if (sense_support) *sense_support = ns;
+    if (median_pitch) *median_pitch = med;
+    return 0;
+}
+
+static int calibration_select_selftest(void)
+{
+    int fails = 0;
+    CalCandidate c[8], s;
+    memset(c, 0, sizeof(c));
+    const double b[]  = {-4.75, -10.0, -11.0, -12.0, 9.0, 10.0};
+    const double r2[] = { 0.99,   0.70,  0.90,  0.80, 0.95, 0.75};
+    for (size_t i = 0; i < 6; i++) {
+        c[i].spiral_b = b[i]; c[i].spiral_r2 = r2[i];
+        c[i].sense = b[i] < 0.0 ? -1 : 1; c[i].order_rank = i;
+        snprintf(c[i].seed_id, sizeof(c[i].seed_id), "c%zu", i);
+    }
+    int sense = 0; size_t support = 0; double med = 0.0;
+    if (select_calibration_candidate(c, 6, &s, &sense, &support, &med) != 0
+        || sense != -1 || support != 4 || fabs(med - 10.5) > 1e-12
+        || strcmp(s.seed_id, "c2") != 0) {
+        fprintf(stderr, "FAIL calibration selector: robust majority/median\n");
+        fails++;
+    }
+
+    /* A sign tie follows the earliest supported schedule candidate. */
+    c[0].spiral_b = 8.0; c[0].sense = 1; c[0].spiral_r2 = 0.5;
+    c[1].spiral_b = -8.0; c[1].sense = -1; c[1].spiral_r2 = 0.9;
+    c[0].order_rank = 0; c[1].order_rank = 1;
+    snprintf(c[0].seed_id, sizeof(c[0].seed_id), "pos");
+    snprintf(c[1].seed_id, sizeof(c[1].seed_id), "neg");
+    if (select_calibration_candidate(c, 2, &s, &sense, &support, &med) != 0
+        || sense != 1 || support != 1 || strcmp(s.seed_id, "pos") != 0) {
+        fprintf(stderr, "FAIL calibration selector: deterministic sign tie\n");
+        fails++;
+    }
+    return fails;
+}
+
 /* per-cube driver record */
 typedef struct {
     PlacedStats st;
@@ -257,7 +443,10 @@ static int calibrate(const WholeCfg *cfg, const CubeNode *nodes, size_t n,
                      const int32_t *order, WholeCal *cal)
 {
     memset(cal, 0, sizeof(*cal));
-    for (size_t t = 0; t < n; t++) {
+    CalCandidate cand[25];
+    size_t ncand = 0;
+    size_t nprobe = n < 25 ? n : 25;
+    for (size_t t = 0; t < nprobe; t++) {
         const CubeNode *nd = &nodes[order[t]];
         char path[1024];
         leaf_obj_path(path, sizeof(path), cfg->dump_dir, nd->id, cfg->leaf_stage);
@@ -281,16 +470,29 @@ static int calibrate(const WholeCfg *cfg, const CubeNode *nodes, size_t n,
                          || R.pitch_source == RIB_PITCH_ESTIMATED;
             if (rr == 0 && pitch_ok &&
                 fabs(R.spiral_b) >= 1.0 && R.spiral_r2 > 0.2) {
-                cal->spiral_a = R.spiral_a;
-                cal->spiral_b = R.spiral_b;
-                cal->sense = R.spiral_b > 0.0 ? 1 : -1;
-                snprintf(cal->seed_id, sizeof(cal->seed_id), "%s", nd->id);
-                logf_both("[cal] seed %s: spiral a=%.3f b=%.4f r2=%.3f "
-                          "sense=%+d (pitch %s %.3f)\n", nd->id, R.spiral_a,
-                          R.spiral_b, R.spiral_r2, cal->sense,
-                          cfg->pitch > 0.0 ? "pinned" : "estimated",
-                          fabs(R.spiral_b));
-                ok = 1;
+                CalCandidate *cc = &cand[ncand++];
+                cc->spiral_a = R.spiral_a;
+                cc->spiral_b = R.spiral_b;
+                cc->spiral_r2 = R.spiral_r2;
+                cc->sense = R.spiral_b > 0.0 ? 1 : -1;
+                cc->order_rank = t;
+                snprintf(cc->seed_id, sizeof(cc->seed_id), "%s", nd->id);
+                if (cfg->pitch > 0.0) {
+                    cal->spiral_a = cc->spiral_a;
+                    cal->spiral_b = cc->spiral_b;
+                    cal->sense = cc->sense;
+                    snprintf(cal->seed_id, sizeof(cal->seed_id), "%s",
+                             cc->seed_id);
+                    logf_both("[cal] seed %s: spiral a=%.3f b=%.4f r2=%.3f "
+                              "sense=%+d (pitch pinned %.3f)\n", nd->id,
+                              R.spiral_a, R.spiral_b, R.spiral_r2, cal->sense,
+                              fabs(R.spiral_b));
+                    ok = 1;
+                } else {
+                    logf_both("[cal/candidate %zu/%zu] %s: a=%.3f b=%.4f "
+                              "r2=%.3f sense=%+d\n", t + 1, nprobe, nd->id,
+                              R.spiral_a, R.spiral_b, R.spiral_r2, cc->sense);
+                }
             } else {
                 logf_both("[cal] %s unusable (rc=%d b=%.3f r2=%.3f "
                           "pitch_source=%d) -- trying next\n", nd->id, rr,
@@ -299,9 +501,29 @@ static int calibrate(const WholeCfg *cfg, const CubeNode *nodes, size_t n,
         }
         Arena_dispose(&arena);
         if (ok) return 0;
-        if (t >= 24) break;   /* two dozen bad candidates = the grid is wrong */
     }
-    return -1;
+
+    if (cfg->pitch > 0.0 || ncand == 0) return -1;
+    CalCandidate selected;
+    int selected_sense = 0;
+    size_t sense_support = 0;
+    double median_pitch = 0.0;
+    if (select_calibration_candidate(cand, ncand, &selected,
+                                     &selected_sense, &sense_support,
+                                     &median_pitch) != 0)
+        return -1;
+    cal->spiral_a = selected.spiral_a;
+    cal->spiral_b = selected.spiral_b;
+    cal->sense = selected.sense;
+    snprintf(cal->seed_id, sizeof(cal->seed_id), "%s", selected.seed_id);
+    logf_both("[cal/consensus] %zu/%zu usable; sense=%+d support=%zu/%zu; "
+              "median pitch=%.4f\n", ncand, nprobe, selected_sense,
+              sense_support, ncand, median_pitch);
+    logf_both("[cal] seed %s: spiral a=%.3f b=%.4f r2=%.3f sense=%+d "
+              "(pitch estimated %.3f)\n", selected.seed_id,
+              selected.spiral_a, selected.spiral_b, selected.spiral_r2,
+              selected.sense, fabs(selected.spiral_b));
+    return 0;
 }
 
 /* ---- Pass B ----------------------------------------------------------------- */
@@ -1378,6 +1600,7 @@ static int run_reregister(const WholeCfg *cfg_in)
     if (cfg.rr_no_moves) go.do_moves = 0;
     if (cfg.rr_max_moves > 0) go.max_moves = cfg.rr_max_moves;
     go.raw_component_gauge = cfg.rr_raw_component_gauge;
+    go.consensus_component_gauge = cfg.rr_consensus_component_gauge;
     go.raw_du_gauge = cfg.rr_raw_du_gauge;
     if (cfg.rr_anchor_weight > 0.0)
         go.anchor_weight = cfg.rr_anchor_weight;
@@ -1402,11 +1625,14 @@ static int run_reregister(const WholeCfg *cfg_in)
     logf_both("[reregister] solve (forest; k-gauge=%s, du-gauge=%s, "
               "anchor=%.6g): "
               "%d component(s), energy=%.1f, "
-              "frustrated=%zu edges, moves=%d (%.1fs)\n",
-              cfg.rr_raw_component_gauge ? "raw" : "radius",
+              "frustrated=%zu edges, moves=%d, gauge radius/raw=%zu/%zu "
+              "(%.1fs)\n",
+              cfg.rr_raw_component_gauge ? "raw" :
+              cfg.rr_consensus_component_gauge ? "consensus" : "radius",
               cfg.rr_raw_du_gauge ? "raw" : "seam",
               gg.anchor_weight_effective,
               gg.n_comp, gg.energy, gg.n_frustrated, gg.moves_applied,
+              gg.components_radius_gauged, gg.components_raw_gauged,
               ves_clock_sec() - t0);
 
     /* ---- per-cube regs from the graph ---- */
@@ -1414,13 +1640,21 @@ static int run_reregister(const WholeCfg *cfg_in)
     for (size_t i = 0; i < n; i++)
         GroupGraph_cube_reg(arena, &gg, i, &regs[i]);
 
+    /* Mark every node whose integer relation is measured by at least one
+     * admitted graph edge.  The old unconstrained cube polish pooled all
+     * neighbour groups and could overwrite these explicit (gidA,gidB)
+     * relations.  Sparse seam groups were hit hardest: on the PHerc0211
+     * validation slab all 54 residual turn errors belonged to 1--2-pair
+     * buckets, and unconstrained polish reintroduced 30 of the errors after
+     * the graph had removed them. */
+    uint8_t *graph_supported = graph_support_mask(arena, &gg);
 
-    /* ---- Gauss-Seidel polish from the graph seed. The graph fixes the
-     * GLOBAL gauge (branch cuts, component turns); the sweeps then refine
-     * per-group du with the proven per-cube median machinery and out-vote
-     * any small component the radius prior mis-gauged -- from a correct
-     * basin, coordinate descent defends the RIGHT majority. Integer changes
-     * are counted for the convergence stop, exactly like pass_c. ---- */
+    /* ---- Gauss-Seidel polish from the graph seed.  Only graph-ISOLATED
+     * groups may take its pooled-neighbour integer/du proposal.  A supported
+     * group keeps the graph's explicit pair-bucket solution; otherwise a
+     * coordinate update can improve its local majority while silently
+     * breaking a measured weak edge.  Accepted cube-level integer changes
+     * drive the convergence stop, exactly like pass_c. ---- */
     Arena_T polish_tabs = NULL;
     if (cfg.sweeps > 0 && !cfg.rr_raw_component_gauge) {
         /* tables in their OWN arena so the per-cube scratch restore can
@@ -1432,6 +1666,7 @@ static int run_reregister(const WholeCfg *cfg_in)
         int sweep = 0;
         for (sweep = 0; sweep < cfg.sweeps; sweep++) {
             size_t changes = 0;
+            size_t protected_proposals = 0;
             for (size_t oi = 0; oi < n; oi++) {
                 size_t i = (size_t)order[oi];
                 if (nskin[i] == 0) continue;
@@ -1460,6 +1695,12 @@ static int run_reregister(const WholeCfg *cfg_in)
                               cfg.min_pairs, cfg.min_group_pairs, &cr);
                 Arena_restore(arena, mark);
                 if (!cr.low_conf) {
+                    /* cr.tab lives in tab_arena and CubeReg_solve allocated
+                     * mutable tables even though PlacedReg exposes them as
+                     * read-only.  Restore both k and its matching du for every
+                     * graph-supported group before accepting this proposal. */
+                    protected_proposals += preserve_graph_supported_groups(
+                        &gg, graph_supported, i, &regs[i], &cr.tab);
                     int diff = cr.tab.wk_cube != regs[i].wk_cube;
                     int32_t gmax = cr.tab.n_groups < regs[i].n_groups
                                  ? cr.tab.n_groups : regs[i].n_groups;
@@ -1469,8 +1710,10 @@ static int run_reregister(const WholeCfg *cfg_in)
                     regs[i] = cr.tab;   /* lives in tab_arena */
                 }
             }
-            logf_both("[reregister] polish sweep %d: %zu integer changes\n",
-                      sweep + 1, changes);
+            logf_both("[reregister] polish sweep %d: %zu accepted cube "
+                      "integer changes; %zu graph-supported group proposals "
+                      "preserved\n", sweep + 1, changes,
+                      protected_proposals);
             if (changes == 0) break;
         }
         logf_both("[reregister] polish done in %.1fs\n",
@@ -1626,7 +1869,8 @@ static int run_reregister(const WholeCfg *cfg_in)
                 "  \"reregistered\": 1,\n"
                 "  \"rereg\": { \"nodes\": %zu, \"edges\": %zu, "
                 "\"components\": %d, \"energy\": %.1f, \"frustrated\": %zu, "
-                "\"moves\": %d },\n"
+                "\"moves\": %d, \"component_gauge\": \"%s\", "
+                "\"radius_components\": %zu, \"raw_components\": %zu },\n"
                 "  \"n_cubes\": %zu, \"n_ok\": %zu, \"n_skipped\": %zu,\n"
                 "  \"n_low_conf\": 0, \"n_turn_corrected\": 0,\n"
                 "  \"u_range\": [%.2f, %.2f], \"v_range\": [%.2f, %.2f],\n"
@@ -1641,6 +1885,9 @@ static int run_reregister(const WholeCfg *cfg_in)
                 seed_json, cal.spiral_a, cal.spiral_b, cal.sense,
                 gg.n_nodes, gg.n_edges, gg.n_comp, gg.energy,
                 gg.n_frustrated, gg.moves_applied,
+                cfg.rr_raw_component_gauge ? "raw" :
+                cfg.rr_consensus_component_gauge ? "consensus" : "radius",
+                gg.components_radius_gauged, gg.components_raw_gauged,
                 n, n_ok, n - n_ok, u_lo, u_hi, v_lo, v_hi);
         int first = 1;
         for (size_t i = 0; i < n; i++) {
@@ -1697,7 +1944,8 @@ static void usage(void)
         "       scroll_whole <placed_dir> --audit [--pair-gate F] [--chunk N]\n"
         "       scroll_whole <placed_dir> --reregister [--radius-gate F]\n"
         "           [--frac-gate F] [--min-edge-pairs N] [--no-moves]\n"
-        "           [--raw-component-gauge|--radius-component-gauge]\n"
+        "           [--raw-component-gauge|--consensus-component-gauge|\n"
+        "            --radius-component-gauge]\n"
         "           [--raw-du-gauge]\n"
         "           [--anchor-weight F|--auto-anchor]\n"
         "           [--no-uwarp] [--uwarp-knots N]\n"
@@ -1715,13 +1963,18 @@ static void usage(void)
         "  --pair-gate F       cross-seam pairing gate vox (default 3.5)\n"
         "  --skin F            boundary-skin depth vox (default 4.0)\n"
         "  --min-pairs N       registration confidence floor (default 24)\n"
-        "  --min-group-pairs N per-group correction floor (default 8; groups\n"
+        "  --min-group-pairs N per-group correction floor (default 3; groups\n"
         "                      with fewer pairs take the cube-level medians)\n"
-        "  --sweeps N          loop-closure consistency sweeps (default 8)\n"
+        "  --min-edge-pairs N  graph edge floor per group pair (default 1)\n"
+        "  --sweeps N          isolated-group consistency sweeps (default 8)\n"
         "  --cut-ratio/--cut-floor/--cut-len   bad-link gates (4 / 40 / 0)\n"
         "  --seed-id ID        force the calibration + flood seed cube\n"
         "  --max-concurrent N  parallel unwraps (default 32)\n"
         "  --limit N           only the first N cubes of the order (debug)\n"
+        "  --consensus-component-gauge  radius-shift only unanimous graph\n"
+        "                      components (reregister default)\n"
+        "  --raw-component-gauge        preserve the raw chart everywhere\n"
+        "  --radius-component-gauge     trust radius on every component\n"
         "  --no-sever          skip per-cube genus severing\n"
         "  --no-obj            skip <id>_placed.obj outputs\n"
         "  --skip-existing     reuse complete Pass-B records (resume)\n");
@@ -1733,6 +1986,8 @@ int main(int argc, char **argv)
         int f = json_escape_selftest();
         f += rr_jstr_selftest();
         f += audit_quality_selftest();
+        f += graph_polish_guard_selftest();
+        f += calibration_select_selftest();
         f += CubeSched_selftest();
         f += CubeReg_selftest();
         f += PlacedCube_selftest();
@@ -1775,13 +2030,14 @@ int main(int argc, char **argv)
     cfg.sever = 1;
     cfg.write_obj = 1;
     cfg.sweeps = 8;
-    /* Production registration: retain Ribbon's coherent raw global gauge,
-     * reject false cross-sheet forest drift with a weak physical anchor, then
-     * fit only the continuous seam warp.  The old radius-gauged +
-     * unconstrained-polish path remains available explicitly. */
+    /* Production registration: a forest component may use its physical
+     * radius gauge only when all supported nodes agree on the same integer
+     * shift; disputed components retain Ribbon's coherent raw global chart.
+     * Explicit all-raw and all-radius modes remain available for diagnosis. */
     cfg.rr_max_moves = 200;
-    cfg.rr_min_edge_pairs = 3;
-    cfg.rr_raw_component_gauge = 1;
+    cfg.rr_min_edge_pairs = 1;
+    cfg.rr_raw_component_gauge = 0;
+    cfg.rr_consensus_component_gauge = 1;
     cfg.rr_anchor_weight = 0.025;
     cfg.rr_anchor_auto = 1;
     cfg.uwarp = 1;
@@ -1821,10 +2077,18 @@ int main(int argc, char **argv)
             cfg.rr_min_edge_pairs = atoi(argv[++i]);
         else if (strcmp(argv[i], "--no-moves") == 0)
             cfg.rr_no_moves = 1;
-        else if (strcmp(argv[i], "--raw-component-gauge") == 0)
+        else if (strcmp(argv[i], "--raw-component-gauge") == 0) {
             cfg.rr_raw_component_gauge = 1;
-        else if (strcmp(argv[i], "--radius-component-gauge") == 0)
+            cfg.rr_consensus_component_gauge = 0;
+        }
+        else if (strcmp(argv[i], "--consensus-component-gauge") == 0) {
             cfg.rr_raw_component_gauge = 0;
+            cfg.rr_consensus_component_gauge = 1;
+        }
+        else if (strcmp(argv[i], "--radius-component-gauge") == 0) {
+            cfg.rr_raw_component_gauge = 0;
+            cfg.rr_consensus_component_gauge = 0;
+        }
         else if (strcmp(argv[i], "--raw-du-gauge") == 0)
             cfg.rr_raw_du_gauge = 1;
         else if (strcmp(argv[i], "--anchor-weight") == 0 && i + 1 < argc) {

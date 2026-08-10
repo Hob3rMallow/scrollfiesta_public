@@ -1,0 +1,34 @@
+scroll_unroll: placed=output\experiments\pherc0826_sparse_graph_scale_stress_20260810\candidate out=output\experiments\pherc0826_sparse_graph_scale_stress_20260810\downstream\candidate raw=output\experiments\pherc0826_sparse_graph_scale_stress_20260810\halo_grid\cubes_RAW id=candidate steps=12345 du=1.00 dv=1.00 band=32768
+[pieces] 147 cubes -> 343402 verts, 317265 kept faces; u=[257,191429] (191172 vox) v=[12672,13056] (0.30s)
+[raw] pre-warmed 405 cubes (0 missing) (1.4s)
+[step1] 191173x385 px (origin u=257 v=12672), 6 band(s): 4.9% filled, multi=2094249 (58.13% of filled), skip_uv=84 skip_3d=0 faces, window=[41,184], raw cubes 405 loaded / 0 missing (5.5s)
+[seams] 3643 seam columns from 147 cubes
+[step1_ribbon] metrics: fill=4.9% multi=58.13% dark=0.33% seam_dcol=12.68 base_dcol=10.10 seam_ratio=1.26 (2121 seam cols)
+[step1_ribbon] vseams: 2 rows gap_fill=0.00 ratio=1.29
+[step2] weld: shell=64565 pairs=5859 clusters=5859 merged-refs=16255 degen=0 rej(cube/uv)=866718/4027 |du|med=0.70
+[step2] relax: bands=6 run=6 reverted=0 no_fiber=0 moved=204987 stretch 1.123->1.080 disp mean=1.64 max=40.00 (51.0s)
+[step2] bake: 5.0% filled, multi=2118587 (10.2s)
+[step2_join] metrics: fill=5.0% multi=57.85% dark=0.35% seam_dcol=12.49 base_dcol=10.27 seam_ratio=1.22 (2270 seam cols)
+[step2_join] vseams: 2 rows gap_fill=0.91 ratio=1.13
+[step3] seam_own: pairs true=59757 seam=3824 mystery=107; 6178 regions (27491 layers, max 3153 f) picks vote/energy/largest=264/469/5445 multicut=5 skip cap/grid=0/0; dropped=32580 of 317265; seams=42 (abut 39, skip 0) drop=0 restore=0; cells 25074->88 (0.4%) E=20.34 (3.6s)
+[step3] diagnostic OBJ split: scroll=284685 faces leftover=32580 faces; XYZ and UV pairs written (output\experiments\pherc0826_sparse_graph_scale_stress_20260810\downstream\candidate/candidate_scroll_xyz.obj, output\experiments\pherc0826_sparse_graph_scale_stress_20260810\downstream\candidate/candidate_leftover_xyz.obj, output\experiments\pherc0826_sparse_graph_scale_stress_20260810\downstream\candidate/candidate_scroll_uv.obj, output\experiments\pherc0826_sparse_graph_scale_stress_20260810\downstream\candidate/candidate_leftover_uv.obj)
+[step3] bake (diagnostic-only; source preserved): 5.0% filled, multi=2118587 (57.85% of filled, was 58.13%), skip_own=0 faces; diagnostic_would_drop=32580 (5.8s)
+[step3_overlap] metrics: fill=5.0% multi=57.85% dark=0.35% seam_dcol=12.49 base_dcol=10.27 seam_ratio=1.22 (2270 seam cols)
+[step3_overlap] vseams: 2 rows gap_fill=0.91 ratio=1.13
+[step3] ownership quarantined: preserved all 317265 faces and immutable UV for downstream stages
+[step4] two-pass snap (global): dark=19226 fixable=11594 crack=7632 rejected=4582; regions=2773 (fix=484 anch=166) max=232; repair moved=8939 reverted=50 mean=3.31 max=8.00 quilt=7800.7 target_dist=3.26 qfb=0; recto support=0 moved=0 reverted=0 slope=0 mean=0.00 max=0.00 iter=0 (0.9s)
+[step4] bake: 5.0% filled, multi=2118587 (5.3s)
+[step4_snap] metrics: fill=5.0% multi=57.85% dark=0.17% seam_dcol=12.51 base_dcol=10.28 seam_ratio=1.22 (2270 seam cols)
+[step4_snap] vseams: 2 rows gap_fill=0.91 ratio=1.12
+[step5] relax: bands=6 run=6 reverted=0 no_fiber=0 moved=202749 stretch 1.098->1.084 disp mean=0.66 max=40.00 (48.5s)
+[step5] bake: 5.0% filled, multi=2118254 (10.3s)
+[step5_relax] metrics: fill=5.0% multi=57.78% dark=0.19% seam_dcol=12.69 base_dcol=10.41 seam_ratio=1.22 (2302 seam cols)
+[step5_relax] vseams: 2 rows gap_fill=0.92 ratio=1.10
+---- summary ----------------------------------------------
+stage               fill%   multi%    dark%    seamR   vfill  vseamR  synth%   drop_own     secs
+step1_ribbon         4.9%   58.13%    0.33%     1.26    0.00    1.29   0.00%          0      5.5
+step2_join           5.0%   57.85%    0.35%     1.22    0.91    1.13   0.00%          0     61.3
+step3_overlap        5.0%   57.85%    0.35%     1.22    0.91    1.13   0.00%          0     10.6
+step4_snap           5.0%   57.85%    0.17%     1.22    0.91    1.12   0.00%          0      6.3
+step5_relax          5.0%   57.78%    0.19%     1.22    0.92    1.10   0.00%          0     58.9
+scroll_unroll: OK (total 149.4s)
