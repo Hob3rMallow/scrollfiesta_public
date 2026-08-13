@@ -17,6 +17,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 /* Emit a ComponentMesh array as a malloc'd sf_mesh_list without provenance
  * (reconstruction outputs have none). Never raises. */
