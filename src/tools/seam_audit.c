@@ -35,12 +35,14 @@
  *   seam_audit <mesh.obj> [--cube <size=128>] [--plane <axis> <coord>]
  *              [--band <vox=4>] [--gap <vox=1.0>] [--angle <deg=20>]
  *              [--out <bad.obj>]
+ *   seam_audit <mesh.obj> --repair <clean.obj> [--repair-max-fraction 0.01]
+ *              [--gap <vox=1.0>] [--angle <deg=20>] [--hinge]
  *   seam_audit --selftest
  *
  * Exit: 0 = clean (or selftest pass), 1 = offenders found (or selftest fail),
  *       2 = usage/IO error.
  *
- * Build: standalone (seam_audit.vcxproj compiles only this file).
+ * Repair uses the shared bounded conflict-graph cleanup also run by grid_weld.
  */
 #ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
@@ -51,6 +53,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "../remesh/intersection_cleanup.h"
 
 /* ===================================================================
  * Vector helpers (double precision; coords can be ~thousands).
@@ -136,6 +140,18 @@ static int inplane_overlap(const double n[3],
         if (pt_in_tri2d(a[k][0],a[k][1], b[0][0],b[0][1],b[1][0],b[1][1],b[2][0],b[2][1])) return 1;
         if (pt_in_tri2d(b[k][0],b[k][1], a[0][0],a[0][1],a[1][0],a[1][1],a[2][0],a[2][1])) return 1;
     }
+    /* Coincident triangulations can have only collinear edges and boundary
+     * vertices.  A centroid is strictly interior for positive-area overlap,
+     * but not for a bare edge/vertex touch. */
+    {
+        double acx=(a[0][0]+a[1][0]+a[2][0])/3.0;
+        double acy=(a[0][1]+a[1][1]+a[2][1])/3.0;
+        double bcx=(b[0][0]+b[1][0]+b[2][0])/3.0;
+        double bcy=(b[0][1]+b[1][1]+b[2][1])/3.0;
+        if (pt_in_tri2d(acx,acy, b[0][0],b[0][1],b[1][0],b[1][1],b[2][0],b[2][1]) ||
+            pt_in_tri2d(bcx,bcy, a[0][0],a[0][1],a[1][0],a[1][1],a[2][0],a[2][1]))
+            return 1;
+    }
     return 0;
 }
 
@@ -201,15 +217,24 @@ static int tri_pair_test(const double v0[3],const double v1[3],const double v2[3
     if (!tri_unit_normal(u0,u1,u2,n2)) return HIT_NONE;
 
     if (fabs(vdot(n1,n2)) >= cos_par) {
-        /* near-parallel: perpendicular separation of the FAR triangle from this
-         * triangle's plane (whole far-tri must sit inside the slab -> a genuine
-         * doubled surface, not a tilted partial clip). */
+        /* Symmetric directed slabs make the predicate independent of sweep
+         * ordering.  The smaller triangle in a coarse/fine local overlap can
+         * be close to the coarse plane while the converse directed distance
+         * exceeds the gap. */
         double d1 = -vdot(n1,v0);
         double s0=fabs(vdot(n1,u0)+d1), s1=fabs(vdot(n1,u1)+d1), s2=fabs(vdot(n1,u2)+d1);
-        double gmax = s0>s1?(s0>s2?s0:s2):(s1>s2?s1:s2);
-        if (gmax > gap_max) return HIT_NONE;        /* too far apart (e.g. wraps) */
-        if (inplane_overlap(n1, v0,v1,v2, u0,u1,u2)) {
-            double gmin = s0<s1?(s0<s2?s0:s2):(s1<s2?s1:s2);
+        double gmax_uv = s0>s1?(s0>s2?s0:s2):(s1>s2?s1:s2);
+        double gmin_uv = s0<s1?(s0<s2?s0:s2):(s1<s2?s1:s2);
+        double d2 = -vdot(n2,u0);
+        double t0=fabs(vdot(n2,v0)+d2), t1=fabs(vdot(n2,v1)+d2), t2=fabs(vdot(n2,v2)+d2);
+        double gmax_vu = t0>t1?(t0>t2?t0:t2):(t1>t2?t1:t2);
+        double gmin_vu = t0<t1?(t0<t2?t0:t2):(t1<t2?t1:t2);
+        if (gmax_uv > gap_max && gmax_vu > gap_max) return HIT_NONE;
+        if (inplane_overlap(n1, v0,v1,v2, u0,u1,u2) ||
+            inplane_overlap(n2, v0,v1,v2, u0,u1,u2)) {
+            double gmin, gmax;
+            if (gmax_uv <= gmax_vu) { gmin=gmin_uv; gmax=gmax_uv; }
+            else                    { gmin=gmin_vu; gmax=gmax_vu; }
             if (out_gap) *out_gap = 0.5*(gmin+gmax);
             return HIT_OVERLAP;
         }
@@ -219,19 +244,112 @@ static int tri_pair_test(const double v0[3],const double v1[3],const double v2[3
 }
 
 /* ===================================================================
- * Minimal OBJ reader (self-contained). First three floats of each "v" line;
- * 0-based indices of each triangular "f" line (tolerates v/vt/vn slashes).
+ * Minimal OBJ reader (self-contained). First three floats of each "v" line,
+ * optional first two floats of each "vt" line, and 0-based indices of each
+ * triangular "f" line (tolerates v/vt/vn slashes).  Retaining a one-to-one
+ * vt stream matters for derived ribbon meshes: exact conflict repair must not
+ * throw away the already-certified UV parameterization.
  * =================================================================== */
-typedef struct { float *v; size_t nv; int32_t *f; size_t nf; } Mesh;
+typedef struct {
+    float *v, *uv;
+    size_t nv, nvt;
+    int32_t *f;
+    size_t nf;
+} Mesh;
+
+#define CHECK_PREVIEW_PAIRS 16384
+typedef struct {
+    size_t a[CHECK_PREVIEW_PAIRS];
+    size_t b[CHECK_PREVIEW_PAIRS];
+    uint8_t kind[CHECK_PREVIEW_PAIRS];
+    size_t n, total;
+} CheckConflictPreview;
+
+static int check_conflict_preview(size_t face_a, size_t face_b,
+                                  int hit_kind, void *context)
+{
+    CheckConflictPreview *p = (CheckConflictPreview *)context;
+    if (!p) return -1;
+    if (p->n < CHECK_PREVIEW_PAIRS) {
+        p->a[p->n] = face_a;
+        p->b[p->n] = face_b;
+        p->kind[p->n] = (uint8_t)hit_kind;
+        p->n++;
+    }
+    p->total++;
+    return 0;
+}
+
+static const char *check_hit_name(int kind)
+{
+    if (kind == INTERSECTION_HIT_OVERLAP) return "overlap";
+    if (kind == INTERSECTION_HIT_STAB) return "stab";
+    if (kind == INTERSECTION_HIT_FOLD) return "fold";
+    return "unknown";
+}
+
+static int write_check_preview(const char *path, const Mesh *m,
+                               const CheckConflictPreview *p)
+{
+    FILE *fp;
+    if (!path || !m || !p) return -1;
+    fp = fopen(path, "w");
+    if (!fp) return -1;
+    fprintf(fp, "# seam_audit exact conflict preview: %zu/%zu pair(s)\n",
+            p->n, p->total);
+    for (size_t q = 0; q < p->n; q++) {
+        size_t face_id[2] = {p->a[q], p->b[q]};
+        fprintf(fp, "o conflict_%zu_%s_faces_%zu_%zu\n", q,
+                check_hit_name(p->kind[q]), face_id[0], face_id[1]);
+        for (int side = 0; side < 2; side++) {
+            size_t f = face_id[side];
+            if (f >= m->nf) { fclose(fp); return -1; }
+            fprintf(fp, "g pair_%zu_side_%c_face_%zu\n",
+                    q, side ? 'B' : 'A', f);
+            for (int k = 0; k < 3; k++) {
+                int32_t v = m->f[f*3+(size_t)k];
+                if (v < 0 || (size_t)v >= m->nv) {
+                    fclose(fp); return -1;
+                }
+                fprintf(fp, "v %.9g %.9g %.9g %.3f %.3f %.3f\n",
+                        (double)m->v[(size_t)v*3+0],
+                        (double)m->v[(size_t)v*3+1],
+                        (double)m->v[(size_t)v*3+2],
+                        side ? 1.0 : 0.0,
+                        side ? 0.1 : 0.8,
+                        side ? 0.1 : 0.2);
+                if (m->uv && m->nvt == m->nv)
+                    fprintf(fp, "vt %.9g %.9g\n",
+                            (double)m->uv[(size_t)v*2],
+                            (double)m->uv[(size_t)v*2+1]);
+            }
+            {
+                size_t base = q * 6 + (size_t)side * 3 + 1;
+                if (m->uv && m->nvt == m->nv)
+                    fprintf(fp, "f %zu/%zu %zu/%zu %zu/%zu\n",
+                            base,base,base+1,base+1,base+2,base+2);
+                else
+                    fprintf(fp, "f %zu %zu %zu\n", base, base+1, base+2);
+            }
+        }
+    }
+    fclose(fp);
+    return 0;
+}
 
 static int obj_read(const char *path, Mesh *m)
 {
     FILE *fp = fopen(path, "r");
     if (!fp) return -1;
-    size_t vcap=1024, fcap=1024;
+    size_t vcap=1024, uvcap=1024, fcap=1024;
     m->v=(float*)malloc(vcap*3*sizeof(float));
+    m->uv=(float*)malloc(uvcap*2*sizeof(float));
     m->f=(int32_t*)malloc(fcap*3*sizeof(int32_t));
-    m->nv=0; m->nf=0;
+    m->nv=0; m->nvt=0; m->nf=0;
+    if (!m->v || !m->uv || !m->f) {
+        fclose(fp); free(m->v); free(m->uv); free(m->f);
+        memset(m,0,sizeof(*m)); return -1;
+    }
     char line[512];
     while (fgets(line,sizeof line,fp)) {
         if (line[0]=='v' && line[1]==' ') {
@@ -240,6 +358,13 @@ static int obj_read(const char *path, Mesh *m)
             sscanf(line+2,"%lf %lf %lf",&a,&b,&c);
             m->v[m->nv*3+0]=(float)a; m->v[m->nv*3+1]=(float)b; m->v[m->nv*3+2]=(float)c;
             m->nv++;
+        } else if (line[0]=='v' && line[1]=='t' &&
+                   (line[2]==' ' || line[2]=='\t')) {
+            if (m->nvt>=uvcap){ uvcap*=2; m->uv=(float*)realloc(m->uv,uvcap*2*sizeof(float)); }
+            double u=0,v=0;
+            sscanf(line+3,"%lf %lf",&u,&v);
+            m->uv[m->nvt*2]=(float)u; m->uv[m->nvt*2+1]=(float)v;
+            m->nvt++;
         } else if (line[0]=='f' && line[1]==' ') {
             int ia=0,ib=0,ic=0;
             if (sscanf(line+2,"%d/%*d/%*d %d/%*d/%*d %d/%*d/%*d",&ia,&ib,&ic)==3 ||
@@ -253,9 +378,40 @@ static int obj_read(const char *path, Mesh *m)
         }
     }
     fclose(fp);
+    if (m->nvt == 0) { free(m->uv); m->uv=NULL; }
+    else if (m->nvt != m->nv) {
+        fprintf(stderr,"seam_audit: ignoring non-1:1 vt stream (%zu vt, %zu v)\n",
+                m->nvt,m->nv);
+        free(m->uv); m->uv=NULL; m->nvt=0;
+    }
     return 0;
 }
-static void mesh_free(Mesh *m){ free(m->v); free(m->f); m->v=NULL; m->f=NULL; }
+static void mesh_free(Mesh *m){ free(m->v); free(m->uv); free(m->f); m->v=NULL; m->uv=NULL; m->f=NULL; }
+
+static int obj_write(const char *path, const Mesh *m)
+{
+    FILE *fp = fopen(path, "w");
+    if (!fp) return -1;
+    fprintf(fp, "# seam_audit conflict-graph repair\n");
+    fprintf(fp, "# %zu verts, %zu faces\n", m->nv, m->nf);
+    for (size_t v = 0; v < m->nv; v++)
+    {
+        fprintf(fp, "v %.6f %.6f %.6f\n",
+                (double)m->v[v*3+0], (double)m->v[v*3+1],
+                (double)m->v[v*3+2]);
+        if (m->uv && m->nvt == m->nv)
+            fprintf(fp, "vt %.6f %.6f\n",
+                    (double)m->uv[v*2],(double)m->uv[v*2+1]);
+    }
+    for (size_t f = 0; f < m->nf; f++) {
+        int a=m->f[f*3]+1,b=m->f[f*3+1]+1,c=m->f[f*3+2]+1;
+        if (m->uv && m->nvt == m->nv)
+            fprintf(fp, "f %d/%d %d/%d %d/%d\n",a,a,b,b,c,c);
+        else
+            fprintf(fp, "f %d %d %d\n",a,b,c);
+    }
+    return fclose(fp) == 0 ? 0 : -1;
+}
 
 /* ===================================================================
  * Seam-plane detection (mirrors seam_weld.c::detect_planes).
@@ -303,8 +459,19 @@ static void tri_pts(const Mesh *m, size_t fi, double p0[3], double p1[3], double
 static int shared_count(const Mesh *m, size_t fa, size_t fb)
 {
     int n=0;
-    for (int i=0;i<3;i++) for (int j=0;j<3;j++)
-        if (m->f[fa*3+i]==m->f[fb*3+j]) n++;
+    const double eps2=1e-10;
+    for (int i=0;i<3;i++) {
+        int32_t a=m->f[fa*3+i];
+        for (int j=0;j<3;j++) {
+            int32_t b=m->f[fb*3+j];
+            double dz,dy,dx;
+            if (a==b) { n++; break; }
+            dz=(double)m->v[(size_t)a*3+0]-(double)m->v[(size_t)b*3+0];
+            dy=(double)m->v[(size_t)a*3+1]-(double)m->v[(size_t)b*3+1];
+            dx=(double)m->v[(size_t)a*3+2]-(double)m->v[(size_t)b*3+2];
+            if (dz*dz+dy*dy+dx*dx<=eps2) { n++; break; }
+        }
+    }
     return n;   /* 0=disjoint, 1=hinge(shared vertex), 2=edge-adjacent */
 }
 
@@ -537,6 +704,9 @@ static int selftest(void)
       /* 9. EDGE-ADJACENT FAN: same shared edge but apex on the OPPOSITE side -> no
        *    AREA overlap (touch only along the edge) -> a legit crease, NOT flagged. */
       {"edge-adj flat fan", {{0,0,0},{4,0,0},{0,4,0}}, {{0,0,0},{4,0,0},{1,-4,0}}, HIT_NONE, 1.0, 0},
+      /* 10-11. Coarse/fine tilted overlap must be independent of pair order. */
+      {"tilted coarse/fine", {{0,0,0},{10,0,0},{0,10,0}}, {{1,1,0.10},{2,1,0.10},{1,2,0.35}}, HIT_OVERLAP, 1.0, 0},
+      {"tilted fine/coarse", {{1,1,0.10},{2,1,0.10},{1,2,0.35}}, {{0,0,0},{10,0,0},{0,10,0}}, HIT_OVERLAP, 1.0, 0},
     };
     for (size_t i=0;i<sizeof T/sizeof T[0];i++){
         double gmax = T[i].gap;
@@ -577,6 +747,7 @@ static int selftest(void)
         if (tj_AC!=0) fail++;
     }
 
+    fail += IntersectionCleanup_selftest();
     printf("SEAM AUDIT SELFTEST %s\n", fail?"FAILED":"PASSED");
     return fail?1:0;
 }
@@ -669,16 +840,23 @@ int main(int argc, char **argv)
           "Usage: %s <mesh.obj> [--cube <size=128>] [--plane <axis> <coord>]\n"
           "       [--band <vox=4>] [--gap <vox=1.0>] [--angle <deg=20>] [--hinge]\n"
           "       [--explain] [--degen] [--split <nvA>] [--out <bad.obj>]\n"
+          "       %s <mesh.obj> --repair <clean.obj> [--repair-max-fraction <0.01>]\n"
+          "       %s <mesh.obj> --check [--repair-max-fraction <0.01>]\n"
           "       %s --selftest\n"
           "  --degen   whole-mesh sliver/degenerate census (T-junction source)\n"
-          "  --explain per-pair detail incl. min-altitude + T-junction verdict\n", argv[0], argv[0]);
+          "  --explain per-pair detail incl. min-altitude + T-junction verdict\n"
+          "  --repair  whole-mesh conflict-graph surgery; --hinge also cuts fold-backs\n"
+          "  --check   whole-mesh conflict-graph audit; no OBJ is written\n",
+          argv[0], argv[0], argv[0], argv[0]);
         return 2;
     }
-    const char *path=argv[1], *out_path=NULL;
+    const char *path=argv[1], *out_path=NULL, *repair_path=NULL;
     double cube=128.0, band=4.0, gap_max=1.0, angle_deg=20.0;
+    double repair_max_fraction=0.01;
+    size_t repair_max_conflicts=1000000;
     int have_plane=0, plane_axis=0; double plane_coord=0.0;
     int min_excl=1;   /* exclude pairs sharing >= this many verts (1 = any shared) */
-    int explain=0; long split=-1; long clones=-1; int degen=0;
+    int explain=0; long split=-1; long clones=-1; int degen=0, check_only=0;
     int near_set=0; double ncz=0, ncy=0, ncx=0, nr=0;  /* --near crop */
     for (int i=2;i<argc;i++){
         if (!strcmp(argv[i],"--cube") && i+1<argc) cube=atof(argv[++i]);
@@ -688,6 +866,12 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i],"--hinge")) min_excl=2;  /* also test 1-vertex-sharing folds */
         else if (!strcmp(argv[i],"--degen")) degen=1;     /* whole-mesh sliver/degenerate census */
         else if (!strcmp(argv[i],"--explain")) explain=1;
+        else if (!strcmp(argv[i],"--repair") && i+1<argc) repair_path=argv[++i];
+        else if (!strcmp(argv[i],"--check")) check_only=1;
+        else if (!strcmp(argv[i],"--repair-max-fraction") && i+1<argc)
+            repair_max_fraction=atof(argv[++i]);
+        else if (!strcmp(argv[i],"--repair-max-conflicts") && i+1<argc)
+            repair_max_conflicts=(size_t)strtoull(argv[++i],NULL,10);
         else if (!strcmp(argv[i],"--split") && i+1<argc) split=atol(argv[++i]);
         else if (!strcmp(argv[i],"--clones") && i+1<argc) clones=atol(argv[++i]);
         else if (!strcmp(argv[i],"--near") && i+4<argc) {
@@ -736,7 +920,16 @@ int main(int argc, char **argv)
         if (out_path) {
             FILE *fp = fopen(out_path, "w");
             if (fp) {
-                for (size_t v = 0; v < m.nv; v++) {
+                int32_t *vmap=(int32_t*)malloc((m.nv?m.nv:1)*sizeof(*vmap));
+                size_t local_nv=0;
+                if(!vmap){fclose(fp);free(keep);mesh_free(&m);return 2;}
+                for(size_t v=0;v<m.nv;v++)vmap[v]=-1;
+                for(size_t f=0;f<m.nf;f++)if(keep[f])
+                    for(int k=0;k<3;k++){
+                        int32_t v=m.f[f*3+(size_t)k];
+                        if(vmap[v]<0)vmap[v]=(int32_t)local_nv++;
+                    }
+                for (size_t v = 0; v < m.nv; v++) if(vmap[v]>=0) {
                     float cr,cg,cb;
                     if (clones>=0 && (long)v>=clones)      { cr=1.0f; cg=0.0f; cb=0.0f; }
                     else if (split>=0 && (long)v<split)    { cr=0.0f; cg=0.8f; cb=0.0f; }
@@ -747,12 +940,106 @@ int main(int argc, char **argv)
                 }
                 for (size_t f = 0; f < m.nf; f++)
                     if (keep[f]) fprintf(fp, "f %d %d %d\n",
-                                         m.f[f*3+0]+1, m.f[f*3+1]+1, m.f[f*3+2]+1);
+                                         vmap[m.f[f*3+0]]+1,
+                                         vmap[m.f[f*3+1]]+1,
+                                         vmap[m.f[f*3+2]]+1);
+                free(vmap);
                 fclose(fp);
-                printf("wrote %s (%zu cropped faces; green=A blue=B RED=clone)\n", out_path, nk);
+                printf("wrote %s (%zu local verts, %zu cropped faces; "
+                       "green=A blue=B RED=clone)\n",out_path,local_nv,nk);
             }
         }
         free(keep); mesh_free(&m);
+        return 0;
+    }
+
+    if (check_only) {
+        IntersectionCleanupParams cp;
+        IntersectionCleanupStats cs;
+        CheckConflictPreview preview;
+        size_t *degree;
+        int audit_rc;
+        memset(&preview, 0, sizeof preview);
+        IntersectionCleanup_default_params(&cp);
+        cp.gap_max=gap_max;
+        cp.parallel_angle_deg=angle_deg;
+        cp.max_conflicts=repair_max_conflicts;
+        cp.include_hinges=(min_excl==2);
+        degree=(size_t*)calloc(m.nf?m.nf:1,sizeof(*degree));
+        if(!degree){
+            fprintf(stderr,"seam_audit check: out of memory\n");
+            mesh_free(&m);
+            return 2;
+        }
+        audit_rc=IntersectionCleanup_audit_visit(
+            m.v,m.nv,m.f,m.nf,NULL,&cp,degree,
+            check_conflict_preview,&preview,&cs);
+        if(audit_rc!=0){
+            fprintf(stderr,
+                    "seam_audit check: REJECTED/INCOMPLETE "
+                    "(conflicts=%zu cap=%zu)\n",
+                    cs.conflicts,repair_max_conflicts);
+            free(degree);
+            mesh_free(&m);
+            return 2;
+        }
+        printf("INTERSECTION_CHECK: candidates=%zu conflicts=%zu "
+               "[overlap=%zu stab=%zu fold=%zu] max_degree=%zu\n",
+               cs.candidate_pairs,cs.conflicts,cs.overlap_pairs,cs.stab_pairs,
+               cs.fold_pairs,cs.max_conflict_degree);
+        for(size_t q=0;q<preview.n;q++)
+            printf("  conflict[%zu]: %s faces=%zu/%zu degree=%zu/%zu\n",
+                   q,check_hit_name(preview.kind[q]),
+                   preview.a[q],preview.b[q],
+                   degree[preview.a[q]],degree[preview.b[q]]);
+        if(out_path&&preview.n>0){
+            if(write_check_preview(out_path,&m,&preview)!=0){
+                fprintf(stderr,"seam_audit check: cannot write %s\n",out_path);
+                free(degree);mesh_free(&m);return 2;
+            }
+            printf("wrote %s (%zu exact pair preview(s))\n",
+                   out_path,preview.n);
+        }
+        free(degree);
+        {
+            int bad_mesh=cs.conflicts>0;
+            mesh_free(&m);
+            return bad_mesh?1:0;
+        }
+    }
+
+    if (repair_path) {
+        IntersectionCleanupParams cp;
+        IntersectionCleanupStats cs;
+        size_t nf_before=m.nf;
+        IntersectionCleanup_default_params(&cp);
+        cp.gap_max=gap_max;
+        cp.parallel_angle_deg=angle_deg;
+        cp.max_delete_fraction=repair_max_fraction;
+        cp.max_conflicts=repair_max_conflicts;
+        cp.include_hinges=(min_excl==2);
+        if (IntersectionCleanup_process(m.v,m.nv,m.f,&m.nf,NULL,&cp,&cs)!=0) {
+            fprintf(stderr,
+                    "seam_audit repair: REJECTED (conflicts=%zu, proposed=%zu/%zu, "
+                    "effective_budget=%zu nominal=%.4f cap=%zu)\n",
+                    cs.conflicts,cs.faces_deleted,nf_before,
+                    cs.delete_budget,repair_max_fraction,repair_max_conflicts);
+            mesh_free(&m);
+            return 2;
+        }
+        printf("INTERSECTION_REPAIR: candidates=%zu conflicts=%zu "
+               "[overlap=%zu stab=%zu fold=%zu] deleted=%zu/%zu "
+               "budget=%zu components=%zu max_degree=%zu\n",
+               cs.candidate_pairs,cs.conflicts,cs.overlap_pairs,cs.stab_pairs,
+               cs.fold_pairs,cs.faces_deleted,nf_before,cs.delete_budget,
+               cs.components_touched,cs.max_conflict_degree);
+        if (obj_write(repair_path,&m)!=0) {
+            fprintf(stderr,"seam_audit repair: cannot write %s\n",repair_path);
+            mesh_free(&m);
+            return 2;
+        }
+        printf("wrote %s (%zu verts, %zu faces)\n",repair_path,m.nv,m.nf);
+        mesh_free(&m);
         return 0;
     }
 

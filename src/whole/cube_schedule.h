@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "../common/arena.h"
+#include "axis_warp.h"
 
 /* ============================================================================
  * cube_schedule.h -- discover the per-cube dump grid and order it for
@@ -27,8 +28,8 @@ typedef struct {
     int32_t  nbr[6];       /* 6-neighbor node index (-z,+z,-y,+y,-x,+x); -1 = absent */
 } CubeNode;
 
-/* Scan the z*_y*_x* dirs under dump_dir, keeping cubes that have
- * <id>/<id>_<leaf_stage>/<id>_<leaf_stage>_all.obj, fill CubeNode geometry
+/* Scan the z*_y*_x* dirs under dump_dir, keeping cubes that have authoritative
+ * <id>/<id>_<leaf_stage>/<id>_<leaf_stage>_all.vmesh, fill CubeNode geometry
  * about axis_point (z,y,x order, axis = +z), link 6-neighbors (origins one
  * chunk apart), and emit the registration order. seed_id (may be NULL) forces
  * the seed cube; the default seed is the present cube with the MEDIAN center
@@ -42,6 +43,16 @@ int CubeSched_build(Arena_T arena, const char *dump_dir, const char *leaf_stage,
                     CubeNode **out_nodes, size_t *out_n,
                     int32_t **out_order, int32_t **out_comp);
 
+/* Curved-axis variant: cube-center polar geometry is evaluated after applying
+ * the same metric straightening used by PlacedCube. Grid adjacency and ids stay
+ * in source/world coordinates. */
+int CubeSched_build_axis_warp(
+    Arena_T arena, const char *dump_dir, const char *leaf_stage,
+    int64_t chunk, const float axis_point[3], const AxisWarp *axis_warp,
+    double pitch, const char *seed_id,
+    CubeNode **out_nodes, size_t *out_n,
+    int32_t **out_order, int32_t **out_comp);
+
 /* Link + order over an already-filled node array (id/oz/oy/ox set; r/theta/
  * w_phase computed here too). Exposed so the selftest and audit can run the
  * pure logic without a dump dir on disk. seed_idx < 0 = median-radius seed.
@@ -50,6 +61,11 @@ int CubeSched_link_and_order(Arena_T arena, CubeNode *nodes, size_t n,
                              int64_t chunk, const float axis_point[3],
                              double pitch, int32_t seed_idx,
                              int32_t **out_order, int32_t **out_comp);
+int CubeSched_link_and_order_axis_warp(
+    Arena_T arena, CubeNode *nodes, size_t n, int64_t chunk,
+    const float axis_point[3], const AxisWarp *axis_warp,
+    double pitch, int32_t seed_idx,
+    int32_t **out_order, int32_t **out_comp);
 
 /* In-process unit tests (grid link, flood order invariants, hole, island).
  * Returns 0 if all pass, else the number of failures. Logs to stderr. */

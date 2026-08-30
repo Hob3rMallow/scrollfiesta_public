@@ -56,7 +56,11 @@ typedef struct {
                                   * is a seam-debug affordance; at fleet
                                   * concurrency it IO-bounds the whole grid
                                   * run. Re-run a single cube without this
-                                  * flag to regenerate its stage dumps. */
+                                   * flag to regenerate its stage dumps. */
+    int         cull_oracle_tangles; /* omit final components for which the
+                                      * developability oracle still sees more
+                                      * than one sheet; explicit fail-closed
+                                      * recovery for an unsplittable tangle */
 
     /* Optional in-memory input. When vol_in != NULL the TIFF/halo loaders are
      * bypassed: vol_in is a padded (p_size_in)^3 uint8 buffer whose (0,0,0) is

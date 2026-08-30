@@ -28,10 +28,14 @@ typedef enum {
     ATLAS_RIBBON_NODE_SPIRAL_FILL = 4
 } AtlasRibbonNodeProvenance;
 
-/* Why a fitted U-grid edge is absent.  These are diagnostic provenance, not
+/* Why a fitted grid edge is absent.  These are diagnostic provenance, not
  * additional fitting policy: ATLAS_RIBBON_EDGE_NONE means the edge exists,
  * while every other value records the gate that prevented or later removed
- * it. */
+ * it.  SUBGRID is decisive where it appears: an accepted span chain lived
+ * strictly inside that one cell, so the data connected but was finer than
+ * the fit grid.  METRIC_FILL splits the metric gate by construction quality:
+ * the stretched edge leaned on at least one spiral-fill endpoint, so the
+ * distance blowout may be the fill's fault rather than the data's. */
 typedef enum {
     ATLAS_RIBBON_EDGE_NONE = 0,
     ATLAS_RIBBON_EDGE_NO_SUPPORT = 1,
@@ -39,7 +43,8 @@ typedef enum {
     ATLAS_RIBBON_EDGE_U_GAP = 3,
     ATLAS_RIBBON_EDGE_METRIC = 4,
     ATLAS_RIBBON_EDGE_TOPOLOGY = 5,
-    ATLAS_RIBBON_EDGE_CROSSING = 6
+    ATLAS_RIBBON_EDGE_CROSSING = 6,
+    ATLAS_RIBBON_EDGE_METRIC_FILL = 7
 } AtlasRibbonEdgeReject;
 
 typedef struct {
@@ -55,6 +60,11 @@ typedef struct {
     double lambda_smooth;       /* zero-curvature rows (8) */
     double lambda_tangent;      /* unit-u tangent integration rows (4) */
     double lambda_register_vertical; /* smooth chart U shifts along v (16) */
+    double lambda_ladder;       /* pull each chart's register shift toward
+                                 * the calibration-spiral arc position of
+                                 * its continuous wind; the proximal target
+                                 * would otherwise be the scrambled tabu
+                                 * layout itself (8; 0 = off) */
     int register_sweeps;        /* bidirectional U(v) smoothing sweeps (6) */
     double collision_relaxation; /* fraction of exact escape per round (0.35) */
     int collision_rounds;        /* exact-audit continuation rounds (8) */
@@ -165,6 +175,12 @@ typedef struct {
     double basis1[3];
     double axis_point[3];
 
+    /* Calibration spiral, for the ladder targets: u(phi) = a*phi +
+     * b*phi^2/(4pi), phi = sense*2pi*wind.  Zero when unavailable. */
+    double spiral_a;
+    double spiral_b;
+    int    spiral_sense;
+
     double observation_u0;
     double observation_du;
     double v0;
@@ -222,7 +238,8 @@ typedef struct {
     uint8_t *support;/* [nrows*ncolumns], close to a direct observation */
     uint8_t *u_edge; /* [nrows*ncolumns], edge to column+1 */
     uint8_t *v_edge; /* [nrows*ncolumns], edge to row+1 */
-    uint8_t *u_reject; /* [nrows*ncolumns], AtlasRibbonEdgeReject */
+    uint8_t *u_reject; /* [nrows*ncolumns], AtlasRibbonEdgeReject for u_edge */
+    uint8_t *v_reject; /* [nrows*ncolumns], AtlasRibbonEdgeReject for v_edge */
     size_t nrows;
     size_t ncolumns;
     double u0;

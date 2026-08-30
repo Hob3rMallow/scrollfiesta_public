@@ -67,43 +67,25 @@
 
 static FILE *g_log = NULL;
 
-static void write_json_string(FILE *fp, const char *value)
+/* Emit portable JSON paths. Raw Windows backslashes form invalid escapes for
+ * ordinary directory names (for example "\p" in "output\pherc..."). */
+static void json_path_copy(char *dst, size_t cap, const char *src)
 {
-    fputc('"', fp);
-    for (const unsigned char *p = (const unsigned char *)value; *p; p++) {
-        switch (*p) {
-        case '"': fputs("\\\"", fp); break;
-        case '\\': fputs("\\\\", fp); break;
-        case '\b': fputs("\\b", fp); break;
-        case '\f': fputs("\\f", fp); break;
-        case '\n': fputs("\\n", fp); break;
-        case '\r': fputs("\\r", fp); break;
-        case '\t': fputs("\\t", fp); break;
-        default:
-            if (*p < 0x20) fprintf(fp, "\\u%04x", (unsigned)*p);
-            else fputc(*p, fp);
+    if (cap == 0) return;
+    size_t w = 0;
+    if (src == NULL) src = "";
+    for (size_t i = 0; src[i] != '\0' && w + 1 < cap; i++) {
+        unsigned char c = (unsigned char)src[i];
+        if (c == '\\') c = '/';
+        if (c == '"') {
+            if (w + 2 >= cap) break;
+            dst[w++] = '\\';
+            dst[w++] = '"';
+        } else if (c >= 0x20) {
+            dst[w++] = (char)c;
         }
     }
-    fputc('"', fp);
-}
-
-static int write_json_string_selftest(void)
-{
-    static const char input[] = "C:\\raw\\x\"\n";
-    static const char expected[] = "\"C:\\\\raw\\\\x\\\"\\n\"";
-    char got[sizeof expected + 8];
-    FILE *fp = tmpfile();
-    if (fp == NULL) return 1;
-    write_json_string(fp, input);
-    fflush(fp);
-    rewind(fp);
-    size_t n = fread(got, 1, sizeof got - 1, fp);
-    got[n] = '\0';
-    fclose(fp);
-    int fail = strcmp(got, expected) != 0;
-    fprintf(stderr, "write_json_string_selftest: %s\n",
-            fail ? "FAIL" : "PASS");
-    return fail;
+    dst[w] = '\0';
 }
 
 static void logf_both(const char *fmt, ...)
@@ -320,15 +302,19 @@ static void usage(void)
         "       [--raw-chunk N] [--range F] [--nsteps N] [--threads N]\n"
         "       [--snap-tensor-weight F] [--snap-tensor-radius F] (legacy)\n"
         "       [--snap-recto-iters N] [--snap-recto-range F]\n"
+        "       [--snap-global-cap N]  (global pass-1 vertex safety ceiling)\n"
         "       [--stretch-ratio F] [--stretch-floor F] [--max-edge F]\n"
         "       [--synth-max-edge F]\n"
         "       [--strip-w N] [--dark-thresh N] [--seam-top N]\n"
+        "       [--own-cell F]  (ownership hash scale; auto sqrt(du*dv), 2..4)\n"
         "       [--apply-ownership]  (unsafe legacy face deletion; default is\n"
         "                              diagnostic-only ownership)\n"
         "       [--no-diag] [--no-preview] [--no-xyzmap]\n"
         "       [--export-tifxyz DIR] [--tifxyz-du F] [--tifxyz-dv F]\n"
         "       [--tifxyz-flip-u] [--tifxyz-flip-v] [--tifxyz-winding]\n"
         "       [--export-atlas DIR] [--atlas-wraps N] [--atlas-slab F]\n"
+        "       [--atlas-polar-u|--atlas-phase-u]\n"
+        "       [--input-polar-u]  (run repair stages in the lifted chart)\n"
         "       [--z-range Z0 Z1]  (only cubes with z-origin in [Z0,Z1);\n"
         "                           slab/strip export from a shared solve)\n"
         "       scroll_unroll --selftest\n"
@@ -336,6 +322,8 @@ static void usage(void)
         "              tifxyz segments under DIR + atlas.json (uuid=DIR/<seg>);\n"
         "              --atlas-wraps wraps per piece (1), --atlas-slab z-slab\n"
         "              height vox (4096). Works with --steps 0 (raw placement)\n"
+        "  --atlas-polar-u   globally lift smooth polar angle using registered\n"
+        "              phi for the integer turn and the curved axis for theta\n"
         "  --no-xyzmap turn off the per-stage world-pos->RGB xyzmap PNGs\n"
         "  --max-edge F  optional 3D-edge cap for real/source faces (default\n"
         "              disabled; their valid scale follows the remesher)\n"
@@ -474,17 +462,16 @@ static void write_pipeline_json(const RunCtx *rc, const char *placed_dir,
     FILE *jf = fopen(jp, "w");
     if (jf == NULL)
         return;
-    fputs("{\n"
-          "  \"tool\": \"scroll_unroll\",\n"
-          "  \"placed_dir\": ", jf);
-    write_json_string(jf, placed_dir);
-    fputs(", \"raw_dir\": ", jf);
-    write_json_string(jf, raw_dir);
-    fprintf(jf, ",\n"
+    char placed_json[2048], raw_json[2048];
+    json_path_copy(placed_json, sizeof(placed_json), placed_dir);
+    json_path_copy(raw_json, sizeof(raw_json), raw_dir);
+    fprintf(jf, "{\n"
+            "  \"tool\": \"scroll_unroll\",\n"
+            "  \"placed_dir\": \"%s\", \"raw_dir\": \"%s\",\n"
             "  \"n_cubes\": %zu, \"nv\": %zu, \"nf\": %zu,\n"
             "  \"n_seam_cols\": %zu,\n"
             "  \"stages\": [\n",
-            ps->n_cubes, ps->nv, ps->nf,
+            placed_json, raw_json, ps->n_cubes, ps->nv, ps->nf,
             rc->n_seam_cols);
     for (int i = 0; i < rc->n_rows; i++) {
         const StageRow *r = &rc->rows[i];
@@ -527,8 +514,7 @@ static void write_pipeline_json(const RunCtx *rc, const char *placed_dir,
 int main(int argc, char **argv)
 {
     if (argc >= 2 && strcmp(argv[1], "--selftest") == 0) {
-        int f = write_json_string_selftest();
-        f += PieceSet_selftest();
+        int f = PieceSet_selftest();
         f += ScrollRaster_selftest();
         f += StripMetrics_selftest();
         f += StripPreview_selftest();
@@ -560,7 +546,9 @@ int main(int argc, char **argv)
     double snap_tensor_weight = 0.0, snap_tensor_radius = 2.0;
     int snap_recto_iters = 4;
     double snap_recto_range = 3.0;
+    size_t snap_global_cap = 0;    /* 0 = SnapGrid compiled default */
     double own_radius_gate = 0.0, own_cell = 0.0;
+    double own_tex_du = 0.0, own_tex_dv = 0.0;
     long own_region_cap = 0;
     int own_grid_cap = 0, own_seam_cut = 1, own_halfband = 0;
     int own_rehome = 1;
@@ -570,6 +558,9 @@ int main(int argc, char **argv)
     int tifxyz_flip_u = 0, tifxyz_flip_v = 0, tifxyz_winding = 0;
     const char *atlas_dir = NULL;              /* L3 export atlas root */
     int atlas_wraps = 1;
+    int atlas_phase_u = 0;
+    int atlas_polar_u = 0;
+    int input_polar_u = 0;
     double atlas_slab = 4096.0;
     int atlas_relax = 0;
     long z_lo = LONG_MIN, z_hi = LONG_MAX;     /* z-slab / strip filter (vox) */
@@ -605,6 +596,8 @@ int main(int argc, char **argv)
             snap_recto_iters = atoi(argv[++i]);
         else if (strcmp(argv[i], "--snap-recto-range") == 0 && i + 1 < argc)
             snap_recto_range = atof(argv[++i]);
+        else if (strcmp(argv[i], "--snap-global-cap") == 0 && i + 1 < argc)
+            snap_global_cap = (size_t)strtoull(argv[++i], NULL, 10);
         else if (strcmp(argv[i], "--stretch-ratio") == 0 && i + 1 < argc)
             ro.stretch_ratio = atof(argv[++i]);
         else if (strcmp(argv[i], "--stretch-floor") == 0 && i + 1 < argc)
@@ -627,6 +620,10 @@ int main(int argc, char **argv)
             own_radius_gate = atof(argv[++i]);
         else if (strcmp(argv[i], "--own-cell") == 0 && i + 1 < argc)
             own_cell = atof(argv[++i]);
+        else if (strcmp(argv[i], "--own-tex-du") == 0 && i + 1 < argc)
+            own_tex_du = atof(argv[++i]);
+        else if (strcmp(argv[i], "--own-tex-dv") == 0 && i + 1 < argc)
+            own_tex_dv = atof(argv[++i]);
         else if (strcmp(argv[i], "--region-cap") == 0 && i + 1 < argc)
             own_region_cap = atol(argv[++i]);
         else if (strcmp(argv[i], "--grid-cap") == 0 && i + 1 < argc)
@@ -657,6 +654,16 @@ int main(int argc, char **argv)
             atlas_dir = argv[++i];
         else if (strcmp(argv[i], "--atlas-wraps") == 0 && i + 1 < argc)
             atlas_wraps = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--atlas-phase-u") == 0) {
+            atlas_phase_u = 1;
+            atlas_polar_u = 0;
+        }
+        else if (strcmp(argv[i], "--atlas-polar-u") == 0) {
+            atlas_polar_u = 1;
+            atlas_phase_u = 0;
+        }
+        else if (strcmp(argv[i], "--input-polar-u") == 0)
+            input_polar_u = 1;
         else if (strcmp(argv[i], "--atlas-slab") == 0 && i + 1 < argc)
             atlas_slab = atof(argv[++i]);
         else if (strcmp(argv[i], "--atlas-relax") == 0)
@@ -714,6 +721,8 @@ int main(int argc, char **argv)
 
     Arena_T arena = Arena_new();
     PieceSet ps;
+    AtlasPolarStats input_polar_stats;
+    memset(&input_polar_stats, 0, sizeof(input_polar_stats));
     double t0 = ves_clock_sec();
     if (PieceSet_build_z(arena, placed_dir, z_lo, z_hi, &ps) != 0) {
         logf_both("ERROR: no complete placed cubes under %s%s\n", placed_dir,
@@ -727,6 +736,47 @@ int main(int argc, char **argv)
               "u=[%.0f,%.0f] (%.0f vox) v=[%.0f,%.0f] (%.2fs)\n",
               ps.n_cubes, ps.nv, ps.nf, ps.u_min, ps.u_max,
               ps.u_max - ps.u_min, ps.v_min, ps.v_max, ves_clock_sec() - t0);
+
+    if (input_polar_u) {
+        ScaffoldCalib cal;
+        if (Scaffold_read_calib(placed_dir, &cal) != 0) {
+            logf_both("ERROR: --input-polar-u needs placed_index.json under %s\n",
+                      placed_dir);
+            return 1;
+        }
+        float *polar_uv = NULL;
+        if (Atlas_lift_polar_u(arena, &ps, &cal, &polar_uv,
+                               &input_polar_stats) != 0) {
+            logf_both("ERROR: lifted polar chart construction failed\n");
+            return 1;
+        }
+        ps.uv = polar_uv;
+        ps.u_min = ps.v_min = 1e300;
+        ps.u_max = ps.v_max = -1e300;
+        for (size_t f = 0; f < ps.nf; f++) {
+            for (int e = 0; e < 3; e++) {
+                size_t v = (size_t)ps.faces[f * 3 + e];
+                double u = (double)ps.uv[v * 2 + 0];
+                double vv = (double)ps.uv[v * 2 + 1];
+                if (u < ps.u_min) ps.u_min = u;
+                if (u > ps.u_max) ps.u_max = u;
+                if (vv < ps.v_min) ps.v_min = vv;
+                if (vv > ps.v_max) ps.v_max = vv;
+            }
+        }
+        logf_both("[polar] input chart sign=%+d offset=%.5f coherence=%.5f "
+                  "curved-axis=%d components=%zu inconsistent=%zu "
+                  "cycles=%zu isolated=%zu "
+                  "u=[%.0f,%.0f] span=%.0f\n",
+                  input_polar_stats.sign, input_polar_stats.offset,
+                  input_polar_stats.coherence,
+                  input_polar_stats.curved_axis,
+                  input_polar_stats.groups,
+                  input_polar_stats.ambiguous_groups,
+                  input_polar_stats.cycle_conflicts,
+                  input_polar_stats.isolated_vertices,
+                  ps.u_min, ps.u_max, ps.u_max - ps.u_min);
+    }
 
     /* ONE RAW table for every stage. Lives in the main arena; never spanned
      * by an Arena_save/restore (scroll_raster.c aliasing rule). Pre-warmed
@@ -818,13 +868,12 @@ int main(int argc, char **argv)
         snprintf(jp, sizeof(jp), "%s/%s_strip_stats.json", out_dir, id);
         FILE *jf = fopen(jp, "w");
         if (jf != NULL) {
-            fputs("{\n"
-                  "  \"tool\": \"scroll_unroll\",\n"
-                  "  \"placed_dir\": ", jf);
-            write_json_string(jf, placed_dir);
-            fputs(", \"raw_dir\": ", jf);
-            write_json_string(jf, raw_dir);
-            fprintf(jf, ",\n"
+            char placed_json[2048], raw_json[2048];
+            json_path_copy(placed_json, sizeof(placed_json), placed_dir);
+            json_path_copy(raw_json, sizeof(raw_json), raw_dir);
+            fprintf(jf, "{\n"
+                    "  \"tool\": \"scroll_unroll\",\n"
+                    "  \"placed_dir\": \"%s\", \"raw_dir\": \"%s\",\n"
                     "  \"n_cubes\": %zu, \"nv\": %zu, \"nf\": %zu,\n"
                     "  \"u_range\": [%.2f, %.2f], \"v_range\": [%.2f, %.2f],\n"
                     "  \"du\": %.3f, \"dv\": %.3f,\n"
@@ -835,7 +884,7 @@ int main(int argc, char **argv)
                     "  \"window\": [%.1f, %.1f],\n"
                     "  \"raw_loaded\": %d, \"raw_missing\": %d,\n"
                     "  \"seconds\": %.2f\n}\n",
-                    ps.n_cubes, ps.nv, ps.nf,
+                    placed_json, raw_json, ps.n_cubes, ps.nv, ps.nf,
                     ps.u_min, ps.u_max, ps.v_min, ps.v_max, ro.du, ro.dv,
                     st1.W, st1.H, st1.u0, st1.v0, st1.n_bands,
                     ro.band_cols, st1.fill, st1.filled, st1.multi,
@@ -941,7 +990,19 @@ int main(int argc, char **argv)
         so.ct = &ct;
         so.verbose = 1;
         if (own_radius_gate > 0.0) so.radius_gate = own_radius_gate;
-        if (own_cell > 0.0) so.cell = own_cell;
+        if (own_cell > 0.0) {
+            so.cell = own_cell;
+        } else {
+            /* Match candidate discovery to the raster pixel footprint.  A
+             * fixed 2-voxel hash missed disjoint tangential layers at du=8,
+             * dv=2; sqrt(area)=4 captured them while the 3D gate protected
+             * same-sheet neighbors.  Clamp for fine and very coarse grids. */
+            so.cell = sqrt(ro.du * ro.dv);
+            if (so.cell < 2.0) so.cell = 2.0;
+            if (so.cell > 4.0) so.cell = 4.0;
+        }
+        if (own_tex_du > 0.0) so.tex_du = own_tex_du;
+        if (own_tex_dv > 0.0) so.tex_dv = own_tex_dv;
         if (own_region_cap > 0) so.region_cap = (size_t)own_region_cap;
         if (own_grid_cap > 0) so.grid_cap = own_grid_cap;
         if (own_halfband > 0) so.seam_halfband = own_halfband;
@@ -973,7 +1034,8 @@ int main(int argc, char **argv)
                           ? 100.0 * (double)sr.multi_cells_after
                                 / (double)sr.multi_cells_before : 0.0,
                       sr.energy_mean, ves_clock_sec() - t3);
-            if (write_ownership_split_objs(out_dir, id, &ps, &sr) != 0)
+            if (ro.write_diag
+                && write_ownership_split_objs(out_dir, id, &ps, &sr) != 0)
                 logf_both("[step3] WARN: XYZ ownership OBJ split failed\n");
             if (sr.n_rehome_layers + sr.n_rehome_dup + sr.n_rehome_blocked
                 + sr.n_rehome_adjacent + sr.n_rehome_incoherent > 0)
@@ -1085,6 +1147,7 @@ int main(int argc, char **argv)
         sgo.tensor_radius = snap_tensor_radius;
         sgo.recto_iters = snap_recto_iters;
         sgo.recto_range = snap_recto_range;
+        if (snap_global_cap > 0) sgo.global_nv_cap = snap_global_cap;
         {   /* axis from the placed index (same source as SeamOwn) */
             SeamOwnOpts axo;
             SeamOwnOpts_default(&axo);
@@ -1102,13 +1165,15 @@ int main(int argc, char **argv)
         if (SnapGrid_run(arena, &ps, &ct, &sgo, &sst) != 0) {
             logf_both("[step4] WARN: snap failed -- continuing unmoved\n");
         } else {
+            const char *snap_scope = sst.global_mode_used ? " (global)" :
+                (sst.global_mode_requested ? " (per-cube fallback)" : "");
             logf_both("[step4] two-pass snap%s: dark=%zu fixable=%zu crack=%zu "
                       "rejected=%zu; regions=%zu (fix=%zu anch=%zu) max=%zu; "
                       "repair moved=%zu reverted=%zu mean=%.2f max=%.2f "
                       "quilt=%.1f target_dist=%.2f qfb=%zu; "
                       "recto support=%zu moved=%zu reverted=%zu slope=%zu "
                       "mean=%.2f max=%.2f iter=%d (%.1fs)\n",
-                      sgo.global_mode ? " (global)" : "",
+                      snap_scope,
                       sst.n_dark, sst.n_fixable, sst.n_crack, sst.n_rejected,
                       sst.nreg, sst.n_reg_fixable, sst.n_reg_anchorless,
                       sst.max_region_size, sst.n_moved, sst.n_reverted,
@@ -1141,6 +1206,9 @@ int main(int argc, char **argv)
                 fprintf(jf, "{\n"
                     "  \"tool\": \"scroll_unroll step4 snap_grid\",\n"
                     "  \"global_mode\": %d,\n"
+                    "  \"global_mode_requested\": %d,\n"
+                    "  \"global_mode_used\": %d,\n"
+                    "  \"global_nv_cap\": %zu,\n"
                     "  \"sampled\": %zu, \"dark\": %zu, \"fixable\": %zu, "
                     "\"crack\": %zu, \"rejected\": %zu,\n"
                     "  \"regions\": { \"n\": %zu, \"fixable\": %zu, "
@@ -1157,7 +1225,8 @@ int main(int argc, char **argv)
                     "  \"window\": [%.1f, %.1f],\n"
                     "  \"units\": %zu, \"gco_fallback\": %zu,\n"
                     "  \"seconds\": %.2f\n}\n",
-                    sgo.global_mode,
+                    sst.global_mode_used, sst.global_mode_requested,
+                    sst.global_mode_used, sst.global_nv_cap,
                     sst.n_sampled, sst.n_dark, sst.n_fixable, sst.n_crack,
                     sst.n_rejected, sst.nreg, sst.n_reg_fixable,
                     sst.n_reg_crack, sst.n_reg_anchorless, sst.n_reg_mixed,
@@ -1179,6 +1248,10 @@ int main(int argc, char **argv)
     /* ---- step5: final light banded relax + re-bake ------------------------- */
     if (want[5]) {
         double t5 = ves_clock_sec();
+        size_t uv_bytes = ps.nv * 2 * sizeof(float);
+        float *uv_before = (float *)malloc(uv_bytes ? uv_bytes : 1);
+        if (uv_before != NULL && uv_bytes > 0)
+            memcpy(uv_before, ps.uv, uv_bytes);
         /* fiber source = the newest baked rawtex */
         char fib_tif[1024];
         if (want[4])
@@ -1224,7 +1297,54 @@ int main(int argc, char **argv)
         }
         logf_both("[step5] bake: %.1f%% filled, multi=%zu (%.1fs)\n",
                   100.0 * st5.fill, st5.multi, ves_clock_sec() - t0);
+        int prev_row = rc.n_rows - 1;
         stage_report(&rc, "step5_relax", &st5, ves_clock_sec() - t5);
+
+        /* Stretch energy alone is not a safe atlas objective: a smooth UV
+         * update can slide disconnected sheets onto one another. Accept the
+         * optional polish only when its raster evidence is Pareto-reasonable.
+         * A >5% relative (and >0.2 percentage-point absolute) multiplicity
+         * increase is rejected unless dark CT support improves by >=0.2 pp. */
+        int guard_reverted = 0;
+        double guard_prev_multi = 0.0, guard_candidate_multi = 0.0;
+        double guard_prev_dark = 0.0, guard_candidate_dark = 0.0;
+        if (uv_before != NULL && prev_row >= 0 &&
+            rc.rows[prev_row].have_sm && rc.rows[rc.n_rows - 1].have_sm) {
+            const StripMetrics *pm = &rc.rows[prev_row].sm;
+            const StripMetrics *cm = &rc.rows[rc.n_rows - 1].sm;
+            guard_prev_multi = pm->multi_frac;
+            guard_candidate_multi = cm->multi_frac;
+            guard_prev_dark = pm->dark_frac;
+            guard_candidate_dark = cm->dark_frac;
+            double multi_allow = guard_prev_multi * 1.05;
+            if (multi_allow < guard_prev_multi + 0.002)
+                multi_allow = guard_prev_multi + 0.002;
+            int overlap_worse = guard_candidate_multi > multi_allow;
+            int dark_improved = guard_candidate_dark + 0.002 <= guard_prev_dark;
+            if (overlap_worse && !dark_improved) {
+                memcpy(ps.uv, uv_before, uv_bytes);
+                t0 = ves_clock_sec();
+                if (ScrollRaster_run(arena, &ps, raw_dir, raw_chunk, prefix,
+                                     &ro, &st5) != 0) {
+                    free(uv_before);
+                    logf_both("ERROR: step5 guard re-bake failed\n");
+                    return 1;
+                }
+                rc.n_rows--;       /* replace rejected candidate report */
+                stage_report(&rc, "step5_relax", &st5,
+                             ves_clock_sec() - t5);
+                guard_reverted = 1;
+                logf_both("[step5] QUALITY GUARD: reverted UV polish "
+                          "(multi %.2f%%->%.2f%%, dark %.2f%%->%.2f%%); "
+                          "pre-relax atlas retained (re-bake %.1fs)\n",
+                          100.0 * guard_prev_multi,
+                          100.0 * guard_candidate_multi,
+                          100.0 * guard_prev_dark,
+                          100.0 * guard_candidate_dark,
+                          ves_clock_sec() - t0);
+            }
+        }
+        free(uv_before);
 
         char jp[1024];
         snprintf(jp, sizeof(jp), "%s/%s_step5_relax_stats.json", out_dir, id);
@@ -1236,11 +1356,16 @@ int main(int argc, char **argv)
                 "\"reverted\": %zu, \"no_fiber\": %zu, \"moved\": %zu,\n"
                 "    \"stretch_before\": %.4f, \"stretch_after\": %.4f,\n"
                 "    \"mean_disp\": %.3f, \"max_disp\": %.3f },\n"
+                "  \"quality_guard\": { \"reverted\": %d, "
+                "\"prev_multi_frac\": %.6f, \"candidate_multi_frac\": %.6f, "
+                "\"prev_dark_frac\": %.6f, \"candidate_dark_frac\": %.6f },\n"
                 "  \"seconds\": %.2f\n}\n",
                 rst.n_bands, rst.bands_run,
                 rst.bands_reverted, rst.bands_no_fiber, rst.n_moved,
                 rst.stretch_before, rst.stretch_after, rst.mean_disp,
-                rst.max_disp, ves_clock_sec() - t5);
+                rst.max_disp, guard_reverted, guard_prev_multi,
+                guard_candidate_multi, guard_prev_dark, guard_candidate_dark,
+                ves_clock_sec() - t5);
             fclose(jf);
         }
     }
@@ -1298,6 +1423,10 @@ int main(int argc, char **argv)
         ao.max_edge3d = ro.max_edge3d;
         ao.write_winding = 1;
         ao.relax = atlas_relax;
+        ao.phase_u = atlas_phase_u;
+        ao.polar_u = atlas_polar_u;
+        ao.input_polar_u = input_polar_u;
+        if (input_polar_u) ao.input_polar_stats = input_polar_stats;
         ao.verbose = 0;
         AtlasStats as;
         if (ExportAtlas_run(arena, &ps, &cal, atlas_dir, id, &ao, &as) != 0) {
@@ -1305,12 +1434,54 @@ int main(int argc, char **argv)
             export_failed = 1;
         } else {
             logf_both("[atlas] %s: %zu pieces written (%zu empty, %zu over-cap, "
-                      "%zu quarantine faces); valid=%zu conflict=%zu "
+                      "%zu quarantine faces = %zu phase + %zu u-outlier); "
+                      "valid=%zu conflict=%zu "
                       "(%.3f%%) in %.1fs\n",
                       atlas_dir, as.n_written, as.n_empty, as.n_over_cap,
-                      as.n_quarantine_faces, as.total_valid_px,
+                      as.n_quarantine_faces, as.n_phase_quarantine_faces,
+                      as.n_u_outlier_faces, as.total_valid_px,
                       as.total_conflict_px, 100.0 * as.conflict_frac,
                       ves_clock_sec() - ta);
+            logf_both("[atlas] first-conflict provenance: same-cube=%zu "
+                      "cross-cube=%zu unknown=%zu; d3 mean/max=%.2f/%.2f; "
+                      "turn-delta <=.25/.5/1/>1=%zu/%zu/%zu/%zu\n",
+                      as.total_conflict_same_cube_px,
+                      as.total_conflict_cross_cube_px,
+                      as.total_conflict_unknown_cube_px,
+                      as.total_conflict_px
+                          ? as.total_conflict_d_sum
+                            / (double)as.total_conflict_px : 0.0,
+                      as.max_conflict_d,
+                      as.total_conflict_turn_le025,
+                      as.total_conflict_turn_le05,
+                      as.total_conflict_turn_le1,
+                      as.total_conflict_turn_gt1);
+            logf_both("[atlas] conflict faces: edge/vertex/disjoint=%zu/%zu/%zu; "
+                      "centroid d3 <=8/>8=%zu/%zu; "
+                      "du <=2/4/8/>8=%zu/%zu/%zu/%zu; "
+                      "dv <=2/4/8/>8=%zu/%zu/%zu/%zu\n",
+                      as.total_conflict_face_shared_edge,
+                      as.total_conflict_face_shared_vertex,
+                      as.total_conflict_face_disjoint,
+                      as.total_conflict_centroid_d_le8,
+                      as.total_conflict_centroid_d_gt8,
+                      as.total_conflict_centroid_du_le2,
+                      as.total_conflict_centroid_du_le4,
+                      as.total_conflict_centroid_du_le8,
+                      as.total_conflict_centroid_du_gt8,
+                      as.total_conflict_centroid_dv_le2,
+                      as.total_conflict_centroid_dv_le4,
+                      as.total_conflict_centroid_dv_le8,
+                      as.total_conflict_centroid_dv_gt8);
+            if (as.polar_sign != 0)
+                logf_both("[atlas] polar lift: sign=%+d offset=%.5f rad "
+                           "coherence=%.5f curved-axis=%d components=%zu "
+                           "inconsistent=%zu cycles=%zu isolated=%zu\n",
+                           as.polar_sign, as.polar_offset,
+                           as.polar_coherence, as.polar_curved_axis,
+                           as.polar_groups, as.polar_ambiguous_groups,
+                           as.polar_cycle_conflicts,
+                           as.polar_isolated_vertices);
         }
     }
 

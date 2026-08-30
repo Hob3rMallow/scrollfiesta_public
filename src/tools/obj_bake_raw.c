@@ -1,13 +1,14 @@
 /* ============================================================================
  * obj_bake_raw -- bake RAW CT intensity onto a UV-carrying OBJ.
  *
- * Standalone validation tool for a UV-carrying scroll mesh: "read the original volumetric
+ * Validation step for the scroll_ribbon unwrap: "read the original volumetric
  * information back from the scroll and write it out to an OBJ -- if this
  * works, we should see nice, clean papyrus."
  *
  * Input: an OBJ whose vertices are SOURCE-SPACE voxel coordinates (z,y,x)
- * with per-vertex "vt u v" texture coordinates (as written by the unroll tools:
- * <id>_uv.obj or <id>_ribbon.obj), plus the grid's cubes_RAW/ directory of
+ * with per-vertex "vt u v" texture coordinates (as written by scroll_ribbon:
+ * <id>_uv.obj or <id>_ribbon.obj locator whose authoritative .vmesh companion
+ * is read, plus the grid's cubes_RAW/ directory of
  * chunk^3 uint8 multipage TIFFs named z#####_y#####_x#####.tif (the name is
  * the cube's source-space voxel origin, so it doubles as the placement).
  *
@@ -40,11 +41,14 @@
 #include <stdint.h>
 
 #include "../common/arena.h"
+#include "../common/mesh_normals.h"
+#include "../common/mesh_bin.h"
 #include "../common/tiff_io.h"
 #include "../common/ves_platform.h"
 #include "../common/ves_png.h"
 #include "../common/raw_sample.h"
 #include "../flatten/rawtex_bake.h"   /* Rawtex_write_tif + DiagOpts (extracted) */
+#include "../flatten/marble_diag.h"
 
 /* ------------------------------------------------------------------ util */
 
@@ -93,7 +97,7 @@ typedef struct UvMesh {
 } UvMesh;
 
 /* Parse v / vt / f lines. Face corners "a", "a/b" and "a/b/c" all accepted
- * (only the vertex index is kept; the unroll tools write a/a so vt index ==
+ * (only the vertex index is kept; scroll_ribbon writes a/a so vt index ==
  * v index by construction). Polygons are fan-triangulated. Vertex color
  * floats after v x y z are ignored. Returns 0 on success. */
 static int parse_uv_obj(const char *path, UvMesh *m)
@@ -179,9 +183,36 @@ static void uvmesh_free(UvMesh *m)
     memset(m, 0, sizeof *m);
 }
 
+/* The OBJ argument remains a convenient name for the human-readable sibling,
+ * but production baking consumes only its VESMESH1 companion. */
+static int load_uv_mesh_binary(const char *locator, UvMesh *m,
+                               char *resolved, size_t resolved_cap)
+{
+    MeshBinData mesh;
+    memset(m, 0, sizeof *m);
+    if (MeshBin_companion_path(locator, resolved, resolved_cap) != 0 ||
+        MeshBin_read_malloc(resolved, &mesh) != 0) {
+        fprintf(stderr,
+                "ERROR: cannot load authoritative mesh container for %s "
+                "(OBJ fallback is disabled)\n", locator);
+        return -1;
+    }
+    if (mesh.uv == NULL) {
+        fprintf(stderr, "ERROR: %s has no per-vertex UV field\n", resolved);
+        MeshBin_dispose(&mesh);
+        return -1;
+    }
+    m->verts = mesh.verts;
+    m->uv = mesh.uv;
+    m->faces = mesh.faces;
+    m->nv = m->nvt = mesh.nv;
+    m->nf = mesh.nf;
+    return 0;
+}
+
 /* cube table + RAW sampling now live in src/common/raw_sample.{c,h}
  * (CubeTable, cubetable_init, cube_fetch, sample_trilinear, sample_vertex,
- * vertex_normals) -- shared with the overlap-repair module. */
+ * sampling primitives) -- shared with the overlap-repair module. */
 
 /* --------------------------------------------------- stretch + writers */
 
@@ -231,8 +262,9 @@ static double gray_of(double v, double lo, double hi)
     return g;
 }
 
-/* Colored OBJ: "v x y z r g b" (grayscale). flat != 0 places vertices at
- * (u, v, 0) from uv instead of their 3D position. Unsampled verts get 0. */
+/* Colored, parameterized OBJ: "v x y z r g b" plus one vt per vertex.
+ * flat != 0 places vertices at (u, v, 0) from uv instead of their 3D
+ * position. Unsampled verts get 0. */
 static int write_colored_obj(const char *path, const float *verts, size_t nv,
                              const int32_t *faces, size_t nf, const float *uv,
                              const double *val, const uint8_t *has,
@@ -252,9 +284,14 @@ static int write_colored_obj(const char *path, const float *verts, size_t nv,
                     (double)verts[i * 3 + 0], (double)verts[i * 3 + 1],
                     (double)verts[i * 3 + 2], g, g, g);
     }
+    for (i = 0; i < nv; i++)
+        fprintf(f, "vt %.9g %.9g\n", (double)uv[i * 2 + 0],
+                (double)uv[i * 2 + 1]);
     for (t = 0; t < nf; t++)
-        fprintf(f, "f %d %d %d\n", faces[t * 3 + 0] + 1,
-                faces[t * 3 + 1] + 1, faces[t * 3 + 2] + 1);
+        fprintf(f, "f %d/%d %d/%d %d/%d\n",
+                faces[t * 3 + 0] + 1, faces[t * 3 + 0] + 1,
+                faces[t * 3 + 1] + 1, faces[t * 3 + 1] + 1,
+                faces[t * 3 + 2] + 1, faces[t * 3 + 2] + 1);
     fclose(f);
     return 0;
 }
@@ -417,10 +454,82 @@ static int selftest(void)
         v = cube_fetch(&ct, 2, 2, 11);
         CHECK(v == 103, "t5 fetch cube B voxel (lazy load)");
         CHECK(ct.n_loaded == 2, "t5 two cubes loaded");
+        CHECK(cubetable_expected_chunks(&ct) == 2 && cubetable_is_complete(&ct),
+              "t5 complete two-chunk bbox is production-safe");
         v = cube_fetch(&ct, 2, 9, 3);   /* y=9 -> cube y0=8: no file */
         (void)v;
         CHECK(ct.n_missing >= 0 && cube_fetch(&ct, 2, 9, 3) == -1,
               "t5 missing neighbor -> -1");
+        {
+            CubeTable partial;
+            float wider[6] = { 1.0f, 1.0f, 1.0f, 6.0f, 14.0f, 14.0f };
+            CHECK(cubetable_init(&partial, arena, cdir, chunk, wider, 2, 0.0) == 0,
+                  "t5 strict-coverage table init");
+            cubetable_prewarm_all(&partial);
+            CHECK(cubetable_expected_chunks(&partial) == 4 &&
+                  partial.n_loaded == 2 && partial.n_missing == 2 &&
+                  !cubetable_is_complete(&partial),
+                  "t5 partial bbox is rejected by production coverage");
+        }
+    }
+
+    /* 6. Zarr coverage clips the padded geometry bbox to the physical array.
+     * Out-of-volume halo is absence of evidence, not a missing in-volume
+     * chunk; sampling it must still return no datum. */
+    {
+        CubeTable ct, outside;
+        const long chunk = 8;
+        const size_t bytes = (size_t)chunk * (size_t)chunk * (size_t)chunk;
+        char zdir[512], path[700];
+        uint8_t *buf = (uint8_t *)xmalloc(bytes);
+        float crossing[6] = { -4.0f, -4.0f, -4.0f, 12.0f, 12.0f, 14.0f };
+        float beyond[6] = { 20.0f, 20.0f, 20.0f, 24.0f, 24.0f, 24.0f };
+        FILE *f = NULL;
+        snprintf(zdir, sizeof zdir, "%s/zarr_boundary", dir);
+        snprintf(path, sizeof path, "%s/0/.zarray", zdir);
+        ves_ensure_parent_dir(path);
+        f = fopen(path, "wb");
+        if (f != NULL) {
+            fputs("{\"zarr_format\":2,\"shape\":[8,8,10],"
+                  "\"chunks\":[8,8,8],\"dtype\":\"|u1\","
+                  "\"compressor\":null,\"fill_value\":0,"
+                  "\"order\":\"C\",\"filters\":null}\n", f);
+            fclose(f);
+        }
+        memset(buf, 31, bytes);
+        snprintf(path, sizeof path, "%s/0/0/0/0", zdir);
+        ves_ensure_parent_dir(path);
+        f = fopen(path, "wb");
+        if (f != NULL) { fwrite(buf, 1, bytes, f); fclose(f); }
+        memset(buf, 197, bytes);
+        snprintf(path, sizeof path, "%s/0/0/0/1", zdir);
+        ves_ensure_parent_dir(path);
+        f = fopen(path, "wb");
+        if (f != NULL) { fwrite(buf, 1, bytes, f); fclose(f); }
+        free(buf);
+
+        CHECK(cubetable_init(&ct, arena, zdir, chunk, crossing, 2, 0.0) == 0,
+              "t6 boundary-crossing Zarr table init");
+        cubetable_prewarm_all(&ct);
+        CHECK(cubetable_expected_chunks(&ct) == 2 && ct.n_loaded == 2 &&
+              ct.n_missing == 0 && ct.n_outside == 25 &&
+              cubetable_is_complete(&ct),
+              "t6 only in-volume Zarr chunks participate in strict coverage");
+        CHECK(cube_fetch(&ct, 2, 2, 9) == 197,
+              "t6 valid voxel in partial boundary chunk loads");
+        CHECK(cube_fetch(&ct, 2, 2, 10) == -1 &&
+              cube_fetch(&ct, -1, 2, 2) == -1,
+              "t6 physical Zarr boundary returns no datum");
+
+        CHECK(cubetable_init(&outside, arena, zdir, chunk, beyond, 2, 0.0) == 0,
+              "t6 fully out-of-volume Zarr table init");
+        cubetable_prewarm_all(&outside);
+        CHECK(cubetable_expected_chunks(&outside) == 0 &&
+              outside.n_loaded == 0 && outside.n_missing == 0 &&
+              outside.n_outside == 8 && cubetable_is_complete(&outside),
+              "t6 fully out-of-volume bbox is complete but has no evidence");
+        CHECK(cube_fetch(&outside, 22, 22, 22) == -1,
+              "t6 fully out-of-volume fetch returns no datum");
     }
 
     /* 6. stretch window percentiles */
@@ -486,23 +595,58 @@ static int selftest(void)
         ves_ensure_parent_dir(path);
         CHECK(Rawtex_write_tif(path, &ct, verts, uvq, 4, fq, 2, NULL, NULL,
                                0.0, 1, 1.0, 1.0, 0.0, 255.0,
-                               4.0, 25.0, 6.0, NULL,
+                               4.0, 25.0, 6.0, 0, NULL,
                                &W, &H, &fill, &multi, NULL, NULL) == 0,
               "t8 raster runs");
-        CHECK(W == 5 && H == 5 && fabs(fill - 1.0) < 1e-9,
-              "t8 raster 5x5, fully covered");
-        {   /* field(2, 1+pv, 1+pu) = 2 + 2(1+pv) + 3(1+pu) = 7 + 2pv + 3pu */
+        CHECK(W == 4 && H == 4 && fabs(fill - 1.0) < 1e-9,
+              "t8 raster 4x4 (half-texel cells), fully covered");
+        {   /* centers at +0.5: field(2, 1.5+pv, 1.5+pu) = 9.5 + 2pv + 3pu;
+             * the writer rounds g*255+0.5 -> 10 + 2pv + 3pu exactly */
             uint8_t *img = NULL;
             int D = 0, IH = 0, IW = 0;
             int okpix = 1, py = 0, pxx = 0;
             CHECK(TiffIO_load(arena, path, &img, &D, &IH, &IW) == 0
-                  && D == 1 && IH == 5 && IW == 5, "t8 raster loads back");
-            for (py = 0; py < 5 && img != NULL; py++)
-                for (pxx = 0; pxx < 5; pxx++)
-                    if (img[py * 5 + pxx]
-                        != (uint8_t)(7 + 2 * py + 3 * pxx)) okpix = 0;
+                  && D == 1 && IH == 4 && IW == 4, "t8 raster loads back");
+            for (py = 0; py < 4 && img != NULL; py++)
+                for (pxx = 0; pxx < 4; pxx++)
+                    if (img[py * 4 + pxx]
+                        != (uint8_t)(10 + 2 * py + 3 * pxx)) okpix = 0;
             CHECK(okpix, "t8 every pixel exact on linear field");
-            CHECK(multi <= 5, "t8 multi-cover only on the shared diagonal");
+            CHECK(multi == 0,
+                  "t8 shared diagonals/vertices have one raster owner");
+        }
+        {   /* The raster must be sized from the UV BOUNDING BOX, not [0,max].
+             * A winding frame lifted from registration starts wherever the
+             * spiral starts -- on the 4x21x21 u is negative almost everywhere
+             * and v is world z (~4352..4864).  Anchoring at (0,0) dropped 99.98%
+             * of that mesh and asked for a 341208x4865 raster. */
+            float uvoff[8];
+            size_t W3 = 0, H3 = 0, multi3 = 0;
+            double fill3 = 0.0;
+            char path3[512];
+            uint8_t *img3 = NULL;
+            int D3 = 0, IH3 = 0, IW3 = 0, okpix3 = 1, py3 = 0, px3 = 0, m3 = 0;
+            for (m3 = 0; m3 < 4; m3++) {
+                uvoff[m3 * 2 + 0] = uvq[m3 * 2 + 0] - 1000.0f;
+                uvoff[m3 * 2 + 1] = uvq[m3 * 2 + 1] + 4352.0f;
+            }
+            snprintf(path3, sizeof path3, "%s/t8c_offset.tif", dir);
+            CHECK(Rawtex_write_tif(path3, &ct, verts, uvoff, 4, fq, 2, NULL,
+                                   NULL, 0.0, 1, 1.0, 1.0, 0.0, 255.0,
+                                   4.0, 25.0, 6.0, 0, NULL,
+                                   &W3, &H3, &fill3, &multi3, NULL, NULL) == 0,
+                  "t8c offset-origin raster runs");
+            CHECK(W3 == 4 && H3 == 4 && fabs(fill3 - 1.0) < 1e-9,
+                  "t8c offset UV still gives a 4x4 fully covered raster");
+            CHECK(TiffIO_load(arena, path3, &img3, &D3, &IH3, &IW3) == 0
+                  && D3 == 1 && IH3 == 4 && IW3 == 4,
+                  "t8c offset raster loads back");
+            for (py3 = 0; py3 < 4 && img3 != NULL; py3++)
+                for (px3 = 0; px3 < 4; px3++)
+                    if (img3[py3 * 4 + px3]
+                        != (uint8_t)(10 + 2 * py3 + 3 * px3)) okpix3 = 0;
+            CHECK(okpix3,
+                  "t8c offset raster is pixel-identical to the origin raster");
         }
         {   /* degenerate UV face (zero area) is skipped cleanly */
             int32_t fdeg[3] = { 0, 0, 1 };
@@ -511,7 +655,7 @@ static int selftest(void)
             snprintf(path, sizeof path, "%s/t8_degen.tif", dir);
             CHECK(Rawtex_write_tif(path, &ct, verts, uvq, 4, fdeg, 1, NULL, NULL,
                                    0.0, 1, 1.0, 1.0, 0.0, 255.0,
-                                   4.0, 25.0, 6.0, NULL,
+                                   4.0, 25.0, 6.0, 0, NULL,
                                    &W2, &H2, &f2, &m2, NULL, NULL) == 0
                   && f2 == 0.0,
                   "t8 degenerate face skipped, empty raster");
@@ -523,7 +667,7 @@ static int selftest(void)
             snprintf(path, sizeof path, "%s/t8_stretch.tif", dir);
             CHECK(Rawtex_write_tif(path, &ct, verts, uvs, 4, fq, 2, NULL, NULL,
                                    0.0, 1, 1.0, 1.0, 0.0, 255.0,
-                                   4.0, 25.0, 6.0, NULL,
+                                   4.0, 25.0, 6.0, 0, NULL,
                                    &W2, &H2, &f2, &m2, &suv, &s3d) == 0
                   && f2 == 0.0 && suv == 2 && s3d == 0,
                   "t8 uv-stretched faces skipped (paint nothing)");
@@ -535,7 +679,7 @@ static int selftest(void)
             snprintf(path, sizeof path, "%s/t8_bigedge.tif", dir);
             CHECK(Rawtex_write_tif(path, &ct, vbig, uvq, 4, fq, 2, NULL, NULL,
                                    0.0, 1, 1.0, 1.0, 0.0, 255.0,
-                                   4.0, 25.0, 6.0, NULL,
+                                   4.0, 25.0, 6.0, 0, NULL,
                                    &W2, &H2, &f2, &m2, &suv, &s3d) == 0
                   && f2 == 0.0 && s3d == 2,
                   "t8 big-3D-edge faces skipped (fill membranes)");
@@ -598,29 +742,66 @@ static int selftest(void)
         dopts.dark_thresh = 13;
         CHECK(Rawtex_write_tif(path, &ct, verts, uvq, nvq, fq, nfq, NULL, NULL,
                                0.0, 1, 1.0, 1.0, 0.0, 255.0,
-                               4.0, 25.0, 6.0, &dopts,
+                               4.0, 25.0, 6.0, 0, &dopts,
                                &W, &H, &fill, &multi, NULL, NULL) == 0
-              && W == 9 && H == 9, "t8b diag raster runs");
+              && W == 8 && H == 8, "t8b diag raster runs");
         {
             uint8_t *cls = NULL, *verr = NULL, *str = NULL;
             int D = 0, IH = 0, IW = 0;
+            int qx = 0, qy = 0;
+            uint8_t verr_max = 0, str_max = 0;
             snprintf(dpath, sizeof dpath, "%s/t8b_diagclass.tif", dir);
             CHECK(TiffIO_load(arena, dpath, &cls, &D, &IH, &IW) == 0
-                  && IW == 9 && IH == 9, "t8b class map loads");
-            /* x = 1.75+u_px: px u=1 -> x=2.75 dark(5); u=7 -> x=8.75 ok(1)
-             * (row 2 is away from the broken vertex at (6.25, 6.25)) */
-            CHECK(cls != NULL && cls[2 * 9 + 1] == 5 && cls[2 * 9 + 7] == 1,
+                  && IW == 8 && IH == 8, "t8b class map loads");
+            /* half-texel center px -> x = 2.5+px: px=1 -> x=3.5 dark(5);
+             * px=6 -> x=8.5 ok(1) (row 2 is away from the broken vertex) */
+            CHECK(cls != NULL && cls[2 * 8 + 1] == 5 && cls[2 * 8 + 6] == 1,
                   "t8b dark/ok split at the field boundary");
             snprintf(dpath, sizeof dpath, "%s/t8b_diagverr.tif", dir);
             CHECK(TiffIO_load(arena, dpath, &verr, &D, &IH, &IW) == 0
-                  && verr != NULL && verr[1 * 9 + 1] == 0
-                  && verr[4 * 9 + 6] == 64,
-                  "t8b verr: 0 on clean grid, 2 vox at broken vertex");
+                  && verr != NULL && verr[1 * 8 + 1] == 0,
+                  "t8b verr: 0 on the clean grid");
             snprintf(dpath, sizeof dpath, "%s/t8b_diagstretch.tif", dir);
             CHECK(TiffIO_load(arena, dpath, &str, &D, &IH, &IW) == 0
-                  && str != NULL && str[1 * 9 + 1] == 128
-                  && str[4 * 9 + 6] > 132,
-                  "t8b stretch: isometric 128 clean, >128 at broken vertex");
+                  && str != NULL && str[1 * 8 + 1] == 128,
+                  "t8b stretch: isometric 128 on the clean grid");
+            for (qy = 0; qy < 8; qy++)
+                for (qx = 0; qx < 8; qx++) {
+                    if (verr != NULL && verr[qy * 8 + qx] > verr_max)
+                        verr_max = verr[qy * 8 + qx];
+                    if (str != NULL && str[qy * 8 + qx] > str_max)
+                        str_max = str[qy * 8 + qx];
+                }
+            /* interpolated centers no longer sit ON the broken vertex, so the
+             * 2-vox verr peak (64) reads back attenuated but must still be
+             * loud, and the stretch map must flag the distortion */
+            CHECK(verr_max >= 32 && str_max > 132,
+                  "t8b broken vertex flagged by verr + stretch maxima");
+        }
+        {   /* RAW/mesh alignment audit writes evidence maps + green overlay. */
+            MarbleDiagOpts mopts;
+            MarbleDiagStats mstats;
+            FILE *probe_file = NULL;
+            MarbleDiag_defaults(&mopts);
+            mopts.stride_pixels = 2;
+            mopts.depth_range = 1.0;
+            mopts.depth_step = 1.0;
+            mopts.tensor_radius = 1.0;
+            mopts.score_threshold = 1.0;
+            mopts.minimum_region_cells = 1;
+            snprintf(dpath, sizeof dpath, "%s/t8b_marble", dir);
+            CHECK(MarbleDiag_write(dpath, path, &ct, verts, uvq, nvq,
+                                   fq, nfq, NULL, 1.0, 1.0, 0,
+                                   &mopts, &mstats) == 0 &&
+                  mstats.audit_width == 4 && mstats.audit_height == 4 &&
+                  mstats.sampled_cells > 0,
+                  "t8b RAW/mesh marble audit runs on sparse UV grid");
+            snprintf(dpath, sizeof dpath,
+                     "%s/t8b_marble_marble_overlay.png", dir);
+            probe_file = fopen(dpath, "rb");
+            CHECK(probe_file != NULL,
+                  "t8b marble audit writes the green-overlay PNG");
+            if (probe_file != NULL) fclose(probe_file);
         }
     }
 
@@ -635,11 +816,42 @@ static int selftest(void)
                            &m) != 0, "t9 missing file -> error");
         CHECK(Rawtex_write_tif("x", NULL, NULL, NULL, 0, NULL, 0, NULL, NULL,
                                0.0, 1, 1.0, 1.0, 0.0, 255.0, 4.0, 25.0, 6.0,
-                               NULL, &W, &H, &fill, &mu, NULL, NULL) != 0,
+                               0, NULL, &W, &H, &fill, &mu, NULL, NULL) != 0,
               "t9 empty raster -> error");
-        n = vertex_normals((const float *)&fill, 0, NULL, 0);
+        n = MeshNormals_compute((const float *)&fill, 0, NULL, 0);
         CHECK(n != NULL, "t9 zero-vert normals ok");
         free(n);
+    }
+
+    /* 10. raster preflight: cheap sizing BEFORE sampling, per-axis advice.
+     * The 21x21x21 bake burned 446s of vertex sampling and THEN rejected the
+     * raster; the old retry advice also scaled dv by sqrt(area), silently
+     * downsampling a full-height v axis because u had exploded. */
+    {
+        RawtexPlan rp, rp2;
+        float uvbig[64 * 2];
+        float uvq2[8] = { 0, 0,  4, 0,  0, 4,  4, 4 };
+        int t = 0;
+        for (t = 0; t < 64; t++) {          /* u spans 3e6, v spans 500 */
+            uvbig[t * 2 + 0] = (float)t / 63.0f * 3.0e6f;
+            uvbig[t * 2 + 1] = (float)t / 63.0f * 500.0f;
+        }
+        CHECK(Rawtex_plan(uvbig, 64, 1.0, 1.0, 0, &rp) == 0 && rp.ok == 0,
+              "t10 huge-u raster rejected by preflight");
+        CHECK(rp.need_du > 1.0 && fabs(rp.need_dv - 1.0) < 1e-12,
+              "t10 advice shrinks u only; v keeps full resolution");
+        CHECK(Rawtex_plan(uvbig, 64, rp.need_du, rp.need_dv, 0, &rp2) == 0
+              && rp2.ok == 1,
+              "t10 suggested steps fit the caps");
+        CHECK(Rawtex_plan(uvq2, 4, 1.0, 1.0, 0, &rp) == 0 && rp.ok == 1
+              && rp.W == 4 && rp.H == 4,
+              "t10 plan dims match the rasterizer (4x4 quad)");
+        CHECK(Rawtex_plan(uvq2, 4, 1.0, 1.0, 8, &rp) == 0 && rp.ok == 0
+              && Rawtex_plan(uvq2, 4, rp.need_du, rp.need_dv, 8, &rp2) == 0
+              && rp2.ok == 1 && rp2.W * rp2.H <= 8,
+              "t10 custom --raster-max-px cap honored with fitting advice");
+        CHECK(Rawtex_plan(NULL, 0, 1.0, 1.0, 0, &rp) != 0,
+              "t10 empty input -> error");
     }
 
     Arena_dispose(&arena);
@@ -653,26 +865,35 @@ static int selftest(void)
 static void usage(void)
 {
     fprintf(stderr,
-        "usage: obj_bake_raw <uv.obj> <raw_cube_dir> <out_dir> [options]\n"
+        "usage: obj_bake_raw <uv.obj> <raw_cube_dir_or_zarr> <out_dir> [options]\n"
+        "       (production reads only the authoritative companion .vmesh)\n"
         "       obj_bake_raw --selftest\n"
+        "       obj_bake_raw --migrate-obj <legacy.obj> [output.vmesh]\n"
         "  Bake RAW CT intensity as grayscale per-vertex colors onto a mesh\n"
         "  whose OBJ carries source-space (z,y,x) verts + per-vertex vt (u,v).\n"
         "options:\n"
         "  --id S              output prefix (default: bake)\n"
         "  --chunk N           cube edge, vox (default 128)\n"
+        "  --require-complete-raw  fail if any required RAW chunk is absent (default)\n"
+        "  --allow-incomplete-raw  diagnostics only; never publish this output\n"
         "  --normal-range F    max-sample +/-F vox along the vertex normal\n"
         "                      (default 2.0; 0 = single trilinear sample)\n"
         "  --normal-samples N  steps along the normal (default 5)\n"
         "  --pct-lo F          contrast stretch low percentile (default 1)\n"
         "  --pct-hi F          contrast stretch high percentile (default 99)\n"
+        "  --window LO HI      use an explicit shared contrast window\n"
         "  --no-stretch        disable contrast stretch (window 0..255)\n"
-        "  --require-contrast  fail if the sampled percentile window is constant\n"
         "  --no-raster         skip the rasterized texture TIFF (on by\n"
         "                      default: every pixel gets a fresh volume\n"
         "                      sample at its barycentric surface point;\n"
         "                      per-vertex scattering is never used)\n"
         "  --raster-du F       raster pixel size in u, vox (default 1.0)\n"
         "  --raster-dv F       raster pixel size in v, vox (default 1.0)\n"
+        "  --raster-auto       if (du,dv) would exceed the raster caps, adopt\n"
+        "                      the smallest per-axis steps that fit instead of\n"
+        "                      erroring (the preflight runs BEFORE sampling)\n"
+        "  --raster-max-px N   total-pixel cap (default 268435456 = 1<<28);\n"
+        "                      raise on big-RAM boxes to avoid downsampling\n"
         "  --raster-stretch-ratio F / --raster-stretch-floor F\n"
         "                      skip faces with a UV edge > max(ratio*3d_len,\n"
         "                      floor) -- collapsed-core streak paint (4.0/25)\n"
@@ -684,6 +905,13 @@ static void usage(void)
         "                      _diagstretch/_diagsquash = 128+42.5*log2(sigma);\n"
         "                      _diagverr = |vt.v-(z-zmin)|*32) + hot-tile table\n"
         "  --diag-dark N       dark-pixel threshold, post-stretch u8 (def 13)\n"
+        "  --marble-diag       audit RAW/mesh UV alignment and emit green overlay\n"
+        "  --marble-stride N   audit-cell edge in baked pixels (default 16)\n"
+        "  --marble-depth F    normal search reach +/-F vox (default 4)\n"
+        "  --marble-depth-step F  normal search spacing (default 1)\n"
+        "  --marble-radius F   RAW tangent-patch radius (default 2)\n"
+        "  --marble-threshold F  green-mask score threshold (default .40)\n"
+        "  --marble-min-cells N  remove smaller audit islands (default 12)\n"
         "  --no-3d / --no-flat skip that output\n");
 }
 
@@ -695,15 +923,22 @@ int main(int argc, char **argv)
     double normal_range = 2.0;
     int normal_samples = 5;
     double pct_lo = 1.0, pct_hi = 99.0;
+    double fixed_lo = 0.0, fixed_hi = 255.0;
+    int fixed_window = 0;
     int do_stretch = 1, do_raster = 1, do_3d = 1, do_flat = 1;
-    int require_contrast = 0, output_failures = 0;
     double raster_du = 1.0, raster_dv = 1.0;
+    int raster_auto = 0;
+    size_t raster_max_px = 0;   /* 0 = Rawtex default (1<<28) */
     double raster_stretch_ratio = 4.0, raster_stretch_floor = 25.0;
     /* Real input-mesh edge scale belongs to the upstream remesher. A fixed
      * 6-voxel cap hid most valid faces in coarse welded scroll meshes; callers
      * rasterizing known synthetic membrane fill can opt back in explicitly. */
     double raster_max_edge = 0.0;
     int do_diag = 1, diag_dark = 13;
+    int do_marble = 0;
+    MarbleDiagOpts marble_opts;
+    int require_complete_raw = 1;
+    int need_vertex_samples = 1;
     const char *dump_smear = NULL;
     int i = 0;
     UvMesh m;
@@ -714,11 +949,36 @@ int main(int argc, char **argv)
     uint8_t *has = NULL;
     size_t nsamp = 0, k = 0;
     double lo = 0.0, hi = 255.0;
-    double sample_min = 1.0e300, sample_max = -1.0e300;
     double t0 = 0.0, t_parse = 0.0, t_sample = 0.0, t_write = 0.0;
 
+    MarbleDiag_defaults(&marble_opts);
+
     if (argc >= 2 && strcmp(argv[1], "--selftest") == 0)
-        return selftest() == 0 ? 0 : 1;
+        return selftest() == 0 && MeshBin_selftest() == 0 ? 0 : 1;
+    /* Explicit one-time migration valve for artifacts predating VESMESH1.
+     * No normal pipeline path calls the text parser. */
+    if (argc >= 3 && strcmp(argv[1], "--migrate-obj") == 0) {
+        char companion[2048];
+        const char *destination = argc >= 4 ? argv[3] : companion;
+        if (argc > 4 ||
+            (argc < 4 && MeshBin_companion_path(
+                argv[2], companion, sizeof companion) != 0)) {
+            usage(); return 1;
+        }
+        if (parse_uv_obj(argv[2], &m) != 0) return 1;
+        if (MeshBin_write(destination, m.verts, m.nv, m.faces, m.nf,
+                          m.nvt == m.nv ? m.uv : NULL) != 0) {
+            fprintf(stderr, "ERROR: cannot migrate %s to %s\n",
+                    argv[2], destination);
+            uvmesh_free(&m);
+            return 1;
+        }
+        fprintf(stderr, "migrated %s -> %s (%zu vertices, %zu faces%s)\n",
+                argv[2], destination, m.nv, m.nf,
+                m.nvt == m.nv ? ", UV" : "");
+        uvmesh_free(&m);
+        return 0;
+    }
     if (argc < 4) { usage(); return 1; }
     in_path = argv[1];
     raw_dir = argv[2];
@@ -727,6 +987,10 @@ int main(int argc, char **argv)
         if (strcmp(argv[i], "--id") == 0 && i + 1 < argc) id = argv[++i];
         else if (strcmp(argv[i], "--chunk") == 0 && i + 1 < argc)
             chunk = strtol(argv[++i], NULL, 10);
+        else if (strcmp(argv[i], "--require-complete-raw") == 0)
+            require_complete_raw = 1;
+        else if (strcmp(argv[i], "--allow-incomplete-raw") == 0)
+            require_complete_raw = 0;
         else if (strcmp(argv[i], "--normal-range") == 0 && i + 1 < argc)
             normal_range = strtod(argv[++i], NULL);
         else if (strcmp(argv[i], "--normal-samples") == 0 && i + 1 < argc)
@@ -735,14 +999,21 @@ int main(int argc, char **argv)
             pct_lo = strtod(argv[++i], NULL);
         else if (strcmp(argv[i], "--pct-hi") == 0 && i + 1 < argc)
             pct_hi = strtod(argv[++i], NULL);
+        else if (strcmp(argv[i], "--window") == 0 && i + 2 < argc) {
+            fixed_lo = strtod(argv[++i], NULL);
+            fixed_hi = strtod(argv[++i], NULL);
+            fixed_window = 1;
+        }
         else if (strcmp(argv[i], "--no-stretch") == 0) do_stretch = 0;
-        else if (strcmp(argv[i], "--require-contrast") == 0) require_contrast = 1;
         else if (strcmp(argv[i], "--raster") == 0) do_raster = 1;  /* default */
         else if (strcmp(argv[i], "--no-raster") == 0) do_raster = 0;
         else if (strcmp(argv[i], "--raster-du") == 0 && i + 1 < argc)
             raster_du = strtod(argv[++i], NULL);
         else if (strcmp(argv[i], "--raster-dv") == 0 && i + 1 < argc)
             raster_dv = strtod(argv[++i], NULL);
+        else if (strcmp(argv[i], "--raster-auto") == 0) raster_auto = 1;
+        else if (strcmp(argv[i], "--raster-max-px") == 0 && i + 1 < argc)
+            raster_max_px = (size_t)strtoull(argv[++i], NULL, 10);
         else if (strcmp(argv[i], "--raster-stretch-ratio") == 0 && i + 1 < argc)
             raster_stretch_ratio = strtod(argv[++i], NULL);
         else if (strcmp(argv[i], "--raster-stretch-floor") == 0 && i + 1 < argc)
@@ -752,21 +1023,76 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "--no-diag") == 0) do_diag = 0;
         else if (strcmp(argv[i], "--diag-dark") == 0 && i + 1 < argc)
             diag_dark = (int)strtol(argv[++i], NULL, 10);
+        else if (strcmp(argv[i], "--marble-diag") == 0) do_marble = 1;
+        else if (strcmp(argv[i], "--marble-stride") == 0 && i + 1 < argc)
+            marble_opts.stride_pixels = (int)strtol(argv[++i], NULL, 10);
+        else if (strcmp(argv[i], "--marble-depth") == 0 && i + 1 < argc)
+            marble_opts.depth_range = strtod(argv[++i], NULL);
+        else if (strcmp(argv[i], "--marble-depth-step") == 0 && i + 1 < argc)
+            marble_opts.depth_step = strtod(argv[++i], NULL);
+        else if (strcmp(argv[i], "--marble-radius") == 0 && i + 1 < argc)
+            marble_opts.tensor_radius = strtod(argv[++i], NULL);
+        else if (strcmp(argv[i], "--marble-threshold") == 0 && i + 1 < argc)
+            marble_opts.score_threshold = strtod(argv[++i], NULL);
+        else if (strcmp(argv[i], "--marble-min-cells") == 0 && i + 1 < argc)
+            marble_opts.minimum_region_cells = (int)strtol(argv[++i], NULL, 10);
         else if (strcmp(argv[i], "--dump-smear") == 0 && i + 1 < argc)
             dump_smear = argv[++i];
         else if (strcmp(argv[i], "--no-3d") == 0) do_3d = 0;
         else if (strcmp(argv[i], "--no-flat") == 0) do_flat = 0;
         else { fprintf(stderr, "unknown option %s\n", argv[i]); usage(); return 1; }
     }
-    if (chunk <= 0 || normal_samples < 1) { usage(); return 1; }
+    if (chunk <= 0 || normal_samples < 1 ||
+        (do_marble && (marble_opts.stride_pixels < 2 ||
+                       marble_opts.depth_range <= 0.0 ||
+                       marble_opts.depth_step <= 0.0 ||
+                       marble_opts.tensor_radius <= 0.0 ||
+                       marble_opts.score_threshold < 0.0 ||
+                       marble_opts.score_threshold > 1.0 ||
+                       marble_opts.minimum_region_cells < 1)) ||
+        (fixed_window && (!isfinite(fixed_lo) || !isfinite(fixed_hi) ||
+                          fixed_hi <= fixed_lo))) {
+        usage(); return 1;
+    }
 
     fprintf(stderr, "[obj_bake_raw] in=%s raw=%s out=%s id=%s\n",
             in_path, raw_dir, out_dir, id);
+    if (!require_complete_raw)
+        fprintf(stderr, "WARNING: incomplete RAW is allowed: this bake is diagnostic "
+                        "and must not be published as a production sheet\n");
     t0 = ves_clock_sec();
-    if (parse_uv_obj(in_path, &m) != 0) return 1;
+    {
+        char binary_path[2048];
+        if (load_uv_mesh_binary(in_path, &m, binary_path,
+                                sizeof binary_path) != 0)
+            return 1;
+        fprintf(stderr, "  authoritative input: %s\n", binary_path);
+    }
     t_parse = ves_clock_sec() - t0;
-    fprintf(stderr, "  parsed: %zu verts, %zu vt, %zu faces (%.1fs)\n",
+    fprintf(stderr, "  loaded: %zu verts, %zu vt, %zu faces (%.1fs)\n",
             m.nv, m.nvt, m.nf, t_parse);
+    {
+        double lo3[3] = { HUGE_VAL, HUGE_VAL, HUGE_VAL };
+        double hi3[3] = { -HUGE_VAL, -HUGE_VAL, -HUGE_VAL };
+        for (size_t v = 0; v < m.nv; v++) {
+            for (int d = 0; d < 3; d++) {
+                double x = (double)m.verts[v*3 + (size_t)d];
+                if (!isfinite(x)) {
+                    fprintf(stderr,
+                            "BUG: non-finite geometry at input vertex %zu "
+                            "axis %d\n", v, d);
+                    uvmesh_free(&m);
+                    return 1;
+                }
+                if (x < lo3[d]) lo3[d] = x;
+                if (x > hi3[d]) hi3[d] = x;
+            }
+        }
+        fprintf(stderr,
+                "  geometry bbox z=[%.3f,%.3f] y=[%.3f,%.3f] "
+                "x=[%.3f,%.3f]\n",
+                lo3[0], hi3[0], lo3[1], hi3[1], lo3[2], hi3[2]);
+    }
     if (m.nvt != m.nv) {
         fprintf(stderr, "  WARN: nvt (%zu) != nv (%zu) -- flat/raster outputs "
                 "disabled\n", m.nvt, m.nv);
@@ -774,50 +1100,154 @@ int main(int argc, char **argv)
         do_raster = 0;
     }
 
+    /* Raster preflight: size + cap check from the UV bbox alone, BEFORE the
+     * cube table and the (minutes-long) vertex sampling pass.  The 21x21x21
+     * chain sampled for 446s and only then learned the raster was rejected. */
+    if (do_raster) {
+        RawtexPlan rp;
+        if (Rawtex_plan(m.uv, m.nv, raster_du, raster_dv,
+                        raster_max_px, &rp) != 0) {
+            fprintf(stderr, "ERROR: raster preflight failed (no UV?)\n");
+            uvmesh_free(&m);
+            return 1;
+        }
+        if (!rp.ok && raster_auto) {
+            fprintf(stderr,
+                "  raster preflight: %zux%zu at du=%.3g dv=%.3g exceeds caps; "
+                "auto-adopting du=%.4g dv=%.4g\n",
+                rp.W, rp.H, raster_du, raster_dv, rp.need_du, rp.need_dv);
+            raster_du = rp.need_du;
+            raster_dv = rp.need_dv;
+            if (Rawtex_plan(m.uv, m.nv, raster_du, raster_dv,
+                            raster_max_px, &rp) != 0 || !rp.ok) {
+                fprintf(stderr, "ERROR: raster preflight advice does not fit "
+                        "(%zux%zu, cap %zu px)\n", rp.W, rp.H, rp.max_px);
+                uvmesh_free(&m);
+                return 1;
+            }
+        }
+        if (!rp.ok) {
+            fprintf(stderr,
+                "ERROR: raster %zux%zu unreasonable for uv u=[%.1f,%.1f] "
+                "v=[%.1f,%.1f] at du=%.3g dv=%.3g; retry with --raster-du "
+                "%.4g --raster-dv %.4g, or pass --raster-auto / "
+                "--raster-max-px N (nothing sampled yet -- no time wasted)\n",
+                rp.W, rp.H, rp.umin, rp.umax, rp.vmin, rp.vmax,
+                raster_du, raster_dv, rp.need_du, rp.need_dv);
+            uvmesh_free(&m);
+            return 1;
+        }
+        fprintf(stderr, "  raster preflight: %zux%zu px at du=%.3g dv=%.3g "
+                "(u=[%.1f,%.1f] v=[%.1f,%.1f], cap %zu px)\n",
+                rp.W, rp.H, raster_du, raster_dv,
+                rp.umin, rp.umax, rp.vmin, rp.vmax, rp.max_px);
+    }
+
     arena = Arena_new();
-    if (cubetable_init(&ct, arena, raw_dir, chunk, m.verts, m.nv,
-                       normal_range + 2.0) != 0) {
-        fprintf(stderr, "ERROR: cube table init failed\n");
-        return 1;
+    {
+        double raw_pad = normal_range + 2.0;
+        if (do_marble) {
+            double marble_pad = marble_opts.depth_range
+                              + 2.0 * marble_opts.tensor_radius + 2.0;
+            if (marble_pad > raw_pad) raw_pad = marble_pad;
+        }
+        if (cubetable_init(&ct, arena, raw_dir, chunk, m.verts, m.nv,
+                           raw_pad) != 0) {
+            fprintf(stderr, "ERROR: cube table init failed\n");
+            return 1;
+        }
     }
     fprintf(stderr, "  cube table: %ldx%ldx%ld cubes (chunk %ld) over bbox\n",
             ct.nz, ct.ny, ct.nx, chunk);
 
-    if (m.nf > 0) normals = vertex_normals(m.verts, m.nv, m.faces, m.nf);
-    val = (double *)xmalloc(m.nv * sizeof(double));
-    has = (uint8_t *)xcalloc(m.nv, sizeof(uint8_t));
+    if (m.nf > 0)
+        normals = MeshNormals_compute(m.verts, m.nv, m.faces, m.nf);
+    need_vertex_samples = do_3d || do_flat || !fixed_window;
+    if (need_vertex_samples) {
+        val = (double *)xmalloc(m.nv * sizeof(double));
+        has = (uint8_t *)xcalloc(m.nv, sizeof(uint8_t));
+    }
 
     t0 = ves_clock_sec();
-    for (k = 0; k < m.nv; k++) {
-        double s = sample_vertex(&ct, &m.verts[k * 3],
-                                 normals != NULL ? &normals[k * 3] : NULL,
-                                 normal_range, normal_samples);
-        val[k] = (s >= 0.0) ? s : 0.0;
-        if (s >= 0.0) {
-            has[k] = 1;
-            nsamp++;
-            if (s < sample_min) sample_min = s;
-            if (s > sample_max) sample_max = s;
+    /* prewarm freezes the cube table (raw_sample.h: reads are then OMP-safe),
+     * so the 30M-vertex sample loop parallelizes cleanly */
+    cubetable_prewarm_all(&ct);
+    {
+        size_t expected = cubetable_expected_chunks(&ct);
+        char coverage_path[2300];
+        FILE *coverage = NULL;
+        snprintf(coverage_path, sizeof coverage_path,
+                 "%s/%s_raw_coverage.json", out_dir, id);
+        ves_ensure_parent_dir(coverage_path);
+        coverage = fopen(coverage_path, "wb");
+        if (coverage == NULL) {
+            fprintf(stderr, "ERROR: cannot write RAW coverage report %s\n",
+                    coverage_path);
+            return 1;
+        }
+        fprintf(coverage,
+                "{\n  \"schema\": \"obj-bake-raw-coverage-v1\",\n"
+                "  \"source_kind\": \"%s\",\n"
+                "  \"chunk_size\": %ld,\n"
+                "  \"table_shape_zyx\": [%ld, %ld, %ld],\n"
+                "  \"expected_chunks\": %zu,\n"
+                "  \"loaded_chunks\": %d,\n"
+                "  \"missing_chunks\": %d,\n"
+                "  \"outside_volume_chunks\": %zu,\n"
+                "  \"complete\": %s,\n"
+                "  \"strict\": %s\n}\n",
+                ct.is_zarr ? "zarr_v2" : "cube_tiffs", chunk,
+                ct.nz, ct.ny, ct.nx, expected, ct.n_loaded, ct.n_missing,
+                ct.n_outside, cubetable_is_complete(&ct) ? "true" : "false",
+                require_complete_raw ? "true" : "false");
+        fclose(coverage);
+        fprintf(stderr,
+                "  RAW coverage: %d/%zu in-volume chunks loaded, %d missing, "
+                "%zu out-of-volume bbox chunks excluded (%.1fs); report=%s\n",
+                ct.n_loaded, expected, ct.n_missing, ct.n_outside,
+                ves_clock_sec() - t0, coverage_path);
+        if (require_complete_raw && !cubetable_is_complete(&ct)) {
+            fprintf(stderr,
+                    "ERROR: incomplete RAW source for bake bbox: %d/%zu chunks "
+                    "loaded, %d missing, %zu out-of-volume bbox chunks excluded "
+                    "(source=%s). Refusing to sample or emit "
+                    "a production texture. Use the authoritative full RAW source; "
+                    "--allow-incomplete-raw is diagnostics-only.\n",
+                    ct.n_loaded, expected, ct.n_missing, ct.n_outside, raw_dir);
+            return 1;
         }
     }
-    t_sample = ves_clock_sec() - t0;
-    fprintf(stderr, "  sampled: %zu/%zu verts (%.2f%%), %d cubes loaded, "
-            "%d missing (%.1fs)\n", nsamp, m.nv,
-            m.nv > 0 ? 100.0 * (double)nsamp / (double)m.nv : 0.0,
-            ct.n_loaded, ct.n_missing, t_sample);
-
-    if (do_stretch) stretch_window(val, has, m.nv, pct_lo, pct_hi, &lo, &hi);
-    fprintf(stderr, "  contrast window: [%.0f, %.0f] (stretch %s)\n",
-            lo, hi, do_stretch ? "on" : "off");
-    if (require_contrast && (nsamp == 0 || !(sample_max > sample_min))) {
-        fprintf(stderr, "ERROR: sampled RAW data has no intensity contrast "
-                "(range [%.0f, %.0f])\n", sample_min, sample_max);
-        free(normals); free(val); free(has);
-        uvmesh_free(&m);
-        Arena_dispose(&arena);
-        return 1;
+    if (need_vertex_samples) {
+        int kk = 0;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+        for (kk = 0; kk < (int)m.nv; kk++) {
+            double s = sample_vertex(&ct, &m.verts[kk * 3],
+                                     normals != NULL ? &normals[kk * 3] : NULL,
+                                     normal_range, normal_samples);
+            val[kk] = (s >= 0.0) ? s : 0.0;
+            if (s >= 0.0) has[kk] = 1;
+        }
     }
-    {   /* value distribution over sampled verts */
+    if (need_vertex_samples)
+        for (k = 0; k < m.nv; k++) nsamp += has[k];
+    t_sample = ves_clock_sec() - t0;
+    if (need_vertex_samples)
+        fprintf(stderr, "  sampled: %zu/%zu verts (%.2f%%), %d cubes loaded, "
+                "%d missing (%.1fs)\n", nsamp, m.nv,
+                m.nv > 0 ? 100.0 * (double)nsamp / (double)m.nv : 0.0,
+                ct.n_loaded, ct.n_missing, t_sample);
+    else
+        fprintf(stderr,
+                "  skipped redundant per-vertex sampling; raster samples RAW "
+                "directly with the fixed window (%.1fs)\n", t_sample);
+
+    if (fixed_window) { lo = fixed_lo; hi = fixed_hi; }
+    else if (do_stretch) stretch_window(val, has, m.nv, pct_lo, pct_hi, &lo, &hi);
+    fprintf(stderr, "  contrast window: [%.0f, %.0f] (%s)\n",
+            lo, hi, fixed_window ? "fixed" : (do_stretch ? "stretch on" : "stretch off"));
+    if (need_vertex_samples) {   /* value distribution over sampled verts */
         double q[5] = { 0.0, 0.0, 0.0, 0.0, 0.0 };
         double pcts[5] = { 1.0, 25.0, 50.0, 75.0, 99.0 };
         int qi = 0;
@@ -837,10 +1267,9 @@ int main(int argc, char **argv)
         snprintf(path, sizeof path, "%s/%s_raw3d.obj", out_dir, id);
         ves_ensure_parent_dir(path);
         if (write_colored_obj(path, m.verts, m.nv, m.faces, m.nf, m.uv,
-                              val, has, lo, hi, 0) != 0) {
+                              val, has, lo, hi, 0) != 0)
             fprintf(stderr, "  WARN: cannot write %s\n", path);
-            output_failures++;
-        } else
+        else
             fprintf(stderr, "  wrote %s\n", path);
     }
     if (do_flat) {
@@ -848,10 +1277,9 @@ int main(int argc, char **argv)
         snprintf(path, sizeof path, "%s/%s_rawflat.obj", out_dir, id);
         ves_ensure_parent_dir(path);
         if (write_colored_obj(path, m.verts, m.nv, m.faces, m.nf, m.uv,
-                              val, has, lo, hi, 1) != 0) {
+                              val, has, lo, hi, 1) != 0)
             fprintf(stderr, "  WARN: cannot write %s\n", path);
-            output_failures++;
-        } else
+        else
             fprintf(stderr, "  wrote %s\n", path);
     }
     if (do_raster) {
@@ -870,29 +1298,40 @@ int main(int argc, char **argv)
                              normals, NULL /*face_skip*/, normal_range, normal_samples,
                              raster_du, raster_dv, lo, hi,
                              raster_stretch_ratio, raster_stretch_floor,
-                             raster_max_edge,
+                             raster_max_edge, raster_max_px,
                              do_diag ? &dopts : NULL,
-                             &W, &H, &fill, &multi, &skuv, &sk3d) != 0) {
+                             &W, &H, &fill, &multi, &skuv, &sk3d) != 0)
             fprintf(stderr, "  WARN: cannot write %s\n", path);
-            output_failures++;
-        } else
+        else {
             fprintf(stderr, "  wrote %s (%zux%zu px, %.1f%% filled, "
                     "%zu multi-cover px, skipped %zu uv-stretched + %zu "
                     "big-3d faces, %.1fs)\n",
                     path, W, H, 100.0 * fill, multi, skuv, sk3d,
                     ves_clock_sec() - tr);
+            if (do_marble) {
+                MarbleDiagStats mstats;
+                if (MarbleDiag_write(dprefix, path, &ct,
+                                     m.verts, m.uv, m.nv, m.faces, m.nf,
+                                     normals, raster_du, raster_dv,
+                                     raster_max_px, &marble_opts, &mstats) != 0)
+                    fprintf(stderr, "  WARN: RAW/mesh marble audit failed\n");
+                else
+                    fprintf(stderr, "  wrote %s_marble_overlay.png\n", dprefix);
+            }
+        }
     }
     t_write = ves_clock_sec() - t0;
 
     fprintf(stderr, "[obj_bake_raw] SUMMARY id=%s verts=%zu sampled=%.2f%% "
             "cubes=%d/%d window=[%.0f,%.0f] parse=%.1fs sample=%.1fs "
             "write=%.1fs\n", id, m.nv,
-            m.nv > 0 ? 100.0 * (double)nsamp / (double)m.nv : 0.0,
+            need_vertex_samples && m.nv > 0
+                ? 100.0 * (double)nsamp / (double)m.nv : 0.0,
             ct.n_loaded, ct.n_loaded + ct.n_missing, lo, hi,
             t_parse, t_sample, t_write);
 
     free(normals); free(val); free(has);
     uvmesh_free(&m);
     Arena_dispose(&arena);
-    return output_failures == 0 ? 0 : 1;
+    return 0;
 }

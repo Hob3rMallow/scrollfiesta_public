@@ -28,6 +28,11 @@ int TiffIO_save_float2d(const char *path, const float *img, int W, int H);
 int TiffIO_load_float2d(Arena_T arena, const char *path,
                         float **out_img, int *out_W, int *out_H);
 
+/* Load a single 2D signed 32-bit integer TIFF.  This is used by tifxyz turn /
+ * topology labels, whose -1 background cannot be represented by TiffIO_load. */
+int TiffIO_load_int32_2d(Arena_T arena, const char *path,
+                         int32_t **out_img, int *out_W, int *out_H);
+
 /* ----------------------------------------------------------------------------
  * Streaming row access to a single-page UNCOMPRESSED 8-bit 1-sample gray TIFF
  * (the shape TiffIO_save writes: the whole-grid strip rasters are ~610 MB at

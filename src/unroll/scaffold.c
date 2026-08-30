@@ -16,6 +16,7 @@ void Scaffold_calib_default(ScaffoldCalib *c)
     c->sense    = -1;
     c->axis_point[0] = 0.0f; c->axis_point[1] = 3405.0f; c->axis_point[2] = 2878.0f;
     c->axis_dir[0]   = 1.0f; c->axis_dir[1]   = 0.0f;    c->axis_dir[2]   = 0.0f;
+    c->axis_table[0] = '\0';
 }
 
 /* crude key scan (same convention as seam_own's so_jfind). */
@@ -27,6 +28,23 @@ static const char *sc_jfind(const char *s, const char *key)
     if (p == NULL) return NULL;
     p = strchr(p + strlen(pat), ':');
     return p != NULL ? p + 1 : NULL;
+}
+
+static void sc_jstring(const char *s, const char *key, char *out, size_t cap)
+{
+    const char *p = sc_jfind(s, key);
+    if (out == NULL || cap == 0) return;
+    out[0] = '\0';
+    if (p == NULL) return;
+    p = strchr(p, '"');
+    if (p == NULL) return;
+    p++;
+    const char *q = strchr(p, '"');
+    if (q == NULL) return;
+    size_t n = (size_t)(q - p);
+    if (n >= cap) n = cap - 1;
+    memcpy(out, p, n);
+    out[n] = '\0';
 }
 
 int Scaffold_read_calib(const char *placed_dir, ScaffoldCalib *c)
@@ -59,6 +77,7 @@ int Scaffold_read_calib(const char *placed_dir, ScaffoldCalib *c)
     /* sense lives in the calibration sub-block: "sense": -1 (an int). */
     { int s = 0; if ((p = sc_jfind(buf, "sense")) != NULL && sscanf(p, " %d", &s) == 1
                   && (s == 1 || s == -1)) c->sense = s; }
+    sc_jstring(buf, "axis_table", c->axis_table, sizeof(c->axis_table));
     return 0;
 }
 

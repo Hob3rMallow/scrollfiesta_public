@@ -21,19 +21,20 @@
  *             runs perpendicular, theta = phi + pi/2 (mod pi). Picks whichever
  *             ONE family locally dominates -> the two cross-hatch families
  *             compete and the field speckles.
- *   rosy = 4  GRID orientation (mod 90 deg): the rosy=2 fiber orientation folded
- *             mod 90, so the two cross-hatch families collapse to one grid-rotation
- *             value (theta in [0,pi/2), 0 = axes aligned) and the family-switching
- *             speckle of rosy=2 disappears. This is what the aligner consumes;
- *             genuinely balanced/isotropic spots just read low coherence and gate
- *             off. (Folding the *tensor* itself is wrong -- two equal families
- *             blend their gradients to the diagonal -- so we fold the ANGLE.)
+ *   rosy = 4  CROSS orientation (mod 90 deg): square the complex trace-free
+ *             Hessian eigendirection and spatially average the resulting
+ *             fourth-order representation E*(cos(4 theta),sin(4 theta)).
+ *             Swapping two orthogonal ridge families leaves that value
+ *             unchanged, yielding one unordered cross {+/-d,+/-perp(d)}
+ *             rather than pretending to recover a directed fiber. theta is
+ *             in [0,pi/2), with 0 = axes aligned.
  *
  * Method: (1) Gaussian pre-smooth I at grad_sigma; central-difference gradient
  * (gx,gy), x = column = u (horizontal), y = row = v (vertical). (2) accumulate
- * the structure tensor (gradient outer product). (3) Gaussian-smooth at
- * tensor_sigma (integration scale). (4) extract orientation + coherence; fold
- * mod 90 for rosy=4.
+ * the second gradient moment for rosy=2 or squared trace-free Hessian moment
+ * for rosy=4.
+ * (3) Gaussian-smooth that moment at tensor_sigma (integration scale).
+ * (4) extract the line/cross orientation and coherence.
  *
  * Convention: theta = 0 -> fiber/grid runs along +u (horizontal); pi/2 ->
  * along +v (vertical). theta is an axis, not a vector.

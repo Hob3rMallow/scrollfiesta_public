@@ -11,6 +11,13 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* Chart mode may separate a pair of distinct, coincident boundary vertices
+ * along their local boundary bisectors so one topological cycle can be filled
+ * as one disk.  This is the hard per-vertex displacement cap.  Attribute
+ * lineage consumers use the same contract and reject any larger source motion
+ * (allowing only float-rounding epsilon). */
+#define HOLEFILL_CHART_PINCH_MAX_STEP_VOX 0.25f
+
 /*
  * HoleFill_process — detect and fill interior holes in a triangle mesh.
  *
@@ -36,15 +43,21 @@ int HoleFill_process(Arena_T arena,
                      size_t *out_n_filled);
 
 /*
- * HoleFill_process_ex — same as HoleFill_process, with an interior_only switch.
+ * HoleFill_process_ex — same as HoleFill_process, with a classification mode.
  *
- *   interior_only != 0 : fill ONLY geometrically-interior holes (loops the
+ *   interior_only == 1 : fill ONLY geometrically-interior holes (loops the
  *                        surface surrounds), determined by a signed-area /
  *                        winding test relative to the averaged incident-face
  *                        normal. Outer perimeters and still-open boundary bays
  *                        are left untouched. Correct for multi-component meshes
  *                        (each component's own perimeter is recognised), so it
  *                        is the mode the post-weld joined mesh wants.
+ *   interior_only == 2 : chart mode.  Treat each connected component as one
+ *                        source chart, preserve that chart's longest boundary
+ *                        loop as its perimeter, and fill every other cleanly-
+ *                        fillable loop.  This is the post-weld mode when chart
+ *                        provenance is authoritative and avoids misclassifying
+ *                        steep 3-D punctures by projected winding.
  *   interior_only == 0 : fill every cleanly-fillable closed 4+ loop
  *                        (HoleFill_process wraps this).
  *

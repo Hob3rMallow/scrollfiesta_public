@@ -1,7 +1,7 @@
 /* ============================================================================
  * rawtex_bake.h -- rasterize RAW CT intensity into an unrolled (u,v) TIFF.
  *
- * Extracted from obj_bake_raw.c so the unified unroll pipeline (scroll_unroll)
+ * Extracted from obj_bake_raw.c so the unwrap pipeline (scroll_ribbon --raw)
  * and the standalone obj_bake_raw tool share one rasterizer. Given a
  * UV-carrying mesh (verts in source-space z,y,x + per-vertex u,v) and a RAW
  * cube table, every output pixel center is located in its covering UV
@@ -29,12 +29,33 @@ typedef struct DiagOpts {
     const char *smear_obj;     /* if set: write skip-uv faces in 3D + histograms */
 } DiagOpts;
 
+/* Raster sizing plan: the UV bounding box and the raster dims it implies at
+ * (du,dv), checked against the per-axis (2^20) and total-pixel caps BEFORE any
+ * expensive work.  `ok` says whether (du,dv) fits; `need_du`/`need_dv` are the
+ * smallest per-axis steps that do fit -- an axis already within its cap keeps
+ * its requested step (no more silently downsampling a 512-row v axis because
+ * u exploded).  Call this preflight before sampling; Rawtex_write_tif uses the
+ * identical computation, so a plan that says ok cannot be rejected later. */
+typedef struct RawtexPlan {
+    double umin, umax, vmin, vmax;  /* UV bbox over all nv vertices */
+    size_t W, H;                    /* raster dims at the requested (du,dv) */
+    double need_du, need_dv;        /* smallest steps that satisfy the caps */
+    size_t max_px;                  /* resolved total-pixel cap (0 -> default) */
+    int    ok;                      /* 1 = requested (du,dv) fits the caps */
+} RawtexPlan;
+
+/* max_px = 0 selects the default cap (1<<28 px). Returns 0 with *out filled
+ * (out->ok says whether it fits), -1 on invalid input (no verts / bad steps). */
+int Rawtex_plan(const float *uv, size_t nv, double du, double dv,
+                size_t max_px, RawtexPlan *out);
+
 /* Rasterize the (u,v) texture at (du,dv) vox/px and write `path` (+ a .png
  * sibling). Face gates skip UV-stretched (streak) and long-3D-edge (hole-fill
  * membrane) faces. `face_skip`: optional [nf] mask -- faces with face_skip[f]!=0
  * are omitted ENTIRELY (not painted, not diagnosed); NULL = consider all faces.
- * `lo`/`hi` are the pre-computed contrast window. Out-params (nullable where
- * noted): W,H image dims; fill fraction; multi = #pixels with >1 cover;
+ * `lo`/`hi` are the pre-computed contrast window. `max_px` = total-pixel cap
+ * (0 -> default 1<<28), same meaning as Rawtex_plan. Out-params (nullable
+ * where noted): W,H image dims; fill fraction; multi = #pixels with >1 cover;
  * skip_uv/skip_3d = gated face counts. Returns 0 on success. */
 int Rawtex_write_tif(const char *path, CubeTable *ct,
                      const float *verts, const float *uv, size_t nv,
@@ -44,7 +65,7 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
                      double range, int nsteps,
                      double du, double dv, double lo, double hi,
                      double stretch_ratio, double stretch_floor,
-                     double max_edge3d,
+                     double max_edge3d, size_t max_px,
                      const DiagOpts *diag,
                      size_t *out_W, size_t *out_H,
                      double *out_fill, size_t *out_multi,

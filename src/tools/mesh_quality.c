@@ -69,13 +69,17 @@ static int report(const char *name, const float *V, size_t nv,
     int hist[6] = {0,0,0,0,0,0};   /* [0,10)[10,20)[20,30)[30,40)[40,50)[50,60] */
     int n_degen = 0;
     double worst = 180.0, sum_min = 0.0, sum_q = 0.0;
+    size_t worst_face = 0, degen_face[8], ndegen_face = 0;
     size_t lt10 = 0, lt20 = 0, lt30 = 0;
     for (size_t t = 0; t < nf; t++) {
         double ma, q;
         tri_metrics(V, F[t*3+0], F[t*3+1], F[t*3+2], &ma, &q);
         mins[t] = ma; sum_min += ma; sum_q += q;
-        if (ma <= 0.0) n_degen++;
-        if (ma < worst) worst = ma;
+        if (ma <= 0.0) {
+            n_degen++;
+            if (ndegen_face < 8) degen_face[ndegen_face++] = t;
+        }
+        if (ma < worst) { worst = ma; worst_face = t; }
         if (ma < 10.0) lt10++;
         if (ma < 20.0) lt20++;
         if (ma < 30.0) lt30++;
@@ -125,6 +129,43 @@ static int report(const char *name, const float *V, size_t nv,
     printf("  V=%zu  F=%zu  degenerate=%d\n", nv, nf, n_degen);
     printf("  min-angle: worst=%.2f  mean=%.2f  median=%.2f (deg)\n",
            worst, sum_min/(double)nf, median);
+    printf("  worst-face: %zu (%d,%d,%d)\n", worst_face,
+           F[worst_face*3],F[worst_face*3+1],F[worst_face*3+2]);
+    for(size_t d=0;d<ndegen_face;d++){
+        size_t f=degen_face[d];
+        int32_t a=F[f*3],b=F[f*3+1],c=F[f*3+2];
+        printf("  degenerate-face[%zu]: f=%zu idx=(%d,%d,%d) "
+               "bbox=[%.6g %.6g %.6g]-[%.6g %.6g %.6g]\n",d,f,a,b,c,
+               fmin(fmin(V[(size_t)a*3],V[(size_t)b*3]),V[(size_t)c*3]),
+               fmin(fmin(V[(size_t)a*3+1],V[(size_t)b*3+1]),V[(size_t)c*3+1]),
+               fmin(fmin(V[(size_t)a*3+2],V[(size_t)b*3+2]),V[(size_t)c*3+2]),
+               fmax(fmax(V[(size_t)a*3],V[(size_t)b*3]),V[(size_t)c*3]),
+               fmax(fmax(V[(size_t)a*3+1],V[(size_t)b*3+1]),V[(size_t)c*3+1]),
+               fmax(fmax(V[(size_t)a*3+2],V[(size_t)b*3+2]),V[(size_t)c*3+2]));
+        printf("    xyz: A=(%.9g %.9g %.9g) B=(%.9g %.9g %.9g) "
+               "C=(%.9g %.9g %.9g)\n",
+               V[(size_t)a*3],V[(size_t)a*3+1],V[(size_t)a*3+2],
+               V[(size_t)b*3],V[(size_t)b*3+1],V[(size_t)b*3+2],
+               V[(size_t)c*3],V[(size_t)c*3+1],V[(size_t)c*3+2]);
+        {
+            size_t shown=0;
+            for(size_t qf=0;qf<nf&&shown<12;qf++)if(qf!=f){
+                int shared=0;
+                for(int qi=0;qi<3;qi++){
+                    int32_t qv=F[qf*3+(size_t)qi];
+                    if(qv==a||qv==b||qv==c)shared++;
+                }
+                if(shared>=2){
+                    double qma,qq;
+                    tri_metrics(V,F[qf*3],F[qf*3+1],F[qf*3+2],&qma,&qq);
+                    printf("    edge-neighbor: f=%zu idx=(%d,%d,%d) "
+                           "min-angle=%.6g\n",qf,F[qf*3],F[qf*3+1],
+                           F[qf*3+2],qma);
+                    shown++;
+                }
+            }
+        }
+    }
     printf("  slivers:   <10deg=%.2f%%  <20deg=%.2f%%  <30deg=%.2f%%\n",
            100.0*(double)lt10/(double)nf, 100.0*(double)lt20/(double)nf,
            100.0*(double)lt30/(double)nf);

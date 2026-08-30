@@ -17,11 +17,17 @@
 #include "seam_refine.h"
 #include "weld_cleanup.h"
 #include "../common/pipeline_constants.h"
+#include "../common/u64_radix.h"
 
 #include <assert.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 static double edge_len3(const float *V, int32_t a, int32_t b)
 {
@@ -53,13 +59,42 @@ static double tri_min_alt3(const float *V, int32_t a, int32_t b, int32_t c)
     return 2.0*tri_area3(V,a,b,c)/lmax;
 }
 
-typedef struct { int32_t v0,v1,face,opposite; int8_t fwd; } RHE;
+/* Key first so the generic record radix can move the complete half-edge while
+ * sorting on (min_vertex,max_vertex).  face_dir packs the direction bit into
+ * the low bit; grid_weld's face budget is far below the remaining 31 bits. */
+typedef VesU64Record16 RHE;
+
+static uint64_t rhe_key(int32_t a, int32_t b)
+{
+    uint32_t lo = (uint32_t)(a < b ? a : b);
+    uint32_t hi = (uint32_t)(a < b ? b : a);
+    return ((uint64_t)lo << 32) | (uint64_t)hi;
+}
+
+static int32_t rhe_v0(const RHE *h) { return (int32_t)(h->key >> 32); }
+static int32_t rhe_v1(const RHE *h) { return (int32_t)(uint32_t)h->key; }
+static int32_t rhe_face(const RHE *h)
+{ return (int32_t)((uint32_t)h->data >> 1); }
+static int rhe_fwd(const RHE *h) { return (int)((uint32_t)h->data & 1u); }
+
 static int rhe_cmp(const void *pa, const void *pb)
 {
     const RHE *a=(const RHE*)pa, *b=(const RHE*)pb;
-    if (a->v0 != b->v0) return a->v0 < b->v0 ? -1 : 1;
-    if (a->v1 != b->v1) return a->v1 < b->v1 ? -1 : 1;
-    return 0;
+    return a->key < b->key ? -1 : a->key > b->key ? 1 : 0;
+}
+
+static int seam_work_threads(size_t n, size_t grain)
+{
+#ifdef _OPENMP
+    int nt = omp_get_max_threads();
+    size_t useful = (n + grain - 1) / grain;
+    if (useful < 1) useful = 1;
+    if ((size_t)nt > useful) nt = (int)useful;
+    return nt > 0 ? nt : 1;
+#else
+    (void)n; (void)grain;
+    return 1;
+#endif
 }
 
 /* One split request: interior (fd >= 0) or boundary (fd == -1). fc traverses
@@ -81,10 +116,13 @@ static int seam_refine_process_impl(Arena_T arena,
                        const int32_t *faces, size_t nf,
                        const SeamPlane *planes, size_t np,
                        const SeamRefineParams *params,
+                       const uint8_t *freeze_source_faces,
+                       size_t freeze_source_nf,
                        float **out_verts, size_t *out_nv,
                        int32_t **out_faces, size_t *out_nf,
                        int32_t **out_new_vert_parent0,
                        int32_t **out_new_vert_parent1,
+                       int32_t **out_face_source,
                        size_t *out_n_new,
                        SeamRefineStats *st)
 {
@@ -92,6 +130,8 @@ static int seam_refine_process_impl(Arena_T arena,
     float   *V = NULL;
     int32_t *F = NULL;
     int32_t *src0 = NULL, *src1 = NULL; /* per NEW vert: edge endpoints */
+    int32_t *face_source = NULL;         /* final face -> input source face */
+    uint8_t *face_frozen = NULL;         /* propagated source-face freeze */
     size_t   cnv = nv, cnf = nf, nsrc = 0, src_cap = 0;
     int      round = 0;
 
@@ -108,51 +148,149 @@ static int seam_refine_process_impl(Arena_T arena,
     *out_faces = (int32_t *)faces; *out_nf = nf;
     *out_new_vert_parent0 = NULL;
     *out_new_vert_parent1 = NULL;  *out_n_new = 0;
+    if (out_face_source) *out_face_source = NULL;
     if (nf == 0 || nv == 0 || np == 0 || planes == NULL) return 0;
     if (p.target_len <= 0.0f || p.max_rounds <= 0) return 0;
+    if (freeze_source_faces && freeze_source_nf != nf) return -1;
 
     for (round = 0; round < p.max_rounds; round++) {
         const float   *cV = V ? V : verts;
         const int32_t *cF = F ? F : faces;
-        size_t n_he = cnf * 3, i = 0, nreq = 0;
+        size_t n_he = 0, i = 0, nreq = 0;
         size_t bnd_this = 0, int_this = 0;
-
-        RHE *he = (RHE *)malloc((n_he ? n_he : 1) * sizeof(RHE));
-        uint8_t *fdone = (uint8_t *)calloc(cnf ? cnf : 1, 1);
-        RSplit *req = (RSplit *)malloc((n_he/2 + 2) * sizeof(RSplit));
-        if (!he || !fdone || !req) { free(he); free(fdone); free(req); return -1; }
-
-        for (size_t f = 0; f < cnf; f++) {
-            int32_t v[3] = { cF[f*3+0], cF[f*3+1], cF[f*3+2] };
-            for (int e = 0; e < 3; e++) {
-                int32_t a = v[e], b = v[(e+1)%3], opp = v[(e+2)%3];
-                size_t idx = f*3 + (size_t)e;
-                he[idx].v0 = (a<b)?a:b; he[idx].v1 = (a<b)?b:a;
-                he[idx].face = (int32_t)f; he[idx].opposite = opp;
-                he[idx].fwd = (int8_t)((a<b)?1:0);
-            }
+        int nt = seam_work_threads(cnf > cnv ? cnf : cnv, 65536u);
+        uint8_t *vband = (uint8_t *)malloc(cnv ? cnv : 1);
+        size_t *edge_off = (size_t *)calloc((size_t)nt + 1, sizeof(*edge_off));
+        RHE *he = NULL;
+        uint8_t *fdone = NULL;
+        RSplit *req = NULL;
+        if (vband == NULL || edge_off == NULL ||
+            cnf > (size_t)UINT32_MAX / 2u) {
+            free(vband); free(edge_off);
+            return -1;
         }
-        qsort(he, n_he, sizeof(RHE), rhe_cmp);
+
+        /* The old loop evaluated distance-to-any-seam twice for every unique
+         * edge.  Cache it once per vertex, then omit half-edges whose endpoints
+         * both fail the exact same predicate.  Every incident copy of a kept
+         * edge has the same endpoints, so multiplicity and boundary detection
+         * are unchanged for every edge the refiner can act on. */
+#ifdef _OPENMP
+#pragma omp parallel num_threads(nt)
+#endif
+        {
+            int tid = 0;
+#ifdef _OPENMP
+            tid = omp_get_thread_num();
+#endif
+            size_t lo = cnv * (size_t)tid / (size_t)nt;
+            size_t hi = cnv * (size_t)(tid + 1) / (size_t)nt;
+            size_t v;
+            for (v = lo; v < hi; v++)
+                vband[v] = (uint8_t)
+                    (SeamPlanes_vert_dist(cV, (int32_t)v, planes, np)
+                        <= (double)p.band);
+        }
+#ifdef _OPENMP
+#pragma omp parallel num_threads(nt)
+#endif
+        {
+            int tid = 0;
+            size_t count = 0;
+#ifdef _OPENMP
+            tid = omp_get_thread_num();
+#endif
+            size_t lo = cnf * (size_t)tid / (size_t)nt;
+            size_t hi = cnf * (size_t)(tid + 1) / (size_t)nt;
+            size_t f;
+            for (f = lo; f < hi; f++) {
+                int32_t v[3] = {
+                    cF[f*3+0], cF[f*3+1], cF[f*3+2]
+                };
+                int e;
+                for (e = 0; e < 3; e++) {
+                    int32_t a = v[e], b = v[(e+1)%3];
+                    count += (size_t)(vband[(size_t)a] ||
+                                      vband[(size_t)b]);
+                }
+            }
+            edge_off[(size_t)tid + 1] = count;
+        }
+        {
+            int t;
+            for (t = 0; t < nt; t++)
+                edge_off[(size_t)t + 1] += edge_off[(size_t)t];
+        }
+        n_he = edge_off[(size_t)nt];
+        he = (RHE *)malloc((n_he ? n_he : 1) * sizeof(*he));
+        fdone = (uint8_t *)calloc(cnf ? cnf : 1, 1);
+        req = (RSplit *)malloc((n_he/2 + 2) * sizeof(*req));
+        if (he == NULL || fdone == NULL || req == NULL) {
+            free(vband); free(edge_off);
+            free(he); free(fdone); free(req);
+            return -1;
+        }
+#ifdef _OPENMP
+#pragma omp parallel num_threads(nt)
+#endif
+        {
+            int tid = 0;
+#ifdef _OPENMP
+            tid = omp_get_thread_num();
+#endif
+            size_t lo = cnf * (size_t)tid / (size_t)nt;
+            size_t hi = cnf * (size_t)(tid + 1) / (size_t)nt;
+            size_t pos = edge_off[(size_t)tid];
+            size_t f;
+            for (f = lo; f < hi; f++) {
+                int32_t v[3] = {
+                    cF[f*3+0], cF[f*3+1], cF[f*3+2]
+                };
+                int e;
+                for (e = 0; e < 3; e++) {
+                    int32_t a = v[e], b = v[(e+1)%3];
+                    if (!vband[(size_t)a] && !vband[(size_t)b]) continue;
+                    he[pos].key = rhe_key(a, b);
+                    he[pos].data =
+                        (uint64_t)(((uint32_t)f << 1) |
+                                   (uint32_t)(a < b));
+                    pos++;
+                }
+            }
+            assert(pos == edge_off[(size_t)tid + 1]);
+        }
+        free(vband);
+        free(edge_off);
+        if (ves_u64_record16_sort(he, n_he) != 0)
+            qsort(he, n_he, sizeof(*he), rhe_cmp);
 
         while (i < n_he) {
             size_t j = i + 1;
-            while (j < n_he && he[j].v0 == he[i].v0 && he[j].v1 == he[i].v1) j++;
+            while (j < n_he && he[j].key == he[i].key) j++;
             size_t run = j - i;
-            int32_t a = he[i].v0, b = he[i].v1;
+            int32_t a = rhe_v0(&he[i]), b = rhe_v1(&he[i]);
             do {
                 if (run > 2) break;                       /* non-manifold: leave alone */
                 if (edge_len3(cV, a, b) <= (double)p.target_len) break;
-                /* band test: either endpoint within band of a seam plane */
-                if (SeamPlanes_vert_dist(cV, a, planes, np) > (double)p.band &&
-                    SeamPlanes_vert_dist(cV, b, planes, np) > (double)p.band)
-                    break;
                 if (run == 2) {
                     /* interior edge: needs oppositely-wound faces (same_dir
                      * pairs are left for the orient passes, as split_round) */
                     int32_t fc, fd;
-                    if (he[i].fwd == he[i+1].fwd) break;
-                    if (he[i].fwd) { fc = he[i].face; fd = he[i+1].face; }
-                    else           { fc = he[i+1].face; fd = he[i].face; }
+                    if (rhe_fwd(&he[i]) == rhe_fwd(&he[i+1])) break;
+                    if (rhe_fwd(&he[i])) {
+                        fc = rhe_face(&he[i]);
+                        fd = rhe_face(&he[i+1]);
+                    } else {
+                        fc = rhe_face(&he[i+1]);
+                        fd = rhe_face(&he[i]);
+                    }
+                    if ((face_frozen &&
+                         (face_frozen[(size_t)fc] ||
+                          face_frozen[(size_t)fd])) ||
+                        (!face_frozen && freeze_source_faces &&
+                         (freeze_source_faces[(size_t)fc] ||
+                          freeze_source_faces[(size_t)fd])))
+                        break;
                     if (fdone[fc] || fdone[fd]) break;
                     if (tri_min_alt3(cV, cF[fc*3+0], cF[fc*3+1], cF[fc*3+2])
                             < (double)p.min_parent_alt) break;
@@ -165,9 +303,13 @@ static int seam_refine_process_impl(Arena_T arena,
                     /* boundary edge (run 1): split its single face. Recover the
                      * DIRECTED orientation: fwd means the face traverses a->b
                      * (v0->v1); else b->a. Normalize so fc traverses a->b. */
-                    int32_t fc = he[i].face;
-                    int32_t da = he[i].fwd ? a : b;
-                    int32_t db = he[i].fwd ? b : a;
+                    int32_t fc = rhe_face(&he[i]);
+                    int32_t da = rhe_fwd(&he[i]) ? a : b;
+                    int32_t db = rhe_fwd(&he[i]) ? b : a;
+                    if ((face_frozen && face_frozen[(size_t)fc]) ||
+                        (!face_frozen && freeze_source_faces &&
+                         freeze_source_faces[(size_t)fc]))
+                        break;
                     if (fdone[fc]) break;
                     if (tri_min_alt3(cV, cF[fc*3+0], cF[fc*3+1], cF[fc*3+2])
                             < (double)p.min_parent_alt) break;
@@ -186,18 +328,41 @@ static int seam_refine_process_impl(Arena_T arena,
             size_t add_f = 2*int_this + bnd_this;
             size_t new_nv = cnv + nreq, new_nf = cnf + add_f;
             float   *nV = (float *)ARENA_ALLOC(arena,
-                              (size_t)(new_nv*3*sizeof(float)));
+                              (new_nv*3*sizeof(float)));
             int32_t *nF = (int32_t *)ARENA_ALLOC(arena,
-                              (size_t)(new_nf*3*sizeof(int32_t)));
+                              (new_nf*3*sizeof(int32_t)));
+            int32_t *nFaceSource = out_face_source
+                ? (int32_t *)ARENA_ALLOC(
+                      arena, (new_nf*sizeof(int32_t)))
+                : NULL;
+            uint8_t *nFaceFrozen = freeze_source_faces
+                ? (uint8_t *)ARENA_ALLOC(arena, new_nf)
+                : NULL;
             memcpy(nV, cV, cnv*3*sizeof(float));
             memcpy(nF, cF, cnf*3*sizeof(int32_t));
+            if (nFaceSource) {
+                if (face_source)
+                    memcpy(nFaceSource, face_source,
+                           cnf*sizeof(int32_t));
+                else
+                    for (size_t sf = 0; sf < cnf; sf++)
+                        nFaceSource[sf] = (int32_t)sf;
+            }
+            if (nFaceFrozen) {
+                if (face_frozen)
+                    memcpy(nFaceFrozen, face_frozen,
+                           cnf*sizeof(uint8_t));
+                else
+                    memcpy(nFaceFrozen, freeze_source_faces,
+                           cnf*sizeof(uint8_t));
+            }
             if (nsrc + nreq > src_cap) {
                 size_t ncap = src_cap ? src_cap : 1024;
                 while (ncap < nsrc + nreq) ncap <<= 1;
                 int32_t *ns0 = (int32_t *)ARENA_ALLOC(arena,
-                                  (size_t)(ncap*sizeof(int32_t)));
+                                  (ncap*sizeof(int32_t)));
                 int32_t *ns1 = (int32_t *)ARENA_ALLOC(arena,
-                                  (size_t)(ncap*sizeof(int32_t)));
+                                  (ncap*sizeof(int32_t)));
                 if (src0) memcpy(ns0, src0, nsrc*sizeof(int32_t));
                 if (src1) memcpy(ns1, src1, nsrc*sizeof(int32_t));
                 src0 = ns0; src1 = ns1; src_cap = ncap;
@@ -209,9 +374,24 @@ static int seam_refine_process_impl(Arena_T arena,
                 int32_t fc = req[r].fc, fd = req[r].fd;
                 int32_t m = (int32_t)(cnv + r);
                 int k;
-                nV[(size_t)m*3+0] = 0.5f*(nV[(size_t)a*3+0]+nV[(size_t)b*3+0]);
-                nV[(size_t)m*3+1] = 0.5f*(nV[(size_t)a*3+1]+nV[(size_t)b*3+1]);
-                nV[(size_t)m*3+2] = 0.5f*(nV[(size_t)a*3+2]+nV[(size_t)b*3+2]);
+                /*
+                 * Accumulate the midpoint in double.  At PHerc world
+                 * coordinates (~4500), adding two floats in float precision
+                 * loses a bit before the divide; repeated subdivision can then
+                 * drift a child plane by one ULP and turn a sub-voxel-clear
+                 * neighbouring chart into a real stab.  The result is still a
+                 * float OBJ vertex, but it receives the correctly-rounded chord
+                 * midpoint in one rounding step.
+                 */
+                nV[(size_t)m*3+0] = (float)(0.5*
+                    ((double)nV[(size_t)a*3+0]+
+                     (double)nV[(size_t)b*3+0]));
+                nV[(size_t)m*3+1] = (float)(0.5*
+                    ((double)nV[(size_t)a*3+1]+
+                     (double)nV[(size_t)b*3+1]));
+                nV[(size_t)m*3+2] = (float)(0.5*
+                    ((double)nV[(size_t)a*3+2]+
+                     (double)nV[(size_t)b*3+2]));
                 src0[nsrc + r] = a;
                 src1[nsrc + r] = b;
                 /* fc traverses a->b: copy a->m (b-side sub-tri), in place b->m */
@@ -222,6 +402,10 @@ static int seam_refine_process_impl(Arena_T arena,
                     for (k=0;k<3;k++) if (nF[(size_t)fc*3+(size_t)k]==b)
                                           nF[(size_t)fc*3+(size_t)k] = m;
                     for (k=0;k<3;k++) nF[wf*3+(size_t)k] = Fc2[k];
+                    if (nFaceSource)
+                        nFaceSource[wf] = nFaceSource[(size_t)fc];
+                    if (nFaceFrozen)
+                        nFaceFrozen[wf] = nFaceFrozen[(size_t)fc];
                     wf++;
                 }
                 if (fd >= 0) {
@@ -232,11 +416,17 @@ static int seam_refine_process_impl(Arena_T arena,
                     for (k=0;k<3;k++) if (nF[(size_t)fd*3+(size_t)k]==a)
                                           nF[(size_t)fd*3+(size_t)k] = m;
                     for (k=0;k<3;k++) nF[wf*3+(size_t)k] = Fd2[k];
+                    if (nFaceSource)
+                        nFaceSource[wf] = nFaceSource[(size_t)fd];
+                    if (nFaceFrozen)
+                        nFaceFrozen[wf] = nFaceFrozen[(size_t)fd];
                     wf++;
                 }
             }
             assert(wf == new_nf);
             V = nV; F = nF;
+            face_source = nFaceSource;
+            face_frozen = nFaceFrozen;
             cnv = new_nv; cnf = new_nf;
             nsrc += nreq;
         }
@@ -249,11 +439,39 @@ static int seam_refine_process_impl(Arena_T arena,
         }
 
         /* Flip relief so the next round splits well-shaped triangles (and the
-         * final geometry is near-Delaunay, circumradius ~ edge/sqrt(3)). */
-        if (st) st->flips += WeldCleanup_flip_rounds(arena, V, cnv, F, cnf,
-                                                     p.flip_max_rounds);
-        else    (void)WeldCleanup_flip_rounds(arena, V, cnv, F, cnf,
-                                              p.flip_max_rounds);
+         * final geometry is near-Delaunay, circumradius ~ edge/sqrt(3)).
+         * This is a seam-band operation: the previous global pass repeatedly
+         * sorted every edge in the scroll and could alter remote chart
+         * geometry.  Recompute the exact vertex predicate after appending the
+         * midpoints and expose only that band to the guarded flip machinery. */
+        if (p.flip_max_rounds > 0) {
+            uint8_t *flip_active =
+                (uint8_t *)malloc(cnv ? cnv : 1);
+            int flip_nt = seam_work_threads(cnv, 65536u);
+            size_t flips;
+            if (flip_active == NULL) return -1;
+#ifdef _OPENMP
+#pragma omp parallel num_threads(flip_nt)
+#endif
+            {
+                int tid = 0;
+#ifdef _OPENMP
+                tid = omp_get_thread_num();
+#endif
+                size_t lo = cnv * (size_t)tid / (size_t)flip_nt;
+                size_t hi = cnv * (size_t)(tid + 1) / (size_t)flip_nt;
+                size_t v;
+                for (v = lo; v < hi; v++)
+                    flip_active[v] = (uint8_t)
+                        (SeamPlanes_vert_dist(
+                            V, (int32_t)v, planes, np) <= (double)p.band);
+            }
+            flips = WeldCleanup_flip_rounds_active_masked(
+                arena, V, cnv, F, cnf, p.flip_max_rounds,
+                face_frozen, flip_active);
+            free(flip_active);
+            if (st) st->flips += flips;
+        }
     }
 
     if (V == NULL) return 0;       /* nothing split anywhere: no-op outputs stand */
@@ -262,12 +480,37 @@ static int seam_refine_process_impl(Arena_T arena,
     *out_faces = F;   *out_nf = cnf;
     *out_new_vert_parent0 = src0;
     *out_new_vert_parent1 = src1;
+    if (out_face_source) *out_face_source = face_source;
     *out_n_new = nsrc;
     if (st) {
         st->verts_added = cnv - nv;
         st->faces_added = cnf - nf;
     }
     return 0;
+}
+
+int SeamRefine_process_masked_with_roots(
+                       Arena_T arena,
+                       const float *verts, size_t nv,
+                       const int32_t *faces, size_t nf,
+                       const SeamPlane *planes, size_t np,
+                       const SeamRefineParams *params,
+                       const uint8_t *freeze_source_faces,
+                       size_t freeze_source_nf,
+                       float **out_verts, size_t *out_nv,
+                       int32_t **out_faces, size_t *out_nf,
+                       int32_t **out_new_vert_parent0,
+                       int32_t **out_new_vert_parent1,
+                       int32_t **out_face_source,
+                       size_t *out_n_new,
+                       SeamRefineStats *st)
+{
+    return seam_refine_process_impl(
+        arena, verts, nv, faces, nf, planes, np, params,
+        freeze_source_faces, freeze_source_nf,
+        out_verts, out_nv, out_faces, out_nf,
+        out_new_vert_parent0, out_new_vert_parent1, out_face_source,
+        out_n_new, st);
 }
 
 int SeamRefine_process_with_parents(
@@ -285,8 +528,9 @@ int SeamRefine_process_with_parents(
 {
     return seam_refine_process_impl(
         arena, verts, nv, faces, nf, planes, np, params,
+        NULL, 0,
         out_verts, out_nv, out_faces, out_nf,
-        out_new_vert_parent0, out_new_vert_parent1, out_n_new, st);
+        out_new_vert_parent0, out_new_vert_parent1, NULL, out_n_new, st);
 }
 
 int SeamRefine_process(Arena_T arena,
@@ -302,6 +546,7 @@ int SeamRefine_process(Arena_T arena,
     int32_t *unused_parent1 = NULL;
     return seam_refine_process_impl(
         arena, verts, nv, faces, nf, planes, np, params,
+        NULL, 0,
         out_verts, out_nv, out_faces, out_nf,
-        out_new_vert_src, &unused_parent1, out_n_new, st);
+        out_new_vert_src, &unused_parent1, NULL, out_n_new, st);
 }

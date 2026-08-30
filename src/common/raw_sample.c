@@ -13,16 +13,6 @@
 /* slot[] sentinel: tried and missing (grid edge). */
 #define CUBE_ABSENT ((uint8_t *)(uintptr_t)1)
 
-static void *xcalloc_rs(size_t count, size_t size)
-{
-    void *p = calloc(count > 0 ? count : 1, size);
-    if (p == NULL) {
-        fprintf(stderr, "ERROR: out of memory (%zu x %zu)\n", count, size);
-        exit(1);
-    }
-    return p;
-}
-
 static long floor_div(long a, long b)
 {
     long q = a / b;
@@ -30,12 +20,74 @@ static long floor_div(long a, long b)
     return q;
 }
 
+static int parse_long3(const char *json, const char *key, long out[3])
+{
+    const char *p = strstr(json, key);
+    if (!p) return -1;
+    p = strchr(p, '[');
+    if (!p) return -1;
+    p++;
+    for (int i = 0; i < 3; i++) {
+        char *end = NULL;
+        while (*p && !((*p >= '0' && *p <= '9') || *p == '-')) p++;
+        if (!*p) return -1;
+        out[i] = strtol(p, &end, 10);
+        if (end == p) return -1;
+        p = end;
+    }
+    return 0;
+}
+
+/* Return 1 for a supported raw Zarr, 0 when this is an ordinary TIFF-cube
+ * directory, and -1 when a Zarr exists but would require a codec/dtype we do
+ * not silently reinterpret. */
+static int detect_raw_zarr(CubeTable *ct)
+{
+    char path[2300];
+    char text[4096];
+    long chunks[3] = {0,0,0};
+    FILE *f;
+    size_t n;
+    snprintf(path, sizeof path, "%s/0/.zarray", ct->dir);
+    f = fopen(path, "rb");
+    if (!f) return 0;
+    n = fread(text, 1, sizeof text - 1, f);
+    fclose(f);
+    text[n] = 0;
+    const char *comp = strstr(text, "\"compressor\"");
+    if (comp) comp = strchr(comp, ':');
+    if (comp) { comp++; while (*comp == ' ' || *comp == '\t' || *comp == '\r' || *comp == '\n') comp++; }
+    if (!strstr(text, "\"dtype\"") ||
+        !(strstr(text, "\"|u1\"") || strstr(text, "\"<u1\"")) ||
+        !comp || strncmp(comp, "null", 4) != 0 ||
+        parse_long3(text, "\"shape\"", ct->shape) != 0 ||
+        parse_long3(text, "\"chunks\"", chunks) != 0 ||
+        chunks[0] != ct->chunk || chunks[1] != ct->chunk || chunks[2] != ct->chunk) {
+        fprintf(stderr, "ERROR: RAW Zarr must be uncompressed uint8 with %ld^3 chunks: %s\n",
+                ct->chunk, path);
+        return -1;
+    }
+    ct->is_zarr = 1;
+    return 1;
+}
+
+static void cube_path(const CubeTable *ct, long cz, long cy, long cx,
+                      char *path, size_t cap)
+{
+    if (ct->is_zarr)
+        snprintf(path, cap, "%s/0/%ld/%ld/%ld", ct->dir, cz, cy, cx);
+    else
+        snprintf(path, cap, "%s/z%05ld_y%05ld_x%05ld.tif",
+                 ct->dir, cz * ct->chunk, cy * ct->chunk, cx * ct->chunk);
+}
+
 int cubetable_init(CubeTable *ct, Arena_T arena, const char *dir,
                    long chunk, const float *verts, size_t nv, double pad)
 {
     double mn[3] = { 1e30, 1e30, 1e30 }, mx[3] = { -1e30, -1e30, -1e30 };
-    size_t i = 0, total = 0;
+    size_t i = 0, total = 0, requested = 0;
     long c1[3] = { 0, 0, 0 };
+    long requested_dims[3] = { 0, 0, 0 };
     int a = 0;
 
     memset(ct, 0, sizeof *ct);
@@ -43,6 +95,7 @@ int cubetable_init(CubeTable *ct, Arena_T arena, const char *dir,
     ct->arena = arena;
     ct->chunk = chunk;
     snprintf(ct->dir, sizeof ct->dir, "%s", dir);
+    if (detect_raw_zarr(ct) < 0) return -1;
     for (i = 0; i < nv; i++) {
         for (a = 0; a < 3; a++) {
             double v = (double)verts[i * 3 + a];
@@ -56,6 +109,37 @@ int cubetable_init(CubeTable *ct, Arena_T arena, const char *dir,
     c1[0] = floor_div((long)ceil(mx[0] + pad) + 1, chunk);
     c1[1] = floor_div((long)ceil(mx[1] + pad) + 1, chunk);
     c1[2] = floor_div((long)ceil(mx[2] + pad) + 1, chunk);
+    requested_dims[0] = c1[0] - ct->cz0 + 1;
+    requested_dims[1] = c1[1] - ct->cy0 + 1;
+    requested_dims[2] = c1[2] - ct->cx0 + 1;
+    if (requested_dims[0] <= 0 || requested_dims[1] <= 0 ||
+        requested_dims[2] <= 0 ||
+        (size_t)requested_dims[0] > ((size_t)1 << 24) ||
+        (size_t)requested_dims[1] > ((size_t)1 << 24) ||
+        (size_t)requested_dims[2] > ((size_t)1 << 24) ||
+        (size_t)requested_dims[0] > ((size_t)1 << 24) /
+                                      (size_t)requested_dims[1] ||
+        (size_t)requested_dims[0] * (size_t)requested_dims[1] >
+            ((size_t)1 << 24) / (size_t)requested_dims[2]) {
+        fprintf(stderr, "ERROR: requested cube table %ldx%ldx%ld unreasonable\n",
+                requested_dims[0], requested_dims[1], requested_dims[2]);
+        return -1;
+    }
+    requested = (size_t)requested_dims[0] * (size_t)requested_dims[1] *
+                (size_t)requested_dims[2];
+    if (ct->is_zarr) {
+        long *lo[3] = { &ct->cz0, &ct->cy0, &ct->cx0 };
+        for (a = 0; a < 3; a++) {
+            long last = (ct->shape[a] - 1) / chunk;
+            if (*lo[a] < 0) *lo[a] = 0;
+            if (c1[a] > last) c1[a] = last;
+        }
+        if (c1[0] < ct->cz0 || c1[1] < ct->cy0 || c1[2] < ct->cx0) {
+            ct->nz = ct->ny = ct->nx = 0;
+            ct->n_outside = requested;
+            return 0;
+        }
+    }
     ct->nz = c1[0] - ct->cz0 + 1;
     ct->ny = c1[1] - ct->cy0 + 1;
     ct->nx = c1[2] - ct->cx0 + 1;
@@ -65,6 +149,7 @@ int cubetable_init(CubeTable *ct, Arena_T arena, const char *dir,
                 ct->nz, ct->ny, ct->nx);
         return -1;
     }
+    ct->n_outside = requested - total;
     ct->slot = (uint8_t **)ARENA_CALLOC(arena, (long)total,
                                         (long)sizeof(uint8_t *));
     return 0;
@@ -79,6 +164,9 @@ int cube_fetch(CubeTable *ct, long iz, long iy, long ix)
     size_t si = 0;
     uint8_t *buf = NULL;
 
+    if (ct->is_zarr && (iz < 0 || iy < 0 || ix < 0 ||
+                        iz >= ct->shape[0] || iy >= ct->shape[1] ||
+                        ix >= ct->shape[2])) return -1;
     if (tz < 0 || tz >= ct->nz || ty < 0 || ty >= ct->ny
         || tx < 0 || tx >= ct->nx) return -1;
     si = ((size_t)tz * (size_t)ct->ny + (size_t)ty) * (size_t)ct->nx
@@ -88,16 +176,45 @@ int cube_fetch(CubeTable *ct, long iz, long iy, long ix)
         char path[2600];
         uint8_t *vol = NULL;
         int D = 0, H = 0, W = 0;
-        snprintf(path, sizeof path, "%s/z%05ld_y%05ld_x%05ld.tif",
-                 ct->dir, cz * ct->chunk, cy * ct->chunk, cx * ct->chunk);
-        if (TiffIO_load(ct->arena, path, &vol, &D, &H, &W) == 0
-            && D == (int)ct->chunk && H == (int)ct->chunk
-            && W == (int)ct->chunk) {
-            buf = vol;
-            ct->n_loaded++;
+        size_t chunk_bytes = (size_t)ct->chunk * (size_t)ct->chunk * (size_t)ct->chunk;
+        cube_path(ct, cz, cy, cx, path, sizeof path);
+        /* Missing halo cubes are expected at a cropped volume boundary.
+         * Probe quietly before libtiff: TIFFOpen otherwise emits one scary
+         * diagnostic per absent neighbor (hundreds in a normal full run). */
+        FILE *probe = NULL;
+        if (ct->is_zarr && (iz < 0 || iy < 0 || ix < 0 ||
+                            iz >= ct->shape[0] || iy >= ct->shape[1] || ix >= ct->shape[2])) {
+            probe = NULL;
         } else {
+            probe = fopen(path, "rb");
+        }
+        if (probe == NULL) {
             buf = CUBE_ABSENT;
             ct->n_missing++;
+        } else {
+            if (ct->is_zarr) {
+                vol = (uint8_t *)ARENA_ALLOC(ct->arena, (long)chunk_bytes);
+                size_t got = fread(vol, 1, chunk_bytes, probe);
+                fclose(probe);
+                if (got == chunk_bytes) {
+                    buf = vol;
+                    ct->n_loaded++;
+                } else {
+                    buf = CUBE_ABSENT;
+                    ct->n_missing++;
+                }
+            } else {
+                fclose(probe);
+                if (TiffIO_load(ct->arena, path, &vol, &D, &H, &W) == 0
+                    && D == (int)ct->chunk && H == (int)ct->chunk
+                    && W == (int)ct->chunk) {
+                    buf = vol;
+                    ct->n_loaded++;
+                } else {
+                    buf = CUBE_ABSENT;
+                    ct->n_missing++;
+                }
+            }
         }
         ct->slot[si] = buf;
     }
@@ -110,13 +227,53 @@ int cube_fetch(CubeTable *ct, long iz, long iy, long ix)
 int cubetable_prewarm_all(CubeTable *ct)
 {
     long before = ct->n_loaded;
+    long total = ct->nz * ct->ny * ct->nx;
+#ifdef _OPENMP
+    /* Phase 1: parallel page-cache warm.  The serial TIFF parse below is
+     * memcpy-speed once the bytes are in the OS cache; reading ~2k cube
+     * files one at a time was 80+ s of pure disk latency (the whole bake
+     * cost on the 4x21x21).  Neither libtiff nor the arena is touched here,
+     * so this phase is trivially thread-safe. */
+    {
+        long t = 0;
+#pragma omp parallel for schedule(dynamic, 4)
+        for (t = 0; t < total; t++) {
+            long tz = t / (ct->ny * ct->nx);
+            long ty = (t / ct->nx) % ct->ny;
+            long tx = t % ct->nx;
+            char path[2600];
+            FILE *f = NULL;
+            char buf[32768];
+            cube_path(ct, ct->cz0 + tz, ct->cy0 + ty, ct->cx0 + tx,
+                      path, sizeof path);
+            f = fopen(path, "rb");
+            if (f == NULL) continue;
+            while (fread(buf, 1, sizeof buf, f) == sizeof buf) { /* warm */ }
+            fclose(f);
+        }
+    }
+#endif
     for (long tz = 0; tz < ct->nz; tz++)
         for (long ty = 0; ty < ct->ny; ty++)
             for (long tx = 0; tx < ct->nx; tx++)
                 (void)cube_fetch(ct, (ct->cz0 + tz) * ct->chunk,
                                  (ct->cy0 + ty) * ct->chunk,
                                  (ct->cx0 + tx) * ct->chunk);
+    (void)total;
     return (int)(ct->n_loaded - before);
+}
+
+size_t cubetable_expected_chunks(const CubeTable *ct)
+{
+    if (ct == NULL || ct->nz <= 0 || ct->ny <= 0 || ct->nx <= 0) return 0;
+    return (size_t)ct->nz * (size_t)ct->ny * (size_t)ct->nx;
+}
+
+int cubetable_is_complete(const CubeTable *ct)
+{
+    size_t expected = cubetable_expected_chunks(ct);
+    return ct != NULL && ct->n_missing == 0 &&
+           (size_t)ct->n_loaded == expected;
 }
 
 double sample_trilinear(CubeTable *ct, double z, double y, double x)
@@ -250,46 +407,6 @@ int sample_tangent_tensor(CubeTable *ct, const double p[3],
         if (out->quality > 1.0) out->quality = 1.0;
     }
     return 0;
-}
-
-float *vertex_normals(const float *verts, size_t nv,
-                      const int32_t *faces, size_t nf)
-{
-    float *n = (float *)xcalloc_rs(nv * 3, sizeof(float));
-    size_t t = 0, i = 0;
-
-    for (t = 0; t < nf; t++) {
-        size_t a = (size_t)faces[t * 3 + 0];
-        size_t b = (size_t)faces[t * 3 + 1];
-        size_t c = (size_t)faces[t * 3 + 2];
-        double e1[3], e2[3], cr[3];
-        int k = 0;
-        for (k = 0; k < 3; k++) {
-            e1[k] = (double)verts[b * 3 + k] - (double)verts[a * 3 + k];
-            e2[k] = (double)verts[c * 3 + k] - (double)verts[a * 3 + k];
-        }
-        cr[0] = e1[1] * e2[2] - e1[2] * e2[1];
-        cr[1] = e1[2] * e2[0] - e1[0] * e2[2];
-        cr[2] = e1[0] * e2[1] - e1[1] * e2[0];
-        for (k = 0; k < 3; k++) {
-            n[a * 3 + k] += (float)cr[k];
-            n[b * 3 + k] += (float)cr[k];
-            n[c * 3 + k] += (float)cr[k];
-        }
-    }
-    for (i = 0; i < nv; i++) {
-        double len = sqrt((double)n[i * 3 + 0] * (double)n[i * 3 + 0]
-                          + (double)n[i * 3 + 1] * (double)n[i * 3 + 1]
-                          + (double)n[i * 3 + 2] * (double)n[i * 3 + 2]);
-        if (len > 1e-12) {
-            n[i * 3 + 0] = (float)((double)n[i * 3 + 0] / len);
-            n[i * 3 + 1] = (float)((double)n[i * 3 + 1] / len);
-            n[i * 3 + 2] = (float)((double)n[i * 3 + 2] / len);
-        } else {
-            n[i * 3 + 0] = 0.0f; n[i * 3 + 1] = 0.0f; n[i * 3 + 2] = 0.0f;
-        }
-    }
-    return n;
 }
 
 double sample_vertex(CubeTable *ct, const float *p, const float *n,

@@ -46,11 +46,11 @@ static void nodelist_push(Arena_T arena, NodeList *nl, const CubeNode *nd)
     nl->nodes[nl->n++] = *nd;
 }
 
-static int leaf_obj_exists(const char *dump_dir, const char *id,
-                           const char *leaf_stage)
+static int leaf_mesh_exists(const char *dump_dir, const char *id,
+                            const char *leaf_stage)
 {
     char path[1024];
-    snprintf(path, sizeof(path), "%s/%s/%s_%s/%s_%s_all.obj",
+    snprintf(path, sizeof(path), "%s/%s/%s_%s/%s_%s_all.vmesh",
              dump_dir, id, id, leaf_stage, id, leaf_stage);
     FILE *f = fopen(path, "rb");
     if (f == NULL) return 0;
@@ -75,7 +75,7 @@ static int scan_cubes(Arena_T arena, const char *dump_dir,
         CubeNode nd;
         memset(&nd, 0, sizeof(nd));
         if (parse_cube_origin(fd.cFileName, &nd.oz, &nd.oy, &nd.ox) != 0) continue;
-        if (!leaf_obj_exists(dump_dir, fd.cFileName, leaf_stage)) continue;
+        if (!leaf_mesh_exists(dump_dir, fd.cFileName, leaf_stage)) continue;
         snprintf(nd.id, sizeof(nd.id), "%s", fd.cFileName);
         nodelist_push(arena, out, &nd);
     } while (FindNextFileA(h, &fd));
@@ -96,7 +96,7 @@ static int scan_cubes(Arena_T arena, const char *dump_dir,
         CubeNode nd;
         memset(&nd, 0, sizeof(nd));
         if (parse_cube_origin(ent->d_name, &nd.oz, &nd.oy, &nd.ox) != 0) continue;
-        if (!leaf_obj_exists(dump_dir, ent->d_name, leaf_stage)) continue;
+        if (!leaf_mesh_exists(dump_dir, ent->d_name, leaf_stage)) continue;
         snprintf(nd.id, sizeof(nd.id), "%s", ent->d_name);
         nodelist_push(arena, out, &nd);
     }
@@ -141,10 +141,11 @@ static int cmp_dbl_cs(const void *pa, const void *pb)
     return a < b ? -1 : (a > b ? 1 : 0);
 }
 
-int CubeSched_link_and_order(Arena_T arena, CubeNode *nodes, size_t n,
-                             int64_t chunk, const float axis_point[3],
-                             double pitch, int32_t seed_idx,
-                             int32_t **out_order, int32_t **out_comp)
+static int cube_sched_link_and_order_impl(
+    Arena_T arena, CubeNode *nodes, size_t n,
+    int64_t chunk, const float axis_point[3], const AxisWarp *axis_warp,
+    double pitch, int32_t seed_idx,
+    int32_t **out_order, int32_t **out_comp)
 {
     assert(nodes && out_order && out_comp);
     if (n == 0) return -1;
@@ -152,10 +153,13 @@ int CubeSched_link_and_order(Arena_T arena, CubeNode *nodes, size_t n,
 
     /* polar geometry at cube centers (axis = +z through axis_point in (z,y,x)) */
     for (size_t i = 0; i < n; i++) {
+        double cz = (double)nodes[i].oz + (double)chunk * 0.5;
         double cy = (double)nodes[i].oy + (double)chunk * 0.5;
         double cx = (double)nodes[i].ox + (double)chunk * 0.5;
-        double dy = cy - (double)axis_point[1];
-        double dx = cx - (double)axis_point[2];
+        double ay = (double)axis_point[1], ax = (double)axis_point[2];
+        if (AxisWarp_valid(axis_warp)) AxisWarp_eval(axis_warp, cz, &ay, &ax);
+        double dy = cy - ay;
+        double dx = cx - ax;
         nodes[i].r       = sqrt(dy * dy + dx * dx);
         nodes[i].theta   = atan2(dx, dy);
         nodes[i].w_phase = radial_order
@@ -241,11 +245,33 @@ int CubeSched_link_and_order(Arena_T arena, CubeNode *nodes, size_t n,
     return 0;
 }
 
-int CubeSched_build(Arena_T arena, const char *dump_dir, const char *leaf_stage,
-                    int64_t chunk, const float axis_point[3], double pitch,
-                    const char *seed_id,
-                    CubeNode **out_nodes, size_t *out_n,
-                    int32_t **out_order, int32_t **out_comp)
+int CubeSched_link_and_order(Arena_T arena, CubeNode *nodes, size_t n,
+                             int64_t chunk, const float axis_point[3],
+                             double pitch, int32_t seed_idx,
+                             int32_t **out_order, int32_t **out_comp)
+{
+    return cube_sched_link_and_order_impl(
+        arena, nodes, n, chunk, axis_point, NULL, pitch, seed_idx,
+        out_order, out_comp);
+}
+
+int CubeSched_link_and_order_axis_warp(
+    Arena_T arena, CubeNode *nodes, size_t n, int64_t chunk,
+    const float axis_point[3], const AxisWarp *axis_warp,
+    double pitch, int32_t seed_idx,
+    int32_t **out_order, int32_t **out_comp)
+{
+    return cube_sched_link_and_order_impl(
+        arena, nodes, n, chunk, axis_point, axis_warp, pitch, seed_idx,
+        out_order, out_comp);
+}
+
+int CubeSched_build_axis_warp(
+    Arena_T arena, const char *dump_dir, const char *leaf_stage,
+    int64_t chunk, const float axis_point[3], const AxisWarp *axis_warp,
+    double pitch, const char *seed_id,
+    CubeNode **out_nodes, size_t *out_n,
+    int32_t **out_order, int32_t **out_comp)
 {
     assert(dump_dir && leaf_stage && out_nodes && out_n && out_order && out_comp);
     NodeList nl;
@@ -262,12 +288,24 @@ int CubeSched_build(Arena_T arena, const char *dump_dir, const char *leaf_stage,
                     "using median-radius seed\n", seed_id);
         }
     }
-    int rc = CubeSched_link_and_order(arena, nl.nodes, nl.n, chunk, axis_point,
-                                      pitch, seed_idx, out_order, out_comp);
+    int rc = cube_sched_link_and_order_impl(
+        arena, nl.nodes, nl.n, chunk, axis_point, axis_warp, pitch, seed_idx,
+        out_order, out_comp);
     if (rc != 0) return rc;
     *out_nodes = nl.nodes;
     *out_n = nl.n;
     return 0;
+}
+
+int CubeSched_build(Arena_T arena, const char *dump_dir, const char *leaf_stage,
+                    int64_t chunk, const float axis_point[3], double pitch,
+                    const char *seed_id,
+                    CubeNode **out_nodes, size_t *out_n,
+                    int32_t **out_order, int32_t **out_comp)
+{
+    return CubeSched_build_axis_warp(
+        arena, dump_dir, leaf_stage, chunk, axis_point, NULL, pitch, seed_id,
+        out_nodes, out_n, out_order, out_comp);
 }
 
 /* ============================================================================

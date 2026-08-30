@@ -63,6 +63,57 @@ int PinholeFill_split_pinches(Arena_T arena,
                               ComponentMesh *meshes, size_t n_meshes,
                               size_t *out_splits);
 
+/* Single-mesh mapped variant for callers that carry vertex-keyed provenance.
+ * out_vertex_source is arena allocated with mesh->nv entries after the split;
+ * every entry identifies the corresponding vertex in the pre-split mesh.
+ * Original vertices map to themselves and every duplicated fan vertex maps to
+ * the bowtie vertex it copied. */
+int PinholeFill_split_pinches_mapped(Arena_T arena,
+                                     ComponentMesh *mesh,
+                                     size_t *out_splits,
+                                     int32_t **out_vertex_source);
+
+/* Chart-safe alternatives used by the regional weld.  They never duplicate a
+ * source vertex.  close_bowties fills only coherent, winding-compatible gaps
+ * between fans in place; fill_small_loops adds only exact missing triangles.
+ * Any divergent bowtie remains visible to the exact manifold/topology gate and
+ * must be rejected at its chart transaction, not repaired by fan splitting. */
+int PinholeFill_close_bowties(Arena_T arena,
+                              ComponentMesh *meshes, size_t n_meshes,
+                              size_t *out_closed);
+/* Raw bridge variant: connect coherent bridge fans with the minimum number of
+ * triangles needed to make one open disk patch.  Candidate edges are checked
+ * against source_faces as well as the complete raw bridge, so the repair can
+ * never consume or triple a legitimate source-chart attachment edge.
+ * defer_source_orientation permits a source-edge winding mismatch only until
+ * the following chart transaction flips or rejects the complete bridge patch. */
+int PinholeFill_close_bridge_bowties(Arena_T arena,
+                                     ComponentMesh *bridge,
+                                     const int32_t *source_faces,
+                                     size_t source_nf,
+                                     const int32_t *vertex_chart,
+                                     size_t n_charts,
+                                     int defer_source_orientation,
+                                     size_t *out_closed);
+/* Close coherent point contacts between the source prefix and raw bridge
+ * suffix of one combined mesh.  Each repair is a minimum fan-spanning
+ * triangle for exactly one original chart pair; source-source, bridge-only,
+ * three-chart, folded, and edge-conflicting contacts are left untouched. */
+int PinholeFill_close_bridge_attachments(Arena_T arena,
+                                         ComponentMesh *combined,
+                                         size_t source_nf,
+                                         const int32_t *vertex_chart,
+                                         size_t n_charts,
+                                         const size_t *chart_face_count,
+                                         int defer_source_orientation,
+                                         size_t *out_closed);
+int PinholeFill_fill_small_loops(Arena_T arena,
+                                 ComponentMesh *meshes, size_t n_meshes,
+                                 int respect_pins,
+                                 size_t *out_loops_filled,
+                                 size_t *out_tris_added,
+                                 size_t *out_loops_skipped);
+
 /* Per-mesh CDT/Liepa fill for the 4+ loops PinholeFill leaves (returns 0 on
  * success). The pipeline implements it over src/holefill (the only TU that
  * links Triangle/Clipper2); grid_weld passes NULL, so the weld binary stays
@@ -113,17 +164,28 @@ int HoleFill_meshes(Arena_T arena,
 #define HOLEFILL_MIN_ALT_VOX 0.05f
 
 /* PinholeFill phase 0 (close_bowtie_gaps): resolve a non-manifold "bowtie"
- * vertex IN PLACE -- keep the single vertex and fan-triangulate the angular
- * gaps between its fans -- instead of duplicating it (split_pinch_verts), which
- * on a near-coincident cross-cube seam spawns a doubled, z-fighting fill. Only
- * applied when the fans form one well-defined surface: every incident face's
- * normal agrees with the area-weighted vertex normal to within
- * BOWTIE_COHERENCE_COS, AND each inter-fan gap is narrower than
- * BOWTIE_GAP_MAX_VOX. The gap cap sits well below the inter-wrap clearance
- * (~CUT_GAP_DEPTH=7) so two wraps touching at a point are NEVER welded -- they
- * fail the gap test and fall through to the split. */
+ * vertex IN PLACE -- keep the single vertex and join its incident fans with a
+ * shortest safe spanning forest of angular-gap triangles -- instead of
+ * duplicating it (split_pinch_verts), which on a near-coincident cross-cube seam
+ * spawns a doubled, z-fighting fill.  A spanning forest is essential: filling
+ * every cyclic gap around two disk fans closes the exterior boundary and makes
+ * an annulus; one accepted gap joins the fans into a disk and leaves the other
+ * gap on the outer boundary.  Only applied when the fans form one well-defined
+ * surface: every incident face's normal agrees with the area-weighted vertex
+ * normal to within BOWTIE_COHERENCE_COS, and every selected inter-fan gap is
+ * narrower than BOWTIE_GAP_MAX_VOX. The gap cap sits well below the inter-wrap
+ * clearance (~CUT_GAP_DEPTH=7) so two wraps touching at a point are never
+ * welded -- they fail the gap test and fall through to the split. */
 #define BOWTIE_COHERENCE_COS 0.2f
 #define BOWTIE_GAP_MAX_VOX   2.0f
+
+/* A tiny source chart can legitimately terminate on a sharply turning corner
+ * of a larger chart.  Its bridge has already passed the scroll-winding gate;
+ * the combined attachment closer additionally requires one exact source-chart
+ * pair, compatible boundary winding, and a free manifold edge budget.  Only
+ * that narrowly guarded case uses this lower normal-coherence floor. */
+#define BRIDGE_MICRO_CHART_MAX_FACES             128
+#define BRIDGE_MICRO_ATTACHMENT_COHERENCE_COS   0.08f
 
 /* Wider gap cap used ONLY when the weld arms it (SEAM_UMBILICUS_Y/X +
  * SEAM_WRAP_PITCH) AND the ORIENTATION GATE passes. A wide bowtie is two triangle

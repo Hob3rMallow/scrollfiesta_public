@@ -1,6 +1,6 @@
 /* ============================================================================
  * obj_orient_audit -- per-component orientation & UV-mirror audit for a
- * scroll-surface OBJ (optionally carrying per-vertex vt from an unroll stage).
+ * scroll-surface OBJ (optionally carrying per-vertex vt from scroll_ribbon).
  *
  * Question it answers: when components "face different directions", is that
  *   (a) stored-winding sign flips (some components present recto, some verso
@@ -48,6 +48,7 @@
 #include "../common/arena.h"
 #include "../common/union_find.h"
 #include "../common/ves_platform.h"
+#include "../whole/atlas_overlap_audit.h"
 
 /* ------------------------------------------------------------------ util */
 
@@ -90,7 +91,7 @@ static void *xgrow(void *p, size_t need_elems, size_t *cap_elems, size_t elem)
 
 typedef struct UvMesh {
     float   *verts;   /* [nv*3] (z,y,x) as stored */
-    float   *uv;      /* [nvt*2] */
+    double  *uv;      /* [nvt*2], preserve OBJ text precision */
     int32_t *faces;   /* [nf*3] 0-based */
     size_t   nv, nvt, nf;
 } UvMesh;
@@ -123,10 +124,10 @@ static int parse_uv_obj(const char *path, UvMesh *m)
             char *s = line + 3, *end = NULL;
             double u = strtod(s, &end); s = end;
             double v = strtod(s, &end);
-            m->uv = (float *)xgrow(m->uv, (m->nvt + 1) * 2, &cap_t,
-                                   sizeof(float));
-            m->uv[m->nvt * 2 + 0] = (float)u;
-            m->uv[m->nvt * 2 + 1] = (float)v;
+            m->uv = (double *)xgrow(m->uv, (m->nvt + 1) * 2, &cap_t,
+                                    sizeof(double));
+            m->uv[m->nvt * 2 + 0] = u;
+            m->uv[m->nvt * 2 + 1] = v;
             m->nvt++;
         } else if (line[0] == 'f' && (line[1] == ' ' || line[1] == '\t')) {
             char *s = line + 2;
@@ -221,7 +222,7 @@ static int cmp_comp_area(const void *a, const void *b)
 /* Core analysis on in-memory arrays (uv may be NULL: radial-only audit).
  * axis_point/axis_dir in the same (z,y,x) component order as verts. */
 static int audit_run(Arena_T arena,
-                     const float *verts, size_t nv, const float *uv,
+                     const float *verts, size_t nv, const double *uv,
                      const int32_t *faces, size_t nf,
                      const float axis_point[3], const float axis_dir[3],
                      double min_cos, AuditResult *R)
@@ -420,7 +421,7 @@ static double comp_kap_agr(const CompStat *c)
  * radial-vs-main (green agree / red opposite / gray unclear), mode 1 =
  * kappa-vs-main (green / magenta / gray). */
 static int write_vote_flat(const char *path,
-                           const float *uv, size_t nv,
+                           const double *uv, size_t nv,
                            const int32_t *faces, size_t nf,
                            const float *verts3d,
                            const AuditResult *R, int mode)
@@ -475,18 +476,21 @@ static int write_vote_flat(const char *path,
 
 /* ------------------------------------------------------------ reporting */
 
-static void print_report(const AuditResult *R, const float *uv, size_t max_rows)
+static void print_report(const AuditResult *R, const double *uv, size_t max_rows)
 {
     size_t i = 0, n_flip = 0, n_mirror = 0, n_mixed = 0, n_samedir = 0;
     double tot_area = 0.0;
 
     for (i = 0; i < R->ncomp; i++) tot_area += R->comp[i].area;
     fprintf(stderr,
-        "comp   faces      area%%  sameDir  radial       kappa        dot111  azim    u-range          verdict\n");
+        "comp   faces      area%%  sameDir  radial       |n.r|  clear%%  kappa        dot111  azim    u-range          verdict\n");
     for (i = 0; i < R->ncomp && i < max_rows; i++) {
         const CompStat *c = &R->comp[i];
         int rs = comp_rad_sign(c), ks = comp_kap_sign(c);
         double ra = comp_rad_agr(c), ka = comp_kap_agr(c);
+        double coh = (c->area > 0.0) ? c->coh / c->area : 0.0;
+        double clear = (c->area > 0.0)
+                       ? (c->area_out + c->area_in) / c->area : 0.0;
         double d111 = (c->area > 0.0) ? c->dot111 / c->area : 0.0;
         double azim = atan2(c->az_x, c->az_y) * 57.29577951308232;
         char verdict[80] = "ok";
@@ -500,10 +504,11 @@ static void print_report(const AuditResult *R, const float *uv, size_t max_rows)
                 memmove(verdict, verdict + 2, strlen(verdict + 2) + 1);
         }
         fprintf(stderr,
-            "%4zu %8zu  %8.3f  %7zu  %s %5.1f%%   %s %5.1f%%   %+6.2f  %+4.0f  [%7.0f,%7.0f]  %s\n",
+            "%4zu %8zu  %8.3f  %7zu  %s %5.1f%%  %5.3f  %5.1f%%   %s %5.1f%%   %+6.2f  %+4.0f  [%7.0f,%7.0f]  %s\n",
             i, c->nf, 100.0 * c->area / (tot_area > 0 ? tot_area : 1.0),
             c->same_dir,
             rs > 0 ? "out" : "in ", ra * 100.0,
+            coh, clear * 100.0,
             uv ? (ks > 0 ? "+" : "-") : "?", uv ? ka * 100.0 : 0.0,
             d111, azim,
             uv ? c->umin : 0.0, uv ? c->umax : 0.0, verdict);
@@ -541,7 +546,7 @@ static void print_report(const AuditResult *R, const float *uv, size_t max_rows)
  * Appends into caller arrays (offset = existing vert count). */
 static void build_arc(float rad, double th0, double th1, int nth, int nz,
                       int flip, int mirror,
-                      float **verts, float **uv, int32_t **faces,
+                      float **verts, double **uv, int32_t **faces,
                       size_t *nv, size_t *nf,
                       size_t *cap_v, size_t *cap_t, size_t *cap_f)
 {
@@ -552,12 +557,12 @@ static void build_arc(float rad, double th0, double th1, int nth, int nz,
             double th = th0 + (th1 - th0) * (double)i / (double)nth;
             double u = (double)rad * th * (mirror ? -1.0 : 1.0);
             *verts = (float *)xgrow(*verts, (*nv + 1) * 3, cap_v, sizeof(float));
-            *uv = (float *)xgrow(*uv, (*nv + 1) * 2, cap_t, sizeof(float));
+            *uv = (double *)xgrow(*uv, (*nv + 1) * 2, cap_t, sizeof(double));
             (*verts)[*nv * 3 + 0] = (float)j;
             (*verts)[*nv * 3 + 1] = rad * (float)cos(th);
             (*verts)[*nv * 3 + 2] = rad * (float)sin(th);
-            (*uv)[*nv * 2 + 0] = (float)u;
-            (*uv)[*nv * 2 + 1] = (float)j;
+            (*uv)[*nv * 2 + 0] = u;
+            (*uv)[*nv * 2 + 1] = (double)j;
             (*nv)++;
         }
     }
@@ -595,7 +600,7 @@ static int selftest(void)
 
     /* t1: outward-wound arc, standard uv */
     {
-        float *v = NULL, *t = NULL; int32_t *fc = NULL;
+        float *v = NULL; double *t = NULL; int32_t *fc = NULL;
         size_t nv = 0, nf = 0, cv = 0, ct = 0, cf = 0;
         AuditResult R;
         build_arc(50.0f, 0.2, 2.2, 40, 10, 0, 0, &v, &t, &fc, &nv, &nf,
@@ -614,7 +619,7 @@ static int selftest(void)
 
     /* t2: all faces flipped -> radial IN, kappa UNCHANGED (invariance) */
     {
-        float *v = NULL, *t = NULL; int32_t *fc = NULL;
+        float *v = NULL; double *t = NULL; int32_t *fc = NULL;
         size_t nv = 0, nf = 0, cv = 0, ct = 0, cf = 0;
         AuditResult R;
         build_arc(50.0f, 0.2, 2.2, 40, 10, 1, 0, &v, &t, &fc, &nv, &nf,
@@ -630,7 +635,7 @@ static int selftest(void)
 
     /* t3: mirrored uv (u -> -u), original winding -> kappa flips */
     {
-        float *v = NULL, *t = NULL; int32_t *fc = NULL;
+        float *v = NULL; double *t = NULL; int32_t *fc = NULL;
         size_t nv = 0, nf = 0, cv = 0, ct = 0, cf = 0;
         AuditResult R;
         build_arc(50.0f, 0.2, 2.2, 40, 10, 0, 1, &v, &t, &fc, &nv, &nf,
@@ -645,7 +650,7 @@ static int selftest(void)
     /* t4: two components, second winding-flipped at another azimuth ->
      * WINDING-FLIPPED detected, NOT mirrored */
     {
-        float *v = NULL, *t = NULL; int32_t *fc = NULL;
+        float *v = NULL; double *t = NULL; int32_t *fc = NULL;
         size_t nv = 0, nf = 0, cv = 0, ct = 0, cf = 0;
         AuditResult R;
         build_arc(50.0f, 0.2, 2.2, 40, 10, 0, 0, &v, &t, &fc, &nv, &nf,
@@ -665,7 +670,7 @@ static int selftest(void)
 
     /* t5: mixed winding inside one comp -> same_dir > 0, agreement ~50% */
     {
-        float *v = NULL, *t = NULL; int32_t *fc = NULL;
+        float *v = NULL; double *t = NULL; int32_t *fc = NULL;
         size_t nv = 0, nf = 0, cv = 0, ct = 0, cf = 0, f = 0;
         AuditResult R;
         build_arc(50.0f, 0.2, 2.2, 40, 10, 0, 0, &v, &t, &fc, &nv, &nf,
@@ -683,7 +688,7 @@ static int selftest(void)
 
     /* t6: no uv -> radial-only path; degenerate input -> error */
     {
-        float *v = NULL, *t = NULL; int32_t *fc = NULL;
+        float *v = NULL; double *t = NULL; int32_t *fc = NULL;
         size_t nv = 0, nf = 0, cv = 0, ct = 0, cf = 0;
         AuditResult R;
         build_arc(50.0f, 0.2, 2.2, 8, 3, 0, 0, &v, &t, &fc, &nv, &nf,
@@ -717,6 +722,8 @@ static void usage(void)
         "  --min-cos F         radial-clarity gate |cos| (default 0.3)\n"
         "  --out-dir D --id S  write colored flat dumps (needs vt):\n"
         "                      <id>_orient_flat.obj, <id>_mirror_flat.obj\n"
+        "  --exact-uv-overlap  run the complete exact 2-D triangle-overlap audit\n"
+        "  --fail-uv-overlap   imply the audit and return failure on any overlap\n"
         "  --max-rows N        table rows to print (default 40)\n");
 }
 
@@ -727,14 +734,19 @@ int main(int argc, char **argv)
     float axd[3] = { 1.0f, 0.0f, 0.0f };
     double min_cos = 0.3;
     size_t max_rows = 40;
+    int exact_uv_overlap = 0, fail_uv_overlap = 0;
+    int exit_code = 0;
     int i = 0;
     UvMesh m;
     AuditResult R;
     Arena_T arena = NULL;
     double t0 = 0.0;
 
-    if (argc >= 2 && strcmp(argv[1], "--selftest") == 0)
-        return selftest() == 0 ? 0 : 1;
+    if (argc >= 2 && strcmp(argv[1], "--selftest") == 0) {
+        int orient_failures = selftest();
+        int overlap_failures = AtlasOverlapAudit_selftest();
+        return orient_failures + overlap_failures == 0 ? 0 : 1;
+    }
     if (argc < 2) { usage(); return 1; }
     in_path = argv[1];
     for (i = 2; i < argc; i++) {
@@ -754,6 +766,11 @@ int main(int argc, char **argv)
             id = argv[++i];
         } else if (strcmp(argv[i], "--max-rows") == 0 && i + 1 < argc) {
             max_rows = (size_t)strtol(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "--exact-uv-overlap") == 0) {
+            exact_uv_overlap = 1;
+        } else if (strcmp(argv[i], "--fail-uv-overlap") == 0) {
+            exact_uv_overlap = 1;
+            fail_uv_overlap = 1;
         } else {
             fprintf(stderr, "unknown option %s\n", argv[i]);
             usage();
@@ -785,6 +802,75 @@ int main(int argc, char **argv)
     }
     print_report(&R, m.uv, max_rows);
 
+    if (exact_uv_overlap) {
+        if (m.uv == NULL) {
+            fprintf(stderr,
+                    "[orient_audit] exact UV overlap: unavailable (OBJ has no "
+                    "one-to-one vt coordinates)\n");
+            if (fail_uv_overlap) exit_code = 2;
+        } else {
+            double *u = (double *)ARENA_ALLOC(
+                arena, (long)(m.nv * sizeof(double)));
+            double *v = (double *)ARENA_ALLOC(
+                arena, (long)(m.nv * sizeof(double)));
+            float *registered_u = (float *)ARENA_ALLOC(
+                arena, (long)(m.nv * sizeof(float)));
+            float *phi = (float *)ARENA_ALLOC(
+                arena, (long)(m.nv * sizeof(float)));
+            AtlasOverlapAudit overlap;
+            for (size_t vi = 0; vi < m.nv; vi++) {
+                u[vi] = (double)m.uv[vi * 2 + 0];
+                v[vi] = (double)m.uv[vi * 2 + 1];
+                registered_u[vi] = (float)m.uv[vi * 2 + 0];
+                phi[vi] = (float)m.uv[vi * 2 + 0];
+            }
+            double overlap_t0 = ves_clock_sec();
+            int overlap_rc = AtlasOverlapAudit_build(
+                arena, m.faces, m.nf, m.nv, u, v, registered_u, phi,
+                R.vert_comp, R.ncomp, &overlap);
+            if (overlap_rc != 0 || !overlap.broad_phase_complete ||
+                overlap.indexed_faces != m.nf ||
+                overlap.pair_buffer_truncated) {
+                fprintf(stderr,
+                        "[orient_audit] exact UV overlap: FAILED/incomplete "
+                        "(rc=%d indexed=%zu/%zu complete=%d truncated=%d)\n",
+                        overlap_rc, overlap.indexed_faces, m.nf,
+                        overlap.broad_phase_complete,
+                        overlap.pair_buffer_truncated);
+                exit_code = 2;
+            } else {
+                fprintf(stderr,
+                        "[orient_audit] exact UV overlap: %zu pair(s) "
+                        "(same-component=%zu cross-component=%zu, bundles=%zu) "
+                        "across %zu candidates in %zu cells; cell=%.6g (%.2fs)\n",
+                        overlap.exact_face_pairs,
+                        overlap.same_component_pairs,
+                        overlap.cross_component_pairs, overlap.nbundles,
+                        overlap.broad_phase_candidate_pairs,
+                        overlap.broad_phase_cells,
+                        overlap.broad_phase_cell_size,
+                        ves_clock_sec() - overlap_t0);
+                if (overlap.exact_face_pairs > 0) {
+                    size_t show = overlap.nbundles < max_rows
+                                  ? overlap.nbundles : max_rows;
+                    for (size_t bi = 0; bi < show; bi++) {
+                        const AtlasOverlapBundle *b = &overlap.bundles[bi];
+                        fprintf(stderr,
+                                "  UV overlap bundle %zu: comp %d <-> %d, "
+                                "%zu face pair(s), unique=%zu/%zu\n",
+                                bi, b->component0, b->component1,
+                                b->face_pairs, b->unique_faces0,
+                                b->unique_faces1);
+                    }
+                    if (overlap.nbundles > show)
+                        fprintf(stderr, "  ... %zu more UV overlap bundles\n",
+                                overlap.nbundles - show);
+                    if (fail_uv_overlap) exit_code = 2;
+                }
+            }
+        }
+    }
+
     if (out_dir != NULL && m.uv != NULL) {
         char path[2600];
         snprintf(path, sizeof path, "%s/%s_orient_flat.obj", out_dir, id);
@@ -798,5 +884,5 @@ int main(int argc, char **argv)
 
     uvmesh_free(&m);
     Arena_dispose(&arena);
-    return 0;
+    return exit_code;
 }

@@ -86,6 +86,8 @@ typedef struct {
     float *px, *py, *pz;      /* [W*H] world x/y/z planes, -1 = invalid */
     float *pw;                /* [W*H] winding (phi/2pi), NULL = off */
     uint8_t *state;           /* [W*H] TXZ_* cover state */
+    int32_t *owner_face;      /* [W*H] deterministic first-cover face */
+    TifxyzStats *stats;
 } TxzCanvas;
 
 /* uv (vox) -> canvas px coords, flips applied. */
@@ -153,15 +155,94 @@ static void txz_splat_face(TxzCanvas *cv, size_t f)
                                  + l2 * (double)ps->phi[c];
                     cv->pw[pi] = (float)(phi / (2.0 * M_PI));
                 }
+                cv->owner_face[pi] = (int32_t)f;
                 cv->state[pi] = TXZ_ONE;
             } else {
                 double dx = wx - (double)cv->px[pi];
                 double dy = wy - (double)cv->py[pi];
                 double dz = wz - (double)cv->pz[pi];
                 double d = sqrt(dx * dx + dy * dy + dz * dz);
-                if (d > cv->opts->conflict_dist)
+                if (d > cv->opts->conflict_dist) {
+                    /* Classify exactly once, on the transition into the
+                     * contested state.  Later covers cannot bias the
+                     * provenance or distance histogram. */
+                    if (cv->state[pi] != TXZ_CONFLICT) {
+                        TifxyzStats *st = cv->stats;
+                        int32_t of = cv->owner_face[pi];
+                        if (ps->face_cube == NULL || of < 0) {
+                            st->conflict_unknown_cube++;
+                        } else if (ps->face_cube[(size_t)of]
+                                   == ps->face_cube[f]) {
+                            st->conflict_same_cube++;
+                        } else {
+                            st->conflict_cross_cube++;
+                        }
+                        if (d <= 4.0) st->conflict_d_le4++;
+                        else if (d <= 8.0) st->conflict_d_le8++;
+                        else if (d <= 16.0) st->conflict_d_le16++;
+                        else if (d <= 32.0) st->conflict_d_le32++;
+                        else st->conflict_d_gt32++;
+                        st->conflict_d_sum += d;
+                        if (d > st->conflict_d_max) st->conflict_d_max = d;
+                        if (cv->pw != NULL && ps->phi != NULL) {
+                            double turn = (l0 * (double)ps->phi[a]
+                                           + l1 * (double)ps->phi[b]
+                                           + l2 * (double)ps->phi[c])
+                                          / (2.0 * M_PI);
+                            double dt = fabs(turn - (double)cv->pw[pi]);
+                            st->conflict_turn_known++;
+                            if (dt <= 0.25) st->conflict_turn_le025++;
+                            else if (dt <= 0.5) st->conflict_turn_le05++;
+                            else if (dt <= 1.0) st->conflict_turn_le1++;
+                            else st->conflict_turn_gt1++;
+                        }
+                        if (of >= 0) {
+                            int shared = 0;
+                            for (int ea = 0; ea < 3; ea++)
+                                for (int eb = 0; eb < 3; eb++)
+                                    if (ps->faces[(size_t)of * 3 + ea]
+                                        == ps->faces[f * 3 + eb])
+                                        shared++;
+                            if (shared >= 2) st->conflict_face_shared_edge++;
+                            else if (shared == 1)
+                                st->conflict_face_shared_vertex++;
+                            else st->conflict_face_disjoint++;
+
+                            double co3[3] = {0, 0, 0}, cn3[3] = {0, 0, 0};
+                            double cou = 0.0, cov = 0.0;
+                            double cnu = 0.0, cnv = 0.0;
+                            for (int e = 0; e < 3; e++) {
+                                size_t ov = (size_t)ps->faces[(size_t)of * 3 + e];
+                                size_t nv = (size_t)ps->faces[f * 3 + e];
+                                for (int k = 0; k < 3; k++) {
+                                    co3[k] += (double)ps->verts[ov * 3 + k] / 3.0;
+                                    cn3[k] += (double)ps->verts[nv * 3 + k] / 3.0;
+                                }
+                                cou += (double)ps->uv[ov * 2 + 0] / 3.0;
+                                cov += (double)ps->uv[ov * 2 + 1] / 3.0;
+                                cnu += (double)ps->uv[nv * 2 + 0] / 3.0;
+                                cnv += (double)ps->uv[nv * 2 + 1] / 3.0;
+                            }
+                            double cd2 = 0.0;
+                            for (int k = 0; k < 3; k++) {
+                                double dd = co3[k] - cn3[k];
+                                cd2 += dd * dd;
+                            }
+                            if (sqrt(cd2) <= 8.0) st->conflict_centroid_d_le8++;
+                            else st->conflict_centroid_d_gt8++;
+                            double cdu = fabs(cou - cnu), cdv = fabs(cov - cnv);
+                            if (cdu <= 2.0) st->conflict_centroid_du_le2++;
+                            else if (cdu <= 4.0) st->conflict_centroid_du_le4++;
+                            else if (cdu <= 8.0) st->conflict_centroid_du_le8++;
+                            else st->conflict_centroid_du_gt8++;
+                            if (cdv <= 2.0) st->conflict_centroid_dv_le2++;
+                            else if (cdv <= 4.0) st->conflict_centroid_dv_le4++;
+                            else if (cdv <= 8.0) st->conflict_centroid_dv_le8++;
+                            else st->conflict_centroid_dv_gt8++;
+                        }
+                    }
                     cv->state[pi] = TXZ_CONFLICT;
-                else if (cv->state[pi] == TXZ_ONE)
+                } else if (cv->state[pi] == TXZ_ONE)
                     cv->state[pi] = TXZ_MULTI;
             }
         }
@@ -190,6 +271,14 @@ static int txz_write_meta(const char *seg_dir, const char *uuid,
         "        \"origin_uv\": [%.3f, %.3f],\n"
         "        \"n_cubes\": %zu,\n"
         "        \"valid_px\": %zu, \"multi_px\": %zu, \"conflict_px\": %zu,\n"
+        "        \"conflict_provenance_px\": {\"same_cube\": %zu, "
+        "\"cross_cube\": %zu, \"unknown_cube\": %zu},\n"
+        "        \"conflict_distance_px\": {\"le4\": %zu, \"le8\": %zu, "
+        "\"le16\": %zu, \"le32\": %zu, \"gt32\": %zu, "
+        "\"mean\": %.6f, \"max\": %.6f},\n"
+        "        \"conflict_turn_delta_px\": {\"known\": %zu, "
+        "\"le0.25\": %zu, \"le0.5\": %zu, \"le1\": %zu, "
+        "\"gt1\": %zu},\n"
         "        \"skip_uv_faces\": %zu, \"skip_3d_faces\": %zu, "
         "\"skip_own_faces\": %zu%s\n"
         "    }\n"
@@ -201,6 +290,15 @@ static int txz_write_meta(const char *seg_dir, const char *uuid,
         opts->du, opts->dv, opts->flip_u ? 1 : 0, opts->flip_v ? 1 : 0,
         st->u0, st->v0, ps->n_cubes,
         st->valid, st->multi, st->conflicts,
+        st->conflict_same_cube, st->conflict_cross_cube,
+        st->conflict_unknown_cube,
+        st->conflict_d_le4, st->conflict_d_le8, st->conflict_d_le16,
+        st->conflict_d_le32, st->conflict_d_gt32,
+        st->conflicts ? st->conflict_d_sum / (double)st->conflicts : 0.0,
+        st->conflict_d_max,
+        st->conflict_turn_known, st->conflict_turn_le025,
+        st->conflict_turn_le05, st->conflict_turn_le1,
+        st->conflict_turn_gt1,
         st->skip_uv, st->skip_3d, st->skip_own,
         opts->write_provenance
             ? ",\n        \"provenance\": \"provenance.tif: 0=empty 1=single "
@@ -260,17 +358,21 @@ int TifxyzExport_run(Arena_T arena, const PieceSet *ps, const char *seg_dir,
     out->v0 = (double)Y0 * dv;
 
     const size_t npx = W * H;
-    int want_winding = opts->write_winding && ps->phi != NULL;
+    int have_phi = ps->phi != NULL;
+    int want_winding = opts->write_winding && have_phi;
     float *px = (float *)malloc(npx * sizeof(float));
     float *py = (float *)malloc(npx * sizeof(float));
     float *pz = (float *)malloc(npx * sizeof(float));
-    float *pw = want_winding ? (float *)malloc(npx * sizeof(float)) : NULL;
+    /* Keep first-cover winding whenever available: it is also the diagnostic
+     * needed to tell an inter-wrap collapse from a same-wrap collision. */
+    float *pw = have_phi ? (float *)malloc(npx * sizeof(float)) : NULL;
     uint8_t *state = (uint8_t *)calloc(npx, 1);
+    int32_t *owner_face = (int32_t *)malloc(npx * sizeof(int32_t));
     if (px == NULL || py == NULL || pz == NULL || state == NULL ||
-        (want_winding && pw == NULL)) {
+        owner_face == NULL || (have_phi && pw == NULL)) {
         fprintf(stderr, "tifxyz_export: ERROR out of memory "
                 "(canvas %zux%zu)\n", W, H);
-        free(px); free(py); free(pz); free(pw); free(state);
+        free(px); free(py); free(pz); free(pw); free(state); free(owner_face);
         return -1;
     }
     for (size_t i = 0; i < npx; i++) {
@@ -280,6 +382,7 @@ int TifxyzExport_run(Arena_T arena, const PieceSet *ps, const char *seg_dir,
     }
     if (pw != NULL)
         memset(pw, 0, npx * sizeof(float));
+    memset(owner_face, 0xff, npx * sizeof(int32_t));
 
     TxzCanvas cv;
     cv.ps = ps;
@@ -293,6 +396,8 @@ int TifxyzExport_run(Arena_T arena, const PieceSet *ps, const char *seg_dir,
     cv.pz = pz;
     cv.pw = pw;
     cv.state = state;
+    cv.owner_face = owner_face;
+    cv.stats = out;
 
     /* ascending face order => first-cover-wins is deterministic */
     for (size_t f = 0; f < ps->nf; f++) {
@@ -320,7 +425,7 @@ int TifxyzExport_run(Arena_T arena, const PieceSet *ps, const char *seg_dir,
     if (out->valid == 0) {
         fprintf(stderr, "tifxyz_export: ERROR zero covered pixels "
                 "(all faces gated?)\n");
-        free(px); free(py); free(pz); free(pw); free(state);
+        free(px); free(py); free(pz); free(pw); free(state); free(owner_face);
         return -1;
     }
     for (int k = 0; k < 3; k++) {
@@ -367,7 +472,7 @@ int TifxyzExport_run(Arena_T arena, const PieceSet *ps, const char *seg_dir,
             rc = -1;
         }
     }
-    if (rc == 0 && pw != NULL) {
+    if (rc == 0 && want_winding) {
         snprintf(path, sizeof(path), "%s/winding.tif", seg_dir);
         if (TiffIO_save_float2d(path, pw, (int)W, (int)H) != 0) {
             fprintf(stderr, "tifxyz_export: ERROR writing %s\n", path);
@@ -409,6 +514,7 @@ int TifxyzExport_run(Arena_T arena, const PieceSet *ps, const char *seg_dir,
     free(pz);
     free(pw);
     free(state);
+    free(owner_face);
     return rc;
 }
 
@@ -688,6 +794,25 @@ int TifxyzExport_selftest(void)
         txz_check(rc == 0, "D: rc", &fails);
         txz_check(st.valid == 441 && st.multi == 441 && st.conflicts == 441,
                   "D: all px conflicted", &fails);
+        txz_check(st.conflict_same_cube == 441
+                  && st.conflict_cross_cube == 0
+                  && st.conflict_unknown_cube == 0,
+                  "D: conflict provenance is same cube", &fails);
+        txz_check(st.conflict_d_le16 == 441
+                  && st.conflict_d_le4 == 0 && st.conflict_d_le8 == 0
+                  && st.conflict_d_le32 == 0 && st.conflict_d_gt32 == 0
+                  && fabs(st.conflict_d_sum / 441.0 - 10.0) < 1e-6,
+                  "D: conflict distance histogram", &fails);
+        txz_check(st.conflict_turn_known == 441
+                  && st.conflict_turn_le025 == 441,
+                  "D: same-winding conflict histogram", &fails);
+        txz_check(st.conflict_face_disjoint == 441
+                  && st.conflict_face_shared_edge == 0
+                  && st.conflict_face_shared_vertex == 0
+                  && st.conflict_centroid_d_gt8 == 441
+                  && st.conflict_centroid_du_le2 == 441
+                  && st.conflict_centroid_dv_le2 == 441,
+                  "D: conflict face relation and centroids", &fails);
         float *by = NULL;
         int w = 0, h = 0;
         char p[600];

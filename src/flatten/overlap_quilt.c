@@ -21,6 +21,7 @@
 #include <math.h>
 
 #include "../common/pca.h"
+#include "../common/mesh_normals.h"
 #include "../common/raw_sample.h"
 #include "../split/multicut_wrap.h"
 
@@ -483,7 +484,7 @@ int Quilt_run(Arena_T arena,
     CubeTable ct; int have_ct = 0; float *nrm = NULL;
     if (o.raw_dir != NULL &&
         cubetable_init(&ct, arena, o.raw_dir, o.chunk, verts, nv, o.normal_range+2.0)==0) {
-        nrm = vertex_normals(verts, nv, faces, nf); have_ct = 1;
+        nrm = MeshNormals_compute(verts, nv, faces, nf); have_ct = 1;
     }
     out->have_texture = have_ct;
 

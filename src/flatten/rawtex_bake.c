@@ -5,6 +5,28 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+static int32_t rawtex_component_find(int32_t *parent, int32_t vertex)
+{
+    int32_t root = vertex;
+    while (parent[root] >= 0) root = parent[root];
+    while (vertex != root) {
+        int32_t next = parent[vertex];
+        parent[vertex] = root;
+        vertex = next;
+    }
+    return root;
+}
+
+static void rawtex_component_union(int32_t *parent, int32_t a, int32_t b)
+{
+    a = rawtex_component_find(parent, a);
+    b = rawtex_component_find(parent, b);
+    if (a == b) return;
+    if (parent[a] > parent[b]) { int32_t swap = a; a = b; b = swap; }
+    parent[a] += parent[b];
+    parent[b] = a;
+}
 #include <math.h>
 #include <stdint.h>
 
@@ -15,7 +37,7 @@
 
 /* ------------------------------------------------------------------ util
  * Trivial malloc wrappers + the rasterizer's private math helpers. These are
- * intentionally file-local duplicates of the same statics in the standalone diagnostic baker
+ * intentionally file-local duplicates of the same statics in obj_bake_raw.c
  * (5-line wrappers not worth a shared alloc header). */
 static void *xmalloc(size_t nbytes)
 {
@@ -125,6 +147,82 @@ void Rawtex_stretch_window(const double *val, const uint8_t *has, size_t nv,
     *out_hi = (double)hi;
 }
 
+/* Per-axis raster cap (image dimension) and default total-pixel budget. */
+#define RAWTEX_AXIS_CAP       ((size_t)1 << 20)
+#define RAWTEX_MAX_PX_DEFAULT ((size_t)1 << 28)
+
+/* Half-texel convention: pixel k covers [k*step, (k+1)*step] and samples at
+ * its CENTER (k+0.5)*step.  The fitted ribbon emits uv on an exact grid_du
+ * lattice; the old corner-sample convention put every pixel center ON a
+ * lattice line, so one dropped grid cell painted a 1-px black crack tracing
+ * every section boundary, and shared edges beat against the sampler. */
+static size_t plan_dim(double span, double step)
+{
+    double cells = ceil(span / step);
+    if (cells < 1.0) return 1;
+    return (size_t)cells;
+}
+
+int Rawtex_plan(const float *uv, size_t nv, double du, double dv,
+                size_t max_px, RawtexPlan *out)
+{
+    size_t i = 0;
+    double span_u = 0.0, span_v = 0.0;
+    int pass = 0;
+
+    if (out == NULL) return -1;
+    memset(out, 0, sizeof *out);
+    if (nv == 0 || uv == NULL || du <= 0.0 || dv <= 0.0) return -1;
+    for (i = 0; i < nv; i++) {
+        double uu = (double)uv[i * 2 + 0], vv = (double)uv[i * 2 + 1];
+        if (i == 0) {
+            out->umin = out->umax = uu;
+            out->vmin = out->vmax = vv;
+            continue;
+        }
+        if (uu < out->umin) out->umin = uu;
+        if (uu > out->umax) out->umax = uu;
+        if (vv < out->vmin) out->vmin = vv;
+        if (vv > out->vmax) out->vmax = vv;
+    }
+    out->max_px = max_px > 0 ? max_px : RAWTEX_MAX_PX_DEFAULT;
+    span_u = out->umax - out->umin;
+    span_v = out->vmax - out->vmin;
+    out->W = plan_dim(span_u, du);
+    out->H = plan_dim(span_v, dv);
+    out->ok = out->W <= RAWTEX_AXIS_CAP && out->H <= RAWTEX_AXIS_CAP &&
+              out->W * out->H <= out->max_px;
+
+    /* Smallest steps that fit: satisfy each axis cap independently, then
+     * shrink only the LARGER axis to meet the total budget -- the old advice
+     * scaled both axes by sqrt(area) and silently downsampled a full-height
+     * 512-row v axis because u had exploded. */
+    out->need_du = du;
+    out->need_dv = dv;
+    if (out->W > RAWTEX_AXIS_CAP)
+        out->need_du = span_u / (double)RAWTEX_AXIS_CAP * 1.0000001;
+    if (out->H > RAWTEX_AXIS_CAP)
+        out->need_dv = span_v / (double)RAWTEX_AXIS_CAP * 1.0000001;
+    for (pass = 0; pass < 8; pass++) {
+        size_t w = plan_dim(span_u, out->need_du);
+        size_t h = plan_dim(span_v, out->need_dv);
+        double target = 0.0;
+        if (w <= RAWTEX_AXIS_CAP && h <= RAWTEX_AXIS_CAP &&
+            w * h <= out->max_px)
+            break;
+        if (w >= h) {
+            target = (double)(out->max_px / (h > 0 ? h : 1));
+            if (target < 1.0) target = 1.0;
+            out->need_du = span_u / target * 1.001;
+        } else {
+            target = (double)(out->max_px / (w > 0 ? w : 1));
+            if (target < 1.0) target = 1.0;
+            out->need_dv = span_v / target * 1.001;
+        }
+    }
+    return 0;
+}
+
 int Rawtex_write_tif(const char *path, CubeTable *ct,
                      const float *verts, const float *uv, size_t nv,
                      const int32_t *faces, size_t nf,
@@ -133,15 +231,26 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
                      double range, int nsteps,
                      double du, double dv, double lo, double hi,
                      double stretch_ratio, double stretch_floor,
-                     double max_edge3d,
+                     double max_edge3d, size_t max_px,
                      const DiagOpts *diag,
                      size_t *out_W, size_t *out_H,
                      double *out_fill, size_t *out_multi,
                      size_t *out_skip_uv, size_t *out_skip_3d)
 {
+    /* A boundary-only hit is ownership, not a second surface layer.  The
+     * fitted ribbon deliberately puts vertices on its raster lattice, so a
+     * pixel can lie on a shared diagonal (or even on a grid vertex touched by
+     * several triangles).  Counting every closed-triangle incidence made an
+     * exactly injective ribbon look almost entirely multi-covered.  Keep one
+     * boundary owner until a strict-interior hit appears; only multiple strict
+     * interiors are evidence of an overlap.  The high bit avoids another
+     * W*H owner raster.  Exact UV intersection auditing remains the authority
+     * for measure-zero edge coincidences. */
+    const uint32_t boundary_hit = UINT32_C(0x80000000);
     size_t skip_uv = 0, skip_3d = 0;
-    double umax = 0.0, vmax = 0.0;
+    double umin = 0.0, umax = 0.0, vmin = 0.0, vmax = 0.0;
     size_t W = 0, H = 0, i = 0, f = 0, px = 0, filled = 0, multi = 0;
+    size_t centroid_stamps = 0;
     double *sum = NULL;
     uint32_t *cnt = NULL;
     uint8_t *img = NULL;
@@ -149,6 +258,14 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
     uint8_t *dsmax = NULL, *dsmin = NULL, *dverr = NULL, *dcls = NULL;
     uint8_t *cover_uv = NULL, *cover_3d = NULL;
     uint8_t *is_smear = NULL;   /* per-face skip-uv flag for the 3D dump */
+    int32_t *component_parent = NULL, *component_label = NULL;
+    int32_t *owner_component = NULL;
+    float *owner_position = NULL;
+    size_t *component_pair_hits = NULL, component_count = 0;
+    size_t *component_vertices = NULL;
+    double *component_u_lo = NULL, *component_u_hi = NULL;
+    uint8_t *multi_topology = NULL; /* bit 0: same CC, bit 1: cross CC */
+    uint8_t *multi_physical = NULL; /* bit 0: <=6 vox, bit 1: >6 vox */
     double zoff = 0.0;
     int rc = 0;
 
@@ -156,16 +273,28 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
     if (out_skip_uv != NULL) *out_skip_uv = 0;
     if (out_skip_3d != NULL) *out_skip_3d = 0;
     if (nv == 0 || nf == 0 || uv == NULL || du <= 0.0 || dv <= 0.0) return -1;
-    for (i = 0; i < nv; i++) {
-        if ((double)uv[i * 2 + 0] > umax) umax = (double)uv[i * 2 + 0];
-        if ((double)uv[i * 2 + 1] > vmax) vmax = (double)uv[i * 2 + 1];
-    }
-    W = (size_t)floor(umax / du + 0.5) + 1;
-    H = (size_t)floor(vmax / dv + 0.5) + 1;
-    if (W > (size_t)1 << 20 || H > (size_t)1 << 20 || W * H > (size_t)1 << 26) {
-        fprintf(stderr, "ERROR: raster %zux%zu unreasonable (du/dv too small?)\n",
-                W, H);
-        return -1;
+    /* Size from the UV BOUNDING BOX.  A winding frame lifted from registration
+     * has its natural origin wherever the spiral starts -- on the 4x21x21 that
+     * is u in [-1174233, +341207] and v in [4352, 4864], v being world z -- so
+     * anchoring the raster at (0,0) silently drops every negative-u vertex,
+     * which there is 99.98% of the mesh, and wastes 4352 empty rows in v.
+     * Sizing + caps live in Rawtex_plan so callers can preflight BEFORE the
+     * expensive sampling pass; a plan that reports ok never rejects here. */
+    {
+        RawtexPlan plan;
+        if (Rawtex_plan(uv, nv, du, dv, max_px, &plan) != 0) return -1;
+        if (!plan.ok) {
+            fprintf(stderr,
+                "ERROR: raster %zux%zu unreasonable for uv u=[%.1f,%.1f] "
+                "v=[%.1f,%.1f] at du=%.3g dv=%.3g; retry with --raster-du "
+                "%.3g --raster-dv %.3g, or --raster-auto / --raster-max-px\n",
+                plan.W, plan.H, plan.umin, plan.umax, plan.vmin, plan.vmax,
+                du, dv, plan.need_du, plan.need_dv);
+            return -1;
+        }
+        umin = plan.umin; umax = plan.umax;
+        vmin = plan.vmin; vmax = plan.vmax;
+        W = plan.W; H = plan.H;
     }
     sum = (double *)xcalloc(W * H, sizeof(double));
     cnt = (uint32_t *)xcalloc(W * H, sizeof(uint32_t));
@@ -179,6 +308,56 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
         dcls = (uint8_t *)xcalloc(W * H, 1);
         cover_uv = (uint8_t *)xcalloc(W * H, 1);
         cover_3d = (uint8_t *)xcalloc(W * H, 1);
+        component_parent = (int32_t *)xmalloc(nv * sizeof(*component_parent));
+        component_label = (int32_t *)xmalloc(nv * sizeof(*component_label));
+        owner_component = (int32_t *)xmalloc(W * H * sizeof(*owner_component));
+        owner_position = (float *)xmalloc(W * H * 3 * sizeof(*owner_position));
+        multi_topology = (uint8_t *)xcalloc(W * H, 1);
+        multi_physical = (uint8_t *)xcalloc(W * H, 1);
+        /* INT32_MIN marks a vertex that is not referenced by any face.  It is
+         * not a singleton mesh component: compact diagnostic/probe meshes can
+         * deliberately retain unused input vertices, and counting those as
+         * components makes the dense conflict matrix grow quadratically. */
+        for (i = 0; i < nv; i++) component_parent[i] = INT32_MIN;
+        for (f = 0; f < nf; f++) {
+            int32_t a = faces[f * 3];
+            int32_t b = faces[f * 3 + 1];
+            int32_t c = faces[f * 3 + 2];
+            if (component_parent[a] == INT32_MIN) component_parent[a] = -1;
+            if (component_parent[b] == INT32_MIN) component_parent[b] = -1;
+            if (component_parent[c] == INT32_MIN) component_parent[c] = -1;
+            rawtex_component_union(component_parent, faces[f * 3],
+                                    faces[f * 3 + 1]);
+            rawtex_component_union(component_parent, faces[f * 3],
+                                    faces[f * 3 + 2]);
+        }
+        for (i = 0; i < nv; i++) component_label[i] = -1;
+        for (i = 0; i < nv; i++)
+            if (component_parent[i] < 0 && component_parent[i] != INT32_MIN)
+                component_label[i] = (int32_t)component_count++;
+        component_pair_hits = (size_t *)xcalloc(
+            component_count * component_count, sizeof(*component_pair_hits));
+        component_vertices = (size_t *)xcalloc(
+            component_count, sizeof(*component_vertices));
+        component_u_lo = (double *)xmalloc(
+            component_count * sizeof(*component_u_lo));
+        component_u_hi = (double *)xmalloc(
+            component_count * sizeof(*component_u_hi));
+        for (i = 0; i < component_count; i++) {
+            component_u_lo[i] = 1e300;
+            component_u_hi[i] = -1e300;
+        }
+        for (i = 0; i < nv; i++) {
+            int32_t label;
+            double u = (double)uv[i * 2];
+            if (component_parent[i] == INT32_MIN) continue;
+            label = component_label[
+                rawtex_component_find(component_parent, (int32_t)i)];
+            component_vertices[label]++;
+            if (u < component_u_lo[label]) component_u_lo[label] = u;
+            if (u > component_u_hi[label]) component_u_hi[label] = u;
+        }
+        for (px = 0; px < W * H; px++) owner_component[px] = -1;
         /* zmin estimate: median of (z - vt.v) over a vertex sample -- exact
          * on correctly-mapped verts, robust to the broken ones */
         stride = (nv > 200000) ? nv / 200000 : 1;
@@ -196,9 +375,16 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
         size_t a = (size_t)faces[f * 3 + 0];
         size_t b = (size_t)faces[f * 3 + 1];
         size_t c = (size_t)faces[f * 3 + 2];
-        double ua = (double)uv[a * 2 + 0] / du, va = (double)uv[a * 2 + 1] / dv;
-        double ub = (double)uv[b * 2 + 0] / du, vb = (double)uv[b * 2 + 1] / dv;
-        double uc = (double)uv[c * 2 + 0] / du, vc = (double)uv[c * 2 + 1] / dv;
+        int32_t face_component = component_parent != NULL
+                               ? component_label[rawtex_component_find(
+                                     component_parent, (int32_t)a)]
+                               : -1;
+        double ua = ((double)uv[a * 2 + 0] - umin) / du;
+        double va = ((double)uv[a * 2 + 1] - vmin) / dv;
+        double ub = ((double)uv[b * 2 + 0] - umin) / du;
+        double vb = ((double)uv[b * 2 + 1] - vmin) / dv;
+        double uc = ((double)uv[c * 2 + 0] - umin) / du;
+        double vc = ((double)uv[c * 2 + 1] - vmin) / dv;
         double A2 = (ub - ua) * (vc - va) - (vb - va) * (uc - ua);
         double lox = ua < ub ? (ua < uc ? ua : uc) : (ub < uc ? ub : uc);
         double hix = ua > ub ? (ua > uc ? ua : uc) : (ub > uc ? ub : uc);
@@ -250,15 +436,25 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
             emax *= 32.0;
             f_verr = (uint8_t)(emax > 255.0 ? 255.0 : emax);
         }
-        x0 = (long)ceil(lox - 0.001); x1 = (long)floor(hix + 0.001);
-        y0 = (long)ceil(loy - 0.001); y1 = (long)floor(hiy + 0.001);
+        /* Centers are sampled at xx+0.5, so the first covered pixel is
+         * ceil(lo - 0.5).  The former ceil(lo - 0.001) bound implicitly
+         * assumed integer-lattice UVs (every historical quadribbon) and
+         * silently dropped each face's first row/column at generic UV
+         * phases -- the metric-projection bake lost ~20% of covered pixels
+         * to that in smoothly swirling moire bands.  The upper bound only
+         * overscans; the barycentric test rejects those centers. */
+        x0 = (long)ceil(lox - 0.501); x1 = (long)floor(hix + 0.001);
+        y0 = (long)ceil(loy - 0.501); y1 = (long)floor(hiy + 0.001);
         if (x0 < 0) x0 = 0;
         if (y0 < 0) y0 = 0;
         if (x1 >= (long)W) x1 = (long)W - 1;
         if (y1 >= (long)H) y1 = (long)H - 1;
+        int face_hit = 0;
         for (yy = y0; yy <= y1; yy++) {
             for (xx = x0; xx <= x1; xx++) {
-                double pu = (double)xx, pv = (double)yy;
+                /* half-texel: sample the pixel's CENTER, never a lattice
+                 * line (see plan_dim) */
+                double pu = (double)xx + 0.5, pv = (double)yy + 0.5;
                 double l1 = ((pu - ua) * (vc - va) - (pv - va) * (uc - ua)) / A2;
                 double l2 = ((ub - ua) * (pv - va) - (vb - va) * (pu - ua)) / A2;
                 double l0 = 1.0 - l1 - l2;
@@ -266,7 +462,10 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
                 float p3[3], n3[3];
                 double nn = 0.0, s = 0.0;
                 int k = 0;
-                if (l0 < -1e-6 || l1 < -1e-6 || l2 < -1e-6) continue;
+                int on_boundary = 0;
+                if (l0 < -1e-9 || l1 < -1e-9 || l2 < -1e-9) continue;
+                face_hit = 1;
+                on_boundary = l0 <= 1e-9 || l1 <= 1e-9 || l2 <= 1e-9;
                 pi = (size_t)yy * W + (size_t)xx;
                 if (diag != NULL) {
                     if (f_smax > dsmax[pi]) dsmax[pi] = f_smax;
@@ -296,18 +495,277 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
                 }
                 s = sample_vertex(ct, p3, nn > 0.5 ? n3 : NULL, range, nsteps);
                 if (s < 0.0) continue;
-                sum[pi] += s;
-                cnt[pi]++;
+                if (on_boundary) {
+                    /* Shared edges/vertices have one deterministic first
+                     * owner.  A strict interior already stored at this pixel
+                     * is stronger evidence and is left untouched. */
+                    if (cnt[pi] == 0) {
+                        sum[pi] = s;
+                        cnt[pi] = boundary_hit | UINT32_C(1);
+                    }
+                } else if ((cnt[pi] & boundary_hit) != 0) {
+                    /* Replace a boundary fallback by the unique strict
+                     * interior sample. */
+                    sum[pi] = s;
+                    cnt[pi] = 1;
+                    if (owner_component != NULL)
+                        owner_component[pi] = face_component;
+                    if (owner_position != NULL)
+                        memcpy(&owner_position[pi * 3], p3, 3 * sizeof(*p3));
+                } else {
+                    if (owner_component != NULL && cnt[pi] != 0) {
+                        if (owner_component[pi] == face_component)
+                            multi_topology[pi] |= 1;
+                        else {
+                            double dz = (double)p3[0] -
+                                        (double)owner_position[pi * 3];
+                            double dy = (double)p3[1] -
+                                        (double)owner_position[pi * 3 + 1];
+                            double dx = (double)p3[2] -
+                                        (double)owner_position[pi * 3 + 2];
+                            multi_topology[pi] |= 2;
+                            if (dz * dz + dy * dy + dx * dx <= 36.0)
+                                multi_physical[pi] |= 1;
+                            else
+                                multi_physical[pi] |= 2;
+                            component_pair_hits[
+                                (size_t)owner_component[pi] * component_count +
+                                (size_t)face_component]++;
+                        }
+                    }
+                    sum[pi] += s;
+                    cnt[pi]++;
+                    if (owner_component != NULL && cnt[pi] == 1)
+                        owner_component[pi] = face_component;
+                    if (owner_position != NULL && cnt[pi] == 1)
+                        memcpy(&owner_position[pi * 3], p3, 3 * sizeof(*p3));
+                }
+            }
+        }
+        if (!face_hit && !bad_uv && !bad_3d) {
+            /* Sub-pixel face: its bbox caught no pixel CENTER (coarse du/dv
+             * can make a roughly 2-vox face a half-pixel footprint).
+             * Stamp the face centroid as a weak boundary-class sample so
+             * coverage survives any raster resolution; a strict interior
+             * owner still wins the pixel. */
+            double cu = (ua + ub + uc) / 3.0, cv = (va + vb + vc) / 3.0;
+            long sx2 = (long)cu, sy2 = (long)cv;
+            if (sx2 >= 0 && sy2 >= 0 && sx2 < (long)W && sy2 < (long)H) {
+                size_t pi = (size_t)sy2 * W + (size_t)sx2;
+                if (cnt[pi] == 0) {
+                    float p3[3], n3[3];
+                    double nn = 0.0, s = 0.0;
+                    int k = 0;
+                    for (k = 0; k < 3; k++) {
+                        p3[k] = (float)(((double)verts[a * 3 + k]
+                                         + (double)verts[b * 3 + k]
+                                         + (double)verts[c * 3 + k]) / 3.0);
+                        n3[k] = (normals != NULL)
+                                ? (float)(((double)normals[a * 3 + k]
+                                           + (double)normals[b * 3 + k]
+                                           + (double)normals[c * 3 + k]) / 3.0)
+                                : 0.0f;
+                    }
+                    nn = sqrt((double)n3[0] * n3[0] + (double)n3[1] * n3[1]
+                              + (double)n3[2] * n3[2]);
+                    if (nn > 1e-6) {
+                        n3[0] = (float)((double)n3[0] / nn);
+                        n3[1] = (float)((double)n3[1] / nn);
+                        n3[2] = (float)((double)n3[2] / nn);
+                    }
+                    s = sample_vertex(ct, p3, nn > 0.5 ? n3 : NULL,
+                                      range, nsteps);
+                    if (s >= 0.0) {
+                        sum[pi] = s;
+                        cnt[pi] = boundary_hit | UINT32_C(1);
+                        centroid_stamps++;
+                    }
+                }
             }
         }
     }
     for (px = 0; px < W * H; px++) {
-        if (cnt[px] > 0) {
-            double g = gray_of(sum[px] / (double)cnt[px], lo, hi);
+        uint32_t ncover = cnt[px] & ~boundary_hit;
+        if (ncover > 0) {
+            double g = gray_of(sum[px] / (double)ncover, lo, hi);
             img[px] = (uint8_t)(g * 255.0 + 0.5);
             filled++;
-            if (cnt[px] > 1) multi++;   /* overlapping wraps (rarely: on-edge) */
+            if (ncover > 1) multi++;
         }
+    }
+    if (centroid_stamps > 0)
+        fprintf(stderr, "  sub-pixel faces stamped at centroid: %zu\n",
+                centroid_stamps);
+    if (multi_topology != NULL) {
+        size_t same = 0, cross = 0, mixed = 0;
+        for (px = 0; px < W * H; px++) {
+            if (multi_topology[px] == 1) same++;
+            else if (multi_topology[px] == 2) cross++;
+            else if (multi_topology[px] == 3) mixed++;
+        }
+        fprintf(stderr,
+                "  multi-cover topology: same-component=%zu "
+                "cross-component=%zu mixed=%zu\n",
+                same, cross, mixed);
+        if (multi_physical != NULL) {
+            size_t near = 0, far = 0, both = 0;
+            for (px = 0; px < W * H; px++) {
+                if (multi_physical[px] == 1) near++;
+                else if (multi_physical[px] == 2) far++;
+                else if (multi_physical[px] == 3) both++;
+            }
+            fprintf(stderr,
+                    "  cross-component physical separation: near=%zu "
+                    "far=%zu mixed=%zu (gate %.1f vox)\n",
+                    near, far, both, 6.0);
+        }
+        if (component_pair_hits != NULL) {
+            size_t edges = 0;
+            for (size_t a = 0; a < component_count; a++) {
+                for (size_t b = a + 1; b < component_count; b++) {
+                    size_t support =
+                        component_pair_hits[a * component_count + b] +
+                        component_pair_hits[b * component_count + a];
+                    if (support == 0) continue;
+                    fprintf(stderr,
+                            "    component conflict %zu-%zu support=%zu\n",
+                            a, b, support);
+                    edges++;
+                }
+            }
+            fprintf(stderr,
+                    "  component conflict graph: vertices=%zu edges=%zu\n",
+                    component_count, edges);
+            for (size_t a = 0; a < component_count; a++) {
+                int active = 0;
+                for (size_t b = 0; b < component_count; b++)
+                    if (component_pair_hits[a * component_count + b] != 0 ||
+                        component_pair_hits[b * component_count + a] != 0) {
+                        active = 1;
+                        break;
+                    }
+                if (active)
+                    fprintf(stderr,
+                            "    component %zu vertices=%zu U=[%.1f,%.1f] "
+                            "width=%.1f\n",
+                            a, component_vertices[a], component_u_lo[a],
+                            component_u_hi[a],
+                            component_u_hi[a] - component_u_lo[a]);
+            }
+        }
+    }
+    /* Bounded void-fill: an uncovered pixel with >=5 of 8 supported
+     * neighbours takes their mean.  Two passes close the 1-2 px cracks and
+     * pinholes that a dropped grid cell leaves, without inventing texture at
+     * real-hole scale.  The coverage sibling keeps display honest: painted
+     * (255) vs void-filled (128) vs background (0); out_fill counts only
+     * genuinely painted pixels. */
+    {
+        uint8_t *cover = (uint8_t *)xcalloc(W * H, 1);
+        size_t vf_total = 0;
+        int pass2 = 0;
+        for (px = 0; px < W * H; px++)
+            if ((cnt[px] & ~boundary_hit) > 0) cover[px] = 1;
+        for (pass2 = 0; pass2 < 2; pass2++) {
+            size_t cap_fill = 4096, nfill = 0;
+            size_t *fill_px = (size_t *)xmalloc(cap_fill * sizeof(size_t));
+            uint8_t *fill_val = (uint8_t *)xmalloc(cap_fill);
+            size_t yy2 = 0, xx2 = 0;
+            for (yy2 = 0; yy2 < H; yy2++) {
+                for (xx2 = 0; xx2 < W; xx2++) {
+                    size_t p2 = yy2 * W + xx2;
+                    int nsupp = 0;
+                    unsigned int acc = 0;
+                    int dy2 = 0, dx2 = 0;
+                    int up = 0, down = 0, left = 0, right = 0;
+                    if (cover[p2] != 0) continue;
+                    for (dy2 = -1; dy2 <= 1; dy2++) {
+                        for (dx2 = -1; dx2 <= 1; dx2++) {
+                            long ny2 = (long)yy2 + dy2;
+                            long nx2 = (long)xx2 + dx2;
+                            size_t np2 = 0;
+                            if ((dy2 == 0 && dx2 == 0) || ny2 < 0 ||
+                                nx2 < 0 || ny2 >= (long)H || nx2 >= (long)W)
+                                continue;
+                            np2 = (size_t)ny2 * W + (size_t)nx2;
+                            if (cover[np2] != 0) {
+                                nsupp++;
+                                acc += img[np2];
+                                if (dy2 < 0 && dx2 == 0) up = 1;
+                                if (dy2 > 0 && dx2 == 0) down = 1;
+                                if (dy2 == 0 && dx2 < 0) left = 1;
+                                if (dy2 == 0 && dx2 > 0) right = 1;
+                            }
+                        }
+                    }
+                    /* A 1-2 px slit with paint on BOTH sides is always
+                     * artificial: adjacent wraps sit a full pitch (~9.5 vox =
+                     * 9+ px at dv=1) apart in v and real u-holes split into
+                     * gutter runs.  One dropped GRID cell is TWO raster rows
+                     * (grid_dv 2 vox, raster dv 1), so the reach is 2. */
+                    if (!up && yy2 >= 2)
+                        up = cover[p2 - 2 * W] != 0;
+                    if (!down && yy2 + 2 < H)
+                        down = cover[p2 + 2 * W] != 0;
+                    if (!left && xx2 >= 2)
+                        left = cover[p2 - 2] != 0;
+                    if (!right && xx2 + 2 < W)
+                        right = cover[p2 + 2] != 0;
+                    if (nsupp < 5 && !(up && down) && !(left && right))
+                        continue;
+                    if (nsupp == 0) continue;
+                    if (nfill == cap_fill) {
+                        size_t ncap = cap_fill * 2;
+                        size_t *npx = (size_t *)xmalloc(ncap * sizeof(size_t));
+                        uint8_t *nvl = (uint8_t *)xmalloc(ncap);
+                        memcpy(npx, fill_px, nfill * sizeof(size_t));
+                        memcpy(nvl, fill_val, nfill);
+                        free(fill_px); free(fill_val);
+                        fill_px = npx; fill_val = nvl;
+                        cap_fill = ncap;
+                    }
+                    fill_px[nfill] = p2;
+                    fill_val[nfill] = (uint8_t)(acc / (unsigned int)nsupp);
+                    nfill++;
+                }
+            }
+            for (px = 0; px < nfill; px++) {
+                img[fill_px[px]] = fill_val[px];
+                cover[fill_px[px]] = 2;
+            }
+            vf_total += nfill;
+            free(fill_px);
+            free(fill_val);
+            if (nfill == 0) break;
+        }
+        if (vf_total > 0)
+            fprintf(stderr, "  void-filled %zu crack/pinhole px "
+                    "(coverage mask tags them 128)\n", vf_total);
+        {   /* coverage sibling: <base>_coverage.png */
+            char cpath[2600];
+            size_t plen = strlen(path);
+            uint8_t *cimg = (uint8_t *)xmalloc(W * H);
+            for (px = 0; px < W * H; px++)
+                cimg[px] = cover[px] == 1 ? 255 : (cover[px] == 2 ? 128 : 0);
+            snprintf(cpath, sizeof cpath, "%s", path);
+            if (plen > 4 && strcmp(cpath + plen - 4, ".tif") == 0)
+                snprintf(cpath + plen - 4, sizeof cpath - (plen - 4),
+                         "_coverage.png");
+            else
+                snprintf(cpath + plen, sizeof cpath - plen, "_coverage.png");
+            VesPng_write_gray(cpath, cimg, (int)W, (int)H);
+            /* TIF sibling: the C sheet compositor reads coverage via TiffIO
+             * (ves_png is write-only) */
+            snprintf(cpath, sizeof cpath, "%s", path);
+            if (plen > 4 && strcmp(cpath + plen - 4, ".tif") == 0)
+                snprintf(cpath + plen - 4, sizeof cpath - (plen - 4),
+                         "_coverage.tif");
+            else
+                snprintf(cpath + plen, sizeof cpath - plen, "_coverage.tif");
+            TiffIO_save(cpath, cimg, 1, (int)H, (int)W);
+            free(cimg);
+        }
+        free(cover);
     }
     rc = TiffIO_save(path, img, 1, (int)H, (int)W);
     {   /* also a full-res grayscale PNG sibling (<path>.png), written from C
@@ -346,8 +804,8 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
             uint8_t cl = 0;
             if (cover_uv[px]) cl = 2;
             else if (cover_3d[px]) cl = 3;
-            else if (cnt[px] > 1) cl = 4;
-            else if (cnt[px] == 1)
+            else if ((cnt[px] & ~boundary_hit) > 1) cl = 4;
+            else if ((cnt[px] & ~boundary_hit) == 1)
                 cl = (img[px] < diag->dark_thresh) ? 5 : 1;
             dcls[px] = cl;
             switch (cl) {
@@ -494,5 +952,10 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
     free(sum); free(cnt); free(img);
     free(dsmax); free(dsmin); free(dverr); free(dcls);
     free(cover_uv); free(cover_3d);
+    free(component_parent); free(component_label); free(owner_component);
+    free(owner_position);
+    free(component_pair_hits); free(multi_topology);
+    free(multi_physical);
+    free(component_vertices); free(component_u_lo); free(component_u_hi);
     return rc;
 }

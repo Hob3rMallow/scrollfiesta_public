@@ -12,6 +12,7 @@
  * vt/vn. Own OBJ parser + writer (standalone); colours from src/common/cc_color.
  *
  *   obj_cc_color <in.obj> <out.obj> [--min-faces M=0] [--sat S=0.62] [--top N]
+ *   obj_cc_color <in.obj> --stats-only [--min-faces M=0]
  *   obj_cc_color --selftest
  *
  *   --min-faces components with fewer faces than this are coloured dim grey
@@ -84,7 +85,8 @@ done:
     return rc;
 }
 
-static int run(const char *in, const char *out, size_t min_faces, double sat)
+static int run(const char *in, const char *out, size_t min_faces, double sat,
+               int stats_only)
 {
     FVec V = {0}; IVec F = {0};
     if (read_obj(in, &V, &F) != 0) { free(V.v); free(F.f); return 1; }
@@ -96,17 +98,20 @@ static int run(const char *in, const char *out, size_t min_faces, double sat)
     CCColorStats st;
     CCColor_compute(V.n, F.f, F.n, &opts, col, &st);
 
-    FILE *ofp = fopen(out, "wb");
-    if (!ofp) { fprintf(stderr, "obj_cc_color: cannot write %s\n", out); free(col); free(V.v); free(F.f); return 1; }
-    fprintf(ofp, "# obj_cc_color: %zu components, coloured by size rank\n", st.ncomp);
-    for (size_t i = 0; i < V.n; i++)
-        fprintf(ofp, "v %.5g %.5g %.5g %.4f %.4f %.4f\n",
-                V.v[i*3+0], V.v[i*3+1], V.v[i*3+2], col[i*3+0], col[i*3+1], col[i*3+2]);
-    for (size_t f = 0; f < F.n; f++)
-        fprintf(ofp, "f %d %d %d\n", F.f[f*3+0]+1, F.f[f*3+1]+1, F.f[f*3+2]+1);
-    fclose(ofp);
+    if (!stats_only) {
+        FILE *ofp = fopen(out, "wb");
+        if (!ofp) { fprintf(stderr, "obj_cc_color: cannot write %s\n", out); free(col); free(V.v); free(F.f); return 1; }
+        fprintf(ofp, "# obj_cc_color: %zu components, coloured by size rank\n", st.ncomp);
+        for (size_t i = 0; i < V.n; i++)
+            fprintf(ofp, "v %.5g %.5g %.5g %.4f %.4f %.4f\n",
+                    V.v[i*3+0], V.v[i*3+1], V.v[i*3+2], col[i*3+0], col[i*3+1], col[i*3+2]);
+        for (size_t f = 0; f < F.n; f++)
+            fprintf(ofp, "f %d %d %d\n", F.f[f*3+0]+1, F.f[f*3+1]+1, F.f[f*3+2]+1);
+        if (fclose(ofp) != 0) { free(col); free(V.v); free(F.f); return 1; }
+    }
 
-    printf("obj_cc_color: %s -> %s\n", in, out);
+    if (stats_only) printf("obj_cc_color: %s (stats only)\n", in);
+    else printf("obj_cc_color: %s -> %s\n", in, out);
     printf("  verts=%zu  faces=%zu  components=%zu\n", st.nv, st.nf, st.ncomp);
     printf("  largest = %zu faces (%.1f%%);  to cover 50%%=%zu  90%%=%zu  99%%=%zu comps\n",
            st.largest_faces, st.nf ? 100.0 * (double)st.largest_faces / (double)st.nf : 0.0,
@@ -121,17 +126,27 @@ static int run(const char *in, const char *out, size_t min_faces, double sat)
 int main(int argc, char **argv)
 {
     if (argc == 2 && !strcmp(argv[1], "--selftest")) return CCColor_selftest() ? 3 : 0;
-    if (argc < 3) {
+    if (argc < 2) {
         fprintf(stderr, "usage: %s <in.obj> <out.obj> [--min-faces M] [--sat S] [--top N]\n"
-                        "       %s --selftest\n", argv[0], argv[0]);
+                        "       %s <in.obj> --stats-only [--min-faces M]\n"
+                        "       %s --selftest\n", argv[0], argv[0], argv[0]);
         return 2;
     }
-    size_t min_faces = 0; double sat = 0.62;
-    for (int i = 3; i < argc; i++) {
+    size_t min_faces = 0; double sat = 0.62; int stats_only = 0;
+    const char *out = NULL;
+    int first_arg = 2;
+    if (first_arg < argc && strcmp(argv[first_arg], "--stats-only"))
+        out = argv[first_arg++];
+    for (int i = first_arg; i < argc; i++) {
         if      (!strcmp(argv[i], "--min-faces") && i + 1 < argc) min_faces = (size_t)atoll(argv[++i]);
         else if (!strcmp(argv[i], "--sat") && i + 1 < argc) sat = atof(argv[++i]);
         else if (!strcmp(argv[i], "--top") && i + 1 < argc) ++i;   /* accepted, ignored */
+        else if (!strcmp(argv[i], "--stats-only")) stats_only = 1;
         else { fprintf(stderr, "obj_cc_color: unknown arg %s\n", argv[i]); return 2; }
     }
-    return run(argv[1], argv[2], min_faces, sat);
+    if (!stats_only && out == NULL) {
+        fprintf(stderr, "obj_cc_color: output OBJ required unless --stats-only is set\n");
+        return 2;
+    }
+    return run(argv[1], out, min_faces, sat, stats_only);
 }

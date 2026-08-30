@@ -351,3 +351,46 @@ int TiffIO_load_float2d(Arena_T arena, const char *path,
     *out_H = (int)h;
     return 0;
 }
+
+int TiffIO_load_int32_2d(Arena_T arena, const char *path,
+                         int32_t **out_img, int *out_W, int *out_H)
+{
+    assert(arena);
+    assert(path);
+    assert(out_img && out_W && out_H);
+
+    ves_mutex_lock(&tiff_lock);
+    TIFF *tif = TIFFOpen(path, "r");
+    if (tif == NULL) {
+        ves_mutex_unlock(&tiff_lock);
+        return -1;
+    }
+    uint32_t w = 0, h = 0;
+    uint16_t bps = 0, spp = 0, format = 0;
+    TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &w);
+    TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &h);
+    TIFFGetFieldDefaulted(tif, TIFFTAG_BITSPERSAMPLE, &bps);
+    TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLESPERPIXEL, &spp);
+    TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLEFORMAT, &format);
+    if (w == 0 || h == 0 || bps != 32 || spp != 1 ||
+        format != SAMPLEFORMAT_INT) {
+        TIFFClose(tif);
+        ves_mutex_unlock(&tiff_lock);
+        return -1;
+    }
+    int32_t *img = (int32_t *)ARENA_ALLOC(
+        arena, (long)((size_t)w * (size_t)h * sizeof *img));
+    for (uint32_t y = 0; y < h; y++) {
+        if (TIFFReadScanline(tif, img + (size_t)y * (size_t)w, y, 0) < 0) {
+            TIFFClose(tif);
+            ves_mutex_unlock(&tiff_lock);
+            return -1;
+        }
+    }
+    TIFFClose(tif);
+    ves_mutex_unlock(&tiff_lock);
+    *out_img = img;
+    *out_W = (int)w;
+    *out_H = (int)h;
+    return 0;
+}

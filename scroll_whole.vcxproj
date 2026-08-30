@@ -51,8 +51,8 @@
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>_DEBUG;VESUVIUS_DEBUG;_CRT_SECURE_NO_WARNINGS;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)deps\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>_DEBUG;VESUVIUS_DEBUG;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)deps\include;$(SolutionDir)deps\taucs\src;$(SolutionDir)deps\taucs\build;$(SolutionDir)deps\taucs\external\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
@@ -64,7 +64,11 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <StackReserveSize>536870912</StackReserveSize>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(SolutionDir)deps\clapack\LIB\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>clapackd_nowrap.lib;BLASd_nowrap.lib;libf2cd.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <IgnoreSpecificDefaultLibraries>LIBCMTD</IgnoreSpecificDefaultLibraries>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -73,8 +77,8 @@
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>NDEBUG;_CRT_SECURE_NO_WARNINGS;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)deps\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>NDEBUG;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)deps\include;$(SolutionDir)deps\taucs\src;$(SolutionDir)deps\taucs\build;$(SolutionDir)deps\taucs\external\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
@@ -84,15 +88,20 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <StackReserveSize>536870912</StackReserveSize>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(SolutionDir)deps\clapack\LIB\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>clapack_nowrap.lib;BLAS_nowrap.lib;libf2c.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <IgnoreSpecificDefaultLibraries>LIBCMT</IgnoreSpecificDefaultLibraries>
       <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\tools\scroll_whole.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\whole\cube_schedule.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\whole\axis_warp.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\whole\placed_cube.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\whole\cube_register.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\whole\group_graph.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
@@ -101,16 +110,45 @@
     <ClCompile Include="src\whole\arc_reg.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\maxflow.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\flatten\ribbon.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\ribbon_grid_io.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\remesh\intersection_cleanup.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\flatten\seam_cut.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\flatten\mesh_topo.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\topology_invariants.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\arena.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\except.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\obj_io.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\mesh_bin.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\mesh_manifold.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\ves_platform.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\pca.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\csr.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\union_find.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\kdtree.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\sparse_solve.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <!-- TAUCS double-real subset; canonical list lives in marble_uv_repair.vcxproj -->
+    <ClCompile Include="deps\taucs\build\wrap\taucs_complex_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_complex_D.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_logging_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_timer_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_malloc_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_base_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_base_D.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_vec_base_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_vec_base_D.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_ops_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_ops_D.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_order_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_sn_llt_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_sn_llt_D.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_factor_llt_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_factor_llt_D.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_solve_llt_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_solve_llt_D.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_iter_D.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_linsolve_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\external\src\genmmd.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\taucs_stubs.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

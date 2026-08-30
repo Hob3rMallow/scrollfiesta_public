@@ -25,4 +25,26 @@ int Sparse_solve_sym(int n, int nt,
                      const int *rows, const int *cols, const double *vals,
                      const double *b, double *x, SparseMode mode);
 
+/* ---- factor-once / solve-many (SPD only) ---------------------------------
+ * For loops that solve the SAME matrix against many right-hand sides (ADMM
+ * iterations, IRLS rounds, multigrid-free preconditioning): factor once with
+ * supernodal multifrontal Cholesky, then each solve is two triangular sweeps.
+ * The handle owns the permuted matrix and the TAUCS factorization; free it
+ * with Sparse_factor_free.  All functions return 0 on success. */
+typedef struct SparseFactor *SparseFactor_T;
+
+int  Sparse_factor_spd(int n, int nt,
+                       const int *rows, const int *cols, const double *vals,
+                       SparseFactor_T *out);
+int  Sparse_factor_solve(SparseFactor_T f, const double *b, double *x);
+/* nrhs right-hand sides, column-major contiguous ([n*nrhs]); one call
+ * amortizes the solver's per-call permutation across the batch. */
+int  Sparse_factor_solve_multi(SparseFactor_T f, const double *B, double *X,
+                               int nrhs);
+void Sparse_factor_free(SparseFactor_T *f);
+
+/* Unit test: factor reuse across multiple RHS agrees with the one-shot
+ * solver; exercises the n==1 scalar path.  Returns 0 on pass. */
+int Sparse_selftest(void);
+
 #endif

@@ -31,6 +31,92 @@
 #define GARBAGE_RECT_FRAC      0.20f   /* reject needs >= this frac of slices be rect frames */
 #define GARBAGE_RECT_RUN        12     /* ...AND a run of >= this many consecutive rect frames */
 
+/* Pre-Step 0 — 2D prediction gap fixup (src/fixup/, tool src/tools/pred_fixup.c).
+ * Closes visible per-z-plane gaps in the binary prediction by matching skeleton
+ * endpoints (greedy stable matching on one symmetric score + crossing bans,
+ * per the MATCHING_ANALYSIS.md post-mortem of the 2026-05 prototype) and
+ * painting cubic-Bezier joins, with cross-plane ConnectionTrack consistency.
+ * ADDITIVE ONLY: never erases prediction foreground.
+ * Reach respects the wrap-safety envelope (2*BRIDGE_RHO_MAX = 6 <
+ * CUT_GAP_DEPTH = 7; observed inter-wrap spacing tightens to 2-3 vox near the
+ * core). The prototype's drifted MAX_GAP_DIST = 250-320 px is deliberately
+ * NOT adopted. Calibrated on PHerc0139-4x5x5 (pitch 9.5, umbilicus 3405,2878). */
+#define FIXUP_REACH_SAFE_PX      6.0f  /* joins <= this: standard gates only (== 2*BRIDGE_RHO_MAX) */
+#define FIXUP_REACH_MAX_PX      21.0f  /* hard cap for the far tier, set by the MEASURED 2.4um
+                                        * dose-response (2026-08-18, 597 decided joins): connected
+                                        * 98.6% at d<=6, 97.0% at 6-10, ~85% plateau 10-21, then a
+                                        * CLIFF to 51.2% in (21,24] — beyond ~2 wrap pitches a
+                                        * persistent "gap" is usually a persistent real fray, and
+                                        * L0 continuity there is partial-volume illusion (the
+                                        * z=4377 d=23.4 poster join itself read SEPARATE at hi-res).
+                                        * Support does NOT rescue long joins (76-81% at any level).
+                                        * Wrap safety comes from the RADIAL gate, not this cap:
+                                        * |dr|<=4 forbids cross-wrap joins at any reach. Unarmed
+                                        * (no umbilicus) runs stay evidence-gated instead. */
+#define FIXUP_RADIAL_DR_MAX      3.0f  /* max |r_a - r_b| from the umbilicus. Was 4.0; tightened
+                                        * after the run3 mesh A/B showed ONE full-turn fusion at
+                                        * (z4803,y3589,x2963) seeded by a join track with dr~3.3 —
+                                        * near-limit radial steps chain across delamination stacks
+                                        * (|dw|~0.35/join) until the weld walks a full turn. Hi-res
+                                        * precision is flat in dr (87-90% at 2.5-4.0), so the cap
+                                        * is a topology dial, not an accuracy dial. */
+#define FIXUP_MERGER_MARGIN      2     /* third-CC clearance (px) along the painted path */
+#define FIXUP_PAINT_RADIUS       1     /* disk radius of the painted join stroke */
+#define FIXUP_MIN_SUPPORT        3     /* a join's ConnectionTrack must recur in >= this many
+                                        * planes (mirrors skeleton_stack junction_tube_min_planes) */
+#define FIXUP_PRUNE_LEN          5     /* skeleton spur branches shorter than this are pruned */
+#define FIXUP_MIN_CURVE_PX       8     /* endpoints on skeleton CCs smaller than this are dropped */
+#define FIXUP_TANGENT_WALK       8     /* skeleton px walked for the outward tangent. Short on
+                                        * purpose: the walk-chord tilts inward by walk/(2r) rad
+                                        * on curvature radius r — 12px rejected real gaps at
+                                        * bends (measured on 4x5x5 z04353/z04354) */
+#define FIXUP_CURV_WALK         24     /* skeleton px walked for the turning-angle estimate */
+#define FIXUP_MIN_SCORE          0.30f /* score floor for a FINAL-round candidate pair */
+#define FIXUP_MIN_SCORE_PROV     0.22f /* round-1 (provisional) floor: long gaps must be able to
+                                        * seed ConnectionTracks or the track term can never rescue
+                                        * them in round 2 (round-1 joins are never painted) */
+#define FIXUP_DIST_SIGMA        10.0f  /* Gaussian distance falloff (px). 6 crushed d>=14 below the
+                                        * floor before the track term could speak (measured: the
+                                        * z4372-4382 track decayed 0.58 -> 0.39 over d 5 -> 12) */
+#define FIXUP_FACING_MIN_COS     0.866f/* far tier: both tangents within 30 deg of the partner.
+                                        * Cross-wrap diagonal pairs this admits are killed by the
+                                        * radial gate (armed on 0139) + merger + support */
+#define FIXUP_FACING_MIN_COS_NEAR 0.707f /* safe tier (d <= reach_safe): 45 deg. Walk-estimated
+                                        * tangents at hooks/bends are noisy at 4px gaps; the short
+                                        * chord + radial + merger + support gates carry safety
+                                        * (measured refusal: z4374-76 (3471,2853) d=4.2 hook) */
+#define FIXUP_OPPOSE_MAX_DOT    -0.40f /* far tier: tangents anti-parallel-ish, dot(tanA,tanB) <= this */
+#define FIXUP_OPPOSE_MAX_DOT_NEAR 0.0f /* safe tier: consistent with the 45-deg facing gate */
+/* Thin-neck bridge SCAN (cross-wrap prediction welds — "lumpy joined to
+ * bumpy by one pixel"). Detection is always on and reported; CUTTING is
+ * opt-in (--cut-bridges) and only ever touches radial-certified, persistent
+ * necks, because it breaks the additive-only contract. */
+#define FIXUP_BRIDGE_MAX_WIDTH   1.9f  /* max chamfer half-width (px) along a neck (<= ~3px band) */
+#define FIXUP_BRIDGE_MAX_LEN    12     /* max neck run length (skeleton px) */
+#define FIXUP_BRIDGE_END_WIDTH   2.4f  /* both ends must open into material at least this thick */
+#define FIXUP_BRIDGE_MIN_DR      2.0f  /* radial offset across the neck (cross-wrap certificate);
+                                        * near-core wraps compress to 2-3 px so the bar sits low */
+#define FIXUP_BRIDGE_RADIAL_DOT  0.60f /* neck direction must be mostly radial */
+#define FIXUP_BRIDGE_MIN_SUPPORT 3     /* persistence across planes before a bridge is certified */
+#define FIXUP_MAX_ARC_RATIO      1.15f /* Bezier arc/chord cap (curvature sanity) */
+#define FIXUP_ADJ_CORRIDOR       4     /* corridor dilation (px) for the local adjacent-plane flood */
+#define FIXUP_ADJ_SEED_R         2     /* endpoint seed radius in the adjacent plane */
+#define FIXUP_ADJ_MIN_EVIDENCE   0.5f  /* s_adj >= this counts as evidence for the far reach tier */
+#define FIXUP_CROSS_CHECK_RANGE  2     /* z +/- planes for the cross-sheet corridor check */
+#define FIXUP_BORDER_EXCLUDE     2     /* endpoints within this of plane/absent border: unmatchable */
+#define FIXUP_W_DIST             0.30f /* symmetric score weights (sum 1.0 incl. W_TRACK) */
+#define FIXUP_W_DIR              0.30f
+#define FIXUP_W_ADJ              0.15f
+#define FIXUP_W_TRACK            0.25f /* contributes 0 in round 1 (no tracks yet) */
+#define FIXUP_TRACK_SPATIAL      8.0f  /* endpoint-track association radius (px) */
+#define FIXUP_TRACK_GAP_TOL     10     /* max plane gap before an endpoint track goes stale */
+#define FIXUP_TRACK_BOOST_STRONG 0.85f /* s_track: conf >= CONF_STRONG and confirmed >= MIN_SUPPORT */
+#define FIXUP_TRACK_BOOST_MOD    0.50f /* s_track: conf >= CONF_MOD */
+#define FIXUP_TRACK_ANTI        -0.30f /* s_track: either endpoint's best conn is a DIFFERENT track */
+#define FIXUP_TRACK_CONF_STRONG  0.70f
+#define FIXUP_TRACK_CONF_MOD     0.40f
+#define FIXUP_MAX_EPS_PER_PLANE  4096  /* hard cap; a plane beyond this is left untouched */
+
 /* Step 0 */
 #define MIN_CC_SIZE          500    /* voxels - discard smaller components. Also
                                      * the "empty garbage" floor: a cube whose
@@ -427,6 +513,8 @@
  * by ~12-15 iterations with the decaying lambda_CVT, well short of the standalone
  * default of 50; the pipeline trades the tail for throughput. */
 #define CVT_PIPELINE_ITERS          12    /* Lloyd/CWF iterations per component      */
+#define CVT_WIND_MAX_RETRIES         4    /* winding shortcut: density may cure it    */
+#define CVT_TOPOLOGY_MAX_RETRIES     1    /* one 2x attempt, then retain source chart */
 
 /* GRADED density (the pipeline default): the CVT target edge length varies with
  * depth into the owned box -- fine (weldable) near the cube faces, coarse in the

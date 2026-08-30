@@ -66,6 +66,27 @@ typedef struct {
     size_t multi;             /* px with >1 cover */
     size_t conflicts;         /* px with a cover > conflict_dist from the
                                  first (parameterization defect) */
+    /* First conflicting cover at each contested pixel, classified against
+     * the deterministic first-cover owner.  These three buckets sum to
+     * `conflicts`; unknown is used only when face provenance is unavailable. */
+    size_t conflict_same_cube, conflict_cross_cube, conflict_unknown_cube;
+    /* 3D separation of that first conflicting cover (vox), in fixed bins. */
+    size_t conflict_d_le4, conflict_d_le8, conflict_d_le16;
+    size_t conflict_d_le32, conflict_d_gt32;
+    double conflict_d_sum, conflict_d_max;
+    /* Absolute unwrapped winding difference |dphi|/(2pi), when phi exists.
+     * These buckets sum to conflict_turn_known; the remainder is unknown. */
+    size_t conflict_turn_known;
+    size_t conflict_turn_le025, conflict_turn_le05, conflict_turn_le1;
+    size_t conflict_turn_gt1;
+    /* Relation and centroid diagnostics for the first conflicting face pair. */
+    size_t conflict_face_shared_edge, conflict_face_shared_vertex;
+    size_t conflict_face_disjoint;
+    size_t conflict_centroid_d_le8, conflict_centroid_d_gt8;
+    size_t conflict_centroid_du_le2, conflict_centroid_du_le4;
+    size_t conflict_centroid_du_le8, conflict_centroid_du_gt8;
+    size_t conflict_centroid_dv_le2, conflict_centroid_dv_le4;
+    size_t conflict_centroid_dv_le8, conflict_centroid_dv_gt8;
     size_t skip_uv, skip_3d, skip_own;   /* gated faces */
     double bbox_lo[3], bbox_hi[3];       /* world (x,y,z) over valid px */
     double area_vx2;          /* valid 2x2 quads * du*dv */

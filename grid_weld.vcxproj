@@ -98,12 +98,13 @@
   <ItemGroup>
     <ClCompile Include="src\tools\grid_weld.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\arena.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\pitch_table.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\vert_weld.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\mesh_manifold.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\except.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\obj_io.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\mesh_bin.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\ves_platform.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
-    <ClCompile Include="src\common\run_ctx.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\remesh\ball_pivot.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\remesh\seam_weld.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\remesh\seam_planes.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
@@ -139,12 +140,23 @@
     <ClCompile Include="src\remesh\orient_mesh.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\remesh\orient_weld.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\remesh\weld_cleanup.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\remesh\intersection_cleanup.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\remesh\boundary_arc_weld.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\remesh\chart_lineage.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\remesh\chart_bridge_forest.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\remesh\chart_zipper.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\remesh\stream_weld_format.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <!-- Interior-hole fill on the joined mesh (CDT/Liepa). Pulls the holefill
          stack: csr, pca, Triangle (from source), Clipper2 wrapper. -->
     <ClCompile Include="src\common\csr.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\pca.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <!-- Lambda gate: Crane developability energy + 3x3 eigensolver. -->
     <ClCompile Include="src\flatten\developability.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <!-- Exact final disk normalization + independent topology certificate. -->
+    <ClCompile Include="src\flatten\disk_topology_repair.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\topology_invariants.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\seam_cut.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\mesh_topo.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\eig3.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\holefill\hole_fill.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\holefill\clipper2_wrap.cpp">

@@ -56,7 +56,9 @@ typedef struct SnapGridOpts {
     int    global_mode;      /* treat the whole mesh as ONE cube (exact when
                                 cross-cube edges exist, i.e. after the
                                 step2_join weld; falls back to per-cube with
-                                a face-range guard above SG_GLOBAL_NV_CAP) */
+                                a face-range guard above global_nv_cap) */
+    size_t global_nv_cap;    /* safety ceiling for global_mode; 0 selects the
+                                compiled default (8 Mi vertices) */
     int    verbose;
 } SnapGridOpts;
 
@@ -76,6 +78,8 @@ typedef struct SnapGridStats {
     size_t n_quilt_fallback;
     size_t n_recto_supported, n_recto_moved, n_recto_reverted,
            n_recto_slope_limited;
+    int global_mode_requested, global_mode_used;
+    size_t global_nv_cap;
     int recto_iterations;
     double recto_mean_disp, recto_max_disp, recto_mean_gradient;
     double sec_occ, sec_cv, sec_cubes, sec_recto;

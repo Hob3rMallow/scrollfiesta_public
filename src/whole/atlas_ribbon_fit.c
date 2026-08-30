@@ -2,6 +2,7 @@
 
 #include "monotone_qp.h"
 
+#include <assert.h>
 #include <float.h>
 #include <limits.h>
 #include <math.h>
@@ -104,6 +105,20 @@ static double arf_mod_tau(double angle);
 static int arf_registration_winding_direction(
     const AtlasRibbonObservationSet *set);
 
+typedef struct {
+    int32_t chart;
+    double u;
+} ArfChartU;
+
+static int arf_compare_chart_u(const void *pa, const void *pb)
+{
+    const ArfChartU *a = (const ArfChartU *)pa;
+    const ArfChartU *b = (const ArfChartU *)pb;
+    if (a->chart != b->chart) return a->chart < b->chart ? -1 : 1;
+    if (a->u != b->u) return a->u < b->u ? -1 : 1;
+    return 0;
+}
+
 static void arf_make_frame(const ScaffoldCalib *cal,
                            double axis[3], double basis0[3], double basis1[3])
 {
@@ -153,6 +168,7 @@ void AtlasRibbonFitOptions_default(AtlasRibbonFitOptions *opts)
     opts->lambda_smooth = 8.0;
     opts->lambda_tangent = 4.0;
     opts->lambda_register_vertical = 16.0;
+    opts->lambda_ladder = 8.0;
     opts->register_sweeps = 6;
     opts->collision_relaxation = 0.35;
     opts->collision_rounds = 8;
@@ -417,6 +433,9 @@ int AtlasRibbonFit_build_observations(
     arf_make_frame(cal, out->axis, out->basis0, out->basis1);
     for (int d = 0; d < 3; d++)
         out->axis_point[d] = (double)cal->axis_point[d];
+    out->spiral_a = cal->spiral_a;
+    out->spiral_b = cal->spiral_b;
+    out->spiral_sense = cal->sense < 0 ? -1 : 1;
 
     double umin = DBL_MAX, umax = -DBL_MAX;
     double vmin = DBL_MAX, vmax = -DBL_MAX;
@@ -655,7 +674,10 @@ int AtlasRibbonFit_build_observations(
      * sign whose convention matches and near 0 for the other.  Snapping
      * each sample against its own alpha makes the integer increment at
      * the consumer's own theta cut, tolerating half a turn of continuous
-     * error and charts that straddle the cut. */
+     * error and charts that straddle the cut.  The per-chart copy above
+     * (round-local tabu k) is overwritten here whenever the calibration
+     * is decisive; when it is not (e.g. all winds zero), samples keep a
+     * plain per-chart rounding, which is the legacy behaviour. */
     if (layer_count > 0) {
         int direction = arf_registration_winding_direction(out);
         double cos_sum[2] = {0.0, 0.0};
@@ -1815,6 +1837,91 @@ static int arf_register_u_field(
             return -1;
     }
 
+    /* Ladder targets: the proximal anchor for every chart's register
+     * shift.  Without them the row QP pulls every shift toward ZERO --
+     * i.e. toward the scrambled, over-spread tabu layout itself -- and
+     * the push-only bounds can order charts but never compress them, so
+     * fills bridge stretched gaps and the strip bakes as confetti.  Each
+     * target places the chart's median u at the calibration spiral's arc
+     * position of its continuous wind (the FORWARD map; registered u is
+     * never inverted through the spiral), offset-aligned to the incoming
+     * field so the strip does not teleport. */
+    double *ladder_target = NULL;
+    if (opts->lambda_ladder > 0.0 &&
+        (set->spiral_a != 0.0 || set->spiral_b != 0.0)) {
+        double wind_min = DBL_MAX, wind_max = -DBL_MAX;
+        for (size_t c = 0; c < ncharts; c++) {
+            double w = solution->chart[c].wind;
+            if (!isfinite(w)) {
+                wind_min = DBL_MAX;
+                wind_max = -DBL_MAX;
+                break;
+            }
+            if (w < wind_min) wind_min = w;
+            if (w > wind_max) wind_max = w;
+        }
+        if (wind_max - wind_min > 0.5) {
+            ArfChartU *cu = (ArfChartU *)ARENA_ALLOC(
+                arena, solution->nvertices * sizeof(*cu));
+            size_t ncu = 0;
+            for (size_t i = 0; i < solution->nvertices; i++) {
+                int32_t c = solution->vertex_chart[i];
+                if (c < 0 || (size_t)c >= ncharts ||
+                    !isfinite(solution->u[i]))
+                    continue;
+                cu[ncu].chart = c;
+                cu[ncu].u = solution->u[i];
+                ncu++;
+            }
+            if (ncu > 0) {
+                qsort(cu, ncu, sizeof(*cu), arf_compare_chart_u);
+                ladder_target = (double *)ARENA_CALLOC(
+                    arena, ncharts, sizeof(*ladder_target));
+                uint8_t *have_med = (uint8_t *)ARENA_CALLOC(
+                    arena, ncharts, 1);
+                double *u_med = (double *)ARENA_CALLOC(
+                    arena, ncharts, sizeof(*u_med));
+                for (size_t first = 0; first < ncu;) {
+                    size_t last = first + 1;
+                    while (last < ncu && cu[last].chart == cu[first].chart)
+                        last++;
+                    u_med[cu[first].chart] =
+                        cu[first + (last - first) / 2].u;
+                    have_med[cu[first].chart] = 1;
+                    first = last;
+                }
+                double offset_sum = 0.0;
+                size_t offset_count = 0;
+                double target_min = DBL_MAX, target_max = -DBL_MAX;
+                for (size_t c = 0; c < ncharts; c++) {
+                    if (!have_med[c]) continue;
+                    double phi = (double)set->spiral_sense * 2.0 * M_PI *
+                                 solution->chart[c].wind;
+                    double target = set->spiral_a * phi +
+                                    set->spiral_b * phi * phi /
+                                    (4.0 * M_PI);
+                    ladder_target[c] = target;
+                    if (target < target_min) target_min = target;
+                    if (target > target_max) target_max = target;
+                    offset_sum += u_med[c] - target;
+                    offset_count++;
+                }
+                if (offset_count > 0) {
+                    double offset = offset_sum / (double)offset_count;
+                    for (size_t c = 0; c < ncharts; c++)
+                        ladder_target[c] = have_med[c]
+                            ? ladder_target[c] + offset - u_med[c] : 0.0;
+                    fprintf(stderr, "[atlas_ribbon_fit] ladder targets: "
+                            "%zu charts, lambda=%g, physical width %.0f\n",
+                            offset_count, opts->lambda_ladder,
+                            target_max - target_min);
+                } else {
+                    ladder_target = NULL;
+                }
+            }
+        }
+    }
+
     out->nrows = set->nrows;
     out->v0 = set->v0;
     out->dv = set->dv;
@@ -1854,6 +1961,24 @@ static int arf_register_u_field(
         arena, matrix_size * sizeof(*local_pair));
     double *rank_shift = (double *)ARENA_ALLOC(
         arena, ncharts * sizeof(*rank_shift));
+    double *ladder_sum = NULL, *ladder_weight = NULL;
+    double *ladder_field = NULL;
+    if (ladder_target != NULL) {
+        ladder_sum = (double *)ARENA_ALLOC(
+            arena, ncharts * sizeof(*ladder_sum));
+        ladder_weight = (double *)ARENA_ALLOC(
+            arena, ncharts * sizeof(*ladder_weight));
+        for (size_t r = 0; r < ncharts; r++) {
+            ladder_weight[r] = opts->lambda_ladder;
+            ladder_sum[r] = opts->lambda_ladder *
+                            ladder_target[rank_to_chart[r]];
+        }
+        ladder_field = (double *)ARENA_ALLOC(
+            arena, field_size * sizeof(*ladder_field));
+        for (size_t row = 0; row < set->nrows; row++)
+            for (size_t c = 0; c < ncharts; c++)
+                ladder_field[row * ncharts + c] = ladder_target[c];
+    }
 
     size_t max_row_samples = 0;
     for (size_t first = 0; first < set->nlayer_samples;) {
@@ -1958,7 +2083,8 @@ static int arf_register_u_field(
         out->register_inversions_before += initial_inversions;
 
         int qrc = arf_register_row_qp(
-            arena, &bounds, present, local_pair, NULL, NULL, rank_shift);
+            arena, &bounds, present, local_pair, ladder_sum, ladder_weight,
+            rank_shift);
         if (qrc < 0) return -1;
         if (qrc > 0) out->register_qp_failures++;
         if (out->register_iterations < 1)
@@ -2076,7 +2202,8 @@ static int arf_register_u_field(
          opts->mode == ATLAS_RIBBON_REGISTERED_RIBBON) &&
         arf_register_smooth_u_field(
             arena, solution, set, opts, rank_to_chart, row_present,
-            &bounds, NULL, 0, NULL, NULL, NULL, 0.0,
+            &bounds, NULL, 0, NULL, NULL,
+            ladder_field, ladder_field != NULL ? opts->lambda_ladder : 0.0,
             opts->register_sweeps,
             present, local_pair, rank_shift, out) != 0)
         return -1;
@@ -3158,6 +3285,8 @@ int AtlasRibbonFit_build_registered_ribbon(
     fit->v_edge = (uint8_t *)ARENA_CALLOC(arena, nnode, 1);
     fit->u_reject = (uint8_t *)ARENA_ALLOC(arena, nnode);
     memset(fit->u_reject, ATLAS_RIBBON_EDGE_NO_SUPPORT, nnode);
+    fit->v_reject = (uint8_t *)ARENA_ALLOC(arena, nnode);
+    memset(fit->v_reject, ATLAS_RIBBON_EDGE_NO_SUPPORT, nnode);
     fit->row_metric = (AtlasRibbonRowMetric *)ARENA_CALLOC(
         arena, fit->nrows, sizeof(*fit->row_metric));
     for (size_t i = 0; i < nnode * 2; i++) fit->p[i] = NAN;
@@ -3198,7 +3327,6 @@ int AtlasRibbonFit_build_registered_ribbon(
     ArfRegisterRef *ref = (ArfRegisterRef *)ARENA_ALLOC(
         arena, max_row_samples * sizeof(*ref));
     uint8_t *kind = (uint8_t *)ARENA_ALLOC(arena, max_row_samples);
-    uint8_t *reject = (uint8_t *)ARENA_ALLOC(arena, max_row_samples);
     double *angle_delta = (double *)ARENA_ALLOC(
         arena, max_row_samples * sizeof(*angle_delta));
 
@@ -3246,27 +3374,24 @@ int AtlasRibbonFit_build_registered_ribbon(
             const AtlasRibbonLayerSample *b =
                 &set->layer_sample[ref[j + 1].sample];
             double gap = ref[j + 1].u - ref[j].u;
+            assert(gap > 1.0e-9); /* compaction leaves strictly rising u */
             double limit = opts->max_bridge_stretch > 0.0
                 ? opts->max_bridge_stretch * gap + opts->bridge_slack
                 : DBL_MAX;
             kind[j] = 0;
-            reject[j] = ATLAS_RIBBON_EDGE_TOPOLOGY;
+            AtlasRibbonEdgeReject reason = ATLAS_RIBBON_EDGE_TOPOLOGY;
             angle_delta[j] = 0.0;
-            if (!(gap > 1.0e-9)) {
-                metric->topology_cuts++;
-                fit->topology_cuts++;
-            } else if (opts->max_fill_u > 0.0 && gap > opts->max_fill_u) {
-                reject[j] = ATLAS_RIBBON_EDGE_U_GAP;
+            if (opts->max_fill_u > 0.0 && gap > opts->max_fill_u) {
+                reason = ATLAS_RIBBON_EDGE_U_GAP;
                 metric->u_gap_cuts++;
                 fit->u_gap_cuts++;
             } else if (arf_layer_samples_local(a, b, opts)) {
                 if (arf_distance2(a->p, b->p) <= limit) {
                     kind[j] = 1;
-                    reject[j] = ATLAS_RIBBON_EDGE_SUBGRID;
                     metric->direct_spans++;
                     fit->direct_spans++;
                 } else {
-                    reject[j] = ATLAS_RIBBON_EDGE_METRIC;
+                    reason = ATLAS_RIBBON_EDGE_METRIC;
                     metric->metric_jump_cuts++;
                     fit->metric_jump_cuts++;
                 }
@@ -3281,18 +3406,23 @@ int AtlasRibbonFit_build_registered_ribbon(
                     metric->topology_cuts++;
                     fit->topology_cuts++;
                 } else if (arc > limit) {
-                    reject[j] = ATLAS_RIBBON_EDGE_METRIC;
+                    reason = ATLAS_RIBBON_EDGE_METRIC;
                     metric->metric_jump_cuts++;
                     fit->metric_jump_cuts++;
                 } else {
                     kind[j] = 2;
-                    reject[j] = ATLAS_RIBBON_EDGE_SUBGRID;
                     metric->spiral_spans++;
                     fit->spiral_spans++;
                 }
             }
-            arf_mark_u_reject(fit, row, ref[j].u, ref[j + 1].u,
-                              (AtlasRibbonEdgeReject)reject[j]);
+            /* Accepted spans mark nothing here: their cells either gain a
+             * real edge (cleared to NONE) or belong to a chain too short to
+             * cross a grid line, which the chain walk below records as the
+             * decisive SUBGRID.  Marking accepted spans up front would let
+             * flanking cut reasons out-rank SUBGRID on every shared cell,
+             * which is exactly the shadowing that made it unreachable. */
+            if (kind[j] == 0)
+                arf_mark_u_reject(fit, row, ref[j].u, ref[j + 1].u, reason);
         }
 
         size_t chain = 0;
@@ -3311,6 +3441,17 @@ int AtlasRibbonFit_build_registered_ribbon(
             if (column0 < 0) column0 = 0;
             if (column1 >= (int64_t)fit->ncolumns)
                 column1 = (int64_t)fit->ncolumns - 1;
+            if (column0 > column1) {
+                /* The accepted chain lies strictly inside one cell: no grid
+                 * line falls in [ua, ub], so no node and no edge can
+                 * materialize.  Write the decisive reason unconditionally --
+                 * the spans flanking this chain are cuts, so no other chain
+                 * can span the cell and there is no edge to contradict. */
+                int64_t cell = (int64_t)floor((ua - fit->u0) / fit->du);
+                if (cell >= 0 && cell < (int64_t)fit->ncolumns - 1)
+                    fit->u_reject[row * fit->ncolumns + (size_t)cell] =
+                        ATLAS_RIBBON_EDGE_SUBGRID;
+            }
             size_t link = chain;
             for (int64_t column = column0; column <= column1; column++) {
                 double u = fit->u0 + (double)column * fit->du;
@@ -3385,7 +3526,15 @@ int AtlasRibbonFit_build_registered_ribbon(
             double dp0 = fit->p[b * 2] - fit->p[a * 2];
             double dp1 = fit->p[b * 2 + 1] - fit->p[a * 2 + 1];
             double distance = sqrt(dp0 * dp0 + dp1 * dp1 + fit->dv * fit->dv);
-            if (distance <= vertical_limit) fit->v_edge[a] = 1;
+            if (distance <= vertical_limit) {
+                fit->v_edge[a] = 1;
+                fit->v_reject[a] = ATLAS_RIBBON_EDGE_NONE;
+            } else if (fit->provenance[a] == ATLAS_RIBBON_NODE_SPIRAL_FILL ||
+                       fit->provenance[b] == ATLAS_RIBBON_NODE_SPIRAL_FILL) {
+                fit->v_reject[a] = ATLAS_RIBBON_EDGE_METRIC_FILL;
+            } else {
+                fit->v_reject[a] = ATLAS_RIBBON_EDGE_METRIC;
+            }
         }
 
     double *speed_error = (double *)ARENA_ALLOC(
@@ -3671,6 +3820,194 @@ int AtlasRibbonFit_solve(
     return 0;
 }
 
+/* Registered-ribbon fixture: a hand-built 2-row layer-sample set whose
+ * spans exercise every verdict -- direct chains, an accepted radial spiral
+ * fill, a metric cut, a u-gap cut, a sub-cell chain (the SUBGRID force),
+ * and the vertical METRIC vs METRIC_FILL split -- then pins u_edge,
+ * u_reject, v_reject, provenance, and the span counters cell by cell.
+ * Grid: du = dv = 4, two rows, ncolumns = 152 (u spans 0..604). */
+static int arf_registered_ribbon_selftest(void)
+{
+    Arena_T arena = Arena_new();
+    if (arena == NULL) return 1;
+    enum { ROW0 = 8, ROW1 = 4, SAMPLES = ROW0 + ROW1 };
+    static const double u_row0[ROW0] = {0, 4, 8, 24, 41, 42, 600, 604};
+    static const double p_row0[ROW0][2] = {
+        {0, 0}, {4, 0}, {8, 0}, {24, 0},
+        {80, 0}, {80.5, 0}, {600, 0}, {604, 0}
+    };
+    static const double u_row1[ROW1] = {0, 4, 8, 24};
+    static const double p_row1[ROW1][2] = {
+        {0, 2}, {4, 2}, {8, 9}, {0, 26}
+    };
+    AtlasRibbonLayerSample sample[SAMPLES];
+    double registered_u[SAMPLES];
+    memset(sample, 0, sizeof sample);
+    for (int i = 0; i < SAMPLES; i++) {
+        int in_row1 = i >= ROW0;
+        int j = in_row1 ? i - ROW0 : i;
+        sample[i].row = in_row1 ? 1 : 0;
+        sample[i].chart = 0;
+        sample[i].rank = (uint64_t)j;
+        sample[i].source_u = in_row1 ? u_row1[j] : u_row0[j];
+        sample[i].v = in_row1 ? 4.0 : 0.0;
+        sample[i].p[0] = in_row1 ? p_row1[j][0] : p_row0[j][0];
+        sample[i].p[1] = in_row1 ? p_row1[j][1] : p_row0[j][1];
+        sample[i].tangent[0] = 1.0;
+        registered_u[i] = sample[i].source_u;
+    }
+
+    float vertices[9] = {0, 0, 0, 0, 4, 0, 0, 0, 4};
+    int32_t faces[3] = {0, 1, 2};
+    int32_t face_cube[1] = {0};
+    uint8_t keep[1] = {1};
+    char ids[1][48];
+    memset(ids, 0, sizeof ids);
+    size_t cube_voff[2] = {0, 3};
+    PieceSet ps;
+    memset(&ps, 0, sizeof ps);
+    ps.verts = vertices;
+    ps.faces = faces;
+    ps.face_cube = face_cube;
+    ps.ids = ids;
+    ps.cube_voff = cube_voff;
+    ps.nv = 3;
+    ps.nf = 1;
+    ps.n_cubes = 1;
+    double sol_u[3] = {4, 8, 4};
+    double sol_v[3] = {0, 4, 4};
+    int32_t vertex_chart[3] = {0, 0, 0};
+    AtlasSolutionChart chart_row;
+    memset(&chart_row, 0, sizeof chart_row);
+    AtlasSolution solution;
+    memset(&solution, 0, sizeof solution);
+    solution.nvertices = 3;
+    solution.nfaces = 1;
+    solution.ncharts = 1;
+    solution.u = sol_u;
+    solution.v = sol_v;
+    solution.face_keep = keep;
+    solution.vertex_chart = vertex_chart;
+    solution.chart = &chart_row;
+
+    AtlasRibbonObservationSet set;
+    memset(&set, 0, sizeof set);
+    set.layer_sample = sample;
+    set.nlayer_samples = SAMPLES;
+    set.nrows = 2;
+    set.v0 = 0.0;
+    set.dv = 4.0;
+    set.observation_du = 2.0;
+    set.axis[0] = 1.0;
+    set.basis0[1] = 1.0;
+    set.basis1[2] = 1.0;
+
+    AtlasRibbonFitOptions opts;
+    AtlasRibbonFitOptions_default(&opts);
+    opts.fit_u_spacing = 4.0;
+    opts.local_xyz_tolerance = 12.0;
+
+    double row_chart_shift[2] = {0, 0};
+    AtlasRibbonFitResult fit;
+    memset(&fit, 0, sizeof fit);
+    fit.registered_u = registered_u;
+    fit.row_chart_shift = row_chart_shift;
+    fit.nrows = 2;
+    fit.v0 = 0.0;
+    fit.dv = 4.0;
+    fit.register_winding_direction = 1;
+
+    int failures = 0;
+    if (AtlasRibbonFit_build_registered_ribbon(
+            arena, &ps, &solution, &set, &opts, &fit) != 0) {
+        fprintf(stderr,
+                "[atlas_ribbon_fit selftest] ribbon fixture build failed\n");
+        failures++;
+    } else {
+        size_t nc = fit.ncolumns;
+        if (nc != 152) {
+            fprintf(stderr, "[atlas_ribbon_fit selftest] ribbon fixture "
+                    "ncolumns=%zu want 152\n", nc);
+            failures++;
+        }
+        static const struct {
+            size_t row, cell;
+            uint8_t reject;
+        } uexp[] = {
+            {0, 0, ATLAS_RIBBON_EDGE_NONE},
+            {0, 5, ATLAS_RIBBON_EDGE_NONE},
+            {0, 6, ATLAS_RIBBON_EDGE_METRIC},
+            {0, 9, ATLAS_RIBBON_EDGE_METRIC},
+            {0, 10, ATLAS_RIBBON_EDGE_SUBGRID},
+            {0, 11, ATLAS_RIBBON_EDGE_U_GAP},
+            {0, 149, ATLAS_RIBBON_EDGE_U_GAP},
+            {0, 150, ATLAS_RIBBON_EDGE_NONE},
+            {1, 0, ATLAS_RIBBON_EDGE_NONE},
+            {1, 5, ATLAS_RIBBON_EDGE_NONE}
+        };
+        for (size_t i = 0; nc == 152 &&
+             i < sizeof uexp / sizeof uexp[0]; i++) {
+            size_t node = uexp[i].row * nc + uexp[i].cell;
+            if (fit.u_reject[node] != uexp[i].reject ||
+                fit.u_edge[node] !=
+                    (uexp[i].reject == ATLAS_RIBBON_EDGE_NONE)) {
+                fprintf(stderr, "[atlas_ribbon_fit selftest] ribbon fixture "
+                        "u cell (%zu,%zu): edge=%d reject=%d want %d\n",
+                        uexp[i].row, uexp[i].cell, fit.u_edge[node],
+                        fit.u_reject[node], uexp[i].reject);
+                failures++;
+            }
+        }
+        static const struct {
+            size_t cell;
+            uint8_t reject;
+        } vexp[] = {
+            {0, ATLAS_RIBBON_EDGE_NONE},
+            {1, ATLAS_RIBBON_EDGE_NONE},
+            {2, ATLAS_RIBBON_EDGE_METRIC},
+            {4, ATLAS_RIBBON_EDGE_METRIC_FILL},
+            {150, ATLAS_RIBBON_EDGE_NO_SUPPORT}
+        };
+        for (size_t i = 0; nc == 152 &&
+             i < sizeof vexp / sizeof vexp[0]; i++) {
+            size_t node = vexp[i].cell; /* row 0 stores the edge to row 1 */
+            if (fit.v_reject[node] != vexp[i].reject ||
+                fit.v_edge[node] !=
+                    (vexp[i].reject == ATLAS_RIBBON_EDGE_NONE)) {
+                fprintf(stderr, "[atlas_ribbon_fit selftest] ribbon fixture "
+                        "v cell %zu: edge=%d reject=%d want %d\n",
+                        vexp[i].cell, fit.v_edge[node],
+                        fit.v_reject[node], vexp[i].reject);
+                failures++;
+            }
+        }
+        if (nc == 152 &&
+            (fit.provenance[4] != ATLAS_RIBBON_NODE_SPIRAL_FILL ||
+             fit.support[4] != 0 ||
+             fit.provenance[0] != ATLAS_RIBBON_NODE_OBSERVED ||
+             fit.support[0] != 1)) {
+            fprintf(stderr, "[atlas_ribbon_fit selftest] ribbon fixture "
+                    "provenance: node0=%d/%d node4=%d/%d\n",
+                    fit.provenance[0], fit.support[0],
+                    fit.provenance[4], fit.support[4]);
+            failures++;
+        }
+        if (fit.direct_spans != 6 || fit.spiral_spans != 2 ||
+            fit.metric_jump_cuts != 1 || fit.u_gap_cuts != 1 ||
+            fit.row_crossings != 0) {
+            fprintf(stderr, "[atlas_ribbon_fit selftest] ribbon fixture "
+                    "spans: direct=%zu spiral=%zu metric=%zu ugap=%zu "
+                    "crossings=%zu\n",
+                    fit.direct_spans, fit.spiral_spans,
+                    fit.metric_jump_cuts, fit.u_gap_cuts,
+                    fit.row_crossings);
+            failures++;
+        }
+    }
+    Arena_dispose(&arena);
+    return failures;
+}
+
 int AtlasRibbonFit_selftest(void)
 {
     Arena_T arena = Arena_new();
@@ -3786,6 +4123,7 @@ int AtlasRibbonFit_selftest(void)
     }
     Arena_restore(arena, mark);
     Arena_dispose(&arena);
+    failures += arf_registered_ribbon_selftest();
     if (failures == 0)
         fprintf(stderr, "[atlas_ribbon_fit selftest] PASS\n");
     return failures;

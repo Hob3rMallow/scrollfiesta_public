@@ -1,0 +1,19 @@
+{
+  "schema": "vesuvius-quad-ribbon-production-config-v1",
+  "dataset": "PHerc0139",
+  "raw_source": {
+    "path": "PHerc0139-full/20250728140407-9.362um-1.2m-113keV-masked.zarr",
+    "chunk_size": 128,
+    "required_kind": "zarr_v2_uncompressed_u8",
+    "policy": "all physically requested chunks must exist"
+  },
+  "geometry": {
+    "cylindrical_axis_yx": [3405, 2878],
+    "wrap_spacing_voxels": 9.5
+  },
+  "bake": {
+    "window_u8": [47, 193],
+    "dark_threshold_u8": 13,
+    "transparent_background": true
+  }
+}

@@ -5,21 +5,27 @@
 #include <stddef.h>
 #include "../common/arena.h"
 #include "../flatten/ribbon.h"
+#include "axis_warp.h"
 
 /* ============================================================================
  * placed_cube.h -- one cube's unwrap into the pinned global frame, its
  * on-disk record, and the registration finalize step.
  *
- * Pass B (PlacedCube_unwrap, parallel): load the cube's leaf-stage _all.obj,
+ * Pass B (PlacedCube_unwrap, parallel): load the cube's authoritative
+ * leaf-stage _all.vmesh (the OBJ sibling is never read),
  * optionally sever fusion handles, Ribbon_run with the calibration pins
  * (emit_global), flag bad inter-wrap links, and write:
- *   <id>_mesh.obj       the EXACT geometry the sidecars index (post-sever --
+ *   <id>_mesh.vmesh     authoritative geometry the sidecars index (post-sever)
+ *   <id>_mesh.obj       matching interchange/debug dump (never read internally)
  *                       severing duplicates verts along cut loops, so the
  *                       original dump OBJ no longer aligns)
  *   <id>_uvphi_raw.f32  [nv*3] float32 (u, v, phi), PRE-registration
  *   <id>_group.i32      [nv] int32 winding-group id (-1 = unmapped)
  *   <id>_facekeep.u8    [nf] 1 = keep (0 = bad fusion link OR a vertex the
  *                       transfer could not map -- uv is meaningless there)
+ *   <id>_geomkeep.u8    [nf] 1 = keep as source geometry (UV-transfer misses
+ *                       stay present; physical bad-link cuts are accepted only
+ *                       when they do not worsen an original chart atom)
  *   <id>_skin_raw.f32   [n] SkinVert records (28 B): uv_ok vertices within
  *                       skin_dist of the cube's nominal box faces
  *
@@ -64,7 +70,11 @@ typedef struct {
     size_t nv, nf;          /* post-sever mesh size */
     size_t n_skin;
     size_t n_badface;       /* faces dropped from facekeep */
-    size_t n_group_merges;  /* nearest-slice groups merged by kept topology */
+    size_t n_badlink_face;  /* faces rejected by the physical winding-link gate */
+    size_t n_unmapped_face; /* faces touching a vertex without direct transfer */
+    size_t n_geom_restored_faces; /* bad-link faces restored for topology safety */
+    size_t n_geom_restored_charts;/* original chart atoms restored as a unit */
+    size_t n_group_vertices;/* vertices in retained connected chart domains */
     long   loops_cut;       /* severed genus handles */
     double u_min, u_max, v_min, v_max, phi_min, phi_max;  /* over uv_ok verts */
     double spiral_r2;       /* per-cube diagnostic vs the (pinned) line */
@@ -83,13 +93,15 @@ typedef struct {
  * pin_orient=1, wrap_spacing, winding_sense, spiral_a/b) -- the driver builds
  * it once from the seed calibration. origin/chunk define the nominal box for
  * the skin. sever != 0 cuts all genus handles first. cut_* are the
- * Ribbon_flag_bad_faces gates (ratio, floor_vox, len_min).
+ * Ribbon_flag_bad_faces gates (ratio, floor_vox, len_min). write_obj gates the
+ * <id>_mesh.obj text dump; the authoritative <id>_mesh.vmesh always writes.
  * Returns 0 (stats->status reports per-cube failure); -1 on I/O error. */
-int PlacedCube_unwrap(Arena_T arena, const char *obj_path, const char *out_dir,
-                      const char *id, const RibbonOpts *ropts, int sever,
+int PlacedCube_unwrap(Arena_T arena, const char *mesh_path, const char *out_dir,
+                      const char *id, const RibbonOpts *ropts,
+                      const AxisWarp *axis_warp, int sever,
                       const int64_t origin[3], int64_t chunk, double skin_dist,
                       double cut_ratio, double cut_floor, double cut_len,
-                      PlacedStats *stats);
+                      int write_obj, PlacedStats *stats);
 
 /* Pass D for one cube: read the Pass-B record, apply the PER-GROUP
  * registration (per vertex: k = reg table at its group; phi += 2pi*k,

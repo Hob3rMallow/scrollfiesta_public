@@ -4,12 +4,23 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Per-line fprintf on a default (4KB) stdio buffer made the 5 GB parameterized
+ * OBJ take ~57s of pure formatting/flush churn; a 4 MB buffer batches the
+ * writes.  The buffer is owned by stdio and freed at fclose. */
+static FILE *objio_fopen_w(const char *path)
+{
+    FILE *f = fopen(path, "w");
+    if (f != NULL)
+        setvbuf(f, NULL, _IOFBF, (size_t)4 << 20);
+    return f;
+}
+
 int ObjIO_write(const char *path, const float *verts, size_t nv,
                 const int32_t *faces, size_t nf)
 {
     assert(path);
 
-    FILE *f = fopen(path, "w");
+    FILE *f = objio_fopen_w(path);
     if (f == NULL) {
         return -1;
     }
@@ -45,7 +56,7 @@ int ObjIO_write_colored(const char *path, const float *verts, size_t nv,
     assert(path);
     assert(color);
 
-    FILE *f = fopen(path, "w");
+    FILE *f = objio_fopen_w(path);
     if (f == NULL) {
         return -1;
     }
@@ -86,7 +97,7 @@ int ObjIO_write_twotone(const char *path, const float *verts, size_t nv,
     assert(color1);
     assert(color2);
 
-    FILE *f = fopen(path, "w");
+    FILE *f = objio_fopen_w(path);
     if (f == NULL) {
         return -1;
     }
@@ -123,7 +134,7 @@ int ObjIO_write_per_vertex_color(const char *path,
     assert(path);
     assert(colors);
 
-    FILE *f = fopen(path, "w");
+    FILE *f = objio_fopen_w(path);
     if (f == NULL) return -1;
 
     if (verts) {
@@ -182,11 +193,11 @@ int ObjIO_read(Arena_T arena, const char *path,
 
     if (nv > 0) {
         verts = (float *)ARENA_ALLOC(arena,
-                                      (size_t)(nv * 3 * sizeof(float)));
+                                      (nv * 3 * sizeof(float)));
     }
     if (nf > 0) {
         faces = (int32_t *)ARENA_ALLOC(arena,
-                                        (size_t)(nf * 3 * sizeof(int32_t)));
+                                        (nf * 3 * sizeof(int32_t)));
     }
 
     /* Second pass: read data */
@@ -240,7 +251,7 @@ int ObjIO_write_uv(const char *path, const float *verts, size_t nv,
     assert(path);
     assert(uv || nv == 0);
 
-    FILE *f = fopen(path, "w");
+    FILE *f = objio_fopen_w(path);
     if (f == NULL) {
         return -1;
     }
@@ -278,6 +289,37 @@ int ObjIO_write_uv(const char *path, const float *verts, size_t nv,
     return 0;
 }
 
+int ObjIO_write_uv_double(const char *path, const float *verts, size_t nv,
+                          const int32_t *faces, size_t nf, const double *uv)
+{
+    FILE *f = NULL;
+    size_t i = 0;
+    assert(path);
+    assert(uv || nv == 0);
+    f = objio_fopen_w(path);
+    if (f == NULL) return -1;
+    if (verts != NULL) {
+        for (i = 0; i < nv; i++)
+            fprintf(f, "v %.6f %.6f %.6f\n",
+                    (double)verts[i * 3], (double)verts[i * 3 + 1],
+                    (double)verts[i * 3 + 2]);
+    }
+    if (uv != NULL) {
+        for (i = 0; i < nv; i++)
+            fprintf(f, "vt %.17g %.17g\n", uv[i * 2], uv[i * 2 + 1]);
+    }
+    if (faces != NULL) {
+        for (i = 0; i < nf; i++) {
+            int a = faces[i * 3] + 1;
+            int b = faces[i * 3 + 1] + 1;
+            int c = faces[i * 3 + 2] + 1;
+            fprintf(f, "f %d/%d %d/%d %d/%d\n", a, a, b, b, c, c);
+        }
+    }
+    fclose(f);
+    return 0;
+}
+
 int ObjIO_write_uv_masked(const char *path, const float *verts, size_t nv,
                           const int32_t *faces, size_t nf, const float *uv,
                           const uint8_t *keep)
@@ -285,7 +327,7 @@ int ObjIO_write_uv_masked(const char *path, const float *verts, size_t nv,
     assert(path);
     assert(uv || nv == 0);
 
-    FILE *f = fopen(path, "w");
+    FILE *f = objio_fopen_w(path);
     if (f == NULL) {
         return -1;
     }

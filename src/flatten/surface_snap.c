@@ -13,6 +13,7 @@
 
 #include "../common/csr.h"
 #include "../common/kdtree.h"
+#include "../common/mesh_normals.h"
 #include "../common/raw_sample.h"
 #include "../common/tiff_io.h"
 #include "../common/ves_platform.h"
@@ -69,7 +70,7 @@ int SnapDetect_run(Arena_T arena,
     CubeTable *ct=(CubeTable*)ARENA_ALLOC(arena,(long)sizeof(CubeTable));
     if(o.raw_dir==NULL || cubetable_init(ct,arena,o.raw_dir,o.chunk,verts,nv,o.normal_range+reach+2.0)!=0)
         return -1;
-    float *nrm=vertex_normals(verts,nv,faces,nf);
+    float *nrm=MeshNormals_compute(verts,nv,faces,nf);
     /* occupancy index over the EXISTING mesh -- "have we entered another sheet?" */
     KDTree_T occ=KDTree_new(arena,verts,nv);
 

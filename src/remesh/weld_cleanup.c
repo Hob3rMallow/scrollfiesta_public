@@ -12,6 +12,7 @@
  */
 #include "weld_cleanup.h"
 #include "../common/pipeline_constants.h"
+#include "../common/u64_radix.h"
 
 #include <assert.h>
 #include <math.h>
@@ -78,38 +79,69 @@ static int is_target(const float *V, int32_t a, int32_t b, int32_t c,
  * Boundary detection (verts on any face-count==1 edge). Mirrors
  * qem.c::qem_detect_boundary.
  * =================================================================== */
-typedef struct { int32_t v0, v1, face; } HE;
+typedef VesU64Record16 HE;
+static uint64_t wc_edge_key(int32_t a, int32_t b)
+{
+    uint32_t lo=(uint32_t)(a<b?a:b);
+    uint32_t hi=(uint32_t)(a<b?b:a);
+    return ((uint64_t)lo<<32)|(uint64_t)hi;
+}
+static int32_t wc_edge_v0(uint64_t key){return (int32_t)(key>>32);}
+static int32_t wc_edge_v1(uint64_t key){return (int32_t)(uint32_t)key;}
 static int he_cmp(const void *pa, const void *pb)
 {
     const HE *a=(const HE*)pa, *b=(const HE*)pb;
-    if (a->v0 != b->v0) return a->v0 < b->v0 ? -1 : 1;
-    if (a->v1 != b->v1) return a->v1 < b->v1 ? -1 : 1;
-    return 0;
+    return a->key<b->key?-1:a->key>b->key?1:0;
 }
 
 static void detect_boundary(Arena_T arena, const int32_t *faces, size_t nf,
-                            size_t nv, uint8_t *is_boundary)
+                            size_t nv, uint8_t *is_boundary,
+                            const uint8_t *vertex_active)
 {
     Arena_Mark mark = Arena_save(arena);
-    size_t n_he = nf*3, i = 0;
-    HE *he = (HE *)ARENA_ALLOC(arena, (size_t)(n_he*sizeof(HE)));
+    size_t n_he = 0, i = 0;
+    HE *he;
+    if (vertex_active) {
+        for (i=0;i<nf;i++){
+            int32_t tri[3]={
+                faces[i*3+0],faces[i*3+1],faces[i*3+2]
+            };
+            size_t k;
+            for(k=0;k<3;k++){
+                int32_t a=tri[k],b=tri[(k+1)%3];
+                n_he+=(size_t)(vertex_active[(size_t)a]||
+                               vertex_active[(size_t)b]);
+            }
+        }
+    } else {
+        n_he=nf*3;
+    }
+    he = (HE *)ARENA_ALLOC(arena, (n_he?n_he:1)*sizeof(*he));
+    n_he=0;
     for (i=0;i<nf;i++){
         int32_t f0=faces[i*3+0], f1=faces[i*3+1], f2=faces[i*3+2];
         int32_t tri[3]={f0,f1,f2};
         size_t k=0;
         for (k=0;k<3;k++){
             int32_t a=tri[k], b=tri[(k+1)%3];
-            if (a>b){ int32_t t=a; a=b; b=t; }
-            he[i*3+k].v0=a; he[i*3+k].v1=b; he[i*3+k].face=(int32_t)i;
+            if(vertex_active&&!vertex_active[(size_t)a]&&
+               !vertex_active[(size_t)b])continue;
+            he[n_he].key=wc_edge_key(a,b);
+            he[n_he].data=0;
+            n_he++;
         }
     }
-    qsort(he, n_he, sizeof(HE), he_cmp);
+    if(ves_u64_record16_sort(he,n_he)!=0)
+        qsort(he,n_he,sizeof(*he),he_cmp);
     memset(is_boundary, 0, nv*sizeof(uint8_t));
     i=0;
     while (i < n_he){
         size_t j=i+1;
-        while (j<n_he && he[j].v0==he[i].v0 && he[j].v1==he[i].v1) j++;
-        if (j-i == 1){ is_boundary[he[i].v0]=1; is_boundary[he[i].v1]=1; }
+        while(j<n_he&&he[j].key==he[i].key)j++;
+        if(j-i==1){
+            is_boundary[(size_t)wc_edge_v0(he[i].key)]=1;
+            is_boundary[(size_t)wc_edge_v1(he[i].key)]=1;
+        }
         i=j;
     }
     Arena_restore(arena, mark);
@@ -122,13 +154,19 @@ static void detect_boundary(Arena_T arena, const int32_t *faces, size_t nf,
  * faces' normals on the same side as the original (no fold). One locked pass
  * flips only non-adjacent edges, so iterate to convergence.
  * =================================================================== */
-typedef struct { int32_t v0,v1,face,opposite; int8_t fwd; } MHE;
+typedef VesU64Record16 MHE;
+static int32_t mhe_opposite(const MHE *h)
+{return (int32_t)(uint32_t)h->data;}
+static uint32_t mhe_face_dir(const MHE *h)
+{return (uint32_t)(h->data>>32);}
+static int32_t mhe_face(const MHE *h)
+{return (int32_t)(mhe_face_dir(h)>>1);}
+static int mhe_fwd(const MHE *h)
+{return (int)(mhe_face_dir(h)&1u);}
 static int mhe_cmp(const void *pa, const void *pb)
 {
     const MHE *a=(const MHE*)pa, *b=(const MHE*)pb;
-    if (a->v0 != b->v0) return a->v0 < b->v0 ? -1 : 1;
-    if (a->v1 != b->v1) return a->v1 < b->v1 ? -1 : 1;
-    return 0;
+    return a->key<b->key?-1:a->key>b->key?1:0;
 }
 
 static void face_normal(const float *V, int32_t a, int32_t b, int32_t c, float o[3])
@@ -168,50 +206,78 @@ static float min_angle(const float *V, int32_t a, int32_t b, int32_t c)
  * guard as qem.c::maint_edge_exists. */
 static int mhe_edge_exists(const MHE *mhe, size_t n_he, int32_t u, int32_t w)
 {
-    int32_t v0 = (u < w) ? u : w;
-    int32_t v1 = (u < w) ? w : u;
+    uint64_t key=wc_edge_key(u,w);
     size_t lo = 0, hi = n_he;
     while (lo < hi) {
         size_t mid = lo + (hi - lo) / 2;
-        if (mhe[mid].v0 < v0 || (mhe[mid].v0 == v0 && mhe[mid].v1 < v1))
-            lo = mid + 1;
-        else
-            hi = mid;
+        if(mhe[mid].key<key)lo=mid+1;else hi=mid;
     }
-    return (lo < n_he && mhe[lo].v0 == v0 && mhe[lo].v1 == v1) ? 1 : 0;
+    return lo<n_he&&mhe[lo].key==key;
 }
 
 static size_t flip_pass(Arena_T arena, const float *V, int32_t *faces,
-                        size_t nf, size_t nv, const uint8_t *bnd)
+                        size_t nf, size_t nv, const uint8_t *bnd,
+                        const uint8_t *face_frozen,
+                        const uint8_t *vertex_active)
 {
     Arena_Mark mark = Arena_save(arena);
-    size_t n_he=nf*3, f=0, i=0, n_flipped=0;
-    MHE *mhe = (MHE *)ARENA_ALLOC(arena, (size_t)(n_he*sizeof(MHE)));
+    size_t n_he=0, f=0, i=0, n_flipped=0;
+    MHE *mhe;
+    if(vertex_active){
+        for(f=0;f<nf;f++){
+            int32_t v[3]={faces[f*3+0],faces[f*3+1],faces[f*3+2]};
+            int e;
+            for(e=0;e<3;e++)
+                n_he+=(size_t)(vertex_active[(size_t)v[e]]||
+                    vertex_active[(size_t)v[(e+1)%3]]);
+        }
+    }else n_he=nf*3;
+    mhe = (MHE *)ARENA_ALLOC(arena, (n_he?n_he:1)*sizeof(*mhe));
+    n_he=0;
     for (f=0;f<nf;f++){
         int32_t v[3]={faces[f*3+0],faces[f*3+1],faces[f*3+2]};
         int e;
         for (e=0;e<3;e++){
             int32_t a=v[e], b=v[(e+1)%3], opp=v[(e+2)%3];
-            size_t idx=f*3+(size_t)e;
-            mhe[idx].v0=(a<b)?a:b; mhe[idx].v1=(a<b)?b:a;
-            mhe[idx].face=(int32_t)f; mhe[idx].opposite=opp; mhe[idx].fwd=(int8_t)((a<b)?1:0);
+            size_t idx;
+            if(vertex_active&&!vertex_active[(size_t)a]&&
+               !vertex_active[(size_t)b])continue;
+            idx=n_he++;
+            mhe[idx].key=wc_edge_key(a,b);
+            mhe[idx].data=
+                ((uint64_t)(((uint32_t)f<<1)|(uint32_t)(a<b))<<32)|
+                (uint64_t)(uint32_t)opp;
         }
     }
-    qsort(mhe, n_he, sizeof(MHE), mhe_cmp);
-    uint8_t *vused=(uint8_t*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(uint8_t)));
-    uint8_t *fused=(uint8_t*)ARENA_ALLOC(arena,(size_t)(nf*sizeof(uint8_t)));
+    if(ves_u64_record16_sort(mhe,n_he)!=0)
+        qsort(mhe,n_he,sizeof(*mhe),mhe_cmp);
+    uint8_t *vused=(uint8_t*)ARENA_ALLOC(arena,(nv*sizeof(uint8_t)));
+    uint8_t *fused=(uint8_t*)ARENA_ALLOC(arena,(nf*sizeof(uint8_t)));
     memset(vused,0,nv*sizeof(uint8_t));
     memset(fused,0,nf*sizeof(uint8_t));
     i=0;
     while (i+1 < n_he){
-        if (mhe[i].v0==mhe[i+1].v0 && mhe[i].v1==mhe[i+1].v1){
-            int32_t a=mhe[i].v0, b=mhe[i].v1, c=0, d=0, fc=0, fd=0;
+        if(mhe[i].key==mhe[i+1].key){
+            int32_t a=wc_edge_v0(mhe[i].key);
+            int32_t b=wc_edge_v1(mhe[i].key);
+            int32_t c=0,d=0,fc=0,fd=0;
             float n_orig[3], n1[3], n2[3], dot1, dot2, cur, cur2, flp, flp2;
-            if (mhe[i].fwd && !mhe[i+1].fwd){
-                c=mhe[i].opposite; fc=mhe[i].face; d=mhe[i+1].opposite; fd=mhe[i+1].face;
-            } else if (!mhe[i].fwd && mhe[i+1].fwd){
-                c=mhe[i+1].opposite; fc=mhe[i+1].face; d=mhe[i].opposite; fd=mhe[i].face;
+            if(mhe_fwd(&mhe[i])&&!mhe_fwd(&mhe[i+1])){
+                c=mhe_opposite(&mhe[i]);fc=mhe_face(&mhe[i]);
+                d=mhe_opposite(&mhe[i+1]);fd=mhe_face(&mhe[i+1]);
+            }else if(!mhe_fwd(&mhe[i])&&mhe_fwd(&mhe[i+1])){
+                c=mhe_opposite(&mhe[i+1]);fc=mhe_face(&mhe[i+1]);
+                d=mhe_opposite(&mhe[i]);fd=mhe_face(&mhe[i]);
             } else { i+=2; continue; }   /* inconsistent winding */
+            if (face_frozen &&
+                (face_frozen[(size_t)fc] || face_frozen[(size_t)fd])) {
+                i+=2; continue;
+            }
+            /* With a band-filtered edge table, target-edge existence is exact
+             * only when at least one target endpoint is active.  Conservatively
+             * leave the band-border quad unchanged otherwise. */
+            if(vertex_active&&!vertex_active[(size_t)c]&&
+               !vertex_active[(size_t)d]){i+=2;continue;}
             if (bnd[a] && bnd[b]){ i+=2; continue; }
             if (vused[a]||vused[b]||vused[c]||vused[d]||fused[fc]||fused[fd]){ i+=2; continue; }
             if (mhe_edge_exists(mhe, n_he, c, d)){ i+=2; continue; }  /* flip target already an edge -> non-manifold */
@@ -237,14 +303,18 @@ static size_t flip_pass(Arena_T arena, const float *V, int32_t *faces,
 }
 
 static size_t flip_rounds(Arena_T arena, const float *V, int32_t *faces,
-                          size_t nf, size_t nv, int max_rounds)
+                          size_t nf, size_t nv, int max_rounds,
+                          const uint8_t *face_frozen,
+                          const uint8_t *vertex_active)
 {
     Arena_Mark mark = Arena_save(arena);
-    uint8_t *bnd=(uint8_t*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(uint8_t)));
+    uint8_t *bnd=(uint8_t*)ARENA_ALLOC(arena,(nv*sizeof(uint8_t)));
     size_t total=0; int r;
-    detect_boundary(arena, faces, nf, nv, bnd);  /* boundary stable across flips */
+    detect_boundary(arena, faces, nf, nv, bnd,
+                    vertex_active);  /* boundary stable across flips */
     for (r=0;r<max_rounds;r++){
-        size_t k=flip_pass(arena, V, faces, nf, nv, bnd);
+        size_t k=flip_pass(arena, V, faces, nf, nv, bnd, face_frozen,
+                           vertex_active);
         total+=k;
         if (k==0) break;
     }
@@ -259,14 +329,14 @@ static size_t flip_rounds(Arena_T arena, const float *V, int32_t *faces,
 static void build_vf(Arena_T arena, const int32_t *faces, size_t nf, size_t nv,
                      int32_t **out_off, int32_t **out_idx)
 {
-    int32_t *off=(int32_t*)ARENA_ALLOC(arena,(size_t)((nv+1)*sizeof(int32_t)));
-    int32_t *idx=(int32_t*)ARENA_ALLOC(arena,(size_t)((nf?nf*3:1)*sizeof(int32_t)));
+    int32_t *off=(int32_t*)ARENA_ALLOC(arena,((nv+1)*sizeof(int32_t)));
+    int32_t *idx=(int32_t*)ARENA_ALLOC(arena,((nf?nf*3:1)*sizeof(int32_t)));
     size_t i;
     memset(off, 0, (nv+1)*sizeof(int32_t));
     for (i=0;i<nf*3;i++) off[(size_t)faces[i]+1]++;
     for (i=0;i<nv;i++) off[i+1]+=off[i];
     {
-        int32_t *cur=(int32_t*)ARENA_ALLOC(arena,(size_t)((nv)*sizeof(int32_t)));
+        int32_t *cur=(int32_t*)ARENA_ALLOC(arena,((nv)*sizeof(int32_t)));
         size_t f;
         memcpy(cur, off, nv*sizeof(int32_t));
         for (f=0;f<nf;f++)
@@ -390,12 +460,12 @@ static size_t collapse_round(Arena_T arena, const float *V,
 {
     Arena_Mark mark = Arena_save(arena);
     int32_t *off=NULL, *idx=NULL;
-    uint8_t *bnd=(uint8_t*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(uint8_t)));
-    uint8_t *locked=(uint8_t*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(uint8_t)));
-    int32_t *remap=(int32_t*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(int32_t)));
+    uint8_t *bnd=(uint8_t*)ARENA_ALLOC(arena,(nv*sizeof(uint8_t)));
+    uint8_t *locked=(uint8_t*)ARENA_ALLOC(arena,(nv*sizeof(uint8_t)));
+    int32_t *remap=(int32_t*)ARENA_ALLOC(arena,(nv*sizeof(int32_t)));
     size_t f, ncoll=0, w=0, i;
     build_vf(arena, faces, *nf, nv, &off, &idx);
-    detect_boundary(arena, faces, *nf, nv, bnd);
+    detect_boundary(arena, faces, *nf, nv, bnd, NULL);
     memset(locked, 0, nv*sizeof(uint8_t));
     for (i=0;i<nv;i++) remap[i]=(int32_t)i;
 
@@ -419,24 +489,31 @@ static size_t collapse_round(Arena_T arena, const float *V,
             if (SeamPlanes_vert_dist(V, E[0].v, rc->planes, rc->np) > rc->band)
                 continue;
         }
-        /* ONLY the shortest edge is a collapse candidate -- it is the needle's
-         * short edge. Never fall through to a sliver's LONG edges: those are
-         * legitimate geometry (e.g. a bipyramid apex), and collapsing one when
-         * the short edge is blocked (boundary / link / fold) would delete real
-         * surface. A cap with no genuinely-short edge is left for the flip pass. */
+        /* Normally ONLY the shortest edge is a candidate.  For an exactly
+         * degenerate collinear triangle, however, the middle vertex has two
+         * equal short edges.  Either contraction removes the same zero-area
+         * midpoint, but one direction can fail the normal/link guard while the
+         * other is valid.  Try the second edge only when it is within 5% of the
+         * shortest and the face is genuinely degenerate; never fall through to
+         * a sliver's legitimate long edge. */
         {
-            int32_t u=E[0].u, v=E[0].v, surv, mov;
-            if (locked[u] || locked[v]) continue;
-            if (E[0].len > p->max_collapse_len) continue;
-            if (bnd[u] && bnd[v]) continue;
-            surv = bnd[u] ? u : (bnd[v] ? v : u);
-            mov  = (surv==u) ? v : u;
-            if (collapse_violates_link(faces, off, idx, surv, mov)) continue;
-            if (collapse_would_flip(V, faces, off, idx, surv, mov)) continue;
-            remap[mov]=surv;
-            lock_ring(locked, off, idx, faces, mov);
-            lock_ring(locked, off, idx, faces, surv);
-            ncoll++;
+            int attempts=1, accepted=0;
+            if(!rc && tri_area3(V,a,b,c)<p->degen_area &&
+               E[1].len<=E[0].len*1.05)attempts=2;
+            for(int ei=0;ei<attempts&&!accepted;ei++){
+                int32_t u=E[ei].u, v=E[ei].v, surv, mov;
+                if(locked[u]||locked[v])continue;
+                if(E[ei].len>p->max_collapse_len)continue;
+                if(bnd[u]&&bnd[v])continue;
+                surv=bnd[u]?u:(bnd[v]?v:u);
+                mov=(surv==u)?v:u;
+                if(collapse_violates_link(faces,off,idx,surv,mov))continue;
+                if(collapse_would_flip(V,faces,off,idx,surv,mov))continue;
+                remap[mov]=surv;
+                lock_ring(locked,off,idx,faces,mov);
+                lock_ring(locked,off,idx,faces,surv);
+                ncoll++;accepted=1;
+            }
         }
     }
 
@@ -498,11 +575,12 @@ int WeldCleanup_process(Arena_T arena, ComponentMesh *cm,
     if (stats) stats->targets_in = count_targets(cm->verts, cm->faces, nf, &p);
 
     /* Working face array (flips mutate in place; collapse compacts in place). */
-    wf = (int32_t *)ARENA_ALLOC(arena, (size_t)(nf*3*sizeof(int32_t)));
+    wf = (int32_t *)ARENA_ALLOC(arena, (nf*3*sizeof(int32_t)));
     memcpy(wf, cm->faces, nf*3*sizeof(int32_t));
 
     /* Pass 1: flip-first (clear cap slivers, no vertex removed). */
-    total_flips += flip_rounds(arena, cm->verts, wf, nf, nv, p.flip_max_rounds);
+    total_flips += flip_rounds(arena, cm->verts, wf, nf, nv,
+                               p.flip_max_rounds, NULL, NULL);
 
     /* Pass 2: guarded collapse for the residue (needles, zero-area, T-caps). */
     for (r=0; r<p.collapse_max_rounds; r++){
@@ -513,7 +591,8 @@ int WeldCleanup_process(Arena_T arena, ComponentMesh *cm,
 
     /* Pass 3: one more flip-to-convergence to tidy caps the collapse exposed. */
     if (total_collapses > 0)
-        total_flips += flip_rounds(arena, cm->verts, wf, nf, nv, p.flip_max_rounds);
+        total_flips += flip_rounds(arena, cm->verts, wf, nf, nv,
+                                   p.flip_max_rounds, NULL, NULL);
 
     cm->faces = wf;
     cm->nf = nf;
@@ -532,7 +611,30 @@ size_t WeldCleanup_flip_rounds(Arena_T arena, const float *verts, size_t nv,
 {
     assert(arena);
     if (nf == 0 || nv == 0 || faces == NULL || verts == NULL) return 0;
-    return flip_rounds(arena, verts, faces, nf, nv, max_rounds);
+    return flip_rounds(arena, verts, faces, nf, nv, max_rounds,
+                       NULL, NULL);
+}
+
+size_t WeldCleanup_flip_rounds_masked(
+    Arena_T arena, const float *verts, size_t nv,
+    int32_t *faces, size_t nf, int max_rounds,
+    const uint8_t *face_frozen)
+{
+    assert(arena);
+    if (nf == 0 || nv == 0 || faces == NULL || verts == NULL) return 0;
+    return flip_rounds(arena, verts, faces, nf, nv, max_rounds,
+                       face_frozen, NULL);
+}
+
+size_t WeldCleanup_flip_rounds_active_masked(
+    Arena_T arena, const float *verts, size_t nv,
+    int32_t *faces, size_t nf, int max_rounds,
+    const uint8_t *face_frozen, const uint8_t *vertex_active)
+{
+    assert(arena);
+    if (nf == 0 || nv == 0 || faces == NULL || verts == NULL) return 0;
+    return flip_rounds(arena, verts, faces, nf, nv, max_rounds,
+                       face_frozen, vertex_active);
 }
 
 void WeldCleanup_default_recoarsen_params(WeldRecoarsenParams *p)
@@ -576,7 +678,7 @@ int WeldCleanup_recoarsen_seam(Arena_T arena, ComponentMesh *cm,
     ctx.band = p.band;
     ctx.collapse_below = p.collapse_below;
 
-    wf = (int32_t *)ARENA_ALLOC(arena, (size_t)(nf*3*sizeof(int32_t)));
+    wf = (int32_t *)ARENA_ALLOC(arena, (nf*3*sizeof(int32_t)));
     memcpy(wf, cm->faces, nf*3*sizeof(int32_t));
 
     /* Collapse rounds to fixpoint, with one interleaved boundary-frozen flip
@@ -588,7 +690,8 @@ int WeldCleanup_recoarsen_seam(Arena_T arena, ComponentMesh *cm,
         if (k == 0){
             size_t fl;
             if (flips_since_progress) break;
-            fl = flip_rounds(arena, cm->verts, wf, nf, nv, p.flip_max_rounds);
+            fl = flip_rounds(arena, cm->verts, wf, nf, nv,
+                             p.flip_max_rounds, NULL, NULL);
             total_flips += fl;
             flips_since_progress = 1;
             if (fl == 0) break;
@@ -599,7 +702,8 @@ int WeldCleanup_recoarsen_seam(Arena_T arena, ComponentMesh *cm,
 
     /* Final flip-to-convergence tidies the caps the collapses exposed. */
     if (total_collapses > 0)
-        total_flips += flip_rounds(arena, cm->verts, wf, nf, nv, p.flip_max_rounds);
+        total_flips += flip_rounds(arena, cm->verts, wf, nf, nv,
+                                   p.flip_max_rounds, NULL, NULL);
 
     cm->faces = wf;
     cm->nf = nf;

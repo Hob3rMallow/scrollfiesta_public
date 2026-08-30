@@ -82,6 +82,12 @@ int ves_ensure_parent_dir(const char *filepath)
 int ves_run_subprocess(const char *exe, const char *const *argv,
                        double timeout_sec)
 {
+    return ves_run_subprocess_logged(exe, argv, timeout_sec, NULL);
+}
+
+int ves_run_subprocess_logged(const char *exe, const char *const *argv,
+                              double timeout_sec, const char *log_path)
+{
     if (!exe || !argv) return -1;
 
     /* Build command line string from argv.
@@ -108,14 +114,27 @@ int ves_run_subprocess(const char *exe, const char *const *argv,
     PROCESS_INFORMATION pi;
     memset(&si, 0, sizeof(si));
     si.cb = sizeof(si);
-    /* Redirect stdout/stderr to NUL to suppress Poisson output */
-    HANDLE hNull = CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_WRITE,
-                               NULL, OPEN_EXISTING, 0, NULL);
+    /* stdout/stderr go to the caller's log file (shared-read so it can be
+     * tailed live), or to NUL when no log is asked for (the Poisson case) */
+    HANDLE hNull = INVALID_HANDLE_VALUE;
+    if (log_path != NULL) {
+        SECURITY_ATTRIBUTES sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.nLength = sizeof(sa);
+        sa.bInheritHandle = TRUE;
+        hNull = CreateFileA(log_path, FILE_APPEND_DATA,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    }
+    if (hNull == INVALID_HANDLE_VALUE)
+        hNull = CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_WRITE,
+                            NULL, OPEN_EXISTING, 0, NULL);
     if (hNull != INVALID_HANDLE_VALUE) {
         si.dwFlags = STARTF_USESTDHANDLES;
         si.hStdOutput = hNull;
         si.hStdError  = hNull;
         si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
+        SetHandleInformation(hNull, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
     }
     memset(&pi, 0, sizeof(pi));
 
@@ -169,6 +188,12 @@ int ves_run_subprocess(const char *exe, const char *const *argv,
 int ves_run_subprocess(const char *exe, const char *const *argv,
                        double timeout_sec)
 {
+    return ves_run_subprocess_logged(exe, argv, timeout_sec, NULL);
+}
+
+int ves_run_subprocess_logged(const char *exe, const char *const *argv,
+                              double timeout_sec, const char *log_path)
+{
     if (!exe || !argv) return -1;
 
     pid_t pid = fork();
@@ -178,12 +203,13 @@ int ves_run_subprocess(const char *exe, const char *const *argv,
     }
 
     if (pid == 0) {
-        /* Child: redirect stdout/stderr to /dev/null */
-        FILE *devnull = fopen("/dev/null", "w");
-        if (devnull) {
-            dup2(fileno(devnull), STDOUT_FILENO);
-            dup2(fileno(devnull), STDERR_FILENO);
-            fclose(devnull);
+        /* Child: stdout/stderr append to the stage log, else /dev/null */
+        FILE *sink = log_path != NULL ? fopen(log_path, "a") : NULL;
+        if (sink == NULL) sink = fopen("/dev/null", "w");
+        if (sink) {
+            dup2(fileno(sink), STDOUT_FILENO);
+            dup2(fileno(sink), STDERR_FILENO);
+            fclose(sink);
         }
         /* execv expects char *const *, cast away the outer const */
         execv(exe, (char *const *)argv);
@@ -300,38 +326,3 @@ void ves_hard_timeout_cancel(void)
 }
 
 #endif /* _WIN32 */
-
-/* ================================================================
- * OpenMP thread budget: ves_omp_set_threads()
- *
- * The prototype is declared by hand instead of including omp.h:
- * embedding hosts (VC3D) put a C++-only stub omp.h on the include
- * path for their own builds, so the real header must never be named
- * in library code. _OPENMP is only defined when the compiler was
- * invoked with -fopenmp / /openmp, in which case the runtime that
- * provides omp_set_num_threads is linked by that same flag.
- * ================================================================ */
-
-#ifdef _OPENMP
-extern void omp_set_num_threads(int n);
-extern void omp_set_dynamic(int flag);
-#endif
-
-void ves_omp_set_threads(int n)
-{
-#ifdef _OPENMP
-    if (n > 0)
-        omp_set_num_threads(n);
-#else
-    (void)n;
-#endif
-}
-
-void ves_omp_set_dynamic(int flag)
-{
-#ifdef _OPENMP
-    omp_set_dynamic(flag);
-#else
-    (void)flag;
-#endif
-}

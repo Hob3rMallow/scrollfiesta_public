@@ -1,5 +1,4 @@
 #include "mls_project.h"
-#include "run_ctx.h"
 
 #include "pipeline_constants.h"
 
@@ -279,7 +278,7 @@ void MLS_project_verts(Arena_T arena,
      * scroll fold two wraps sit ~1-2 vox apart; the default R=12 spans both and
      * fuses them. Default = the caller's compiled radius. */
     {
-        const char *r_env = sf_env("MLS_RADIUS_VOX");
+        const char *r_env = getenv("MLS_RADIUS_VOX");
         if (r_env && *r_env) {
             double v = atof(r_env);
             if (v > 0.0) {
@@ -424,19 +423,9 @@ void MLS_project_verts(Arena_T arena,
      * omp_set_num_threads(n_threads) in the driver. */
     int nv_i = (int)nv;
     int si = 0;   /* declared before the loop: MSVC OpenMP 2.0 form */
-    /* Cancellation: NEVER longjmp out of a parallel region. Poll cheaply
-     * (every 1024th index), flag-skip the remaining iterations, and let the
-     * caller-side RunCtx_check raise back to the API boundary. */
-    volatile int mls_stop = 0;
 #pragma omp parallel for schedule(dynamic, 256)
     for (si = 0; si < nv_i; si++) {
         size_t i = (size_t)si;
-        if (mls_stop)
-            continue;
-        if ((si & 1023) == 0 && RunCtx_should_stop()) {
-            mls_stop = 1;
-            continue;
-        }
         float vz = verts[i * 3 + 0];
         float vy = verts[i * 3 + 1];
         float vx = verts[i * 3 + 2];
@@ -730,7 +719,7 @@ void MLS_project_verts(Arena_T arena,
      * that magnitude into the reference pipeline and measuring what
      * BPA/guards/weld actually do. NOT for production runs. */
     {
-        const char *pe = sf_env("MLS_PERTURB_EPS");
+        const char *pe = getenv("MLS_PERTURB_EPS");
         if (pe && *pe) {
             double eps = atof(pe);
             for (size_t vi = 0; eps > 0.0 && vi < nv; vi++) {

@@ -40,6 +40,14 @@ typedef struct {
 int ManifoldGuard_process(Arena_T arena, ComponentMesh *meshes, size_t n_meshes,
                           int reorient, ManifoldGuardStats *out);
 
+/* Extended policy hook.  allow_vertex_splits=0 is the regional chart workflow:
+ * edge conflicts may still be diagnosed/resolved, but bowties are left intact
+ * for the caller's exact transaction gate instead of duplicating a vertex. */
+int ManifoldGuard_process_ex(Arena_T arena,
+                             ComponentMesh *meshes, size_t n_meshes,
+                             int reorient, int allow_vertex_splits,
+                             ManifoldGuardStats *out);
+
 /* Self-test: a 3-fan NM edge, a bowtie vertex, and a clean disk -> the first two
  * become manifold, the disk is untouched. Returns 0 on success (failure count). */
 int ManifoldGuard_selftest(Arena_T arena);

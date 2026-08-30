@@ -60,17 +60,36 @@ int BallPivot_reconstruct(Arena_T arena,
  *
  * from each seed and rejects a pivot once the accumulated phase leaves
  * [-tol,+tol].  Re-seeding then reconstructs the next wrap as a distinct mesh
- * component.  `verts` remain cube-local; origin_y/x convert them to the world
- * frame containing umb_y/x.
+ * component.  `verts` remain cube-local; origin_z/y/x convert them to the
+ * world frame containing the sampled or constant umbilicus.
  *
  * Pass NULL (or pitch/tol <= 0) for the historical ungated behaviour.
  */
 typedef struct {
     double umb_y, umb_x;       /* world-space scroll umbilicus */
-    double origin_y, origin_x; /* cube-local -> world translation */
+    double origin_z, origin_y, origin_x; /* cube-local -> world translation */
     double pitch;              /* radial spacing per turn (vox) */
     double tol;                /* maximum accumulated seed phase (turns) */
+    const double *axis_z;       /* optional sampled curved umbilicus */
+    const double *axis_y;
+    const double *axis_x;
+    size_t axis_n;
 } BpaReconGate;
+
+/* Install borrowed, process-wide samples for the per-cube reconstruction and
+ * transaction-certificate gates. cube_mesh calls this once before entering the
+ * pipeline; the arrays must remain alive until clear. Passing invalid samples
+ * clears the configured curve and leaves the constant umb_y/x fallback. */
+void BpaReconGate_set_axis_samples(const double *z, const double *y,
+                                   const double *x, size_t n);
+void BpaReconGate_clear_axis_samples(void);
+
+/* Attach the configured process-wide curve to a gate, then evaluate that gate's
+ * local umbilicus at world z. These are separate from gate arming so CVT/hole
+ * transaction certificates can use the curve when BPA growth itself is off. */
+void BpaReconGate_attach_axis(BpaReconGate *gate);
+void BpaReconGate_axis_at(const BpaReconGate *gate, double world_z,
+                          double *out_y, double *out_x);
 
 int BallPivot_reconstruct_gated(Arena_T arena,
                                 const float *verts,
@@ -134,13 +153,29 @@ typedef struct {
  * pitch > 0 AND an umbilicus is supplied; otherwise the gate is OFF (the caller
  * uses this for a restricted-cloud permissive weld, where cloud restriction is
  * the safety, not the gate). tol = phase tolerance (turns); hard = unconditional
- * cap (turns, <=0 = none). Pass NULL to BallPivot_bridge for gate-off. */
+ * cap (turns, <=0 = none). span bounds the accumulated branch-cut-free winding
+ * range of an entire connected bridge growth (<=0 disables the non-local
+ * staircase guard). axis_{z,y,x}/axis_n optionally describe a sorted curved
+ * umbilicus sampled in world z; when present, every winding evaluation uses
+ * the linearly interpolated (and endpoint-tangent-extrapolated) local axis
+ * instead of the constant umb_y/umb_x fallback. Pass NULL to BallPivot_bridge
+ * for gate-off. */
 typedef struct {
     double umb_y, umb_x;
     double pitch;
     double tol;
     double hard;
+    double span;
+    const double *axis_z;
+    const double *axis_y;
+    const double *axis_x;
+    size_t axis_n;
 } BpaBridgeGate;
+
+/* Evaluate a bridge gate's local umbilicus at world z. The sampled curve is
+ * used when valid; otherwise the constant umb_y/umb_x fallback is returned. */
+void BpaBridgeGate_axis_at(const BpaBridgeGate *gate, double z,
+                           double *out_y, double *out_x);
 
 int BallPivot_bridge(Arena_T arena,
                      const float *verts,
@@ -153,5 +188,8 @@ int BallPivot_bridge(Arena_T arena,
                      const BpaBridgeGate *gate,
                      int32_t **out_faces,
                      size_t *out_nf);
+
+/* In-process regression for the cumulative winding-growth invariant. */
+int BallPivot_winding_selftest(void);
 
 #endif

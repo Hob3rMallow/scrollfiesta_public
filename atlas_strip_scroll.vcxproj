@@ -67,6 +67,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\tools\atlas_strip_scroll.c" />
+    <ClCompile Include="src\common\pitch_table.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\whole\atlas_candidates.c" />
     <ClCompile Include="src\whole\atlas_boxcut.c" />
     <ClCompile Include="src\whole\atlas_boxcut_layout.c" />
@@ -96,10 +97,11 @@
     <ClCompile Include="src\common\kdtree.c" />
     <ClCompile Include="src\common\union_find.c" />
     <ClCompile Include="src\common\obj_io.c" />
+    <ClCompile Include="src\common\mesh_bin.c" />
     <ClCompile Include="src\common\raw_sample.c" />
+    <ClCompile Include="src\common\mesh_normals.c" />
     <ClCompile Include="src\common\tiff_io.c" />
     <ClCompile Include="src\common\ves_platform.c" />
-    <ClCompile Include="src\common\run_ctx.c" />
     <ClCompile Include="src\remesh\ball_pivot.c" />
     <ClCompile Include="src\remesh\seam_planes.c" />
     <ClCompile Include="src\remesh\seam_refine.c" />

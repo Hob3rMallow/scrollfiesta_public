@@ -1,5 +1,4 @@
 #include "pinhole_fill.h"
-#include "../common/run_ctx.h"
 
 #include <string.h>
 #include <stdint.h>
@@ -69,6 +68,115 @@ static int uf_find(int *uf, int a) {
  * connected-component union-find). Open-chained in a hash table. */
 typedef struct { int32_t lo, hi, cnt, next, f0; } E;
 
+/* Combined source + raw-bridge edge state used by the chart-level bowtie
+ * closer.  This is deliberately separate from E above: the regular pinhole
+ * pass owns a complete mesh, whereas a bridge repair must preserve the source
+ * chart boundary that the bridge is going to attach to. */
+typedef struct {
+    int32_t lo, hi;
+    uint32_t count;
+    int32_t orient_sum;
+    uint32_t source_count;
+    uint8_t used;
+} BowtieGuardEdge;
+
+typedef struct {
+    BowtieGuardEdge *slot;
+    size_t cap;
+} BowtieGuard;
+
+static int bowtie_guard_init(BowtieGuard *g, size_t edge_hint)
+{
+    size_t cap = next_pow2(edge_hint > 4 ? edge_hint * 2 : 8);
+    g->slot = (BowtieGuardEdge *)calloc(cap, sizeof(*g->slot));
+    if (g->slot == NULL) { g->cap = 0; return -1; }
+    g->cap = cap;
+    return 0;
+}
+
+static BowtieGuardEdge *bowtie_guard_slot(BowtieGuard *g,
+                                           int32_t a, int32_t b)
+{
+    int32_t lo = a < b ? a : b, hi = a < b ? b : a;
+    size_t s = (size_t)(edge_hash(lo, hi) & (uint64_t)(g->cap - 1));
+    while (g->slot[s].used &&
+           (g->slot[s].lo != lo || g->slot[s].hi != hi))
+        s = (s + 1) & (g->cap - 1);
+    return &g->slot[s];
+}
+
+static void bowtie_guard_add_edge(BowtieGuard *g, int32_t a, int32_t b,
+                                  int is_source)
+{
+    BowtieGuardEdge *e = bowtie_guard_slot(g, a, b);
+    if (!e->used) {
+        e->used = 1;
+        e->lo = a < b ? a : b;
+        e->hi = a < b ? b : a;
+    }
+    e->count++;
+    e->orient_sum += a < b ? 1 : -1;
+    if (is_source) e->source_count++;
+}
+
+static void bowtie_guard_add_faces(BowtieGuard *g,
+                                    const int32_t *faces, size_t nf,
+                                    int is_source)
+{
+    for (size_t f = 0; f < nf; f++)
+        for (int k = 0; k < 3; k++)
+            bowtie_guard_add_edge(g, faces[f*3+(size_t)k],
+                                  faces[f*3+(size_t)((k+1)%3)],is_source);
+}
+
+/* Test one proposed triangle against the immutable source/raw-bridge edge map
+ * plus triangles tentatively selected at this vertex.  An occupied edge must
+ * be used exactly once in the opposite direction; a two-face edge is sealed. */
+static int bowtie_guard_triangle_ok(BowtieGuard *g,
+                                    const int32_t *pending,
+                                    size_t pending_begin, size_t pending_end,
+                                    int32_t a, int32_t b, int32_t c,
+                                    int defer_source_orientation)
+{
+    int32_t tri[3] = {a,b,c};
+    for (int k = 0; k < 3; k++) {
+        int32_t x = tri[k], y = tri[(k+1)%3];
+        int32_t lo = x < y ? x : y, hi = x < y ? y : x;
+        int32_t dir = x < y ? 1 : -1;
+        BowtieGuardEdge *e = bowtie_guard_slot(g, lo, hi);
+        uint32_t count = e->used ? e->count : 0;
+        int32_t orient_sum = e->used ? e->orient_sum : 0;
+        uint32_t pending_count = 0;
+        for (size_t f = pending_begin; f < pending_end; f++) {
+            for (int q = 0; q < 3; q++) {
+                int32_t px = pending[f*3+(size_t)q];
+                int32_t py = pending[f*3+(size_t)((q+1)%3)];
+                int32_t plo = px < py ? px : py;
+                int32_t phi = px < py ? py : px;
+                if (plo == lo && phi == hi) {
+                    count++;
+                    pending_count++;
+                    orient_sum += px < py ? 1 : -1;
+                }
+            }
+        }
+        if (count >= 2) return 0;
+        if (count == 1 && orient_sum != -dir) {
+            /* Raw BPA patches are not oriented against the source until the
+             * chart transaction is admitted.  A candidate triangle must keep
+             * the raw bridge fan internally orientable, but it may traverse a
+             * source-only boundary edge in the same direction: the forest can
+             * then flip the complete patch as one unit.  It will reject the
+             * patch if different source attachments demand inconsistent flips.
+             * Never waive a bridge/pending conflict or edge multiplicity. */
+            if (!(defer_source_orientation && pending_count == 0 &&
+                  e->used && e->source_count == 1 && e->count == 1))
+                return 0;
+        }
+    }
+    return 1;
+}
+
 /* Two vertices at the same position (< 1e-4 vox apart). The bowtie split in
  * phase 1 duplicates a vertex's position, so a pinched loop carries such a
  * pair; a fill triangle using BOTH would be zero-area. */
@@ -122,14 +230,13 @@ static double face_normal_d(const float *vp, int32_t a, int32_t b, int32_t c,
 /* Build vertex -> incident-face CSR (off[nv+1], inc[3*nf]). */
 static void build_vert_faces(Arena_T arena, const int32_t *faces, size_t nf,
                              size_t nv, size_t **out_off, int **out_inc) {
-    size_t *off = (size_t *)ARENA_CALLOC(arena, (size_t)(nv + 1),
-                                         (long)sizeof(size_t));
+    size_t *off = (size_t *)ARENA_CALLOC(arena, nv + 1, sizeof(size_t));
     for (size_t f = 0; f < nf; f++) {
         for (int k = 0; k < 3; k++) { off[(size_t)faces[f * 3 + k] + 1]++; }
     }
     for (size_t v = 0; v < nv; v++) { off[v + 1] += off[v]; }
-    int *inc = (int *)ARENA_ALLOC(arena, (size_t)(off[nv] * sizeof(int)));
-    size_t *cur = (size_t *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(size_t)));
+    int *inc = (int *)ARENA_ALLOC(arena, off[nv] * sizeof(int));
+    size_t *cur = (size_t *)ARENA_ALLOC(arena, nv * sizeof(size_t));
     memcpy(cur, off, nv * sizeof(size_t));
     for (size_t f = 0; f < nf; f++) {
         for (int k = 0; k < 3; k++) {
@@ -164,40 +271,76 @@ static int face_edge_dir(const int32_t *faces, int fi, int32_t v, int32_t w)
  *
  * Instead, when the fans form ONE well-defined surface (every incident face's
  * normal agrees with the area-weighted vertex normal within BOWTIE_COHERENCE_COS)
- * and meet across only NARROW gaps (< BOWTIE_GAP_MAX_VOX), close the angular gaps
- * between fans with triangles fanned from v. The fans merge into one manifold
- * disk, no vertex is duplicated, and no coincident triangle is created. A bowtie
- * that is incoherent (divergent sheets) or spans a WIDE gap (two wraps touching
- * at a point) fails a gate and is left untouched for split_pinch_verts -- so
- * wraps are never welded. Adds fill triangles to cm->faces; nv is unchanged. */
-static void close_bowtie_gaps(Arena_T arena, ComponentMesh *cm,
-                              size_t *out_closed) {
+ * and meet across only NARROW gaps (< BOWTIE_GAP_MAX_VOX), join the fans with a
+ * shortest safe spanning forest of triangles fanned from v.  The forest merges
+ * the fans into one manifold disk while retaining an exterior boundary; filling
+ * every cyclic gap would instead create an annulus.  No vertex is duplicated
+ * and no coincident triangle is created. A bowtie that is incoherent (divergent
+ * sheets) or has no safe spanning set (for example two wraps touching at a
+ * point) fails a gate and is left untouched for split_pinch_verts -- so wraps
+ * are never welded. Adds fill triangles to cm->faces; nv is unchanged. */
+static int close_bowtie_gaps(Arena_T arena, ComponentMesh *cm,
+                             const int32_t *source_faces, size_t source_nf,
+                             const int32_t *vertex_chart, size_t n_charts,
+                             const size_t *chart_face_count,
+                             int bridge_boundary_mode,
+                             int defer_source_orientation,
+                             size_t *out_closed) {
     size_t nv = cm->nv, nf = cm->nf;
     int32_t *faces = cm->faces;
     const float *vp = cm->verts;
 
     size_t *off = NULL; int *inc = NULL;
     build_vert_faces(arena, faces, nf, nv, &off, &inc);
-    int *uf = (int *)ARENA_ALLOC(arena, (size_t)(nf * sizeof(int)));
+    int *uf = (int *)ARENA_ALLOC(arena, nf * sizeof(int));
 
     /* fill triangles (original vertex indices); <= total incidence slots. */
-    int32_t *fill = (int32_t *)ARENA_ALLOC(arena,
-                        (long)((off[nv] ? off[nv] : 1) * 3 * sizeof(int32_t)));
+    int32_t *fill = (int32_t *)ARENA_ALLOC(
+        arena, (off[nv] ? off[nv] : 1) * 3 * sizeof(int32_t));
     size_t nfill = 0, closed = 0;
-    int dbg = (sf_env("PINHOLE_DEBUG") != NULL);
+    int dbg = (getenv("PINHOLE_DEBUG") != NULL);
+    BowtieGuard guard;
+    memset(&guard, 0, sizeof guard);
+    if (bridge_boundary_mode) {
+        size_t edge_hint =
+            (bridge_boundary_mode==1 ? source_nf+nf : nf)*3+1;
+        if (bowtie_guard_init(&guard, edge_hint) != 0) return -1;
+        if(bridge_boundary_mode==1){
+            bowtie_guard_add_faces(&guard,source_faces,source_nf,1);
+            bowtie_guard_add_faces(&guard,faces,nf,0);
+        }else if(bridge_boundary_mode==2){
+            bowtie_guard_add_faces(&guard,faces,source_nf,1);
+            bowtie_guard_add_faces(&guard,faces+source_nf*3,nf-source_nf,0);
+        }
+    }
 
     /* The weld arms a wider gap cap (via SEAM_WRAP_PITCH); wide gaps are then
      * gated by the ORIENTATION test below, not size. Per-cube (unarmed) keeps the
      * conservative 2.0 cap. */
     int bt_armed = 0;
-    { const char *e = sf_env("SEAM_WRAP_PITCH"); if (e && atof(e) > 0.0) bt_armed = 1; }
+    { const char *e = getenv("SEAM_WRAP_PITCH"); if (e && atof(e) > 0.0) bt_armed = 1; }
     double bt_gapmax = bt_armed ? (double)BOWTIE_GAP_MAX_ARMED_VOX
                                 : (double)BOWTIE_GAP_MAX_VOX;
 
     enum { NBR_CAP = 128 };
     for (size_t v = 0; v < nv; v++) {
         size_t s = off[v], e = off[v + 1];
+        double coherence_gate=(double)BOWTIE_COHERENCE_COS;
         if (e - s < 2) { continue; }
+        if(bridge_boundary_mode==2&&vertex_chart!=NULL&&
+           chart_face_count!=NULL){
+            size_t smallest=SIZE_MAX;
+            for(size_t j=s;j<e;j++)for(int k=0;k<3;k++){
+                int32_t q=faces[(size_t)inc[j]*3+(size_t)k];
+                int32_t c=vertex_chart[q];
+                if(c>=0&&(size_t)c<n_charts&&
+                   chart_face_count[c]<smallest)
+                    smallest=chart_face_count[c];
+            }
+            if(smallest<=BRIDGE_MICRO_CHART_MAX_FACES)
+                coherence_gate=
+                    (double)BRIDGE_MICRO_ATTACHMENT_COHERENCE_COS;
+        }
 
         /* fan union-find: union incident faces that share a non-v vertex (i.e.
          * an edge (v,w)). Same fan detection as split_pinch_verts. */
@@ -245,7 +388,7 @@ static void close_bowtie_gaps(Arena_T arena, ComponentMesh *cm,
             double d = fn[0]*n[0]+fn[1]*n[1]+fn[2]*n[2];
             if (d < cohmin) { cohmin = d; }
         }
-        if (cohmin < (double)BOWTIE_COHERENCE_COS) {              /* divergent -> split */
+        if (cohmin < coherence_gate) {              /* divergent -> split */
             if (dbg) fprintf(stderr, "  [bowtie] v%zu (%.2f %.2f %.2f) fans=%zu SKIP incoherent cohmin=%.3f\n",
                              v, (double)vp[v*3+0], (double)vp[v*3+1], (double)vp[v*3+2], fans, cohmin);
             continue;
@@ -311,25 +454,255 @@ static void close_bowtie_gaps(Arena_T arena, ComponentMesh *cm,
             bn[jj+1]=kn; bfan[jj+1]=kf; bdir[jj+1]=kd; bang[jj+1]=ka;
         }
 
-        /* fill each cyclically-adjacent boundary pair in DIFFERENT fans (a gap);
-         * a same-fan adjacency is the fan's own interior arc. Abort the whole
-         * vertex if any diff-fan gap is wide / degenerate (leave it to split). */
-        int abort_v = 0; size_t fstart = nfill;
-        int ngap = 0; double abort_gap = -1.0; const char *abort_why = NULL;
+        if (bridge_boundary_mode) {
+            /* The bridge suffix is an open patch, not a complete surface.  A
+             * two-fan bowtie has two angular gaps, but closing both consumes
+             * the source-facing boundary and frequently makes a three-face
+             * edge.  Build a shortest winding-compatible spanning forest of
+             * fan gaps instead.  It joins all bridge fans while deliberately
+             * leaving one boundary arc for the source chart attachment. */
+            typedef struct {
+                int a, b, fa, fb;
+                double gap;
+            } BridgeGap;
+            BridgeGap gap[NBR_CAP];
+            int fan_root[NBR_CAP], fan_parent[NBR_CAP];
+            uint8_t fan_source[NBR_CAP],fan_bridge[NBR_CAP];
+            int ng = 0, nfr = 0, fan_overflow = 0;
+            int have_source=0,have_bridge=0;
+            size_t fstart = nfill;
+
+            for (size_t j = s; j < e; j++) {
+                int fr = uf_find(uf, inc[j]), q = 0;
+                while (q < nfr && fan_root[q] != fr) q++;
+                if (q == nfr) {
+                    if (nfr == NBR_CAP) { fan_overflow = 1; break; }
+                    fan_root[nfr] = fr;
+                    fan_parent[nfr] = nfr;
+                    fan_source[nfr]=fan_bridge[nfr]=0;
+                    nfr++;
+                }
+                if(bridge_boundary_mode==2){
+                    int fi=inc[j];
+                    if((size_t)fi<source_nf){
+                        fan_source[q]=1;have_source=1;
+                    }else{
+                        fan_bridge[q]=1;have_bridge=1;
+                    }
+                }
+            }
+            if (fan_overflow) {
+                if (dbg) fprintf(stderr,
+                    "  [bridge-bowtie] v%zu SKIP fan-overflow\n", v);
+                continue;
+            }
+            if(bridge_boundary_mode==2&&(!have_source||!have_bridge))
+                continue;
+            for (int i = 0; i < nb; i++) {
+                int a = bn[i], b = bn[(i+1)%nb];
+                double dz,dy,dx,glen;
+                if (bfan[i] == bfan[(i+1)%nb]) continue;
+                if (vertex_chart != NULL) {
+                    int32_t cv[3]={
+                        vertex_chart[v],vertex_chart[a],vertex_chart[b]};
+                    int nc=0;
+                    int allow_source_shoulder=0;
+                    for(int k=0;k<3;k++){
+                        int seen=0;
+                        if(cv[k]<0||(size_t)cv[k]>=n_charts){nc=4;break;}
+                        for(int q=0;q<k;q++)if(cv[q]==cv[k])seen=1;
+                        if(!seen)nc++;
+                    }
+                    /* A same-strip bowtie closure has one original chart pair.
+                     * Three distinct labels means the two bridge fans belong
+                     * to different source-chart transactions; joining them
+                     * here creates exactly the premature corner complex this
+                     * chart-level pass is meant to avoid. */
+                    /* In combined source+bridge mode, a missing triangle may
+                     * be the final shoulder between a source-chart fan and a
+                     * raw two-chart strip even though all three of the
+                     * triangle's vertices belong to the source chart.  That
+                     * is not an anonymous self-weld: require exactly one fan
+                     * to contain source faces, require the other fan to carry
+                     * one unambiguous two-chart pair containing this (small)
+                     * chart, and tag the appended face by its creation range
+                     * for ChartBridgeForest's initial support promotion.
+                     * The forest will still admit or reject the complete
+                     * patch transaction against live edge/link topology. */
+                    if(nc==1&&bridge_boundary_mode==2&&
+                       chart_face_count!=NULL&&
+                       chart_face_count[cv[0]]<=
+                           BRIDGE_MICRO_CHART_MAX_FACES){
+                        int ia=0,ib=0,bridge_fr=-1,other=-1,ambiguous=0;
+                        while(ia<nfr&&fan_root[ia]!=bfan[i])ia++;
+                        while(ib<nfr&&fan_root[ib]!=bfan[(i+1)%nb])ib++;
+                        if(ia<nfr&&ib<nfr&&
+                           fan_source[ia]!=fan_source[ib]){
+                            bridge_fr=fan_source[ia]?
+                                fan_root[ib]:fan_root[ia];
+                            for(size_t jj=s;jj<e;jj++){
+                                int fi=inc[jj],fr=uf_find(uf,fi);
+                                int32_t labels[3];int nlbl=0;
+                                if(fr!=bridge_fr||(size_t)fi<source_nf)
+                                    continue;
+                                for(int k=0;k<3;k++){
+                                    int32_t c=vertex_chart[
+                                        faces[(size_t)fi*3+(size_t)k]];
+                                    int seen=0;
+                                    for(int q=0;q<nlbl;q++)
+                                        if(labels[q]==c)seen=1;
+                                    if(!seen&&nlbl<3)labels[nlbl++]=c;
+                                }
+                                if(nlbl==2){
+                                    int32_t candidate=-1;
+                                    if(labels[0]==cv[0])candidate=labels[1];
+                                    else if(labels[1]==cv[0])candidate=labels[0];
+                                    if(candidate>=0){
+                                        if(other<0)other=candidate;
+                                        else if(other!=candidate)ambiguous=1;
+                                    }
+                                }else if(nlbl>2){
+                                    ambiguous=1;
+                                }
+                            }
+                            allow_source_shoulder=other>=0&&!ambiguous;
+                        }
+                    }
+                    if(nc!=2&&!allow_source_shoulder){
+                        if(dbg)fprintf(stderr,
+                            "  [bridge-bowtie] v%zu gap SKIP chart-corner "
+                            "(%d distinct chart(s))\n",v,nc);
+                        continue;
+                    }else if(allow_source_shoulder&&dbg){
+                        fprintf(stderr,
+                            "  [bridge-bowtie] v%zu gap source shoulder "
+                            "chart=%d\n",v,cv[0]);
+                    }
+                }
+                dz=vp[(size_t)a*3+0]-vp[(size_t)b*3+0];
+                dy=vp[(size_t)a*3+1]-vp[(size_t)b*3+1];
+                dx=vp[(size_t)a*3+2]-vp[(size_t)b*3+2];
+                glen=sqrt(dz*dz+dy*dy+dx*dx);
+                if (glen > bt_gapmax || coincident_v(vp,a,b) ||
+                    tri_min_altitude(vp,(int)v,a,b) < HOLEFILL_MIN_ALT_VOX) {
+                    if (dbg) fprintf(stderr,
+                        "  [bridge-bowtie] v%zu gap %.3f SKIP geometry\n",
+                        v,glen);
+                    continue;
+                }
+                gap[ng].a=a; gap[ng].b=b;
+                gap[ng].fa=bfan[i]; gap[ng].fb=bfan[(i+1)%nb];
+                gap[ng].gap=glen; ng++;
+            }
+            for (int i = 1; i < ng; i++) {
+                BridgeGap key=gap[i]; int j=i-1;
+                while (j>=0 && gap[j].gap>key.gap) {
+                    gap[j+1]=gap[j]; j--;
+                }
+                gap[j+1]=key;
+            }
+            for (int i = 0; i < ng; i++) {
+                int ia=0,ib=0,ra,rb,va,vb;
+                double fn[3], dot;
+                while (ia<nfr && fan_root[ia]!=gap[i].fa) ia++;
+                while (ib<nfr && fan_root[ib]!=gap[i].fb) ib++;
+                if (ia==nfr || ib==nfr) continue;
+                ra=uf_find(fan_parent,ia); rb=uf_find(fan_parent,ib);
+                if (ra==rb) continue;
+                if (face_normal_d(vp,(int32_t)v,gap[i].a,gap[i].b,fn)
+                    <= 1e-20) continue;
+                dot=fn[0]*n[0]+fn[1]*n[1]+fn[2]*n[2];
+                va=gap[i].a; vb=gap[i].b;
+                if (dot<0.0) { int tmp=va; va=vb; vb=tmp; dot=-dot; }
+                if (dot < coherence_gate ||
+                    !bowtie_guard_triangle_ok(&guard,fill,fstart,nfill,
+                                               (int32_t)v,va,vb,
+                                               defer_source_orientation)) {
+                    if (dbg) fprintf(stderr,
+                        "  [bridge-bowtie] v%zu gap %.3f SKIP source-edge/winding\n",
+                        v,gap[i].gap);
+                    continue;
+                }
+                fill[nfill*3+0]=(int32_t)v;
+                fill[nfill*3+1]=va;
+                fill[nfill*3+2]=vb;
+                nfill++;
+                fan_parent[ra]=rb;
+            }
+            if (nfr > 0) {
+                int root=uf_find(fan_parent,0), connected=1;
+                for (int i=1;i<nfr;i++)
+                    if (uf_find(fan_parent,i)!=root) { connected=0; break; }
+                if (!connected) {
+                    if (dbg) fprintf(stderr,
+                        "  [bridge-bowtie] v%zu (%.2f %.2f %.2f) fans=%d "
+                        "ABORT incomplete spanning closure\n",v,
+                        (double)vp[v*3+0],(double)vp[v*3+1],
+                        (double)vp[v*3+2],nfr);
+                    nfill=fstart;
+                    continue;
+                }
+            }
+            if (nfill > fstart) {
+                for (size_t f=fstart;f<nfill;f++)
+                    for (int k=0;k<3;k++)
+                        bowtie_guard_add_edge(
+                            &guard,fill[f*3+(size_t)k],
+                            fill[f*3+(size_t)((k+1)%3)],0);
+                closed++;
+                if (dbg) fprintf(stderr,
+                    "  [bridge-bowtie] v%zu (%.2f %.2f %.2f) fans=%d "
+                    "CLOSED %zu spanning gap(s)\n",v,
+                    (double)vp[v*3+0],(double)vp[v*3+1],
+                    (double)vp[v*3+2],nfr,nfill-fstart);
+            }
+            continue;
+        }
+
+        /* Join the fans with a shortest safe spanning tree of angular gaps.
+         * Filling every cyclic gap is topologically wrong: two disk fans have
+         * two gaps around v, and capping both creates an annulus.  One accepted
+         * gap joins them into a disk while retaining the other as outer
+         * boundary.  Kruskal also handles 3+ fans without creating a cycle. */
+        typedef struct {
+            int a, b, fa, fb, va, vb;
+            double gap;
+        } SourceGap;
+        SourceGap source_gap[NBR_CAP];
+        int fan_root[NBR_CAP], fan_parent[NBR_CAP];
+        int nsource_gap = 0, nfr = 0, fan_overflow = 0;
+        size_t fstart = nfill;
+
+        for (size_t j = s; j < e; j++) {
+            int fr = uf_find(uf, inc[j]), q = 0;
+            while (q < nfr && fan_root[q] != fr) q++;
+            if (q == nfr) {
+                if (nfr == NBR_CAP) { fan_overflow = 1; break; }
+                fan_root[nfr] = fr;
+                fan_parent[nfr] = nfr;
+                nfr++;
+            }
+        }
+        if (fan_overflow) {
+            if (dbg) fprintf(stderr,
+                "  [bowtie] v%zu fans=%zu SKIP fan-overflow\n", v, fans);
+            continue;
+        }
         for (int i = 0; i < nb; i++) {
             int a = bn[i], b = bn[(i+1)%nb];
             int da = bdir[i], db = bdir[(i+1)%nb];
             if (bfan[i] == bfan[(i+1)%nb]) { continue; }
-            ngap++;
             double dz=vp[(size_t)a*3+0]-vp[(size_t)b*3+0];
             double dy=vp[(size_t)a*3+1]-vp[(size_t)b*3+1];
             double dx=vp[(size_t)a*3+2]-vp[(size_t)b*3+2];
             double glen = sqrt(dz*dz+dy*dy+dx*dx);
-            if (glen > bt_gapmax) { abort_v=1; abort_gap=glen; abort_why="wide-gap"; break; }
-            if (coincident_v(vp, a, b)) { abort_v=1; abort_gap=glen; abort_why="coincident"; break; }
-            if (tri_min_altitude(vp, (int)v, a, b) < HOLEFILL_MIN_ALT_VOX) { abort_v=1; abort_gap=glen; abort_why="sliver"; break; }
+            const char *reject = NULL;
+            if (glen > bt_gapmax) reject = "wide-gap";
+            else if (coincident_v(vp, a, b)) reject = "coincident";
+            else if (tri_min_altitude(vp, (int)v, a, b) <
+                     HOLEFILL_MIN_ALT_VOX) reject = "sliver";
             int va, vb;
-            if (glen > (double)BOWTIE_GAP_MAX_VOX) {
+            if (reject == NULL && glen > (double)BOWTIE_GAP_MAX_VOX) {
                 /* WIDE (armed) gap: orientation gate. The fan must reverse both
                  * fans' boundary half-edges (v,a) and (v,b). That is possible iff
                  * the two owning faces traverse them in OPPOSITE senses at v
@@ -337,65 +710,185 @@ static void close_bowtie_gaps(Arena_T arena, ComponentMesh *cm,
                  * unknown dir) is a FOLD (fans wound oppositely); abort to split.
                  * The winding is then fixed by the reversal, NOT by the normal. */
                 if (da == 0 || db == 0 || da == db) {
-                    abort_v=1; abort_gap=glen; abort_why="fold"; break;
+                    reject = "fold";
+                    va = a; vb = b;
+                } else if (da == -1) {
+                    va = a; vb = b;       /* (v,a,b): v->a, b->v */
+                } else {
+                    va = b; vb = a;       /* (v,b,a): a->v, v->b */
                 }
-                if (da == -1) { va = a; vb = b; }   /* (v,a,b): v->a, b->v */
-                else          { va = b; vb = a; }   /* (v,b,a): a->v, v->b */
-            } else {
+            } else if (reject == NULL) {
                 /* NARROW gap: unchanged -- wind (v,a,b) so its normal agrees with n. */
                 double e1[3]={vp[(size_t)a*3+0]-vp[v*3+0], vp[(size_t)a*3+1]-vp[v*3+1], vp[(size_t)a*3+2]-vp[v*3+2]};
                 double e2[3]={vp[(size_t)b*3+0]-vp[v*3+0], vp[(size_t)b*3+1]-vp[v*3+1], vp[(size_t)b*3+2]-vp[v*3+2]};
                 double cr[3]={e1[1]*e2[2]-e1[2]*e2[1], e1[2]*e2[0]-e1[0]*e2[2], e1[0]*e2[1]-e1[1]*e2[0]};
                 va = a; vb = b;
                 if (cr[0]*n[0]+cr[1]*n[1]+cr[2]*n[2] < 0) { va = b; vb = a; }
+            } else {
+                va = a; vb = b;
             }
-            fill[nfill*3+0]=(int32_t)v; fill[nfill*3+1]=va; fill[nfill*3+2]=vb; nfill++;
+            if (reject != NULL) {
+                if (dbg) fprintf(stderr,
+                    "  [bowtie] v%zu candidate gap %.3f SKIP %s\n",
+                    v, glen, reject);
+                continue;
+            }
+            if (nsource_gap == NBR_CAP) { fan_overflow = 1; break; }
+            source_gap[nsource_gap].a = a;
+            source_gap[nsource_gap].b = b;
+            source_gap[nsource_gap].fa = bfan[i];
+            source_gap[nsource_gap].fb = bfan[(i+1)%nb];
+            source_gap[nsource_gap].va = va;
+            source_gap[nsource_gap].vb = vb;
+            source_gap[nsource_gap].gap = glen;
+            nsource_gap++;
         }
-        if (abort_v) {                               /* roll back this vertex */
+        if (fan_overflow) {
+            if (dbg) fprintf(stderr,
+                "  [bowtie] v%zu fans=%zu SKIP candidate-overflow\n", v, fans);
+            continue;
+        }
+        for (int i = 1; i < nsource_gap; i++) {
+            SourceGap key = source_gap[i];
+            int j = i - 1;
+            while (j >= 0 && source_gap[j].gap > key.gap) {
+                source_gap[j + 1] = source_gap[j];
+                j--;
+            }
+            source_gap[j + 1] = key;
+        }
+        for (int i = 0; i < nsource_gap; i++) {
+            int ia = 0, ib = 0;
+            while (ia < nfr && fan_root[ia] != source_gap[i].fa) ia++;
+            while (ib < nfr && fan_root[ib] != source_gap[i].fb) ib++;
+            if (ia == nfr || ib == nfr) continue;
+            int ra = uf_find(fan_parent, ia);
+            int rb = uf_find(fan_parent, ib);
+            if (ra == rb) continue;
+            fill[nfill*3+0] = (int32_t)v;
+            fill[nfill*3+1] = source_gap[i].va;
+            fill[nfill*3+2] = source_gap[i].vb;
+            nfill++;
+            fan_parent[ra] = rb;
+        }
+        int connected = nfr > 0;
+        if (connected) {
+            int root = uf_find(fan_parent, 0);
+            for (int i = 1; i < nfr; i++)
+                if (uf_find(fan_parent, i) != root) { connected = 0; break; }
+        }
+        if (!connected) {
             nfill = fstart;
-            if (dbg) fprintf(stderr, "  [bowtie] v%zu (%.2f %.2f %.2f) fans=%zu nb=%d ABORT %s gap=%.3f\n",
-                             v, (double)vp[v*3+0], (double)vp[v*3+1], (double)vp[v*3+2],
-                             fans, nb, abort_why, abort_gap);
+            if (dbg) fprintf(stderr,
+                "  [bowtie] v%zu (%.2f %.2f %.2f) fans=%zu ABORT "
+                "no safe spanning closure\n",
+                v, (double)vp[v*3+0], (double)vp[v*3+1],
+                (double)vp[v*3+2], fans);
             continue;
         }
         if (nfill > fstart) {
             closed++;
-            if (dbg) fprintf(stderr, "  [bowtie] v%zu (%.2f %.2f %.2f) fans=%zu CLOSED %zu gap(s)\n",
+            if (dbg) fprintf(stderr, "  [bowtie] v%zu (%.2f %.2f %.2f) fans=%zu CLOSED %zu spanning gap(s)\n",
                              v, (double)vp[v*3+0], (double)vp[v*3+1], (double)vp[v*3+2], fans, nfill-fstart);
         } else if (dbg) {
-            fprintf(stderr, "  [bowtie] v%zu (%.2f %.2f %.2f) fans=%zu nb=%d ngap=%d NO-FILL\n",
-                    v, (double)vp[v*3+0], (double)vp[v*3+1], (double)vp[v*3+2], fans, nb, ngap);
+            fprintf(stderr, "  [bowtie] v%zu (%.2f %.2f %.2f) fans=%zu nb=%d candidates=%d NO-FILL\n",
+                    v, (double)vp[v*3+0], (double)vp[v*3+1], (double)vp[v*3+2], fans, nb, nsource_gap);
         }
     }
 
     if (nfill > 0) {
         size_t nf_new = nf + nfill;
-        int32_t *nff = (int32_t *)ARENA_ALLOC(arena,
-                           (long)(nf_new * 3 * sizeof(int32_t)));
+        int32_t *nff = (int32_t *)ARENA_ALLOC(
+            arena, nf_new * 3 * sizeof(int32_t));
         memcpy(nff, faces, nf * 3 * sizeof(int32_t));
         memcpy(nff + nf * 3, fill, nfill * 3 * sizeof(int32_t));
         cm->faces = nff; cm->nf = nf_new;
     }
-    if (closed && sf_env("PINHOLE_DEBUG")) {
+    if (closed && getenv("PINHOLE_DEBUG")) {
         fprintf(stderr, "  [pinhole] close_bowtie_gaps: closed %zu bowtie(s) "
                 "in place, +%zu fill tris (no vertex split)\n", closed, nfill);
     }
+    free(guard.slot);
     if (out_closed) { *out_closed = closed; }
+    return 0;
+}
+
+int PinholeFill_close_bowties(Arena_T arena,
+                              ComponentMesh *meshes, size_t n_meshes,
+                              size_t *out_closed)
+{
+    size_t total = 0;
+    for (size_t i = 0; i < n_meshes; i++) {
+        size_t closed = 0;
+        if (meshes[i].nf == 0) continue;
+        if (close_bowtie_gaps(arena, &meshes[i], NULL, 0, NULL, 0, NULL, 0, 0,
+                              &closed) != 0) return -1;
+        total += closed;
+    }
+    if (out_closed) *out_closed = total;
+    return 0;
+}
+
+int PinholeFill_close_bridge_bowties(Arena_T arena,
+                                     ComponentMesh *bridge,
+                                     const int32_t *source_faces,
+                                     size_t source_nf,
+                                     const int32_t *vertex_chart,
+                                     size_t n_charts,
+                                     int defer_source_orientation,
+                                     size_t *out_closed)
+{
+    if (bridge == NULL || (source_nf > 0 && source_faces == NULL) ||
+        vertex_chart == NULL || n_charts == 0) return -1;
+    if (bridge->nf == 0) {
+        if (out_closed) *out_closed = 0;
+        return 0;
+    }
+    return close_bowtie_gaps(arena, bridge, source_faces, source_nf,
+                             vertex_chart, n_charts, NULL, 1,
+                             defer_source_orientation,
+                             out_closed);
+}
+
+int PinholeFill_close_bridge_attachments(Arena_T arena,
+                                         ComponentMesh *combined,
+                                         size_t source_nf,
+                                         const int32_t *vertex_chart,
+                                         size_t n_charts,
+                                         const size_t *chart_face_count,
+                                         int defer_source_orientation,
+                                         size_t *out_closed)
+{
+    if(combined==NULL||source_nf>combined->nf||vertex_chart==NULL||
+       n_charts==0)return -1;
+    if(combined->nf==source_nf){
+        if(out_closed)*out_closed=0;
+        return 0;
+    }
+    /* Mode 2 inspects vertex fans in the combined source+bridge mesh.  The
+     * source_nf prefix marks fan provenance; the edge guard is built from the
+     * combined mesh exactly once. */
+    return close_bowtie_gaps(arena,combined,NULL,source_nf,
+                             vertex_chart,n_charts,chart_face_count,2,
+                             defer_source_orientation,
+                             out_closed);
 }
 
 /* PHASE 1 — split bowtie / pinch vertices. */
 static size_t split_pinch_verts(Arena_T arena, ComponentMesh *cm,
-                                size_t *out_splits) {
+                                size_t *out_splits,
+                                int32_t **out_vertex_source) {
     size_t nv = cm->nv, nf = cm->nf;
     int32_t *faces = cm->faces;
+
+    if (out_vertex_source) *out_vertex_source = NULL;
 
     size_t *off = NULL; int *inc = NULL;
     build_vert_faces(arena, faces, nf, nv, &off, &inc);
 
-    int *uf = (int *)ARENA_ALLOC(arena, (size_t)(nf * sizeof(int)));
+    int *uf = (int *)ARENA_ALLOC(arena, nf * sizeof(int));
     /* root_of_slot[j] = fan root (a face id) for incident slot j */
-    int *root_of_slot = (int *)ARENA_ALLOC(arena,
-                                           (long)(off[nv] * sizeof(int)));
+    int *root_of_slot = (int *)ARENA_ALLOC(arena, off[nv] * sizeof(int));
 
     /* sub-pass 1: fan roots per slot + count extra verts */
     size_t extra = 0;
@@ -433,11 +926,20 @@ static size_t split_pinch_verts(Arena_T arena, ComponentMesh *cm,
         if (fans >= 2) { extra += fans - 1; }
     }
 
-    if (extra == 0) { if (out_splits) { *out_splits = 0; } return nv; }
+    if (extra == 0) {
+        if (out_vertex_source) {
+            int32_t *source = (int32_t *)ARENA_ALLOC(
+                arena, (nv ? nv : 1) * sizeof(*source));
+            for (size_t v = 0; v < nv; v++) source[v] = (int32_t)v;
+            *out_vertex_source = source;
+        }
+        if (out_splits) { *out_splits = 0; }
+        return nv;
+    }
 
     /* sub-pass 2: assign output ids per fan root; fill newid[slot] */
-    int *newid = (int *)ARENA_ALLOC(arena, (size_t)(off[nv] * sizeof(int)));
-    int *src_of_new = (int *)ARENA_ALLOC(arena, (size_t)(extra * sizeof(int)));
+    int *newid = (int *)ARENA_ALLOC(arena, off[nv] * sizeof(int));
+    int *src_of_new = (int *)ARENA_ALLOC(arena, extra * sizeof(int));
     size_t next_new = nv, nsplit = 0;
     for (size_t v = 0; v < nv; v++) {
         size_t s = off[v], e = off[v + 1];
@@ -469,18 +971,18 @@ static size_t split_pinch_verts(Arena_T arena, ComponentMesh *cm,
 
     /* grow vertex-keyed arrays */
     size_t nv_new = nv + extra;
-    float *nv_verts = (float *)ARENA_ALLOC(arena,
-                                           (long)(nv_new * 3 * sizeof(float)));
+    float *nv_verts = (float *)ARENA_ALLOC(
+        arena, nv_new * 3 * sizeof(float));
     memcpy(nv_verts, cm->verts, nv * 3 * sizeof(float));
     float *nv_norm = NULL;
     if (cm->vert_normals) {
-        nv_norm = (float *)ARENA_ALLOC(arena,
-                                       (long)(nv_new * 3 * sizeof(float)));
+        nv_norm = (float *)ARENA_ALLOC(
+            arena, nv_new * 3 * sizeof(float));
         memcpy(nv_norm, cm->vert_normals, nv * 3 * sizeof(float));
     }
     uint8_t *nv_pin = NULL;
     if (cm->pin_mask) {
-        nv_pin = (uint8_t *)ARENA_ALLOC(arena, (size_t)(nv_new * sizeof(uint8_t)));
+        nv_pin = (uint8_t *)ARENA_ALLOC(arena, nv_new * sizeof(uint8_t));
         memcpy(nv_pin, cm->pin_mask, nv * sizeof(uint8_t));
     }
     for (size_t i = 0; i < extra; i++) {
@@ -515,6 +1017,13 @@ static size_t split_pinch_verts(Arena_T arena, ComponentMesh *cm,
     cm->vert_normals = nv_norm ? nv_norm : cm->vert_normals;
     cm->pin_mask = nv_pin ? nv_pin : cm->pin_mask;
     cm->nv = nv_new;
+    if (out_vertex_source) {
+        int32_t *source = (int32_t *)ARENA_ALLOC(
+            arena, nv_new * sizeof(*source));
+        for (size_t v = 0; v < nv; v++) source[v] = (int32_t)v;
+        for (size_t i = 0; i < extra; i++) source[nv+i] = src_of_new[i];
+        *out_vertex_source = source;
+    }
     if (out_splits) { *out_splits = nsplit; }
     return nv_new;
 }
@@ -530,11 +1039,25 @@ int PinholeFill_split_pinches(Arena_T arena,
         ComponentMesh *cm = &meshes[i];
         if (cm->nf == 0) { continue; }
         size_t sp = 0;
-        split_pinch_verts(arena, cm, &sp);
+        split_pinch_verts(arena, cm, &sp, NULL);
         total += sp;
     }
     if (out_splits) { *out_splits = total; }
     return 0;
+}
+
+int PinholeFill_split_pinches_mapped(Arena_T arena,
+                                     ComponentMesh *mesh,
+                                     size_t *out_splits,
+                                     int32_t **out_vertex_source)
+{
+    if (out_splits) *out_splits = 0;
+    if (out_vertex_source) *out_vertex_source = NULL;
+    if (!arena || !mesh || !mesh->verts || !mesh->faces ||
+        mesh->nv == 0 || mesh->nf == 0 || !out_vertex_source)
+        return -1;
+    split_pinch_verts(arena, mesh, out_splits, out_vertex_source);
+    return *out_vertex_source ? 0 : -1;
 }
 
 /* PHASE 2 — fill small boundary loops. */
@@ -551,9 +1074,12 @@ static void fill_small_loops(Arena_T arena, ComponentMesh *cm,
     size_t hsz = next_pow2(nf * 3 * 2);
     if (hsz < 1024) { hsz = 1024; }
     uint64_t hmask = (uint64_t)(hsz - 1);
-    int *bk = (int *)ARENA_ALLOC(arena, (size_t)(hsz * sizeof(int)));
+    /* Keep allocation arithmetic in size_t.  On Win64, long is still 32-bit;
+     * the 4x21x21 source has hsz=2^29, so the old cast wrapped the exact
+     * 2-GiB bucket table to LONG_MIN and then sign-extended to SIZE_MAX-2GiB. */
+    int *bk = (int *)ARENA_ALLOC(arena, hsz * sizeof(int));
     memset(bk, 0xFF, hsz * sizeof(int));
-    E *ed = (E *)ARENA_ALLOC(arena, (size_t)(nf * 3 * sizeof(E)));
+    E *ed = (E *)ARENA_ALLOC(arena, nf * 3 * sizeof(E));
     size_t en = 0;
 
     /* face -> connected component (union across every shared edge). Lets us
@@ -561,7 +1087,7 @@ static void fill_small_loops(Arena_T arena, ComponentMesh *cm,
      * rim, so the component has >=2 boundary loops) from the sole rim of a tiny
      * island (its component's ONLY loop) — the latter must never be capped into
      * a closed bubble. */
-    int *cuf = (int *)ARENA_ALLOC(arena, (size_t)(nf * sizeof(int)));
+    int *cuf = (int *)ARENA_ALLOC(arena, nf * sizeof(int));
     for (size_t f = 0; f < nf; f++) { cuf[f] = (int)f; }
 
     for (size_t f = 0; f < nf; f++) {
@@ -595,9 +1121,9 @@ static void fill_small_loops(Arena_T arena, ComponentMesh *cm,
         if (out_skipped) { *out_skipped = 0; }
         return;
     }
-    int *he_src = (int *)ARENA_ALLOC(arena, (size_t)(nb * sizeof(int)));
-    int *he_dst = (int *)ARENA_ALLOC(arena, (size_t)(nb * sizeof(int)));
-    int *he_face = (int *)ARENA_ALLOC(arena, (size_t)(nb * sizeof(int)));
+    int *he_src = (int *)ARENA_ALLOC(arena, nb * sizeof(int));
+    int *he_dst = (int *)ARENA_ALLOC(arena, nb * sizeof(int));
+    int *he_face = (int *)ARENA_ALLOC(arena, nb * sizeof(int));
     size_t hn = 0;
     for (size_t f = 0; f < nf; f++) {
         for (int e = 0; e < 3; e++) {
@@ -616,21 +1142,21 @@ static void fill_small_loops(Arena_T arena, ComponentMesh *cm,
     }
 
     /* per-vertex outgoing boundary half-edges (CSR) */
-    size_t *voff = (size_t *)ARENA_CALLOC(arena, (size_t)(nv + 1),
-                                          (long)sizeof(size_t));
+    size_t *voff = (size_t *)ARENA_CALLOC(arena, nv + 1, sizeof(size_t));
     for (size_t i = 0; i < nb; i++) { voff[(size_t)he_src[i] + 1]++; }
     for (size_t v = 0; v < nv; v++) { voff[v + 1] += voff[v]; }
-    int *vhe = (int *)ARENA_ALLOC(arena, (size_t)(nb * sizeof(int)));
-    size_t *vcur = (size_t *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(size_t)));
+    int *vhe = (int *)ARENA_ALLOC(arena, nb * sizeof(int));
+    size_t *vcur = (size_t *)ARENA_ALLOC(arena, nv * sizeof(size_t));
     memcpy(vcur, voff, nv * sizeof(size_t));
     for (size_t i = 0; i < nb; i++) { vhe[vcur[(size_t)he_src[i]]++] = (int)i; }
 
-    uint8_t *used = (uint8_t *)ARENA_CALLOC(arena, (size_t)nb, 1);
+    uint8_t *used = (uint8_t *)ARENA_CALLOC(arena, nb, 1);
     int loop[PINHOLE_MAX_LOOP + 2];
 
     /* fill triangles buffer: <= nb triangles added (each boundary edge
      * becomes interior, contributing at most one new fan triangle). */
-    int32_t *fill = (int32_t *)ARENA_ALLOC(arena, (size_t)(nb * 3 * sizeof(int32_t)));
+    int32_t *fill = (int32_t *)ARENA_ALLOC(
+        arena, nb * 3 * sizeof(int32_t));
     size_t nfill = 0, filled = 0, skipped = 0;
 
     /* triangle-existence set over the existing faces, kept live as fills are
@@ -640,8 +1166,7 @@ static void fill_small_loops(Arena_T arena, ComponentMesh *cm,
     size_t tsz = next_pow2((nf + nb) * 2);
     if (tsz < 1024) { tsz = 1024; }
     uint64_t tmask = (uint64_t)(tsz - 1);
-    uint64_t *tset = (uint64_t *)ARENA_CALLOC(arena, (size_t)tsz,
-                                              (long)sizeof(uint64_t));
+    uint64_t *tset = (uint64_t *)ARENA_CALLOC(arena, tsz, sizeof(uint64_t));
     for (size_t f = 0; f < nf; f++) {
         tri_add(tset, tmask, faces[f * 3 + 0], faces[f * 3 + 1],
                 faces[f * 3 + 2]);
@@ -652,8 +1177,8 @@ static void fill_small_loops(Arena_T arena, ComponentMesh *cm,
      * island's component has only its own rim (1 loop) and must not be capped
      * into a closed bubble. Walk consumes the same half-edges the fill pass
      * will, so each distinct boundary cycle/chain is counted once. */
-    size_t *loops_per_comp = (size_t *)ARENA_CALLOC(arena, (size_t)nf,
-                                                    (long)sizeof(size_t));
+    size_t *loops_per_comp = (size_t *)ARENA_CALLOC(
+        arena, nf, sizeof(size_t));
     for (size_t i0 = 0; i0 < nb; i0++) {
         if (used[i0]) { continue; }
         loops_per_comp[(size_t)uf_find(cuf, he_face[i0])]++;
@@ -787,8 +1312,8 @@ static void fill_small_loops(Arena_T arena, ComponentMesh *cm,
 
     if (nfill > 0) {
         size_t nf_new = nf + nfill;
-        int32_t *nf_faces = (int32_t *)ARENA_ALLOC(arena,
-                                  (long)(nf_new * 3 * sizeof(int32_t)));
+        int32_t *nf_faces = (int32_t *)ARENA_ALLOC(
+            arena, nf_new * 3 * sizeof(int32_t));
         memcpy(nf_faces, faces, nf * 3 * sizeof(int32_t));
         memcpy(nf_faces + nf * 3, fill, nfill * 3 * sizeof(int32_t));
         cm->faces = nf_faces;
@@ -797,6 +1322,29 @@ static void fill_small_loops(Arena_T arena, ComponentMesh *cm,
     if (out_filled) { *out_filled = filled; }
     if (out_added) { *out_added = nfill; }
     if (out_skipped) { *out_skipped = skipped; }
+}
+
+int PinholeFill_fill_small_loops(Arena_T arena,
+                                 ComponentMesh *meshes, size_t n_meshes,
+                                 int respect_pins,
+                                 size_t *out_loops_filled,
+                                 size_t *out_tris_added,
+                                 size_t *out_loops_skipped)
+{
+    size_t total_filled = 0, total_added = 0, total_skipped = 0;
+    for (size_t i = 0; i < n_meshes; i++) {
+        size_t filled = 0, added = 0, skipped = 0;
+        if (meshes[i].nf == 0 || meshes[i].nv < 3) continue;
+        fill_small_loops(arena, &meshes[i], respect_pins,
+                         &filled, &added, &skipped);
+        total_filled += filled;
+        total_added += added;
+        total_skipped += skipped;
+    }
+    if (out_loops_filled) *out_loops_filled = total_filled;
+    if (out_tris_added) *out_tris_added = total_added;
+    if (out_loops_skipped) *out_loops_skipped = total_skipped;
+    return 0;
 }
 
 int PinholeFill_process(Arena_T arena,
@@ -814,8 +1362,8 @@ int PinholeFill_process(Arena_T arena,
         size_t splits = 0;
         /* Phase 0: close coherent narrow bowties in place (keep the vertex), so
          * phase 1 only splits the genuinely divergent/wide ones. */
-        close_bowtie_gaps(arena, cm, NULL);
-        split_pinch_verts(arena, cm, &splits);
+        close_bowtie_gaps(arena, cm, NULL, 0, NULL, 0, NULL, 0, 0, NULL);
+        split_pinch_verts(arena, cm, &splits, NULL);
         size_t filled = 0, added = 0, skipped = 0;
         fill_small_loops(arena, cm, respect_pins, &filled, &added, &skipped);
         /* cm->verts/faces/etc now point into arena past `mark`; do NOT

@@ -258,6 +258,8 @@ int ArcReg_solve(Arena_T arena,
     double *r  = (double *)ARENA_ALLOC(arena, (size_t)(total_vars * sizeof(double)));
     double *p  = (double *)ARENA_ALLOC(arena, (size_t)(total_vars * sizeof(double)));
     double *Mp = (double *)ARENA_ALLOC(arena, (size_t)(total_vars * sizeof(double)));
+    uint8_t *clipped = (uint8_t *)ARENA_CALLOC(arena, (size_t)total_vars,
+                                               sizeof(uint8_t));
     double *abs_res = (double *)ARENA_ALLOC(arena, nsp * sizeof(double));
     int rounds = opts.relax_iters + opts.final_iters;
     if (rounds < 1) rounds = 1;
@@ -300,8 +302,14 @@ int ArcReg_solve(Arena_T arena,
         }
 
         for (int i = 0; i < total_vars; i++) {
-            if (x[i] >  opts.max_warp) x[i] =  opts.max_warp;
-            if (x[i] < -opts.max_warp) x[i] = -opts.max_warp;
+            if (x[i] > opts.max_warp) {
+                x[i] = opts.max_warp;
+                clipped[i] = 1;
+            }
+            if (x[i] < -opts.max_warp) {
+                x[i] = -opts.max_warp;
+                clipped[i] = 1;
+            }
         }
         for (size_t s = 0; s < nsp; s++) {
             const Spring *sp = &springs[s];
@@ -332,8 +340,15 @@ int ArcReg_solve(Arena_T arena,
         const NodeInfo *nd = &nodes[i];
         for (int kk = 0; kk < nd->n_knots; kk++) {
             double *v = &x[nd->base + kk];
-            if (*v >  opts.max_warp) { *v =  opts.max_warp; clamps++; }
-            if (*v < -opts.max_warp) { *v = -opts.max_warp; clamps++; }
+            if (*v > opts.max_warp) {
+                *v = opts.max_warp;
+                clipped[nd->base + kk] = 1;
+            }
+            if (*v < -opts.max_warp) {
+                *v = -opts.max_warp;
+                clipped[nd->base + kk] = 1;
+            }
+            if (clipped[nd->base + kk]) clamps++;
             if (fabs(*v) > maxabs) maxabs = fabs(*v);
         }
     }

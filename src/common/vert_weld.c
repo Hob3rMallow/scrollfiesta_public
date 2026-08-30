@@ -62,14 +62,17 @@ static void uf_union(int32_t *parent, int32_t a, int32_t b)
     else parent[ra] = rb;
 }
 
-void Weld_verts(Arena_T arena,
-                const float *verts, size_t nv,
-                const float *in_normals,
-                int32_t *faces, size_t nf, size_t *out_nf,
-                float eps,
-                bool guard_orient,
-                float **out_verts, size_t *out_nv,
-                float **out_normals)
+void Weld_verts_filtered(Arena_T arena,
+                         const float *verts, size_t nv,
+                         const float *in_normals,
+                         int32_t *faces, size_t nf, size_t *out_nf,
+                         float eps,
+                         bool guard_orient,
+                         const int32_t *merge_group,
+                         WeldPairFilter pair_filter,
+                         void *pair_filter_context,
+                         float **out_verts, size_t *out_nv,
+                         float **out_normals)
 {
     assert(arena);
     assert(verts);
@@ -128,7 +131,7 @@ void Weld_verts(Arena_T arena,
     int do_guard = (guard_orient && nf > 0) ? 1 : 0;
     double *vn = NULL;
     if (do_guard) {
-        vn = (double *)ARENA_CALLOC(arena, (size_t)nv * 3L, (size_t)sizeof(double));
+        vn = (double *)ARENA_CALLOC(arena, (long)nv * 3L, (long)sizeof(double));
         for (size_t f = 0; f < nf; f++) {
             int32_t i0 = faces[f*3+0], i1 = faces[f*3+1], i2 = faces[f*3+2];
             const float *p0 = &verts[(size_t)i0*3];
@@ -169,12 +172,25 @@ void Weld_verts(Arena_T arena,
                     }
                     for (size_t k = lo; k < nv && keys[k] == target; k++) {
                         int32_t j = entries[k].vert_idx;
-                        if ((size_t)j == i) continue;
+                        /* Each unordered pair is considered exactly once. */
+                        if ((size_t)j <= i) continue;
                         double dvz = (double)verts[j*3+0] - (double)vz;
                         double dvy = (double)verts[j*3+1] - (double)vy;
                         double dvx = (double)verts[j*3+2] - (double)vx;
                         double r2 = dvz*dvz + dvy*dvy + dvx*dvx;
                         if (r2 <= E2) {
+                            /* A late cleanup may encounter bit-coincident points
+                             * on two independent sheets.  Normal agreement is
+                             * insufficient there: two stacked sheets can be
+                             * same-facing.  Preserve the caller's connectivity
+                             * partition before considering geometric guards. */
+                            if (merge_group != NULL &&
+                                merge_group[i] != merge_group[(size_t)j])
+                                continue;
+                            if (pair_filter != NULL &&
+                                !pair_filter(i, (size_t)j,
+                                             pair_filter_context))
+                                continue;
                             if (do_guard) {
                                 const double *ni = &vn[i*3];
                                 const double *nj = &vn[(size_t)j*3];
@@ -220,17 +236,17 @@ void Weld_verts(Arena_T arena,
 
     /* -------- Accumulate centroid (and optional normals) per group -------- */
     /* Final output arrays live on the caller's arena; allocate now. */
-    float *welded = (float *)ARENA_ALLOC(arena, (size_t)(n_new * 3 * sizeof(float)));
+    float *welded = (float *)ARENA_ALLOC(arena, (long)(n_new * 3 * sizeof(float)));
     float *welded_n = NULL;
     if (out_normals && in_normals) {
-        welded_n = (float *)ARENA_ALLOC(arena, (size_t)(n_new * 3 * sizeof(float)));
+        welded_n = (float *)ARENA_ALLOC(arena, (long)(n_new * 3 * sizeof(float)));
     }
-    double *acc = (double *)ARENA_CALLOC(arena, (size_t)n_new * 3L, (size_t)sizeof(double));
+    double *acc = (double *)ARENA_CALLOC(arena, (long)n_new * 3L, (long)sizeof(double));
     double *acc_n = NULL;
     if (welded_n) {
-        acc_n = (double *)ARENA_CALLOC(arena, (size_t)n_new * 3L, (size_t)sizeof(double));
+        acc_n = (double *)ARENA_CALLOC(arena, (long)n_new * 3L, (long)sizeof(double));
     }
-    int32_t *count = (int32_t *)ARENA_CALLOC(arena, (size_t)n_new, (size_t)sizeof(int32_t));
+    int32_t *count = (int32_t *)ARENA_CALLOC(arena, (long)n_new, (long)sizeof(int32_t));
 
     for (size_t i = 0; i < nv; i++) {
         int32_t k = new_idx[i];
@@ -291,4 +307,33 @@ void Weld_verts(Arena_T arena,
      * the caller would only reclaim the bytes if it brackets this call;
      * that's the existing convention in step0_mesh_extract.c. */
     (void)mark;
+}
+
+void Weld_verts_grouped(Arena_T arena,
+                        const float *verts, size_t nv,
+                        const float *in_normals,
+                        int32_t *faces, size_t nf, size_t *out_nf,
+                        float eps,
+                        bool guard_orient,
+                        const int32_t *merge_group,
+                        float **out_verts, size_t *out_nv,
+                        float **out_normals)
+{
+    Weld_verts_filtered(arena, verts, nv, in_normals, faces, nf, out_nf,
+                        eps, guard_orient, merge_group, NULL, NULL,
+                        out_verts, out_nv, out_normals);
+}
+
+void Weld_verts(Arena_T arena,
+                const float *verts, size_t nv,
+                const float *in_normals,
+                int32_t *faces, size_t nf, size_t *out_nf,
+                float eps,
+                bool guard_orient,
+                float **out_verts, size_t *out_nv,
+                float **out_normals)
+{
+    Weld_verts_filtered(arena, verts, nv, in_normals, faces, nf, out_nf,
+                        eps, guard_orient, NULL, NULL, NULL,
+                        out_verts, out_nv, out_normals);
 }

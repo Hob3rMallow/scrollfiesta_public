@@ -13,9 +13,17 @@
  * can. The fused component falls apart into its per-wrap sheets along the cut.
  *
  *   wind_cut <in.obj> <out.obj> --umb-y Y --umb-x X [--pitch P=9.5] [--tol T=0.7]
- *            [--min-comp-faces M=0]
+ *            [--min-comp-faces M=0] [--pitch-table r_pitch.csv]
+ *            [--json report.json] [--max-cut-fraction F=0.05; 0=off]
  *   wind_cut --selftest
- * Exit: 0 ok / selftest pass, 1 IO, 2 usage, 3 selftest fail.
+ * Exit: 0 ok / selftest pass, 1 IO, 2 usage, 3 selftest fail,
+ *       4 cut fraction exceeded --max-cut-fraction (no output written).
+ *
+ * --pitch-table replaces the scalar dr/pitch with the measured radial
+ * integral (src/common/pitch_table.h); the scalar remains the fallback and
+ * the reported turn spans use the same gauge.  The umbilicus stays constant
+ * per invocation: per-cube cutting spans 128 z at most, where the measured
+ * axis wander (<1 vox) is far below the winding tolerance.
  */
 #ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
@@ -25,6 +33,8 @@
 #include <string.h>
 #include <stdint.h>
 #include <math.h>
+
+#include "../common/pitch_table.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -110,21 +120,23 @@ static void uf_union(int32_t *p, int32_t *sz, int32_t a, int32_t b)
 static double wrap_pmpi(double a) { while (a > M_PI) a -= TWO_PI; while (a <= -M_PI) a += TWO_PI; return a; }
 static double vradius(const float *V, size_t i, double uy, double ux)
 { double dy = (double)V[i*3+1] - uy, dx = (double)V[i*3+2] - ux; return hypot(dy, dx); }
-static double dwind(const float *V, size_t u, size_t v, double uy, double ux, double pitch)
+static double dwind(const float *V, size_t u, size_t v, double uy, double ux,
+                    double pitch, PitchTable ptab)
 {
     double dyu = (double)V[u*3+1] - uy, dxu = (double)V[u*3+2] - ux;
     double dyv = (double)V[v*3+1] - uy, dxv = (double)V[v*3+2] - ux;
-    double dr  = hypot(dyv, dxv) - hypot(dyu, dxu);
+    double ru  = hypot(dyu, dxu), rv = hypot(dyv, dxv);
     double dth = wrap_pmpi(atan2(dyv, dxv) - atan2(dyu, dxu));
-    return dr / pitch - dth / TWO_PI;
+    return PitchTable_dturns(ptab, ru, rv, pitch) - dth / TWO_PI;
 }
 
 /* max |dw| over a face's three edges */
-static double face_max_dw(const float *V, const int32_t *f, double uy, double ux, double pitch)
+static double face_max_dw(const float *V, const int32_t *f, double uy, double ux,
+                          double pitch, PitchTable ptab)
 {
-    double d0 = fabs(dwind(V, (size_t)f[0], (size_t)f[1], uy, ux, pitch));
-    double d1 = fabs(dwind(V, (size_t)f[1], (size_t)f[2], uy, ux, pitch));
-    double d2 = fabs(dwind(V, (size_t)f[2], (size_t)f[0], uy, ux, pitch));
+    double d0 = fabs(dwind(V, (size_t)f[0], (size_t)f[1], uy, ux, pitch, ptab));
+    double d1 = fabs(dwind(V, (size_t)f[1], (size_t)f[2], uy, ux, pitch, ptab));
+    double d2 = fabs(dwind(V, (size_t)f[2], (size_t)f[0], uy, ux, pitch, ptab));
     double m = d0 > d1 ? d0 : d1; return m > d2 ? m : d2;
 }
 
@@ -132,7 +144,8 @@ static double face_max_dw(const float *V, const int32_t *f, double uy, double ux
  * comp face count + radial turn-span (r-span/pitch). */
 typedef struct { size_t n_comp; size_t big_faces; double big_turns; } CompStat;
 static CompStat comp_stats(const FVec *V, const int32_t *F, const uint8_t *active, size_t nf,
-                           double uy, double ux, double pitch, size_t min_faces)
+                           double uy, double ux, double pitch, PitchTable ptab,
+                           size_t min_faces)
 {
     CompStat cs = {0,0,0.0};
     size_t nv = V->n;
@@ -164,7 +177,10 @@ static CompStat comp_stats(const FVec *V, const int32_t *F, const uint8_t *activ
     for (size_t i = 0; i < nv; i++) {
         if (fc[i] < min_faces || fc[i] == 0) continue;
         cs.n_comp++;
-        if (fc[i] > cs.big_faces) { cs.big_faces = fc[i]; cs.big_turns = (rmax[i] - rmin[i]) / pitch; }
+        if (fc[i] > cs.big_faces) {
+            cs.big_faces = fc[i];
+            cs.big_turns = PitchTable_dturns(ptab, rmin[i], rmax[i], pitch);
+        }
     }
     free(p); free(sz); free(fc); free(rmin); free(rmax);
     return cs;
@@ -172,7 +188,8 @@ static CompStat comp_stats(const FVec *V, const int32_t *F, const uint8_t *activ
 
 /* ---------- cut ---------- */
 static int run(const char *in, const char *out, double uy, double ux, double pitch,
-               double tol, size_t min_comp_faces)
+               PitchTable ptab, double tol, size_t min_comp_faces,
+               double max_cut_fraction, const char *json_path)
 {
     FVec V = {0}; IVec F = {0};
     if (read_obj(in, &V, &F) != 0) { free(V.v); free(F.f); return 1; }
@@ -184,12 +201,35 @@ static int run(const char *in, const char *out, double uy, double ux, double pit
     size_t n_cut = 0;
     for (size_t i = 0; i < F.n; i++) {
         all[i] = 1;
-        int cross = face_max_dw(V.v, &F.f[i*3], uy, ux, pitch) > tol;
+        int cross = face_max_dw(V.v, &F.f[i*3], uy, ux, pitch, ptab) > tol;
         keep[i] = cross ? 0 : 1;
         if (cross) n_cut++;
     }
+    double cut_fraction = (double)n_cut / (double)F.n;
+    if (max_cut_fraction > 0.0 && cut_fraction > max_cut_fraction) {
+        /* Fail closed: a cut this broad means the gauge is wrong for this
+         * mesh (bad pitch, wrong umbilicus, or genuine disintegration), not
+         * that this many faces are bridges.  Nothing is written. */
+        fprintf(stderr,
+            "wind_cut: REFUSED %s: cut fraction %.4f exceeds "
+            "--max-cut-fraction %.4f (%zu of %zu faces)\n",
+            in, cut_fraction, max_cut_fraction, n_cut, F.n);
+        if (json_path) {
+            FILE *j = fopen(json_path, "wb");
+            if (j) {
+                fprintf(j,
+                    "{\"input\":\"%s\",\"refused\":true,"
+                    "\"faces_in\":%zu,\"faces_cut\":%zu,"
+                    "\"cut_fraction\":%.6f,\"max_cut_fraction\":%.6f}\n",
+                    in, F.n, n_cut, cut_fraction, max_cut_fraction);
+                fclose(j);
+            }
+        }
+        free(V.v); free(F.f); free(keep); free(all);
+        return 4;
+    }
 
-    CompStat before = comp_stats(&V, F.f, all, F.n, uy, ux, pitch, 1);
+    CompStat before = comp_stats(&V, F.f, all, F.n, uy, ux, pitch, ptab, 1);
 
     /* compact kept faces */
     int32_t *KF = (int32_t *)malloc(F.n * 3 * sizeof(int32_t));
@@ -224,13 +264,15 @@ static int run(const char *in, const char *out, double uy, double ux, double pit
     /* after-stats over the surviving faces */
     uint8_t *kact = (uint8_t *)malloc(nkf ? nkf : 1);
     for (size_t i = 0; i < nkf; i++) kact[i] = 1;
-    CompStat after = comp_stats(&V, KF, kact, nkf, uy, ux, pitch, 1);
+    CompStat after = comp_stats(&V, KF, kact, nkf, uy, ux, pitch, ptab, 1);
     free(kact);
 
     int rc = write_obj(out, &V, KF, nkf) == 0 ? 0 : 1;
 
     printf("wind_cut: %s -> %s\n", in, out);
-    printf("  umbilicus=(y %.1f, x %.1f) pitch=%.2f  cut tol |dw|>%.2f\n", uy, ux, pitch, tol);
+    printf("  umbilicus=(y %.1f, x %.1f) pitch=%.2f (%s)  cut tol |dw|>%.2f\n",
+           uy, ux, pitch,
+           PitchTable_knots(ptab) > 0 ? "radial table" : "scalar", tol);
     printf("  faces: in=%zu  cut(cross-wrap)=%zu (%.1f%%)  dropped(small comp)=%zu  out=%zu\n",
            F.n, n_cut, 100.0*(double)n_cut/(double)F.n, n_drop_faces, nkf);
     printf("  components: %zu -> %zu (+%zd)\n", before.n_comp, after.n_comp,
@@ -238,6 +280,30 @@ static int run(const char *in, const char *out, double uy, double ux, double pit
     printf("  biggest component: %zu f spanning %.1f turns  ->  %zu f spanning %.1f turns\n",
            before.big_faces, before.big_turns, after.big_faces, after.big_turns);
     if (min_comp_faces > 0) printf("  (dropped %zu small comps < %zu faces)\n", n_drop_comp, min_comp_faces);
+
+    if (json_path) {
+        FILE *j = fopen(json_path, "wb");
+        if (j == NULL) {
+            fprintf(stderr, "wind_cut: cannot write json %s\n", json_path);
+            rc = rc == 0 ? 1 : rc;
+        } else {
+            fprintf(j,
+                "{\"input\":\"%s\",\"output\":\"%s\",\"refused\":false,\n"
+                " \"umbilicus_yx\":[%.3f,%.3f],\"pitch\":%.3f,"
+                "\"pitch_table_knots\":%d,\"tol\":%.3f,\n"
+                " \"faces_in\":%zu,\"faces_cut\":%zu,\"cut_fraction\":%.6f,\n"
+                " \"faces_dropped_small\":%zu,\"faces_out\":%zu,\n"
+                " \"comps_before\":%zu,\"comps_after\":%zu,\n"
+                " \"big_faces_before\":%zu,\"big_faces_after\":%zu,\n"
+                " \"big_turns_before\":%.3f,\"big_turns_after\":%.3f}\n",
+                in, out, uy, ux, pitch, PitchTable_knots(ptab), tol,
+                F.n, n_cut, cut_fraction, n_drop_faces, nkf,
+                before.n_comp, after.n_comp,
+                before.big_faces, after.big_faces,
+                before.big_turns, after.big_turns);
+            fclose(j);
+        }
+    }
 
     free(V.v); free(F.f); free(keep); free(all); free(KF);
     return rc;
@@ -280,14 +346,14 @@ static int selftest(void)
     double uy = 0.0, ux = 0.0, pitch = 10.0, tol = 0.5;
     /* count comps before (all faces) */
     uint8_t *all = (uint8_t *)malloc(F.n); for (size_t i=0;i<F.n;i++) all[i]=1;
-    CompStat before = comp_stats(&V, F.f, all, F.n, uy, ux, pitch, 1);
+    CompStat before = comp_stats(&V, F.f, all, F.n, uy, ux, pitch, NULL, 1);
     /* cut */
     size_t n_cut = 0; uint8_t *keep = (uint8_t *)malloc(F.n);
-    for (size_t i = 0; i < F.n; i++) { int cr = face_max_dw(V.v,&F.f[i*3],uy,ux,pitch)>tol; keep[i]=!cr; if(cr)n_cut++; }
+    for (size_t i = 0; i < F.n; i++) { int cr = face_max_dw(V.v,&F.f[i*3],uy,ux,pitch,NULL)>tol; keep[i]=!cr; if(cr)n_cut++; }
     int32_t *KF = (int32_t*)malloc(F.n*3*sizeof(int32_t)); size_t nkf=0;
     for (size_t i=0;i<F.n;i++) if(keep[i]){KF[nkf*3+0]=F.f[i*3+0];KF[nkf*3+1]=F.f[i*3+1];KF[nkf*3+2]=F.f[i*3+2];nkf++;}
     uint8_t *ka=(uint8_t*)malloc(nkf); for(size_t i=0;i<nkf;i++)ka[i]=1;
-    CompStat after = comp_stats(&V, KF, ka, nkf, uy, ux, pitch, 1);
+    CompStat after = comp_stats(&V, KF, ka, nkf, uy, ux, pitch, NULL, 1);
 
     printf("  [selftest] before: comps=%zu (expect 1, bridge fuses the rings)\n", before.n_comp);
     printf("  [selftest] cut %zu bridge face(s) (expect 2)\n", n_cut);
@@ -298,7 +364,30 @@ static int selftest(void)
     if (after.n_comp != 2)  { printf("  FAIL: rings not separated after cut\n"); fails++; }
     if (nkf != nf_clean)    { printf("  FAIL: clean strip faces changed (%zu != %zu)\n", nkf, nf_clean); fails++; }
 
+    /* the same cut through a constant pitch table must be identical */
+    {
+        char tpath[512];
+        const char *tmp = getenv("TEMP");
+        snprintf(tpath, sizeof tpath, "%s\\wind_cut_selftest_table.csv",
+                 tmp ? tmp : ".");
+        FILE *tf = fopen(tpath, "wb");
+        if (tf) { fputs("r,pitch\n5,10\n25,10\n", tf); fclose(tf); }
+        PitchTable pt = NULL;
+        if (PitchTable_load(tpath, &pt) == 0) {
+            size_t n_cut_t = 0;
+            for (size_t i = 0; i < F.n; i++)
+                if (face_max_dw(V.v, &F.f[i*3], uy, ux, pitch, pt) > tol)
+                    n_cut_t++;
+            printf("  [selftest] constant-table cut count: %zu (expect %zu)\n",
+                   n_cut_t, n_cut);
+            if (n_cut_t != n_cut) { printf("  FAIL: table cut differs\n"); fails++; }
+            PitchTable_free(pt);
+        } else { printf("  FAIL: constant table load\n"); fails++; }
+        remove(tpath);
+    }
+
     free(all); free(keep); free(KF); free(ka); free(V.v); free(F.f);
+    fails += PitchTable_selftest();
     printf("wind_cut selftest: %s\n", fails ? "FAIL" : "PASS");
     return fails ? 3 : 0;
 }
@@ -309,12 +398,15 @@ int main(int argc, char **argv)
     if (argc < 3) {
         fprintf(stderr,
           "usage: %s <in.obj> <out.obj> --umb-y Y --umb-x X [--pitch P=9.5] [--tol T=0.7]\n"
-          "         [--min-comp-faces M=0]\n"
+          "         [--min-comp-faces M=0] [--pitch-table r_pitch.csv]\n"
+          "         [--json report.json] [--max-cut-fraction F=0.05; 0=off]\n"
           "       %s --selftest\n", argv[0], argv[0]);
         return 2;
     }
     const char *in = argv[1], *out = argv[2];
-    double uy = 0, ux = 0, pitch = 9.5, tol = 0.7; size_t minc = 0;
+    const char *table_path = NULL, *json_path = NULL;
+    double uy = 0, ux = 0, pitch = 9.5, tol = 0.7, max_cut = 0.05;
+    size_t minc = 0;
     int have_y = 0, have_x = 0;
     for (int i = 3; i < argc; i++) {
         if      (!strcmp(argv[i], "--umb-y") && i+1 < argc) { uy = atof(argv[++i]); have_y = 1; }
@@ -322,9 +414,20 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--pitch") && i+1 < argc) pitch = atof(argv[++i]);
         else if (!strcmp(argv[i], "--tol") && i+1 < argc) tol = atof(argv[++i]);
         else if (!strcmp(argv[i], "--min-comp-faces") && i+1 < argc) minc = (size_t)atoll(argv[++i]);
+        else if (!strcmp(argv[i], "--pitch-table") && i+1 < argc) table_path = argv[++i];
+        else if (!strcmp(argv[i], "--json") && i+1 < argc) json_path = argv[++i];
+        else if (!strcmp(argv[i], "--max-cut-fraction") && i+1 < argc) max_cut = atof(argv[++i]);
         else { fprintf(stderr, "wind_cut: unknown arg %s\n", argv[i]); return 2; }
     }
     if (!have_y || !have_x) { fprintf(stderr, "wind_cut: --umb-y and --umb-x are required\n"); return 2; }
     if (pitch <= 0 || tol <= 0) { fprintf(stderr, "wind_cut: pitch/tol must be > 0\n"); return 2; }
-    return run(in, out, uy, ux, pitch, tol, minc);
+    if (max_cut < 0) { fprintf(stderr, "wind_cut: --max-cut-fraction must be >= 0\n"); return 2; }
+    PitchTable ptab = NULL;
+    if (table_path != NULL && PitchTable_load(table_path, &ptab) != 0) {
+        fprintf(stderr, "wind_cut: cannot load --pitch-table %s\n", table_path);
+        return 2;
+    }
+    int rc = run(in, out, uy, ux, pitch, ptab, tol, minc, max_cut, json_path);
+    PitchTable_free(ptab);
+    return rc;
 }

@@ -321,6 +321,12 @@ int ves_ensure_parent_dir(const char *filepath);
 int ves_run_subprocess(const char *exe, const char *const *argv,
                        double timeout_sec);
 
+/* Same, but the child's stdout+stderr append to log_path (NULL = suppress,
+ * identical to ves_run_subprocess).  Orchestrators use this so every spawned
+ * stage keeps a full log per the house logging rule. */
+int ves_run_subprocess_logged(const char *exe, const char *const *argv,
+                              double timeout_sec, const char *log_path);
+
 /* ================================================================
  * Hard timeout: ves_hard_timeout_start / cancel
  *
@@ -334,22 +340,5 @@ int ves_run_subprocess(const char *exe, const char *const *argv,
 
 void ves_hard_timeout_start(double seconds, volatile sig_atomic_t *flag);
 void ves_hard_timeout_cancel(void);
-
-/* ================================================================
- * OpenMP thread budget: ves_omp_set_threads()
- *
- * Sets the OpenMP thread count for subsequent parallel regions; n <= 0
- * leaves the runtime default. No-op when compiled without OpenMP.
- *
- * Implemented in ves_platform.c with a self-declared prototype rather
- * than including omp.h by name: embedding hosts (VC3D) inject a C++-only stub
- * omp.h into the include path, so no library TU may include the real
- * header by name.
- * ================================================================ */
-
-void ves_omp_set_threads(int n);
-
-/* omp_set_dynamic(flag), same self-declared-prototype rule as above. */
-void ves_omp_set_dynamic(int flag);
 
 #endif /* VES_PLATFORM_H */

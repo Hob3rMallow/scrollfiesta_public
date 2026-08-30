@@ -11,7 +11,7 @@
 #include "../common/kdtree.h"
 #include "../common/union_find.h"
 #include "../common/pca.h"
-#include "../topology/developability.h"   /* Develop_vertex_energy */
+#include "../flatten/developability.h"   /* Develop_vertex_energy */
 
 #include <assert.h>
 #include <math.h>

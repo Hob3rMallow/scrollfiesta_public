@@ -123,4 +123,18 @@ int WeldCleanup_recoarsen_seam(Arena_T arena, ComponentMesh *cm,
 size_t WeldCleanup_flip_rounds(Arena_T arena, const float *verts, size_t nv,
                                int32_t *faces, size_t nf, int max_rounds);
 
+/* As above, but a marked face and every edge incident to it are immutable. */
+size_t WeldCleanup_flip_rounds_masked(
+    Arena_T arena, const float *verts, size_t nv,
+    int32_t *faces, size_t nf, int max_rounds,
+    const uint8_t *face_frozen);
+
+/* Seam-refinement form: only edges touching an active vertex are indexed.
+ * A candidate whose replacement diagonal has no active endpoint is left
+ * unchanged, keeping the edge-existence guard exact at the band border. */
+size_t WeldCleanup_flip_rounds_active_masked(
+    Arena_T arena, const float *verts, size_t nv,
+    int32_t *faces, size_t nf, int max_rounds,
+    const uint8_t *face_frozen, const uint8_t *vertex_active);
+
 #endif

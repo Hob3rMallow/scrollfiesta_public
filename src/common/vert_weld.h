@@ -54,4 +54,38 @@ void Weld_verts(Arena_T arena,
                 float **out_verts, size_t *out_nv,
                 float **out_normals);
 
+/* Component-scoped variant.  A candidate pair is mergeable only when
+ * merge_group[i] == merge_group[j].  This prevents two already-disconnected,
+ * same-facing sheets from being joined.  It is not by itself sufficient for a
+ * connected folded/spiral sheet; use Weld_verts_filtered to add a local-pair
+ * guard in that case.  Pass NULL to recover Weld_verts semantics. */
+void Weld_verts_grouped(Arena_T arena,
+                        const float *verts, size_t nv,
+                        const float *in_normals,
+                        int32_t *faces, size_t nf, size_t *out_nf,
+                        float eps,
+                        bool guard_orient,
+                        const int32_t *merge_group,
+                        float **out_verts, size_t *out_nv,
+                        float **out_normals);
+
+/* Optional pair-level refinement of Weld_verts_grouped.  The callback is
+ * evaluated after the group test and must return true for a spatial candidate
+ * to be merged.  It is called once per unordered pair (i < j).  This lets a
+ * caller impose a local topological condition which cannot be represented by
+ * a single component label. */
+typedef bool (*WeldPairFilter)(size_t i, size_t j, void *context);
+
+void Weld_verts_filtered(Arena_T arena,
+                         const float *verts, size_t nv,
+                         const float *in_normals,
+                         int32_t *faces, size_t nf, size_t *out_nf,
+                         float eps,
+                         bool guard_orient,
+                         const int32_t *merge_group,
+                         WeldPairFilter pair_filter,
+                         void *pair_filter_context,
+                         float **out_verts, size_t *out_nv,
+                         float **out_normals);
+
 #endif

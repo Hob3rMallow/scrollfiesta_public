@@ -13,6 +13,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 #include "../common/csr.h"
 #include "../common/kdtree.h"
@@ -23,9 +26,8 @@
 #include "../flatten/snap_quilt.h"
 #include "../flatten/recto_refine.h"
 
-/* global_mode ceiling: one whole-mesh detect+solve is exact but serial; past
- * this vert count fall back to guarded per-cube (4x21x21 escalation is a
- * separate ticket -- v4 tests 4x5x5 at ~1.5M verts) */
+/* Default global_mode safety ceiling.  Large, deliberately provisioned runs
+ * can raise it through SnapGridOpts.global_nv_cap / --snap-global-cap. */
 #define SG_GLOBAL_NV_CAP ((size_t)8 * 1024 * 1024)
 
 /* per-vertex / per-region classes (surface_snap.h values, kept local so this
@@ -92,6 +94,7 @@ void SnapGridOpts_default(SnapGridOpts *o)
     o->recto_range = 3.0;
     o->recto_max_total = 3.0;
     o->threads = 32;
+    o->global_nv_cap = SG_GLOBAL_NV_CAP;
     o->verbose = 0;
 }
 
@@ -432,6 +435,11 @@ int SnapGrid_run(Arena_T arena, PieceSet *ps, CubeTable *ct,
 {
     assert(arena && ps && opts && out);
     memset(out, 0, sizeof(*out));
+    out->global_mode_requested = opts->global_mode != 0;
+    out->global_nv_cap = opts->global_nv_cap > 0
+                       ? opts->global_nv_cap : SG_GLOBAL_NV_CAP;
+    out->global_mode_used = out->global_mode_requested &&
+                            ps->nv <= out->global_nv_cap;
     if (ps->nv < 3 || ps->nf < 1 || ct == NULL)
         return ps->nv == 0 ? 0 : -1;
     const SnapGridOpts *o = opts;
@@ -458,7 +466,7 @@ int SnapGrid_run(Arena_T arena, PieceSet *ps, CubeTable *ct,
         int n = (int)ps->nv;
         int i = 0;
 #ifdef _OPENMP
-        ves_omp_set_threads(o->threads > 0 ? o->threads : 32);
+        omp_set_num_threads(o->threads > 0 ? o->threads : 32);
 #pragma omp parallel for schedule(static)
 #endif
         for (i = 0; i < n; i++) {
@@ -496,13 +504,12 @@ int SnapGrid_run(Arena_T arena, PieceSet *ps, CubeTable *ct,
     /* detect + solve: one whole-mesh problem (global_mode, exact post-weld)
      * or parallel over cubes (exact pre-weld; face-range guard otherwise) */
     t0 = ves_clock_sec();
-    int global = o->global_mode != 0;
-    if (global && ps->nv > SG_GLOBAL_NV_CAP) {
+    int global = out->global_mode_used;
+    if (out->global_mode_requested && !global) {
         fprintf(stderr,
                 "[snap_grid] WARNING: global_mode with nv=%zu > cap %zu; "
                 "falling back to per-cube (cross-cube faces skipped)\n",
-                ps->nv, (size_t)SG_GLOBAL_NV_CAP);
-        global = 0;
+                ps->nv, out->global_nv_cap);
     }
     size_t n_units = global ? 1 : nc;
     SgCubeStats *cst = (SgCubeStats *)sg_xcalloc(n_units, sizeof(SgCubeStats));
@@ -883,6 +890,8 @@ int SnapGrid_selftest(void)
             o.global_mode = 0;
             sg_check(rc == 0, "t4b global rc", &fails);
             sg_check(st.n_cubes_run == 1, "t4b one unit", &fails);
+            sg_check(st.global_mode_requested && st.global_mode_used,
+                     "t4b global mode reported as used", &fails);
             sg_check(st.n_dark > 0 && st.n_moved > 0,
                      "t4b global dark+moved", &fails);
             double ymax_isl = 0.0, ymove_rim = 0.0;
@@ -900,6 +909,26 @@ int SnapGrid_selftest(void)
             fprintf(stderr, "[snap_grid selftest] t4: guarded cubes=2 ok; "
                     "global dark=%zu moved=%zu ymax=%.1f rim=%.2f\n",
                     st.n_dark, st.n_moved, ymax_isl, ymove_rim);
+
+            /* An explicit small cap must take the guarded path and report the
+             * actual execution scope, not merely echo the requested mode. */
+            nv2 = 0;
+            nf2 = 0;
+            sg_st_grid(28.0f, 8, 2.0, 0, verts, uv, normals, faces,
+                       face_cube, &nv2, &nf2);
+            for (size_t f = 0; f < nf2; f++)
+                face_cube[f] = f < nf2 / 2 ? 0 : 1;
+            size_t saved_cap = o.global_nv_cap;
+            o.global_mode = 1;
+            o.global_nv_cap = nv2 - 1;
+            rc = SnapGrid_run(arena, &ps, &ct, &o, &st);
+            o.global_mode = 0;
+            o.global_nv_cap = saved_cap;
+            sg_check(rc == 0, "t4c capped fallback rc", &fails);
+            sg_check(st.global_mode_requested && !st.global_mode_used,
+                     "t4c capped fallback reported", &fails);
+            sg_check(st.global_nv_cap == nv2 - 1 && st.n_cubes_run == 2,
+                     "t4c cap and unit count", &fails);
         }
     }
 

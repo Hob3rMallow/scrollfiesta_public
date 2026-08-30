@@ -7,9 +7,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 #include "../common/csr.h"
 #include "../common/kdtree.h"
+#include "../common/mesh_normals.h"
 #include "../common/tiff_io.h"
 #include "../common/ves_platform.h"
 
@@ -265,13 +269,13 @@ int RectoRefine_run(Arena_T arena,
     slope_hit = (uint8_t *)ARENA_CALLOC(arena, (long)nv, 1);
 
 #ifdef _OPENMP
-    ves_omp_set_threads(nthreads);
+    omp_set_num_threads(nthreads);
 #else
     (void)nthreads;
 #endif
 
     for (outer = 0; outer < (o.outer_iters > 0 ? o.outer_iters : 4); outer++) {
-        float *normals = vertex_normals(verts, nv, faces, nf);
+        float *normals = MeshNormals_compute(verts, nv, faces, nf);
         long long supported = 0;
         double grad_sum = 0.0;
         int n = (int)nv, i = 0;

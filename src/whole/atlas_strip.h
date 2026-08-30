@@ -108,6 +108,12 @@ typedef struct {
      * upstream).  NULL or lambda_prior == 0 disables.
      */
     const double *prior_u;
+    /* Optional confidence multiplier for each prior row.  NULL preserves the
+     * historical unit weight.  A non-finite or non-positive entry suppresses
+     * that sample's prior.  This lets iterative consumers promote regions
+     * whose chart has become trustworthy without turning a detector mask into
+     * a hard variational cut. */
+    const double *prior_weight;
 } AtlasStripProblem;
 
 typedef enum {

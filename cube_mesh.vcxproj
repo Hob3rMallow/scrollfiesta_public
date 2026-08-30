@@ -53,11 +53,11 @@
   <!-- ============================================================ -->
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <OutDir>$(SolutionDir)build\$(Configuration)\</OutDir>
-    <IntDir>$(SolutionDir)build\obj\$(Configuration)\</IntDir>
+    <IntDir>$(SolutionDir)build\obj\cube_mesh_$(Configuration)\</IntDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <OutDir>$(SolutionDir)build\$(Configuration)\</OutDir>
-    <IntDir>$(SolutionDir)build\obj\$(Configuration)\</IntDir>
+    <IntDir>$(SolutionDir)build\obj\cube_mesh_$(Configuration)\</IntDir>
     <UseCubeClMls Condition="'$(UseCubeClMls)'==''">false</UseCubeClMls>
   </PropertyGroup>
   <!-- ============================================================ -->
@@ -171,13 +171,16 @@ if exist "$(SolutionDir)deps\lib\win64\Release\cubecl-cuda-runtime\*.dll" copy /
     <ClCompile Include="src\common\mesh_trim.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
-<ClCompile Include="src\common\obj_io.c">
+    <ClCompile Include="src\common\ply_io.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\obj_io.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <ClCompile Include="src\common\dump_obj.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
-    <ClCompile Include="src\common\run_ctx.c">
+    <ClCompile Include="src\common\mesh_bin.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <ClCompile Include="src\common\ves_platform.c">
@@ -208,6 +211,9 @@ if exist "$(SolutionDir)deps\lib\win64\Release\cubecl-cuda-runtime\*.dll" copy /
     </ClCompile>
     <!-- Remesh: Ball-Pivoting Algorithm (Bernardini 1999). -->
     <ClCompile Include="src\remesh\ball_pivot.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\whole\axis_warp.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <!-- Remesh: tangent-plane Delaunay tear-patch repair. -->
@@ -265,6 +271,8 @@ if exist "$(SolutionDir)deps\lib\win64\Release\cubecl-cuda-runtime\*.dll" copy /
     <ClCompile Include="src\flatten\snap_solve.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\flatten\recto_refine.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\raw_sample.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\pitch_table.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\mesh_normals.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\gco_wrap.cpp"><CompileAs>CompileAsCpp</CompileAs></ClCompile>
     <ClCompile Include="docs\research\gco-v3.0\GCoptimization.cpp"><CompileAs>CompileAsCpp</CompileAs></ClCompile>
     <ClCompile Include="docs\research\gco-v3.0\LinkedBlockList.cpp"><CompileAs>CompileAsCpp</CompileAs></ClCompile>
@@ -300,6 +308,9 @@ if exist "$(SolutionDir)deps\lib\win64\Release\cubecl-cuda-runtime\*.dll" copy /
     </ClCompile>
     <!-- Topology + Seamster genus reduction (short-handle sever after hole fill) -->
     <ClCompile Include="src\flatten\mesh_topo.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\flatten\topology_invariants.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <ClCompile Include="src\flatten\seam_cut.c">
@@ -361,14 +372,14 @@ if exist "$(SolutionDir)deps\lib\win64\Release\cubecl-cuda-runtime\*.dll" copy /
     <ClInclude Include="src\common\tiff_io.h" />
     <ClInclude Include="src\common\halo_loader.h" />
     <ClInclude Include="src\common\mesh_trim.h" />
-
+    <ClInclude Include="src\common\ply_io.h" />
     <ClInclude Include="src\common\obj_io.h" />
     <ClInclude Include="src\common\obj_colors.h" />
     <ClInclude Include="src\common\dump_obj.h" />
+    <ClInclude Include="src\common\mesh_bin.h" />
     <ClInclude Include="src\common\mesh_types.h" />
     <ClInclude Include="src\common\pipeline_constants.h" />
     <ClInclude Include="src\common\ves_platform.h" />
-    <ClInclude Include="src\common\run_ctx.h" />
     <ClInclude Include="src\common\qem.h" />
     <ClInclude Include="src\common\raw_snapback.h" />
     <ClInclude Include="src\common\snap_cg.h" />
@@ -390,6 +401,7 @@ if exist "$(SolutionDir)deps\lib\win64\Release\cubecl-cuda-runtime\*.dll" copy /
     <ClInclude Include="src\holefill\hole_fill.h" />
     <ClInclude Include="src\holefill\clipper2_wrap.h" />
     <ClInclude Include="src\flatten\mesh_topo.h" />
+    <ClInclude Include="src\flatten\topology_invariants.h" />
     <ClInclude Include="src\flatten\seam_cut.h" />
     <ClInclude Include="src\pipeline\pipeline_cube.h" />
     <ClInclude Include="deps\include\triangle.h" />

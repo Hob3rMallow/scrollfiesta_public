@@ -959,11 +959,16 @@ static int reorient_run(Arena_T arena, float **pverts, size_t *pnv, int32_t *fac
 
     if (do_cut) {
         st->knots_cut = find_and_cut_knots(verts, faces, pnf, 4);
-        /* Deleting a knot face can orphan a vertex into a bowtie (pinch). Split
-         * those so the result stays 2-manifold (nm_vert=0) rather than trading a
-         * cosmetic same_dir for a hard-fail pinch. split_pinch_verts grows verts
-         * from the arena and repoints faces in place (face count unchanged). */
-        if (st->knots_cut > 0) {
+    }
+
+    /* Local face surgery (including an upstream intersection cleanup) can
+     * expose a bowtie without producing a non-manifold edge.  Split every such
+     * vertex, not only those created when this tool happened to cut a knot.
+     * The splitter's edge-manifold precondition is checked explicitly. */
+    {
+        MeshManifoldStats pre_split =
+            MeshManifold_audit(arena, nv, faces, *pnf);
+        if (pre_split.nm_edges == 0 && pre_split.nm_verts > 0) {
             ComponentMesh cm;
             memset(&cm, 0, sizeof cm);
             cm.verts = verts; cm.faces = faces; cm.nv = nv; cm.nf = *pnf;
@@ -1206,6 +1211,25 @@ static int selftest(void)
         CHECK(st2.ow_flipped == 0 && st2.audit_flipped == 0 && st2.knots_cut == 0,
               "t4 second run is a no-op");
         free(v); free(fc);
+    }
+
+    /* t5: an edge-manifold bowtie is repaired even when there are no winding
+     * knots to cut.  This is the topology exposed by local face deletion. */
+    {
+        float vbuf[15] = {
+            0,0,0,  0,1,0,  0,0,1,
+            0,-1,0, 0,0,-1
+        };
+        float *v = vbuf;
+        int32_t f[6] = {0,1,2, 0,3,4};
+        size_t nv = 5, nf = 2;
+        const float no_axis[3] = {0,0,0};
+        ReorientStats st;
+        reorient_run(arena, &v, &nv, f, &nf, AXP, no_axis,
+                     3.0f, 1, 1, 0, &st);
+        CHECK(st.nmv_before == 1 && st.pinch_splits == 1 &&
+              st.nmv_after == 0 && st.nm_after == 0 && nv == 6 && nf == 2,
+              "t5 bowtie vertex split without knot deletion");
     }
 
     /* t6: hairpin ribbon -- a winding-CONSISTENT backward region inside ONE

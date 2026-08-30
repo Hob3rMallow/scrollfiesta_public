@@ -99,6 +99,7 @@
     <ClCompile Include="src\unroll\piece_set.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\unroll\scaffold.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\unroll\export_atlas.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\whole\axis_warp.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\unroll\scroll_raster.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\unroll\strip_metrics.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\unroll\strip_preview.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
@@ -125,8 +126,10 @@
     <ClCompile Include="src\common\arena.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\except.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\obj_io.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\mesh_bin.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\ves_platform.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\raw_sample.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\mesh_normals.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\tiff_io.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\tif_strip.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\ves_png.c"><CompileAs>CompileAsC</CompileAs></ClCompile>

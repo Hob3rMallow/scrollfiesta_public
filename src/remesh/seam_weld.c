@@ -18,7 +18,6 @@
  * combined face array is arena-allocated.
  */
 #include "seam_weld.h"
-#include "../common/run_ctx.h"
 #include "ball_pivot.h"
 #include "seam_planes.h"
 #include "../common/pipeline_constants.h"
@@ -28,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../common/pitch_table.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846  /* MSVC math.h omits it without _USE_MATH_DEFINES */
@@ -338,7 +338,7 @@ int SeamWeld_bridge(Arena_T arena,
                                   (double)band, planes, 64);
     if (np == 0) {
         /* Nothing to bridge -- return faces unchanged. */
-        int32_t *out = (int32_t *)ARENA_ALLOC(arena, (size_t)(nf*3*sizeof(int32_t)));
+        int32_t *out = (int32_t *)ARENA_ALLOC(arena, (long)(nf*3*sizeof(int32_t)));
         memcpy(out, faces, nf*3*sizeof(int32_t));
         *out_faces = out; *out_nf = nf;
         free(normals); free(used_any);
@@ -350,7 +350,7 @@ int SeamWeld_bridge(Arena_T arena,
      * (a phase-2 restricted re-weld passes a WIDER cap to span divots); <=0
      * falls back to BRIDGE_RHO_MAX; SEAM_RHO_MAX env still overrides. */
     double rho_max = (rho_max_in > 0.0f) ? (double)rho_max_in : (double)BRIDGE_RHO_MAX;
-    { const char *e = sf_env("SEAM_RHO_MAX"); if (e) rho_max = atof(e); }
+    { const char *e = getenv("SEAM_RHO_MAX"); if (e) rho_max = atof(e); }
 
     /* 2.5) Pre-bridge sliver + tip cull: drop sliver boundary triangles AND the
      *      seam-ward dangling tips their removal exposes, so the bridge front
@@ -363,7 +363,7 @@ int SeamWeld_bridge(Arena_T arena,
     int32_t *sliver_owned = NULL;
     {
         double sliver_alt = (double)SEAM_SLIVER_MIN_ALT;
-        const char *se = sf_env("SEAM_SLIVER_MIN_ALT"); if (se) sliver_alt = atof(se);
+        const char *se = getenv("SEAM_SLIVER_MIN_ALT"); if (se) sliver_alt = atof(se);
         if (sliver_alt > 0.0) {
             size_t nf0 = nf, total_del = 0;
             for (int pass = 0; pass < 8; pass++) {
@@ -454,18 +454,31 @@ int SeamWeld_bridge(Arena_T arena,
      * promotion CANNOT tell wraps apart and stays OFF -- which is also the case
      * for a phase-2 pair re-weld (gate == NULL): there the cloud is already
      * restricted to two confirmed sheets, so promotion is neither needed nor
-     * safe. SEAM_NO_GRAZING_PROMOTE=1 also disables. */
+     * safe.
+     *
+     * DEFAULT OFF (PHerc0139 4x5x5 regression): even phase-matched promotion
+     * changed the bridge result from 120 to 94 components and joined the red and
+     * boundary-clipped blue layers.  Same winding phase is necessary but not
+     * sufficient to distinguish a grazing continuation from a same-facing fold.
+     * SEAM_GRAZING_PROMOTE=1 opts into the experimental path;
+     * SEAM_NO_GRAZING_PROMOTE remains an overriding kill switch. */
     uint8_t *promoted_vert = NULL;  /* marks verts of promoted (grazing) edges;
                                      * their bridge faces bypass the straddle
                                      * test in the merge filter below. */
-    double grz_umb_y = 0.0, grz_umb_x = 0.0, grz_pitch = 0.0, grz_tol = 0.0;
+    const BpaBridgeGate *grz_gate = NULL;
+    double grz_pitch = 0.0, grz_tol = 0.0;
     {
-        if (gate && gate->pitch > 0.0 && (gate->umb_y != 0.0 || gate->umb_x != 0.0)) {
-            grz_umb_y = gate->umb_y; grz_umb_x = gate->umb_x; grz_pitch = gate->pitch;
+        if (gate && gate->pitch > 0.0 &&
+            ((gate->axis_z != NULL && gate->axis_y != NULL &&
+              gate->axis_x != NULL && gate->axis_n >= 2) ||
+             gate->umb_y != 0.0 || gate->umb_x != 0.0)) {
+            grz_gate = gate; grz_pitch = gate->pitch;
             grz_tol = (gate->tol > 0.0) ? gate->tol : 0.25;
         }
     }
-    if (n_excl > 0 && grz_tol > 0.0 && !sf_env("SEAM_NO_GRAZING_PROMOTE")) {
+    if (n_excl > 0 && grz_tol > 0.0 &&
+        getenv("SEAM_GRAZING_PROMOTE") != NULL &&
+        getenv("SEAM_NO_GRAZING_PROMOTE") == NULL) {
         double reach = 2.0 * rho_max;
         size_t n_all = n_init + n_excl;
         /* midpoints for every run-1 edge (init first, then excl). */
@@ -530,15 +543,21 @@ int SeamWeld_bridge(Arena_T arena,
                         if (ddz*ddz + ddy*ddy + ddx*ddx > reach*reach) continue;
                         /* same-wrap check: winding phase about the umbilicus */
                         {
-                            double iy = (double)mid[i*3+1] - grz_umb_y;
-                            double ix = (double)mid[i*3+2] - grz_umb_x;
-                            double ky = (double)mid[(size_t)k*3+1] - grz_umb_y;
-                            double kx = (double)mid[(size_t)k*3+2] - grz_umb_x;
-                            double dr  = hypot(ky, kx) - hypot(iy, ix);
+                            double iuy, iux, kuy, kux;
+                            BpaBridgeGate_axis_at(grz_gate,
+                                (double)mid[i*3+0], &iuy, &iux);
+                            BpaBridgeGate_axis_at(grz_gate,
+                                (double)mid[(size_t)k*3+0], &kuy, &kux);
+                            double iy = (double)mid[i*3+1] - iuy;
+                            double ix = (double)mid[i*3+2] - iux;
+                            double ky = (double)mid[(size_t)k*3+1] - kuy;
+                            double kx = (double)mid[(size_t)k*3+2] - kux;
                             double dth = atan2(ky, kx) - atan2(iy, ix);
                             while (dth >  M_PI) dth -= 2.0*M_PI;
                             while (dth < -M_PI) dth += 2.0*M_PI;
-                            double dw = dr/grz_pitch - dth/(2.0*M_PI);
+                            double dw = PitchTable_dturns(
+                                PitchTable_from_env(), hypot(iy, ix),
+                                hypot(ky, kx), grz_pitch) - dth/(2.0*M_PI);
                             if (fabs(dw) > grz_tol) continue; /* different wrap */
                         }
                         found = 1; break;
@@ -587,12 +606,12 @@ int SeamWeld_bridge(Arena_T arena,
     /* Emit the init-front diagnostic BEFORE any early-out, so an empty or
      * under-detected front (n_init == 0) is itself visible in the dump. */
     {
-        const char *fpfx = sf_env("SEAM_DUMP_FRONT");
+        const char *fpfx = getenv("SEAM_DUMP_FRONT");
         if (fpfx) dump_seam_front(fpfx, verts, nv, init, n_init, excl, n_excl);
     }
 
     if (n_init == 0) {
-        int32_t *out = (int32_t *)ARENA_ALLOC(arena, (size_t)((nf ? nf : 1)*3*sizeof(int32_t)));
+        int32_t *out = (int32_t *)ARENA_ALLOC(arena, (long)((nf ? nf : 1)*3*sizeof(int32_t)));
         memcpy(out, faces, nf*3*sizeof(int32_t));
         *out_faces = out; *out_nf = nf;
         free(normals); free(used_any); free(he); free(init); free(excl);
@@ -698,7 +717,7 @@ int SeamWeld_bridge(Arena_T arena,
     }
 
     size_t total = nf + n_bridge;
-    int32_t *out = (int32_t *)ARENA_ALLOC(arena, (size_t)((total ? total : 1) * 3 * sizeof(int32_t)));
+    int32_t *out = (int32_t *)ARENA_ALLOC(arena, (long)((total ? total : 1) * 3 * sizeof(int32_t)));
     memcpy(out, faces, nf * 3 * sizeof(int32_t));
     size_t outn = nf, accepted = 0, rej_long = 0, rej_fold = 0;
     for (size_t f = 0; f < n_bridge; f++) {
@@ -715,7 +734,7 @@ int SeamWeld_bridge(Arena_T arena,
              * edges. SEAM_GRAZING_BYPASS=1 re-enables for experiments. */
             static int grz_bypass = -1;
             if (grz_bypass < 0)
-                grz_bypass = sf_env("SEAM_GRAZING_BYPASS") ? 1 : 0;
+                grz_bypass = getenv("SEAM_GRAZING_BYPASS") ? 1 : 0;
             int grazing = grz_bypass && promoted_vert &&
                           (promoted_vert[g0] || promoted_vert[g1] ||
                            promoted_vert[g2]);
@@ -746,7 +765,7 @@ int SeamWeld_bridge(Arena_T arena,
 
     /* Debug: dump the accepted bridge faces (global verts) in isolation. */
     {
-        const char *dp = sf_env("SEAM_DUMP_BRIDGE");
+        const char *dp = getenv("SEAM_DUMP_BRIDGE");
         if (dp) {
             FILE *bf = fopen(dp, "w");
             if (bf) {

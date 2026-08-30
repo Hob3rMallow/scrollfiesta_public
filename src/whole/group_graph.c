@@ -35,6 +35,29 @@ static double gg_median(double *v, size_t n)
     return n % 2 ? v[n / 2] : 0.5 * (v[n / 2 - 1] + v[n / 2]);
 }
 
+typedef struct { double v, w; } GgWeighted;
+
+static int gg_cmp_weighted(const void *a, const void *b)
+{
+    double x = ((const GgWeighted *)a)->v;
+    double y = ((const GgWeighted *)b)->v;
+    return (x < y) ? -1 : (x > y);
+}
+
+static double gg_weighted_median(GgWeighted *v, size_t n)
+{
+    if (n == 0) return 0.0;
+    qsort(v, n, sizeof(*v), gg_cmp_weighted);
+    double total = 0.0;
+    for (size_t i = 0; i < n; i++) total += v[i].w;
+    double accum = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        accum += v[i].w;
+        if (2.0 * accum >= total) return v[i].v;
+    }
+    return v[n - 1].v;
+}
+
 /* wrap to (-pi, pi] */
 static double gg_wrap_pi(double x)
 {
@@ -59,6 +82,7 @@ void GroupGraphOpts_default(GroupGraphOpts *o)
     o->prior_min_verts = 8;
     o->raw_component_gauge = 0;
     o->raw_du_gauge = 0;
+    o->physical_du_gauge = 0;
     o->anchor_weight = 0.0;
     o->anchor_redundancy_ref = 0.0;
     o->do_moves = 1;
@@ -81,7 +105,200 @@ static int32_t gg_node_of(const GroupGraph *g, size_t cube, int32_t gid)
     return -1;
 }
 
+int32_t GroupGraph_node_of(const GroupGraph *g, size_t cube, int32_t gid)
+{
+    return gg_node_of(g, cube, gid);
+}
+
 /* ---------------------------------------------------------------- build */
+
+/* One seam's edge extraction, thread-independent: reads two frozen skins and
+ * the finished node table (gg_node_of + priors), writes only *res.  The
+ * caller concatenates per-seam edge buffers in seam order, so the edge order
+ * (and every downstream tie-break) matches the old serial loop exactly. */
+typedef struct {
+    GGEdge *edges;               /* malloc'd; caller takes ownership */
+    size_t  ne, cap;
+    size_t  pairs_used, pairs_rej_radius, pairs_rej_frac;
+    size_t  edges_rej_dr, edges_rej_prior;
+} GGSeamOut;
+
+static void gg_seam_push(GGSeamOut *res, const GGEdge *e)
+{
+    if (res->ne == res->cap) {
+        size_t ncap = res->cap ? res->cap * 2 : 64;
+        GGEdge *nn2 = (GGEdge *)gg_xmalloc(ncap * sizeof(GGEdge));
+        if (res->ne > 0) memcpy(nn2, res->edges, res->ne * sizeof(GGEdge));
+        free(res->edges);
+        res->edges = nn2;
+        res->cap = ncap;
+    }
+    res->edges[res->ne++] = *e;
+}
+
+static void gg_seam_edges(Arena_T arena, const GroupGraph *out,
+                          const GroupGraphOpts *opts,
+                          const float axis_point[3],
+                          double spiral_a, double spiral_b,
+                          double rgate, double gate2,
+                          const SkinVert *skin_c, size_t nskin_c,
+                          const SkinVert *skin_j, size_t nskin_j,
+                          size_t c, size_t j, GGSeamOut *res)
+{
+    /* KD over neighbor j's skin positions */
+    float *jp = (float *)ARENA_ALLOC(arena, nskin_j * 3 * sizeof(float));
+    for (size_t q = 0; q < nskin_j; q++) {
+        jp[q * 3 + 0] = skin_j[q].p[0];
+        jp[q * 3 + 1] = skin_j[q].p[1];
+        jp[q * 3 + 2] = skin_j[q].p[2];
+    }
+    KDTree_T kd = KDTree_new(arena, jp, nskin_j);
+
+    int32_t ng_i = 0, ng_j = 0;
+    for (size_t q = 0; q < nskin_c; q++)
+        if (skin_c[q].gid >= ng_i) ng_i = skin_c[q].gid + 1;
+    for (size_t q = 0; q < nskin_j; q++)
+        if (skin_j[q].gid >= ng_j) ng_j = skin_j[q].gid + 1;
+    if (ng_i == 0 || ng_j == 0) return;
+
+    size_t nbuck = (size_t)ng_i * (size_t)ng_j;
+    int32_t *bcnt = (int32_t *)ARENA_CALLOC(arena, nbuck, sizeof(int32_t));
+    /* pass 1: count in-gate pairs per bucket */
+    size_t npair_max = nskin_c;
+    int32_t *p_j = (int32_t *)ARENA_ALLOC(arena, npair_max * sizeof(int32_t));
+    double *p_dr = (double *)ARENA_ALLOC(arena, npair_max * sizeof(double));
+    for (size_t q = 0; q < nskin_c; q++) {
+        const SkinVert *si = &skin_c[q];
+        p_j[q] = -1;
+        if (si->gid < 0) continue;
+        float d2 = 0.0f;
+        size_t hit = KDTree_nearest(kd, si->p, &d2);
+        if ((double)d2 > gate2) continue;
+        const SkinVert *sj = &skin_j[hit];
+        if (sj->gid < 0) continue;
+        /* radius sanity (diagnostic at default gates: a 3D-gated
+         * pair always has |dr| <= 3.5 < pitch/2, so this fires only
+         * under an explicit tighter --radius-gate. Cross-wrap
+         * CONTACT pairs are not poison here: they land in their own
+         * (gid_i, gid_j) bucket whose obs correctly encodes the
+         * one-turn offset -- the OLD solver's error was pooling
+         * them into the same median as same-wrap pairs). */
+        double dyi = (double)si->p[1] - axis_point[1];
+        double dxi = (double)si->p[2] - axis_point[2];
+        double dyj = (double)sj->p[1] - axis_point[1];
+        double dxj = (double)sj->p[2] - axis_point[2];
+        double ri = sqrt(dyi * dyi + dxi * dxi);
+        double rj = sqrt(dyj * dyj + dxj * dxj);
+        if (fabs(ri - rj) > rgate) {
+            res->pairs_rej_radius++;
+            continue;
+        }
+        /* the real per-pair filter: a true surface pair's raw dphi
+         * is near-integer turns (theta is a position function; 3.5
+         * vox of positional slack is ~0.01 rad of theta) -- mixed or
+         * torn geometry is not */
+        double dphi = (double)sj->phi - (double)si->phi;
+        if (fabs(gg_wrap_pi(dphi)) > opts->frac_gate) {
+            res->pairs_rej_frac++;
+            continue;
+        }
+        p_j[q] = (int32_t)hit;
+        p_dr[q] = fabs(ri - rj);
+        bcnt[(size_t)si->gid * (size_t)ng_j + (size_t)sj->gid]++;
+        res->pairs_used++;
+    }
+    /* bucket offsets + fill dphi/duraw */
+    int32_t *boff = (int32_t *)ARENA_CALLOC(arena, nbuck + 1,
+                                            sizeof(int32_t));
+    for (size_t bq = 0; bq < nbuck; bq++)
+        boff[bq + 1] = boff[bq] + bcnt[bq];
+    size_t tot = (size_t)boff[nbuck];
+    double *bphi = (double *)ARENA_ALLOC(arena, (tot + 1) * sizeof(double));
+    double *bu = (double *)ARENA_ALLOC(arena, (tot + 1) * sizeof(double));
+    double *bphiraw = (double *)ARENA_ALLOC(arena, (tot + 1)
+                                            * sizeof(double));
+    double *bdr = (double *)ARENA_ALLOC(arena, (tot + 1) * sizeof(double));
+    int32_t *cur = (int32_t *)ARENA_ALLOC(arena, (nbuck + 1)
+                                          * sizeof(int32_t));
+    memcpy(cur, boff, nbuck * sizeof(int32_t));
+    for (size_t q = 0; q < nskin_c; q++) {
+        if (p_j[q] < 0) continue;
+        const SkinVert *si = &skin_c[q];
+        const SkinVert *sj = &skin_j[p_j[q]];
+        size_t bq = (size_t)si->gid * (size_t)ng_j + (size_t)sj->gid;
+        bphi[cur[bq]] = (double)sj->phi - (double)si->phi;
+        bu[cur[bq]] = (double)sj->u - (double)si->u;
+        bphiraw[cur[bq]] = (double)si->phi;
+        bdr[cur[bq]] = p_dr[q];
+        cur[bq]++;
+    }
+    /* per admitted bucket -> edge */
+    for (int32_t gi = 0; gi < ng_i; gi++) {
+        for (int32_t gj = 0; gj < ng_j; gj++) {
+            size_t bq = (size_t)gi * (size_t)ng_j + (size_t)gj;
+            int32_t n = bcnt[bq];
+            if (n < opts->min_edge_pairs) continue;
+            int32_t na = gg_node_of(out, c, gi);
+            int32_t nb = gg_node_of(out, j, gj);
+            if (na < 0 || nb < 0) continue;
+            /* contact-edge discriminator: touching SHEETS sit a
+             * papyrus thickness apart radially; the same SURFACE
+             * crosses the trim gap tangentially */
+            if (opts->edge_dr_gate > 0.0) {
+                double drm = gg_median(&bdr[boff[bq]], (size_t)n);
+                if (drm > opts->edge_dr_gate) {
+                    res->edges_rej_dr++;
+                    continue;
+                }
+            }
+            double *ph = &bphi[boff[bq]];
+            double med = gg_median(ph, (size_t)n);   /* sorts ph */
+            int32_t obs = (int32_t)lround(med / (2.0 * GG_PI));
+            /* prior-consistency gate: the edge must agree with its
+             * own endpoints' radius evidence (k_a - k_b = obs and
+             * k ~ prior => obs ~ prior_a - prior_b). Fused-core
+             * contact edges between wraps whose per-cube windings
+             * collapsed violate this by ~a whole turn. */
+            if (opts->prior_gate > 0.0
+                && out->nodes[na].n_prior >= opts->prior_min_verts
+                && out->nodes[nb].n_prior >= opts->prior_min_verts) {
+                double want = out->nodes[na].prior
+                            - out->nodes[nb].prior;
+                if (fabs((double)obs - want) > opts->prior_gate) {
+                    res->edges_rej_prior++;
+                    continue;
+                }
+            }
+            /* mad of |dphi - 2pi*obs| */
+            double *scr = (double *)ARENA_ALLOC(
+                arena, (size_t)n * sizeof(double));
+            for (int32_t t = 0; t < n; t++)
+                scr[t] = fabs(ph[t] - 2.0 * GG_PI * (double)obs);
+            double mad = gg_median(scr, (size_t)n);
+            /* du_e = median(u_j - u_i - DeltaU(phi_iraw, obs));
+             * constraint sense below: k_i - k_j = obs so a=node_i */
+            for (int32_t t = 0; t < n; t++)
+                scr[t] = bu[boff[bq] + t]
+                       - CubeReg_deltaU(spiral_a, spiral_b,
+                                        bphiraw[boff[bq] + t], obs);
+            double due = gg_median(scr, (size_t)n);
+            GGEdge E;
+            memset(&E, 0, sizeof(E));
+            E.a = na;
+            E.b = nb;
+            E.obs = obs;
+            E.du = due;
+            E.mad = mad;
+            E.n = n;
+            {
+                int32_t ncl = n < opts->conf_n_cap ? n : opts->conf_n_cap;
+                E.conf = (double)ncl / (1.0 + mad / opts->conf_mad0);
+            }
+            E.in_tree = 0;
+            gg_seam_push(res, &E);
+        }
+    }
+}
 
 int GroupGraph_build(Arena_T arena, const CubeNode *cnodes, size_t n_cubes,
                      SkinVert *const *skins, const size_t *nskin,
@@ -136,7 +353,16 @@ int GroupGraph_build(Arena_T arena, const CubeNode *cnodes, size_t n_cubes,
             out->nodes[at].comp = -1;
             at++;
         }
-        /* prior accumulation: (r - a)/b - phi_raw/2pi per skin vert */
+        /* Prior accumulation.  The integer prior fixes winding.  The
+         * continuous prior fixes the one additive du gauge left free in each
+         * seam-translation component:
+         *
+         *   F(phi) = a*phi + b*phi^2/(4pi)
+         *   du*    = F(phi_raw) - u_raw.
+         *
+         * CubeReg_deltaU is exactly F(phi+2pi*k)-F(phi), so du* is
+         * independent of the integer correction and can be estimated before
+         * the k solve. */
         if (spiral_b != 0.0) {
             for (size_t i = 0; i < nskin[c]; i++) {
                 const SkinVert *s = &skins[c][i];
@@ -148,193 +374,88 @@ int GroupGraph_build(Arena_T arena, const CubeNode *cnodes, size_t n_cubes,
                 double r = sqrt(dy * dy + dx * dx);
                 out->nodes[nd].prior += (r - spiral_a) / spiral_b
                                       - (double)s->phi / (2.0 * GG_PI);
+                {
+                    double phi = (double)s->phi;
+                    double fu = spiral_a * phi
+                              + spiral_b * phi * phi / (4.0 * GG_PI);
+                    out->nodes[nd].du_prior += fu - (double)s->u;
+                }
                 out->nodes[nd].n_prior++;
             }
         }
     }
     for (size_t i = 0; i < total_nodes; i++)
-        if (out->nodes[i].n_prior > 0)
+        if (out->nodes[i].n_prior > 0) {
             out->nodes[i].prior /= (double)out->nodes[i].n_prior;
+            out->nodes[i].du_prior /= (double)out->nodes[i].n_prior;
+        }
     free(present);
 
-    /* ---- edges: per seam, per (gidA,gidB) bucket ---- */
-    size_t cap_e = 1024, ne = 0;
-    GGEdge *edges = (GGEdge *)gg_xmalloc(cap_e * sizeof(GGEdge));
-
+    /* ---- edges: per seam, per (gidA,gidB) bucket ----
+     * Seams are independent (each reads two frozen skins and the finished
+     * node table, and appends to its own buffer), so they run as a parallel
+     * for with a private arena per seam; the serial concatenation below in
+     * seam order reproduces the exact serial edge order. */
+    size_t n_seams = 0;
     for (size_t c = 0; c < n_cubes; c++) {
         if (nskin[c] == 0) continue;
         for (int e6 = 1; e6 < 6; e6 += 2) {   /* +z,+y,+x: each seam once */
             int32_t j = cnodes[c].nbr[e6];
-            if (j < 0 || nskin[j] == 0) continue;
-
-            Arena_Mark mark = Arena_save(arena);
-            /* KD over neighbor j's skin positions */
-            float *jp = (float *)ARENA_ALLOC(arena, nskin[j] * 3
-                                             * sizeof(float));
-            for (size_t q = 0; q < nskin[j]; q++) {
-                jp[q * 3 + 0] = skins[j][q].p[0];
-                jp[q * 3 + 1] = skins[j][q].p[1];
-                jp[q * 3 + 2] = skins[j][q].p[2];
-            }
-            KDTree_T kd = KDTree_new(arena, jp, nskin[j]);
-
-            int32_t ng_i = 0, ng_j = 0;
-            for (size_t q = 0; q < nskin[c]; q++)
-                if (skins[c][q].gid >= ng_i) ng_i = skins[c][q].gid + 1;
-            for (size_t q = 0; q < nskin[j]; q++)
-                if (skins[j][q].gid >= ng_j) ng_j = skins[j][q].gid + 1;
-            if (ng_i == 0 || ng_j == 0) { Arena_restore(arena, mark); continue; }
-
-            size_t nbuck = (size_t)ng_i * (size_t)ng_j;
-            int32_t *bcnt = (int32_t *)ARENA_CALLOC(arena, nbuck,
-                                                    sizeof(int32_t));
-            /* pass 1: count in-gate pairs per bucket */
-            size_t npair_max = nskin[c];
-            int32_t *p_j = (int32_t *)ARENA_ALLOC(arena, npair_max
-                                                  * sizeof(int32_t));
-            double *p_dr = (double *)ARENA_ALLOC(arena, npair_max
-                                                 * sizeof(double));
-            for (size_t q = 0; q < nskin[c]; q++) {
-                const SkinVert *si = &skins[c][q];
-                p_j[q] = -1;
-                if (si->gid < 0) continue;
-                float d2 = 0.0f;
-                size_t hit = KDTree_nearest(kd, si->p, &d2);
-                if ((double)d2 > gate2) continue;
-                const SkinVert *sj = &skins[j][hit];
-                if (sj->gid < 0) continue;
-                /* radius sanity (diagnostic at default gates: a 3D-gated
-                 * pair always has |dr| <= 3.5 < pitch/2, so this fires only
-                 * under an explicit tighter --radius-gate. Cross-wrap
-                 * CONTACT pairs are not poison here: they land in their own
-                 * (gid_i, gid_j) bucket whose obs correctly encodes the
-                 * one-turn offset -- the OLD solver's error was pooling
-                 * them into the same median as same-wrap pairs). */
-                double dyi = (double)si->p[1] - axis_point[1];
-                double dxi = (double)si->p[2] - axis_point[2];
-                double dyj = (double)sj->p[1] - axis_point[1];
-                double dxj = (double)sj->p[2] - axis_point[2];
-                double ri = sqrt(dyi * dyi + dxi * dxi);
-                double rj = sqrt(dyj * dyj + dxj * dxj);
-                if (fabs(ri - rj) > rgate) {
-                    out->pairs_rej_radius++;
-                    continue;
-                }
-                /* the real per-pair filter: a true surface pair's raw dphi
-                 * is near-integer turns (theta is a position function; 3.5
-                 * vox of positional slack is ~0.01 rad of theta) -- mixed or
-                 * torn geometry is not */
-                double dphi = (double)sj->phi - (double)si->phi;
-                if (fabs(gg_wrap_pi(dphi)) > opts->frac_gate) {
-                    out->pairs_rej_frac++;
-                    continue;
-                }
-                p_j[q] = (int32_t)hit;
-                p_dr[q] = fabs(ri - rj);
-                bcnt[(size_t)si->gid * (size_t)ng_j + (size_t)sj->gid]++;
-                out->pairs_used++;
-            }
-            /* bucket offsets + fill dphi/duraw */
-            int32_t *boff = (int32_t *)ARENA_CALLOC(arena, nbuck + 1,
-                                                    sizeof(int32_t));
-            for (size_t bq = 0; bq < nbuck; bq++)
-                boff[bq + 1] = boff[bq] + bcnt[bq];
-            size_t tot = (size_t)boff[nbuck];
-            double *bphi = (double *)ARENA_ALLOC(arena, (tot + 1)
-                                                 * sizeof(double));
-            double *bu = (double *)ARENA_ALLOC(arena, (tot + 1)
-                                               * sizeof(double));
-            double *bphiraw = (double *)ARENA_ALLOC(arena, (tot + 1)
-                                                    * sizeof(double));
-            double *bdr = (double *)ARENA_ALLOC(arena, (tot + 1)
-                                                * sizeof(double));
-            int32_t *cur = (int32_t *)ARENA_ALLOC(arena, (nbuck + 1)
-                                                  * sizeof(int32_t));
-            memcpy(cur, boff, nbuck * sizeof(int32_t));
-            for (size_t q = 0; q < nskin[c]; q++) {
-                if (p_j[q] < 0) continue;
-                const SkinVert *si = &skins[c][q];
-                const SkinVert *sj = &skins[j][p_j[q]];
-                size_t bq = (size_t)si->gid * (size_t)ng_j + (size_t)sj->gid;
-                bphi[cur[bq]] = (double)sj->phi - (double)si->phi;
-                bu[cur[bq]] = (double)sj->u - (double)si->u;
-                bphiraw[cur[bq]] = (double)si->phi;
-                bdr[cur[bq]] = p_dr[q];
-                cur[bq]++;
-            }
-            /* per admitted bucket -> edge */
-            for (int32_t gi = 0; gi < ng_i; gi++) {
-                for (int32_t gj = 0; gj < ng_j; gj++) {
-                    size_t bq = (size_t)gi * (size_t)ng_j + (size_t)gj;
-                    int32_t n = bcnt[bq];
-                    if (n < opts->min_edge_pairs) continue;
-                    int32_t na = gg_node_of(out, c, gi);
-                    int32_t nb = gg_node_of(out, (size_t)j, gj);
-                    if (na < 0 || nb < 0) continue;
-                    /* contact-edge discriminator: touching SHEETS sit a
-                     * papyrus thickness apart radially; the same SURFACE
-                     * crosses the trim gap tangentially */
-                    if (opts->edge_dr_gate > 0.0) {
-                        double drm = gg_median(&bdr[boff[bq]], (size_t)n);
-                        if (drm > opts->edge_dr_gate) {
-                            out->edges_rej_dr++;
-                            continue;
-                        }
-                    }
-                    double *ph = &bphi[boff[bq]];
-                    double med = gg_median(ph, (size_t)n);   /* sorts ph */
-                    int32_t obs = (int32_t)lround(med / (2.0 * GG_PI));
-                    /* prior-consistency gate: the edge must agree with its
-                     * own endpoints' radius evidence (k_a - k_b = obs and
-                     * k ~ prior => obs ~ prior_a - prior_b). Fused-core
-                     * contact edges between wraps whose per-cube windings
-                     * collapsed violate this by ~a whole turn. */
-                    if (opts->prior_gate > 0.0
-                        && out->nodes[na].n_prior >= opts->prior_min_verts
-                        && out->nodes[nb].n_prior >= opts->prior_min_verts) {
-                        double want = out->nodes[na].prior
-                                    - out->nodes[nb].prior;
-                        if (fabs((double)obs - want) > opts->prior_gate) {
-                            out->edges_rej_prior++;
-                            continue;
-                        }
-                    }
-                    /* mad of |dphi - 2pi*obs| */
-                    double *scr = (double *)ARENA_ALLOC(
-                        arena, (size_t)n * sizeof(double));
-                    for (int32_t t = 0; t < n; t++)
-                        scr[t] = fabs(ph[t] - 2.0 * GG_PI * (double)obs);
-                    double mad = gg_median(scr, (size_t)n);
-                    /* du_e = median(u_j - u_i - DeltaU(phi_iraw, obs));
-                     * constraint sense below: k_i - k_j = obs so a=node_i */
-                    for (int32_t t = 0; t < n; t++)
-                        scr[t] = bu[boff[bq] + t]
-                               - CubeReg_deltaU(spiral_a, spiral_b,
-                                                bphiraw[boff[bq] + t], obs);
-                    double due = gg_median(scr, (size_t)n);
-                    if (ne == cap_e) {
-                        cap_e *= 2;
-                        GGEdge *nn2 = (GGEdge *)gg_xmalloc(cap_e
-                                                           * sizeof(GGEdge));
-                        memcpy(nn2, edges, ne * sizeof(GGEdge));
-                        free(edges);
-                        edges = nn2;
-                    }
-                    GGEdge *E = &edges[ne++];
-                    E->a = na;
-                    E->b = nb;
-                    E->obs = obs;
-                    E->du = due;
-                    E->mad = mad;
-                    E->n = n;
-                    int32_t ncl = n < opts->conf_n_cap ? n : opts->conf_n_cap;
-                    E->conf = (double)ncl / (1.0 + mad / opts->conf_mad0);
-                    E->in_tree = 0;
-                }
-            }
-            Arena_restore(arena, mark);
+            if (j >= 0 && nskin[j] > 0) n_seams++;
         }
     }
+    int32_t *seam_c = (int32_t *)ARENA_ALLOC(
+        arena, (n_seams + 1) * sizeof(int32_t));
+    int32_t *seam_j = (int32_t *)ARENA_ALLOC(
+        arena, (n_seams + 1) * sizeof(int32_t));
+    {
+        size_t at = 0;
+        for (size_t c = 0; c < n_cubes; c++) {
+            if (nskin[c] == 0) continue;
+            for (int e6 = 1; e6 < 6; e6 += 2) {
+                int32_t j = cnodes[c].nbr[e6];
+                if (j < 0 || nskin[j] == 0) continue;
+                seam_c[at] = (int32_t)c;
+                seam_j[at] = j;
+                at++;
+            }
+        }
+    }
+    GGSeamOut *souts = (GGSeamOut *)gg_xmalloc(
+        (n_seams ? n_seams : 1) * sizeof(GGSeamOut));
+    memset(souts, 0, (n_seams ? n_seams : 1) * sizeof(GGSeamOut));
+    {
+        int s = 0;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic, 4)
+#endif
+        for (s = 0; s < (int)n_seams; s++) {
+            Arena_T sa = Arena_new();
+            gg_seam_edges(sa, out, opts, axis_point, spiral_a, spiral_b,
+                          rgate, gate2,
+                          skins[seam_c[s]], nskin[seam_c[s]],
+                          skins[seam_j[s]], nskin[seam_j[s]],
+                          (size_t)seam_c[s], (size_t)seam_j[s], &souts[s]);
+            Arena_dispose(&sa);
+        }
+    }
+    size_t cap_e = 1024, ne = 0;
+    for (size_t s2 = 0; s2 < n_seams; s2++) cap_e += souts[s2].ne;
+    GGEdge *edges = (GGEdge *)gg_xmalloc(cap_e * sizeof(GGEdge));
+    for (size_t s2 = 0; s2 < n_seams; s2++) {
+        GGSeamOut *so = &souts[s2];
+        if (so->ne > 0) {
+            memcpy(&edges[ne], so->edges, so->ne * sizeof(GGEdge));
+            ne += so->ne;
+        }
+        free(so->edges);
+        out->pairs_used += so->pairs_used;
+        out->pairs_rej_radius += so->pairs_rej_radius;
+        out->pairs_rej_frac += so->pairs_rej_frac;
+        out->edges_rej_dr += so->edges_rej_dr;
+        out->edges_rej_prior += so->edges_rej_prior;
+    }
+    free(souts);
     /* intra-cube prior ladders: rungs between a cube's own groups. The
      * shared local wobble cancels in the DIFFERENCE, making these the one
      * reliable use of the radius prior between nodes. n = 0 marks them as
@@ -748,24 +869,78 @@ int GroupGraph_solve(Arena_T arena, GroupGraph *g, const GroupGraphOpts *opts)
                 Arena_restore(arena, m2);
             }
         }
-        /* per-component recenter by n_prior-weighted median of du */
+        /* Fix the otherwise free additive gauge of every connected
+         * translation component.  Relative seam equations alone determine du
+         * only up to a component-wide constant.  Centering that constant at
+         * zero is arbitrary and lets disconnected charts drift across wraps.
+         * When requested, choose the robust shift that best matches the
+         * analytic spiral target du*=F(phi_raw)-u_raw; all relative seam
+         * differences remain exactly unchanged. */
         {
+            int32_t *coff = (int32_t *)ARENA_CALLOC(
+                arena, (size_t)n_comp + 1, sizeof(int32_t));
+            for (size_t i = 0; i < nn; i++)
+                coff[g->nodes[i].comp + 1]++;
+            for (int32_t c = 0; c < n_comp; c++)
+                coff[c + 1] += coff[c];
+            int32_t *cnode = (int32_t *)ARENA_ALLOC(
+                arena, (nn + 1) * sizeof(int32_t));
+            int32_t *ccur = (int32_t *)ARENA_ALLOC(
+                arena, ((size_t)n_comp + 1) * sizeof(int32_t));
+            memcpy(ccur, coff, (size_t)n_comp * sizeof(int32_t));
+            for (size_t i = 0; i < nn; i++)
+                cnode[ccur[g->nodes[i].comp]++] = (int32_t)i;
+
             for (int32_t cmp = 0; cmp < n_comp; cmp++) {
                 Arena_Mark m2 = Arena_save(arena);
-                double *vals = (double *)ARENA_ALLOC(arena, nn
-                                                     * sizeof(double));
+                int32_t cn = coff[cmp + 1] - coff[cmp];
+                GgWeighted *vals = (GgWeighted *)ARENA_ALLOC(
+                    arena, ((size_t)cn + 1) * sizeof(GgWeighted));
                 size_t nv2 = 0;
-                for (size_t i = 0; i < nn; i++)
-                    if (g->nodes[i].comp == cmp && g->nodes[i].n_prior > 0)
-                        vals[nv2++] = g->nodes[i].du;
+                for (int32_t q = coff[cmp]; q < coff[cmp + 1]; q++) {
+                    GGNode *nd = &g->nodes[cnode[q]];
+                    /* du*=F(phi)-u is a direct continuous observation, not
+                     * the noisier integer radius prior.  Even one retained
+                     * skin vertex fixes a component's free additive gauge. */
+                    if (nd->n_prior <= 0) continue;
+                    vals[nv2].v = opts->physical_du_gauge
+                                ? nd->du_prior - nd->du : nd->du;
+                    int32_t nw = nd->n_prior;
+                    if (nw > opts->conf_n_cap) nw = opts->conf_n_cap;
+                    vals[nv2].w = (double)nw;
+                    nv2++;
+                }
                 if (nv2 > 0) {
-                    double c0 = gg_median(vals, nv2);
-                    for (size_t i = 0; i < nn; i++)
-                        if (g->nodes[i].comp == cmp)
-                            g->nodes[i].du -= c0;
+                    double shift = gg_weighted_median(vals, nv2);
+                    if (!opts->physical_du_gauge) shift = -shift;
+                    for (int32_t q = coff[cmp]; q < coff[cmp + 1]; q++)
+                        g->nodes[cnode[q]].du += shift;
+                    if (opts->physical_du_gauge)
+                        g->du_gauge_components++;
                 }
                 Arena_restore(arena, m2);
             }
+        }
+    }
+
+    /* Report how tightly the solved continuous gauges honor the physical
+     * prior.  This is diagnostic only; seam equations remain the primary
+     * constraints. */
+    {
+        double *res = (double *)ARENA_ALLOC(arena, (nn + 1) * sizeof(double));
+        size_t nr = 0;
+        double rmax = 0.0;
+        for (size_t i = 0; i < nn; i++) {
+            if (g->nodes[i].n_prior <= 0) continue;
+            double r = fabs(g->nodes[i].du - g->nodes[i].du_prior);
+            res[nr++] = r;
+            if (r > rmax) rmax = r;
+        }
+        if (nr > 0) {
+            qsort(res, nr, sizeof(double), gg_cmp_dbl);
+            g->du_prior_resid_median = res[nr / 2];
+            g->du_prior_resid_p95 = res[(size_t)(0.95 * (double)(nr - 1))];
+            g->du_prior_resid_max = rmax;
         }
     }
 
@@ -773,11 +948,14 @@ int GroupGraph_solve(Arena_T arena, GroupGraph *g, const GroupGraphOpts *opts)
         fprintf(stderr, "[group_graph] nodes=%zu edges=%zu comps=%d "
                 "energy=%.1f frustrated=%zu moves=%d anchor=%.5g "
                 "redundancy=%.3f pairs used=%zu "
-                "rej r/frac=%zu/%zu edges rej dr/prior=%zu/%zu\n", nn, ne,
+                "rej r/frac=%zu/%zu edges rej dr/prior=%zu/%zu "
+                "du-prior med/p95/max=%.2f/%.2f/%.2f\n", nn, ne,
                 g->n_comp, g->energy, g->n_frustrated, g->moves_applied,
                 g->anchor_weight_effective, g->edge_redundancy,
                 g->pairs_used, g->pairs_rej_radius, g->pairs_rej_frac,
-                g->edges_rej_dr, g->edges_rej_prior);
+                g->edges_rej_dr, g->edges_rej_prior,
+                g->du_prior_resid_median, g->du_prior_resid_p95,
+                g->du_prior_resid_max);
 
     Arena_restore(arena, mark);
     return 0;
@@ -1130,6 +1308,36 @@ int GroupGraph_selftest(void)
                    "t8 raw du gauge preserves continuous chart", &fails);
         ggst_check(g.n_frustrated == 0,
                    "t8 relative forest constraint remains exact", &fails);
+    }
+
+    /* t11: the physical continuous gauge preserves seam differences while
+     * selecting the component's absolute translation from F(phi)-u_raw. */
+    {
+        GGNode nd[3] = {
+            ggst_node(0, 0, 0.0, 100), ggst_node(1, 0, 0.0, 100),
+            ggst_node(2, 0, 0.0, 100)
+        };
+        nd[0].du_prior = 7.0;
+        nd[1].du_prior = 4.0;
+        nd[2].du_prior = 8.0;
+        GGEdge ed[2] = {
+            ggst_edge(0, 1, 0, 100, 3.0),
+            ggst_edge(1, 2, 0, 100, -4.0)
+        };
+        int32_t cn0[4] = { 0, 1, 2, 3 };
+        GroupGraph g;
+        GroupGraphOpts physical = o;
+        physical.physical_du_gauge = 1;
+        ggst_wire(&g, nd, 3, ed, 2, cn0, 3);
+        GroupGraph_solve(arena, &g, &physical);
+        ggst_check(fabs(nd[0].du - 7.0) < 1e-9
+                   && fabs(nd[1].du - 4.0) < 1e-9
+                   && fabs(nd[2].du - 8.0) < 1e-9,
+                   "t11 physical du gauge fixes absolute translation",
+                   &fails);
+        ggst_check(fabs((nd[0].du - nd[1].du) - 3.0) < 1e-9
+                   && fabs((nd[1].du - nd[2].du) + 4.0) < 1e-9,
+                   "t11 physical gauge preserves seam equations", &fails);
     }
 
     /* t9: the anchored collective cut may reject a false seam bridge without

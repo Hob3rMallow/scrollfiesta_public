@@ -27,6 +27,98 @@ void WeldBuildOpts_default(WeldBuildOpts *o)
     o->verbose = 0;
 }
 
+/* One seam's correspondences, thread-independent: reads two frozen skins,
+ * writes only *res (malloc'd corr buffer the caller takes).  Returns 0, or
+ * -1 on allocation failure. */
+typedef struct {
+    WtrkCorr *corr;
+    size_t    nc, cap;
+    size_t    n_ambig, per_axis[3];
+} WbSeamOut;
+
+static int wb_seam_corrs(Arena_T arena,
+                         const SkinVert *skin_c, size_t nskin_c,
+                         const SkinVert *skin_j, size_t nskin_j,
+                         size_t c, size_t j, uint8_t axis,
+                         double rgate, double gate2, double margin2,
+                         const float axis_point[3],
+                         const WeldBuildOpts *opts, WbSeamOut *res)
+{
+    enum { NB_MAX = 16 };
+    float *jp = (float *)ARENA_ALLOC(arena, nskin_j * 3 * sizeof(float));
+    for (size_t q = 0; q < nskin_j; q++) {
+        jp[q * 3 + 0] = skin_j[q].p[0];
+        jp[q * 3 + 1] = skin_j[q].p[1];
+        jp[q * 3 + 2] = skin_j[q].p[2];
+    }
+    KDTree_T kd = KDTree_new(arena, jp, nskin_j);
+    int32_t ball[NB_MAX];
+
+    for (size_t q = 0; q < nskin_c; q++) {
+        const SkinVert *si = &skin_c[q];
+        if (si->gid < 0)
+            continue;
+        float d2 = 0.0f;
+        size_t hit = KDTree_nearest(kd, si->p, &d2);
+        if ((double)d2 > gate2)
+            continue;
+        const SkinVert *sj = &skin_j[hit];
+        if (sj->gid < 0)
+            continue;
+        double dyi = (double)si->p[1] - (double)axis_point[1];
+        double dxi = (double)si->p[2] - (double)axis_point[2];
+        double dyj = (double)sj->p[1] - (double)axis_point[1];
+        double dxj = (double)sj->p[2] - (double)axis_point[2];
+        double ri = sqrt(dyi * dyi + dxi * dxi);
+        double rj = sqrt(dyj * dyj + dxj * dxj);
+        double dr = fabs(ri - rj);
+        if (dr > rgate)
+            continue;
+        double dphi = wb_wrap_pi((double)sj->phi - (double)si->phi);
+        if (fabs(dphi) > opts->frac_gate)
+            continue;
+
+        /* ambiguity: another wrap of j within (1+margin)*d_nearest */
+        uint8_t conf = 2;
+        float br2 = (float)(margin2 * (double)d2);
+        size_t nb = KDTree_ball_query(kd, si->p, br2, ball, NB_MAX);
+        for (size_t bq = 0; bq < nb; bq++) {
+            if (ball[bq] == (int32_t)hit)
+                continue;
+            double dp = fabs((double)skin_j[(size_t)ball[bq]].phi
+                             - (double)sj->phi);
+            if (dp > WB_PI) { conf = 1; break; }
+        }
+        if (conf == 1)
+            res->n_ambig++;
+
+        if (res->nc == res->cap) {
+            size_t ncap = res->cap ? res->cap * 2 : 256;
+            WtrkCorr *nn = (WtrkCorr *)realloc(res->corr,
+                                               ncap * sizeof(WtrkCorr));
+            if (nn == NULL)
+                return -1;
+            res->corr = nn;
+            res->cap = ncap;
+        }
+        WtrkCorr *e = &res->corr[res->nc++];
+        memset(e, 0, sizeof(*e));
+        e->cube_a = (uint32_t)c;
+        e->cube_b = (uint32_t)j;
+        e->vert_a = (uint32_t)q;
+        e->vert_b = (uint32_t)hit;
+        e->gid_a = si->gid;
+        e->gid_b = sj->gid;
+        e->dr = (float)dr;
+        e->dphi = (float)dphi;
+        e->dist3d = (float)sqrt((double)d2);
+        e->seam_axis = axis;
+        e->conf = conf;
+        res->per_axis[axis]++;
+    }
+    return 0;
+}
+
 int WeldBuild_pass1(Arena_T arena, const CubeNode *cnodes, size_t n_cubes,
                     SkinVert *const *skins, const size_t *nskin,
                     const float axis_point[3],
@@ -54,105 +146,84 @@ int WeldBuild_pass1(Arena_T arena, const CubeNode *cnodes, size_t n_cubes,
     for (size_t c = 0; c < n_cubes; c++)
         snprintf(out->ids[c], WTRK_ID_LEN, "%s", cnodes[c].id);
 
-    size_t cap = 4096, nc = 0;
-    WtrkCorr *cs = (WtrkCorr *)malloc(cap * sizeof(WtrkCorr));
-    if (cs == NULL)
-        return -1;
     size_t n_ambig = 0, per_axis[3] = { 0, 0, 0 };
 
-    enum { NB_MAX = 16 };
+    /* Seams are independent (two frozen skins in, one private corr buffer
+     * out), so run them as a parallel for with a private arena per seam and
+     * concatenate in seam order -- identical output order to the old serial
+     * double loop. */
+    size_t n_seams = 0;
     for (size_t c = 0; c < n_cubes; c++) {
-        if (nskin[c] == 0)
-            continue;
-        for (int e6 = 1; e6 < 6; e6 += 2) {   /* +z,+y,+x: each seam once */
+        if (nskin[c] == 0) continue;
+        for (int e6 = 1; e6 < 6; e6 += 2) {
             int32_t j = cnodes[c].nbr[e6];
-            if (j < 0 || nskin[(size_t)j] == 0)
-                continue;
-            uint8_t axis = e6 == 1 ? 0u : (e6 == 3 ? 1u : 2u);
-
-            Arena_Mark mark = Arena_save(arena);
-            float *jp = (float *)ARENA_ALLOC(arena, nskin[(size_t)j] * 3
-                                             * sizeof(float));
-            for (size_t q = 0; q < nskin[(size_t)j]; q++) {
-                jp[q * 3 + 0] = skins[(size_t)j][q].p[0];
-                jp[q * 3 + 1] = skins[(size_t)j][q].p[1];
-                jp[q * 3 + 2] = skins[(size_t)j][q].p[2];
-            }
-            KDTree_T kd = KDTree_new(arena, jp, nskin[(size_t)j]);
-            int32_t ball[NB_MAX];
-
-            for (size_t q = 0; q < nskin[c]; q++) {
-                const SkinVert *si = &skins[c][q];
-                if (si->gid < 0)
-                    continue;
-                float d2 = 0.0f;
-                size_t hit = KDTree_nearest(kd, si->p, &d2);
-                if ((double)d2 > gate2)
-                    continue;
-                const SkinVert *sj = &skins[(size_t)j][hit];
-                if (sj->gid < 0)
-                    continue;
-                double dyi = (double)si->p[1] - (double)axis_point[1];
-                double dxi = (double)si->p[2] - (double)axis_point[2];
-                double dyj = (double)sj->p[1] - (double)axis_point[1];
-                double dxj = (double)sj->p[2] - (double)axis_point[2];
-                double ri = sqrt(dyi * dyi + dxi * dxi);
-                double rj = sqrt(dyj * dyj + dxj * dxj);
-                double dr = fabs(ri - rj);
-                if (dr > rgate)
-                    continue;
-                double dphi = wb_wrap_pi((double)sj->phi - (double)si->phi);
-                if (fabs(dphi) > opts->frac_gate)
-                    continue;
-
-                /* ambiguity: another wrap of j within (1+margin)*d_nearest */
-                uint8_t conf = 2;
-                float br2 = (float)(margin2 * (double)d2);
-                size_t nb = KDTree_ball_query(kd, si->p, br2, ball, NB_MAX);
-                for (size_t bq = 0; bq < nb; bq++) {
-                    if (ball[bq] == (int32_t)hit)
-                        continue;
-                    double dp = fabs((double)skins[(size_t)j][(size_t)ball[bq]]
-                                         .phi - (double)sj->phi);
-                    if (dp > WB_PI) { conf = 1; break; }
-                }
-                if (conf == 1)
-                    n_ambig++;
-
-                if (nc == cap) {
-                    cap *= 2;
-                    WtrkCorr *nn = (WtrkCorr *)realloc(cs,
-                                       cap * sizeof(WtrkCorr));
-                    if (nn == NULL) {
-                        free(cs);
-                        Arena_restore(arena, mark);
-                        return -1;
-                    }
-                    cs = nn;
-                }
-                WtrkCorr *e = &cs[nc++];
-                memset(e, 0, sizeof(*e));
-                e->cube_a = (uint32_t)c;
-                e->cube_b = (uint32_t)j;
-                e->vert_a = (uint32_t)q;
-                e->vert_b = (uint32_t)hit;
-                e->gid_a = si->gid;
-                e->gid_b = sj->gid;
-                e->dr = (float)dr;
-                e->dphi = (float)dphi;
-                e->dist3d = (float)sqrt((double)d2);
-                e->seam_axis = axis;
-                e->conf = conf;
-                per_axis[axis]++;
-            }
-            Arena_restore(arena, mark);
+            if (j >= 0 && nskin[(size_t)j] > 0) n_seams++;
         }
     }
-
+    int32_t *seam_c = (int32_t *)ARENA_ALLOC(
+        arena, (n_seams + 1) * sizeof(int32_t));
+    int32_t *seam_j = (int32_t *)ARENA_ALLOC(
+        arena, (n_seams + 1) * sizeof(int32_t));
+    uint8_t *seam_axis = (uint8_t *)ARENA_ALLOC(arena, n_seams + 1);
+    {
+        size_t at = 0;
+        for (size_t c = 0; c < n_cubes; c++) {
+            if (nskin[c] == 0) continue;
+            for (int e6 = 1; e6 < 6; e6 += 2) {   /* +z,+y,+x: once each */
+                int32_t j = cnodes[c].nbr[e6];
+                if (j < 0 || nskin[(size_t)j] == 0) continue;
+                seam_c[at] = (int32_t)c;
+                seam_j[at] = j;
+                seam_axis[at] = e6 == 1 ? 0u : (e6 == 3 ? 1u : 2u);
+                at++;
+            }
+        }
+    }
+    WbSeamOut *souts = (WbSeamOut *)calloc(n_seams ? n_seams : 1,
+                                           sizeof(WbSeamOut));
+    if (souts == NULL)
+        return -1;
+    int seam_oom = 0;
+    {
+        int s = 0;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic, 4)
+#endif
+        for (s = 0; s < (int)n_seams; s++) {
+            Arena_T sa = Arena_new();
+            if (wb_seam_corrs(sa, skins[seam_c[s]], nskin[seam_c[s]],
+                              skins[seam_j[s]], nskin[seam_j[s]],
+                              (size_t)seam_c[s], (size_t)seam_j[s],
+                              seam_axis[s], rgate, gate2, margin2,
+                              axis_point, opts, &souts[s]) != 0) {
+#ifdef _OPENMP
+#pragma omp critical
+#endif
+                { seam_oom = 1; }
+            }
+            Arena_dispose(&sa);
+        }
+    }
+    size_t nc = 0;
+    for (size_t s2 = 0; s2 < n_seams; s2++) nc += souts[s2].nc;
     out->n_corr = nc;
     out->corr = (WtrkCorr *)ARENA_ALLOC(arena, (nc + 1) * sizeof(WtrkCorr));
-    memcpy(out->corr, cs, nc * sizeof(WtrkCorr));
-    free(cs);
+    nc = 0;
+    for (size_t s2 = 0; s2 < n_seams; s2++) {
+        WbSeamOut *so = &souts[s2];
+        if (so->nc > 0) {
+            memcpy(&out->corr[nc], so->corr, so->nc * sizeof(WtrkCorr));
+            nc += so->nc;
+        }
+        free(so->corr);
+        n_ambig += so->n_ambig;
+        per_axis[0] += so->per_axis[0];
+        per_axis[1] += so->per_axis[1];
+        per_axis[2] += so->per_axis[2];
+    }
+    free(souts);
+    if (seam_oom)
+        return -1;
     out->self = out;
 
     if (opts->verbose)

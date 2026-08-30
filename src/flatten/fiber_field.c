@@ -119,24 +119,56 @@ int FiberField_compute(Arena_T arena, const uint8_t *img, int W, int H,
             gy[(size_t)y * W + x] = 0.5f * (Is[(size_t)yd * W + x] - Is[(size_t)yu * W + x]);
         }
     }
-    free(Is); Is = NULL;
-
-    /* 2. structure tensor J = [[gx^2, gx gy],[gx gy, gy^2]], stored as the
-     *    doubled-angle vector (Ac,As) = (Sxx-Syy, 2 Sxy) plus energy En = Sxx+Syy.
-     *    (The grid/rosy4 folding of the recovered orientation happens in step 4;
-     *    folding the *tensor* itself would blend the two families to the diagonal.) */
+    /* 2. Per-pixel angular moment plus energy.
+     *
+     * rosy=2 stores the usual second moment
+     *   E (cos 2phi, sin 2phi) = (gx^2-gy^2, 2 gx gy).
+     *
+     * rosy=4 uses the eigencross of the local Hessian.  Its trace-free part
+     * z=(Hxx-Hyy)+i(2Hxy) is an oriented eigenframe modulo pi; squaring z and
+     * normalizing once yields |z| exp(i 4theta).  Swapping the two Hessian
+     * eigenvectors changes z's sign but not z^2, so two equally strong
+     * orthogonal ridge families reinforce rather than cancel.  This is a
+     * genuine unordered cross, not a folded dominant gradient line. */
     Ac = (float *)malloc(N * sizeof *Ac);
     As = (float *)malloc(N * sizeof *As);
     En = (float *)malloc(N * sizeof *En);
     if (Ac == NULL || As == NULL || En == NULL) {
         free(tmp); free(gx); free(gy); free(Ac); free(As); free(En); return -1;
     }
-    for (p = 0; p < N; p++) {
-        double a = gx[p], g = gy[p];
-        En[p] = (float)(a * a + g * g);      /* gradient energy E = |grad I|^2 */
-        Ac[p] = (float)(a * a - g * g);      /* E cos2phi */
-        As[p] = (float)(2.0 * a * g);        /* E sin2phi */
+    for (y = 0; y < H; y++) for (x = 0; x < W; x++) {
+        p = (size_t)y * (size_t)W + (size_t)x;
+        if (rosy == 4) {
+            int xl = x > 0 ? x - 1 : 0, xr = x + 1 < W ? x + 1 : W - 1;
+            int yu = y > 0 ? y - 1 : 0, yd = y + 1 < H ? y + 1 : H - 1;
+            double center = Is[p];
+            double hxx = (double)Is[(size_t)y * W + xr] - 2.0 * center
+                       + (double)Is[(size_t)y * W + xl];
+            double hyy = (double)Is[(size_t)yd * W + x] - 2.0 * center
+                       + (double)Is[(size_t)yu * W + x];
+            double hxy = 0.25 * (
+                (double)Is[(size_t)yd * W + xr]
+              - (double)Is[(size_t)yd * W + xl]
+              - (double)Is[(size_t)yu * W + xr]
+              + (double)Is[(size_t)yu * W + xl]);
+            double A = hxx - hyy, B = 2.0 * hxy;
+            double E = hypot(A, B);
+            En[p] = (float)E;
+            if (E > 1e-12) {
+                Ac[p] = (float)((A * A - B * B) / E);
+                As[p] = (float)(2.0 * A * B / E);
+            } else {
+                Ac[p] = As[p] = 0.0f;
+            }
+        } else {
+            double a = gx[p], g = gy[p];
+            double E = a * a + g * g;
+            En[p] = (float)E;
+            Ac[p] = (float)(a * a - g * g);        /* E cos2phi */
+            As[p] = (float)(2.0 * a * g);          /* E sin2phi */
+        }
     }
+    free(Is); Is = NULL;
     free(gx); gx = NULL; free(gy); gy = NULL;
 
     /* 3. smooth the accumulators at the integration scale (in place via tmp) */
@@ -164,14 +196,22 @@ int FiberField_compute(Arena_T arena, const uint8_t *img, int W, int H,
         double A = Ac[p], B = As[p], E = En[p];
         double mag = sqrt(A * A + B * B);
         double coh = (E > 1e-12) ? mag / E : 0.0;
-        double phi, theta, deg, d90, axis_err;
+        double theta, deg, d90, axis_err;
         int valid = (img[p] > 0) && (covs[p] > 0.9f);
 
         if (coh < 0.0) coh = 0.0; else if (coh > 1.0) coh = 1.0;
-        phi = 0.5 * atan2(B, A);                    /* gradient orientation (mod pi) */
-        theta = phi + FIBER_PI / 2.0;               /* fiber runs perpendicular */
-        theta = fmod(theta, FIBER_PI); if (theta < 0.0) theta += FIBER_PI;
-        if (rosy == 4) theta = fmod(theta, FIBER_PI / 2.0);   /* fold to grid orientation (mod 90) */
+        if (rosy == 4) {
+            /* A,B are the smoothed fourth moment. Gradient and fiber crosses
+             * differ by pi/2, which is the same 4-RoSy element. */
+            theta = 0.25 * atan2(B, A);
+            theta = fmod(theta, FIBER_PI / 2.0);
+            if (theta < 0.0) theta += FIBER_PI / 2.0;
+        } else {
+            double phi = 0.5 * atan2(B, A);         /* gradient line, mod pi */
+            theta = phi + FIBER_PI / 2.0;           /* fiber is perpendicular */
+            theta = fmod(theta, FIBER_PI);
+            if (theta < 0.0) theta += FIBER_PI;
+        }
 
         if (!valid) { out->theta[p] = 0.0f; out->coh[p] = 0.0f; out->valid[p] = 0; continue; }
         out->theta[p] = (float)theta;
@@ -247,7 +287,8 @@ static void ff_grating(uint8_t *img, int W, int H, double dirx, double diry, dou
 }
 
 /* additive orthogonal gratings -> a cross-hatch grid rotated by `deg` */
-static void ff_crosshatch(uint8_t *img, int W, int H, double deg, double lambda)
+static void ff_crosshatch(uint8_t *img, int W, int H, double deg, double lambda,
+                          double amplitude_u, double amplitude_v)
 {
     double a = deg * FIBER_PI / 180.0, cx = cos(a), sx = sin(a);
     int x, y;
@@ -255,8 +296,9 @@ static void ff_crosshatch(uint8_t *img, int W, int H, double deg, double lambda)
         for (x = 0; x < W; x++) {
             double u = (double)x * cx + (double)y * sx;      /* along grid */
             double v = -(double)x * sx + (double)y * cx;     /* across grid */
-            double val = 128.0 + 65.0 * sin(2.0 * FIBER_PI * u / lambda)   /* dominant family */
-                               + 30.0 * sin(2.0 * FIBER_PI * v / lambda);  /* weaker family */
+            double val = 128.0
+                       + amplitude_u * sin(2.0 * FIBER_PI * u / lambda)
+                       + amplitude_v * sin(2.0 * FIBER_PI * v / lambda);
             if (val < 0) val = 0; if (val > 255) val = 255;
             img[(size_t)y * W + x] = (uint8_t)val;
         }
@@ -288,15 +330,29 @@ int FiberField_selftest(void)
         fails += ff_check("r2 diag", ff_mean_orient_deg(&f), 135.0, 8.0, 180.0);
 
     /* rosy4 GRID: axis-aligned cross-hatch -> grid orientation ~0 (mod 90) */
-    ff_crosshatch(img, W, H, 0.0, 12.0);
+    ff_crosshatch(img, W, H, 0.0, 12.0, 65.0, 30.0);
     if (FiberField_compute(arena, img, W, H, 1.0, 5.0, 15.0, 4, &f) == 0) {
         fails += ff_check("r4 aligned", ff_mean_orient_deg(&f), 0.0, 6.0, 90.0);
         if (f.mean_coh < 0.3) { fprintf(stderr, "[fiber_field selftest]   FAIL: r4 aligned coh %.2f\n", f.mean_coh); fails++; }
     }
     /* rosy4 GRID rotated 20 deg -> grid orientation ~20 */
-    ff_crosshatch(img, W, H, 20.0, 12.0);
+    ff_crosshatch(img, W, H, 20.0, 12.0, 65.0, 30.0);
     if (FiberField_compute(arena, img, W, H, 1.0, 5.0, 15.0, 4, &f) == 0)
         fails += ff_check("r4 rot20", ff_mean_orient_deg(&f), 20.0, 7.0, 90.0);
+
+    /* Equal-strength orthogonal families cancel in an ordinary structure
+     * tensor. They must remain a coherent cross in a genuine fourth moment. */
+    ff_crosshatch(img, W, H, 31.0, 12.0, 45.0, 45.0);
+    if (FiberField_compute(arena, img, W, H, 1.0, 5.0, 15.0, 4, &f) == 0) {
+        fails += ff_check("r4 balanced rot31", ff_mean_orient_deg(&f),
+                          31.0, 7.0, 90.0);
+        if (f.mean_coh < 0.3) {
+            fprintf(stderr,
+                    "[fiber_field selftest]   FAIL: r4 balanced coh %.2f\n",
+                    f.mean_coh);
+            fails++;
+        }
+    }
 
     /* flat: no orientation -> coherence ~0 */
     memset(img, 128, (size_t)W * H);

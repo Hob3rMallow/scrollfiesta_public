@@ -35,8 +35,8 @@ CSR_T CSR_from_faces(Arena_T arena, const int32_t *faces, size_t nf,
 
     if (nf == 0 || nv == 0) {
         csr->offset = (int32_t *)ARENA_CALLOC(arena,
-                                               (long)(nv + 1),
-                                               (long)sizeof(int32_t));
+                                               (nv + 1),
+                                               sizeof(int32_t));
         csr->target = NULL;
         csr->nnz = 0;
         return csr;
@@ -45,8 +45,8 @@ CSR_T CSR_from_faces(Arena_T arena, const int32_t *faces, size_t nf,
     assert(faces);
 
     /* Pass 1: count degree (overcount: 2 neighbors per face vertex) */
-    int32_t *degree = (int32_t *)ARENA_CALLOC(arena, (size_t)nv,
-                                               (long)sizeof(int32_t));
+    int32_t *degree = (int32_t *)ARENA_CALLOC(arena, nv,
+                                               sizeof(int32_t));
 
     for (size_t f = 0; f < nf; f++) {
         int32_t a = faces[f * 3 + 0];
@@ -62,7 +62,7 @@ CSR_T CSR_from_faces(Arena_T arena, const int32_t *faces, size_t nf,
 
     /* Prefix sum -> offset */
     csr->offset = (int32_t *)ARENA_ALLOC(arena,
-                                          (long)(nv + 1) * (long)sizeof(int32_t));
+                                          (nv + 1) * sizeof(int32_t));
     csr->offset[0] = 0;
     for (size_t v = 0; v < nv; v++) {
         csr->offset[v + 1] = csr->offset[v] + degree[v];
@@ -70,11 +70,11 @@ CSR_T CSR_from_faces(Arena_T arena, const int32_t *faces, size_t nf,
 
     int32_t total_entries = csr->offset[nv];
     int32_t *raw_target = (int32_t *)ARENA_ALLOC(arena,
-                                                   (long)total_entries * (long)sizeof(int32_t));
+                                                   total_entries * sizeof(int32_t));
 
     /* Pass 2: fill adjacency using cursor array */
     int32_t *cursor = (int32_t *)ARENA_ALLOC(arena,
-                                              (long)nv * (long)sizeof(int32_t));
+                                              nv * sizeof(int32_t));
     memcpy(cursor, csr->offset, nv * sizeof(int32_t));
 
     for (size_t f = 0; f < nf; f++) {
@@ -120,7 +120,7 @@ CSR_T CSR_from_faces(Arena_T arena, const int32_t *faces, size_t nf,
 
     /* Copy compacted target to final arena-allocated array */
     csr->target = (int32_t *)ARENA_ALLOC(arena,
-                                          (long)write_pos * (long)sizeof(int32_t));
+                                          write_pos * sizeof(int32_t));
     memcpy(csr->target, raw_target, (size_t)write_pos * sizeof(int32_t));
 
     return csr;
@@ -155,8 +155,8 @@ CSR_T CSR_from_coo(Arena_T arena, const int32_t *rows, const int32_t *cols,
 
     if (nnz == 0) {
         csr->offset = (int32_t *)ARENA_CALLOC(arena,
-                                               (long)(nrows + 1),
-                                               (long)sizeof(int32_t));
+                                               (nrows + 1),
+                                               sizeof(int32_t));
         csr->target = NULL;
         csr->weight = NULL;
         csr->nnz = 0;
@@ -167,7 +167,7 @@ CSR_T CSR_from_coo(Arena_T arena, const int32_t *rows, const int32_t *cols,
 
     /* Sort COO entries by (row, col) */
     COOEntry *entries = (COOEntry *)ARENA_ALLOC(arena,
-                                                 (long)nnz * (long)sizeof(COOEntry));
+                                                 nnz * sizeof(COOEntry));
     for (size_t i = 0; i < nnz; i++) {
         entries[i].row = rows[i];
         entries[i].col = cols[i];
@@ -177,8 +177,8 @@ CSR_T CSR_from_coo(Arena_T arena, const int32_t *rows, const int32_t *cols,
 
     /* Count rows for offset */
     csr->offset = (int32_t *)ARENA_CALLOC(arena,
-                                           (long)(nrows + 1),
-                                           (long)sizeof(int32_t));
+                                           (nrows + 1),
+                                           sizeof(int32_t));
     for (size_t i = 0; i < nnz; i++) {
         assert(entries[i].row >= 0 && entries[i].row < (int32_t)nrows);
         csr->offset[entries[i].row + 1]++;
@@ -189,9 +189,9 @@ CSR_T CSR_from_coo(Arena_T arena, const int32_t *rows, const int32_t *cols,
 
     csr->nnz = (int32_t)nnz;
     csr->target = (int32_t *)ARENA_ALLOC(arena,
-                                          (long)nnz * (long)sizeof(int32_t));
+                                          nnz * sizeof(int32_t));
     csr->weight = (float *)ARENA_ALLOC(arena,
-                                        (long)nnz * (long)sizeof(float));
+                                        nnz * sizeof(float));
 
     for (size_t i = 0; i < nnz; i++) {
         csr->target[i] = entries[i].col;
@@ -219,11 +219,11 @@ CSR_T CSR_uniform_laplacian(Arena_T arena, const int32_t *faces, size_t nf,
     const int32_t *tgt = CSR_target(adj);
 
     int32_t *coo_rows = (int32_t *)ARENA_ALLOC(arena,
-                                                 (long)total_nnz * (long)sizeof(int32_t));
+                                                 total_nnz * sizeof(int32_t));
     int32_t *coo_cols = (int32_t *)ARENA_ALLOC(arena,
-                                                 (long)total_nnz * (long)sizeof(int32_t));
+                                                 total_nnz * sizeof(int32_t));
     float *coo_vals = (float *)ARENA_ALLOC(arena,
-                                            (long)total_nnz * (long)sizeof(float));
+                                            total_nnz * sizeof(float));
 
     for (int32_t i = 0; i < (int32_t)nv; i++) {
         int32_t degree = off[i + 1] - off[i];

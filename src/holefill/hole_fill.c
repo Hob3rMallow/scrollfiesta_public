@@ -13,7 +13,6 @@
  * 5. Stitch fills into mesh
  */
 #include "../common/ves_platform.h"
-#include "../common/run_ctx.h"
 
 #include "../common/arena.h"
 #include "../common/csr.h"
@@ -21,13 +20,29 @@
 #include "../common/pca.h"
 #include "../common/pipeline_constants.h"
 #include "clipper2_wrap.h"
+#include "hole_fill.h"
 
 #include <assert.h>
+#include <float.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Arena sizes are size_t.  Keep large region/full-scroll allocation arithmetic
+ * in size_t as well: Win64 `long` is only 32 bits, so casting a valid >2 GiB
+ * array through long turns it into a negative value and then a near-SIZE_MAX
+ * request. */
+static size_t hf_array_bytes(size_t count, size_t item_size)
+{
+    if (item_size != 0 && count > SIZE_MAX / item_size) {
+        fprintf(stderr, "hole_fill: allocation size overflow (%zu * %zu)\n",
+                count, item_size);
+        RAISE(Arena_Failed);
+    }
+    return count * item_size;
+}
 
 /* ------------------------------------------------------------------
  * Directed boundary-adjacent edge index.
@@ -94,14 +109,14 @@ extern jmp_buf triangle_jmpbuf;
  * and dominated the hole-fill runtime. Summary/error lines stay unconditional. */
 static int hf_log_on(void) {
     static int d = -1;
-    if (d < 0) d = sf_env("HOLEFILL_DEBUG") ? 1 : 0;
+    if (d < 0) d = getenv("HOLEFILL_DEBUG") ? 1 : 0;
     return d;
 }
 #define HFLOG(...)   do { if (hf_log_on()) fprintf(stderr, __VA_ARGS__); } while (0)
 #define HFFLUSH()    do { if (hf_log_on()) fflush(stderr); } while (0)
 extern int triangle_jmpbuf_set;
 
-#ifndef _WIN32
+#ifndef _MSC_VER
 #include <signal.h>
 /* Linux: sigsetjmp-based SIGSEGV guard for Triangle crashes */
 static sigjmp_buf triangle_segv_jmpbuf;
@@ -170,7 +185,7 @@ static size_t find_boundary_edges(Arena_T arena,
 {
     size_t n_he = nf * 3;
     UEdge *all_edges = (UEdge *)ARENA_ALLOC(arena,
-                         (long)n_he * (long)sizeof(UEdge));
+                         n_he * sizeof(UEdge));
 
     for (size_t f = 0; f < nf; f++) {
         int32_t v[3];
@@ -202,7 +217,7 @@ static size_t find_boundary_edges(Arena_T arena,
     }
 
     UEdge *bdry = (UEdge *)ARENA_ALLOC(arena,
-                     (long)(n_bdry + 1) * (long)sizeof(UEdge));
+                     (n_bdry + 1) * sizeof(UEdge));
     size_t bi = 0;
     i = 0;
     while (i < n_he) {
@@ -294,24 +309,24 @@ static size_t chain_into_loops(Arena_T arena,
                                BoundaryLoop **out_loops)
 {
     /* Build adjacency: boundary_adj[v] = list of boundary neighbors */
-    int32_t *degree = (int32_t *)ARENA_CALLOC(arena, (size_t)nv,
-                                               (long)sizeof(int32_t));
+    int32_t *degree = (int32_t *)ARENA_CALLOC(arena, nv,
+                                               sizeof(int32_t));
     for (size_t i = 0; i < n_edges; i++) {
         degree[edges[i].v0]++;
         degree[edges[i].v1]++;
     }
 
     int32_t *adj_off = (int32_t *)ARENA_ALLOC(arena,
-                         (long)(nv + 1) * (long)sizeof(int32_t));
+                         (nv + 1) * sizeof(int32_t));
     adj_off[0] = 0;
     for (size_t v = 0; v < nv; v++) {
         adj_off[v + 1] = adj_off[v] + degree[v];
     }
 
     int32_t *adj_list = (int32_t *)ARENA_ALLOC(arena,
-                          (long)(n_edges * 2) * (long)sizeof(int32_t));
+                          (n_edges * 2) * sizeof(int32_t));
     int32_t *cursor = (int32_t *)ARENA_ALLOC(arena,
-                        (long)nv * (long)sizeof(int32_t));
+                        nv * sizeof(int32_t));
     memcpy(cursor, adj_off, nv * sizeof(int32_t));
 
     for (size_t i = 0; i < n_edges; i++) {
@@ -321,14 +336,14 @@ static size_t chain_into_loops(Arena_T arena,
         adj_list[cursor[b]++] = a;
     }
 
-    uint8_t *edge_used = (uint8_t *)ARENA_CALLOC(arena, (size_t)n_edges,
-                                                   (long)sizeof(uint8_t));
+    uint8_t *edge_used = (uint8_t *)ARENA_CALLOC(arena, n_edges,
+                                                   sizeof(uint8_t));
 
     /* Phase 1: walk maximal chains (both directions from each seed edge).
      * Collect closed loops and open chains separately. */
     size_t max_chains = n_edges;
     BoundaryLoop *loops = (BoundaryLoop *)ARENA_ALLOC(arena,
-                            (long)max_chains * (long)sizeof(BoundaryLoop));
+                            max_chains * sizeof(BoundaryLoop));
     size_t n_loops = 0;
 
     /* Open chains stored temporarily — head_v, tail_v, buf, len */
@@ -339,7 +354,7 @@ static size_t chain_into_loops(Arena_T arena,
         size_t   len;
     } OpenChain;
     OpenChain *open_chains = (OpenChain *)ARENA_ALLOC(arena,
-                               (long)max_chains * (long)sizeof(OpenChain));
+                               max_chains * sizeof(OpenChain));
     size_t n_open = 0;
 
     /* Chain-walk scratch: allocate ONCE and reuse every iteration. These are
@@ -348,9 +363,9 @@ static size_t chain_into_loops(Arena_T arena,
      * long) PER seed edge leaked O(n_edges) per chain -> tens of GB and an OOM
      * (hole_fill.c:293) on the full-grid weld's millions of boundary edges. */
     int32_t *fwd = (int32_t *)ARENA_ALLOC(arena,
-                      (long)(n_edges + 2) * (long)sizeof(int32_t));
+                      (n_edges + 2) * sizeof(int32_t));
     int32_t *bwd = (int32_t *)ARENA_ALLOC(arena,
-                      (long)(n_edges + 2) * (long)sizeof(int32_t));
+                      (n_edges + 2) * sizeof(int32_t));
 
     for (size_t ei = 0; ei < n_edges; ei++) {
         if (edge_used[ei]) continue;
@@ -373,7 +388,7 @@ static size_t chain_into_loops(Arena_T arena,
              * duplicate-vertex guard saw verts[0]==verts[loop_n-1] and wrongly
              * rejected every clean Phase-1-closed loop (the BPA path's holes). */
             int32_t *loop_buf = (int32_t *)ARENA_ALLOC(arena,
-                                  (long)(fwd_len + 1) * (long)sizeof(int32_t));
+                                  (fwd_len + 1) * sizeof(int32_t));
             loop_buf[0] = v0;
             memcpy(loop_buf + 1, fwd, fwd_len * sizeof(int32_t));
             loops[n_loops].verts = loop_buf;
@@ -407,7 +422,7 @@ static size_t chain_into_loops(Arena_T arena,
          */
         size_t total = bwd_len + fwd_len;
         int32_t *chain_buf = (int32_t *)ARENA_ALLOC(arena,
-                                (long)(total + 2) * (long)sizeof(int32_t));
+                                (total + 2) * sizeof(int32_t));
         /* Reverse bwd into chain_buf */
         for (size_t i = 0; i < bwd_len; i++) {
             chain_buf[i] = bwd[bwd_len - 1 - i];
@@ -512,7 +527,7 @@ static size_t chain_into_loops(Arena_T arena,
             /* Merge chains i and j into one chain */
             size_t merged_len = clen + l2;
             int32_t *merged = (int32_t *)ARENA_ALLOC(arena,
-                                (long)(merged_len + 2) * (long)sizeof(int32_t));
+                                (merged_len + 2) * sizeof(int32_t));
 
             if (join == 1) {
                 /* chain_i + chain_j */
@@ -665,7 +680,7 @@ static int pca_project_2d(Arena_T arena,
 {
     /* Gather 3D points for this loop */
     float *pts = (float *)ARENA_ALLOC(arena,
-                   (long)n_loop * 3 * (long)sizeof(float));
+                   n_loop * 3 * sizeof(float));
     for (size_t i = 0; i < n_loop; i++) {
         pts[i * 3 + 0] = verts[loop_verts[i] * 3 + 0];
         pts[i * 3 + 1] = verts[loop_verts[i] * 3 + 1];
@@ -757,20 +772,19 @@ static int is_valid_for_cdt(const double *pts_2d, size_t n)
  * which is fine for a tiny interior hole) and carry on. Override via env. */
 static int tri_timeout_ms(void)
 {
-    const char *e = sf_env("SEAM_TRI_TIMEOUT_MS");
+    const char *e = getenv("SEAM_TRI_TIMEOUT_MS");
     int ms = e ? atoi(e) : 10000;   /* 10 s: a legit large hole CDT is < ~3.5 s */
     if (ms < 100) ms = 100;
     return ms;
 }
 
-#ifdef _WIN32
+#ifdef _MSC_VER
 #include <process.h>   /* _beginthreadex */
 
 /* SEH must be in its own function (MSVC forbids mixing __try with setjmp). */
 static int triangulate_seh(char *flags, struct triangulateio *in,
                            struct triangulateio *out)
 {
-#ifdef _MSC_VER
     __try {
         triangulate(flags, in, out, NULL);
     } __except(1 /* EXCEPTION_EXECUTE_HANDLER */) {
@@ -778,12 +792,6 @@ static int triangulate_seh(char *flags, struct triangulateio *in,
         return -1;
     }
     return 0;
-#else
-    /* MinGW: gcc has no __try. The triexit() longjmp and the thread
-     * watchdog below still guard; a raw access violation stays fatal. */
-    triangulate(flags, in, out, NULL);
-    return 0;
-#endif
 }
 
 typedef struct {
@@ -1434,6 +1442,57 @@ typedef struct {
     size_t   n_merge;       /* number of merge pairs */
 } HoleFillResult;
 
+/* A hole patch is admissible only when its sole boundary is EXACTLY the chart
+ * cycle supplied by the caller.  The old Clipper2 fallback could retain only
+ * the largest projected lobe, silently omit original loop vertices, and still
+ * return success.  Stitching that partial patch either left extra rims or
+ * attached a shortcut that changed genus.  Certify the local triangle complex
+ * before it is allowed to touch the source chart. */
+static int fill_boundary_is_exact(const int32_t *faces, size_t nf,
+                                  size_t n_boundary)
+{
+    UEdge *edges;
+    size_t ne, i, boundary_edges = 0;
+    int ok = 1;
+    if (!faces || nf == 0 || n_boundary < 3 || nf > SIZE_MAX / 3)
+        return 0;
+    ne = nf * 3;
+    edges = (UEdge *)malloc(ne * sizeof(*edges));
+    if (!edges) return 0;
+    for (size_t f = 0; f < nf; f++) {
+        int32_t tri[3] = { faces[f*3], faces[f*3+1], faces[f*3+2] };
+        if (tri[0] == tri[1] || tri[1] == tri[2] || tri[2] == tri[0]) {
+            ok = 0; break;
+        }
+        for (int k = 0; k < 3; k++) {
+            int32_t a = tri[k], b = tri[(k+1)%3];
+            if (a > b) { int32_t t = a; a = b; b = t; }
+            edges[f*3+(size_t)k].v0 = a;
+            edges[f*3+(size_t)k].v1 = b;
+        }
+    }
+    if (!ok) { free(edges); return 0; }
+    qsort(edges, ne, sizeof(*edges), cmp_uedge);
+    for (i = 0; i < ne; ) {
+        size_t j = i + 1;
+        while (j < ne && edges[j].v0 == edges[i].v0 &&
+               edges[j].v1 == edges[i].v1) j++;
+        if (j - i > 2) { ok = 0; break; }
+        if (j - i == 1) {
+            int32_t a = edges[i].v0, b = edges[i].v1;
+            size_t d;
+            if (a < 0 || b < 0 || (size_t)a >= n_boundary ||
+                (size_t)b >= n_boundary) { ok = 0; break; }
+            d = (size_t)(b - a);
+            if (!(d == 1 || d == n_boundary - 1)) { ok = 0; break; }
+            boundary_edges++;
+        }
+        i = j;
+    }
+    free(edges);
+    return ok && boundary_edges == n_boundary;
+}
+
 /* ------------------------------------------------------------------ */
 /* prune_degenerate_fill — drop sliver/duplicate triangles from a fill */
 /* ------------------------------------------------------------------ */
@@ -1591,9 +1650,9 @@ static int fill_one_hole(Arena_T arena,
 
     /* Gather 3D boundary coordinates and build boundary->mesh vertex map */
     float *bdry_3d = (float *)ARENA_ALLOC(arena,
-                       (long)n_loop * 3 * (long)sizeof(float));
+                       n_loop * 3 * sizeof(float));
     int32_t *bdry_map = (int32_t *)ARENA_ALLOC(arena,
-                          (long)n_loop * (long)sizeof(int32_t));
+                          n_loop * sizeof(int32_t));
     for (size_t i = 0; i < n_loop; i++) {
         bdry_3d[i * 3 + 0] = mesh_verts[loop_verts[i] * 3 + 0];
         bdry_3d[i * 3 + 1] = mesh_verts[loop_verts[i] * 3 + 1];
@@ -1603,7 +1662,7 @@ static int fill_one_hole(Arena_T arena,
 
     /* PCA project to 2D */
     double *pts_2d = (double *)ARENA_ALLOC(arena,
-                       (long)n_loop * 2 * (long)sizeof(double));
+                       n_loop * 2 * sizeof(double));
     float u_axis[3] = {0.0f, 0.0f, 0.0f};
     float v_axis[3] = {0.0f, 0.0f, 0.0f};
     float centroid[3] = {0.0f, 0.0f, 0.0f};
@@ -1636,9 +1695,9 @@ static int fill_one_hole(Arena_T arena,
     /* Track vertex merges from collapse: src[i] -> dst[i] in mesh indices.
      * Allocate worst case (n_loop entries). */
     int32_t *collapse_src = (int32_t *)ARENA_ALLOC(arena,
-                              (long)n_loop * (long)sizeof(int32_t));
+                              n_loop * sizeof(int32_t));
     int32_t *collapse_dst = (int32_t *)ARENA_ALLOC(arena,
-                              (long)n_loop * (long)sizeof(int32_t));
+                              n_loop * sizeof(int32_t));
     size_t n_collapse = 0;
     {
         /* Relative threshold: collapse edges shorter than 0.1% of avg edge.
@@ -1732,7 +1791,7 @@ static int fill_one_hole(Arena_T arena,
             size_t d1 = ap == 0 ? 1 : 2;  /* XY->1, XZ->2, YZ->2 */
 
             double *test_2d = (double *)ARENA_ALLOC(arena,
-                                (long)n_loop * 2 * (long)sizeof(double));
+                                n_loop * 2 * sizeof(double));
             double mu = 0.0, mv = 0.0;
             for (size_t i = 0; i < n_loop; i++) {
                 test_2d[i * 2 + 0] = (double)bdry_3d[i * 3 + d0];
@@ -1925,9 +1984,9 @@ static int fill_one_hole(Arena_T arena,
          * vertex_map[i] = original loop index (0..n_loop-1) if matched,
          *                 or -1 if unmatched (new interior/intersection pt). */
         int32_t *vertex_map = (int32_t *)ARENA_ALLOC(arena,
-                                (long)clip_tri_nv * (long)sizeof(int32_t));
+                                clip_tri_nv * sizeof(int32_t));
         uint8_t *loop_used = (uint8_t *)ARENA_CALLOC(arena,
-                                (long)n_loop, (long)sizeof(uint8_t));
+                                n_loop, sizeof(uint8_t));
 
         double match_tol_sq = 1e-6;  /* 2D distance² threshold */
 
@@ -1980,14 +2039,19 @@ static int fill_one_hole(Arena_T arena,
         }
         if (n_loop_unmatched > 0) {
             fprintf(stderr, "  [fill_one_hole] Clipper2 path: %zu/%zu loop verts "
-                    "unmatched\n", n_loop_unmatched, n_loop);
+                    "unmatched; rejecting partial chart patch\n",
+                    n_loop_unmatched, n_loop);
+            free(clip_tri_pts);
+            free(clip_tri_faces);
+            Arena_restore(arena, mark);
+            return -2;
         }
 
         /* Build remapped output: first n_loop boundary verts, then extras.
          * extra_map[i] = new index for unmatched CDT vertex i */
         size_t remap_nv = n_loop + n_extra;
         int32_t *remap = (int32_t *)ARENA_ALLOC(arena,
-                           (long)clip_tri_nv * (long)sizeof(int32_t));
+                           clip_tri_nv * sizeof(int32_t));
         size_t extra_idx = n_loop;
         for (size_t i = 0; i < clip_tri_nv; i++) {
             if (vertex_map[i] >= 0) {
@@ -2049,13 +2113,13 @@ static int fill_one_hole(Arena_T arena,
             tri_nv, n_loop, tri_nv - n_loop);
     HFFLUSH();
     float *fill_3d = (float *)ARENA_ALLOC(arena,
-                       (long)tri_nv * 3 * (long)sizeof(float));
+                       tri_nv * 3 * sizeof(float));
     embed_steiner_3d(tri_pts_2d, tri_nv, bdry_3d, n_loop,
                      u_axis, v_axis, centroid, fill_3d);
 
     /* Copy faces to arena */
     int32_t *fill_faces = (int32_t *)ARENA_ALLOC(arena,
-                            (long)tri_nf * 3 * (long)sizeof(int32_t));
+                            tri_nf * 3 * sizeof(int32_t));
     memcpy(fill_faces, tri_faces_raw, tri_nf * 3 * sizeof(int32_t));
 
     free(tri_pts_2d);
@@ -2116,7 +2180,7 @@ static int fill_one_hole(Arena_T arena,
          * fill-private until stitch_fills runs. Set HOLEFILL_NO_PRUNE=1 to
          * disable (A/B diagnostics). */
         static int prune_off = -1;
-        if (prune_off < 0) { const char *e = sf_env("HOLEFILL_NO_PRUNE");
+        if (prune_off < 0) { const char *e = getenv("HOLEFILL_NO_PRUNE");
                              prune_off = (e && e[0] && e[0] != '0') ? 1 : 0; }
         size_t pre_nv = tri_nv, pre_nf = tri_nf;
         if (!prune_off &&
@@ -2126,6 +2190,13 @@ static int fill_one_hole(Arena_T arena,
                     "%zu->%zu verts, %zu->%zu faces\n",
                     pre_nv, tri_nv, pre_nf, tri_nf);
         }
+    }
+
+    if (!fill_boundary_is_exact(fill_faces, tri_nf, n_loop)) {
+        HFLOG("    [fill_one_hole] boundary certificate failed; "
+              "rejecting non-disk/partial patch\n");
+        Arena_restore(arena, mark);
+        return -2;
     }
 
     /* Orient fill boundary to oppose mesh boundary half-edges */
@@ -2219,13 +2290,13 @@ static int fill_micro_hole(Arena_T arena,
      * index 0 by reordering loop into [apex, apex+1, ..., apex-1]. */
     size_t n_tri = n_loop - 2;
     float *fill_verts = (float *)ARENA_ALLOC(arena,
-                          (long)n_loop * 3 * (long)sizeof(float));
+                          n_loop * 3 * sizeof(float));
     int32_t *fill_faces = (int32_t *)ARENA_ALLOC(arena,
-                            (long)n_tri * 3 * (long)sizeof(int32_t));
+                            n_tri * 3 * sizeof(int32_t));
 
     /* Rotate loop so apex is at index 0. */
     int32_t *rotated = (int32_t *)ARENA_ALLOC(arena,
-                          (long)n_loop * (long)sizeof(int32_t));
+                          n_loop * sizeof(int32_t));
     for (size_t i = 0; i < n_loop; i++) {
         rotated[i] = loop_verts[(apex + i) % n_loop];
     }
@@ -2244,7 +2315,7 @@ static int fill_micro_hole(Arena_T arena,
 
     /* Micro holes have no reversal — map is identity to rotated loop */
     int32_t *bmap = (int32_t *)ARENA_ALLOC(arena,
-                      (long)n_loop * (long)sizeof(int32_t));
+                      n_loop * sizeof(int32_t));
     for (size_t i = 0; i < n_loop; i++) {
         bmap[i] = rotated[i];
     }
@@ -2261,6 +2332,122 @@ static int fill_micro_hole(Arena_T arena,
     result->merge_src = NULL;
     result->merge_dst = NULL;
     result->n_merge = 0;
+    return 0;
+}
+
+/* Projection-free chart-cycle fallback.  A boundary that is simple on the
+ * scroll can self-intersect in every global 2-D projection; boolean-unioning
+ * that projection changes the cycle.  Triangulate the ORIGINAL combinatorial
+ * cycle instead, greedily clipping the shortest well-shaped 3-D ears.  This
+ * retains every chart vertex/edge, introduces no source-vertex weld or split,
+ * and checks each new diagonal against the live mesh before committing it. */
+static int fill_chart_cycle_3d(Arena_T arena,
+                               const float *mesh_verts,
+                               const HFEdgeIndex *eidx,
+                               const int32_t *loop_verts, size_t n_loop,
+                               HoleFillResult *result)
+{
+    Arena_Mark mark = Arena_save(arena);
+    int32_t *prev, *next, *fill_faces, *bmap;
+    uint8_t *alive;
+    float *fill_verts;
+    size_t remaining, ntri = 0;
+
+    if (!mesh_verts || !loop_verts || !result || n_loop < 3 ||
+        n_loop > (size_t)INT32_MAX) return -1;
+    prev = (int32_t *)ARENA_ALLOC(arena,
+                (n_loop * sizeof(*prev)));
+    next = (int32_t *)ARENA_ALLOC(arena,
+                (n_loop * sizeof(*next)));
+    alive = (uint8_t *)ARENA_CALLOC(arena, n_loop, 1L);
+    fill_faces = (int32_t *)ARENA_ALLOC(arena,
+                ((n_loop - 2) * 3 * sizeof(*fill_faces)));
+    fill_verts = (float *)ARENA_ALLOC(arena,
+                (n_loop * 3 * sizeof(*fill_verts)));
+    bmap = (int32_t *)ARENA_ALLOC(arena,
+                (n_loop * sizeof(*bmap)));
+    for (size_t i = 0; i < n_loop; i++) {
+        int32_t mv = loop_verts[i];
+        if (mv < 0) { Arena_restore(arena, mark); return -1; }
+        prev[i] = (int32_t)((i + n_loop - 1) % n_loop);
+        next[i] = (int32_t)((i + 1) % n_loop);
+        alive[i] = 1;
+        bmap[i] = mv;
+        memcpy(&fill_verts[i*3], &mesh_verts[(size_t)mv*3],
+               3*sizeof(float));
+    }
+
+    remaining = n_loop;
+    while (remaining > 3) {
+        int32_t best = -1;
+        double best_score = DBL_MAX;
+        for (size_t ib = 0; ib < n_loop; ib++) if (alive[ib]) {
+            int32_t ia = prev[ib], ic = next[ib];
+            const float *a, *b, *c;
+            double ab0,ab1,ab2,bc0,bc1,bc2,ac0,ac1,ac2;
+            double lab2,lbc2,lac2,c0,c1,c2,cross2,scale,shape,score;
+            size_t diff;
+            if (ia < 0 || ic < 0 || ia == ic) continue;
+            diff = ia > ic ? (size_t)(ia - ic) : (size_t)(ic - ia);
+            if (!(diff == 1 || diff == n_loop - 1) &&
+                loop_diag_in_mesh(loop_verts[ia], loop_verts[ic], eidx))
+                continue;
+            a = &mesh_verts[(size_t)loop_verts[ia]*3];
+            b = &mesh_verts[(size_t)loop_verts[ib]*3];
+            c = &mesh_verts[(size_t)loop_verts[ic]*3];
+            ab0=b[0]-a[0]; ab1=b[1]-a[1]; ab2=b[2]-a[2];
+            bc0=c[0]-b[0]; bc1=c[1]-b[1]; bc2=c[2]-b[2];
+            ac0=c[0]-a[0]; ac1=c[1]-a[1]; ac2=c[2]-a[2];
+            lab2=ab0*ab0+ab1*ab1+ab2*ab2;
+            lbc2=bc0*bc0+bc1*bc1+bc2*bc2;
+            lac2=ac0*ac0+ac1*ac1+ac2*ac2;
+            c0=ab1*ac2-ab2*ac1;
+            c1=ab2*ac0-ab0*ac2;
+            c2=ab0*ac1-ab1*ac0;
+            cross2=c0*c0+c1*c1+c2*c2;
+            scale=lab2+lbc2+lac2;
+            if (scale <= 0.0 || cross2 <= 1e-12*scale*scale) continue;
+            shape=scale*scale/cross2;
+            score=lac2*(1.0+0.01*shape);
+            if (score < best_score) { best_score=score; best=(int32_t)ib; }
+        }
+        if (best < 0) { Arena_restore(arena, mark); return -2; }
+        {
+            int32_t a=prev[best], c=next[best];
+            fill_faces[ntri*3+0]=a;
+            fill_faces[ntri*3+1]=best;
+            fill_faces[ntri*3+2]=c;
+            ntri++;
+            next[a]=c; prev[c]=a; alive[best]=0; remaining--;
+        }
+    }
+    {
+        int32_t a=-1,b,c;
+        for (size_t i=0;i<n_loop;i++) if(alive[i]) { a=(int32_t)i; break; }
+        if (a < 0) { Arena_restore(arena, mark); return -1; }
+        b=next[a]; c=next[b];
+        if (b < 0 || c < 0 || next[c] != a) {
+            Arena_restore(arena, mark); return -1;
+        }
+        fill_faces[ntri*3+0]=a;
+        fill_faces[ntri*3+1]=b;
+        fill_faces[ntri*3+2]=c;
+        ntri++;
+    }
+    if (ntri != n_loop-2 ||
+        !fill_boundary_is_exact(fill_faces,ntri,n_loop)) {
+        Arena_restore(arena, mark); return -2;
+    }
+    orient_fill(fill_faces,ntri,eidx,bmap,n_loop);
+    result->verts=fill_verts;
+    result->faces=fill_faces;
+    result->nv=n_loop;
+    result->nf=ntri;
+    result->n_boundary=n_loop;
+    result->boundary_map=bmap;
+    result->merge_src=NULL;
+    result->merge_dst=NULL;
+    result->n_merge=0;
     return 0;
 }
 
@@ -2289,9 +2476,9 @@ static int stitch_fills(Arena_T arena,
     size_t new_nf = old_nf + total_new_faces;
 
     float *new_verts = (float *)ARENA_ALLOC(arena,
-                         (long)new_nv * 3 * (long)sizeof(float));
+                         new_nv * 3 * sizeof(float));
     int32_t *new_faces = (int32_t *)ARENA_ALLOC(arena,
-                           (long)new_nf * 3 * (long)sizeof(int32_t));
+                           new_nf * 3 * sizeof(int32_t));
 
     /* Copy original mesh */
     memcpy(new_verts, *verts, old_nv * 3 * sizeof(float));
@@ -2408,8 +2595,8 @@ static size_t repair_mesh_orientation(Arena_T arena,
      *   [2] face_idx
      *   [3] is_forward (1 if a < b, i.e. half-edge goes lo→hi) */
     size_t n_he = nf * 3;
-    int32_t *he = (int32_t *)ARENA_ALLOC(arena,
-                     (long)n_he * 4 * (long)sizeof(int32_t));
+    int32_t *he = (int32_t *)ARENA_ALLOC(
+        arena, hf_array_bytes(n_he, 4u * sizeof(int32_t)));
 
     for (size_t f = 0; f < nf; f++) {
         for (int e = 0; e < 3; e++) {
@@ -2430,10 +2617,10 @@ static size_t repair_mesh_orientation(Arena_T arena,
      * faces), record (face_a, face_b, same_direction).
      * same_direction = 1 means both half-edges go the same way → need flip. */
     size_t max_adj = nf * 3;
-    int32_t *adj_f = (int32_t *)ARENA_ALLOC(arena,
-                        (long)max_adj * 2 * (long)sizeof(int32_t));
-    int8_t *adj_same = (int8_t *)ARENA_ALLOC(arena,
-                          (long)max_adj * (long)sizeof(int8_t));
+    int32_t *adj_f = (int32_t *)ARENA_ALLOC(
+        arena, hf_array_bytes(max_adj, 2u * sizeof(int32_t)));
+    int8_t *adj_same = (int8_t *)ARENA_ALLOC(
+        arena, hf_array_bytes(max_adj, sizeof(int8_t)));
     size_t n_adj = 0;
 
     size_t i = 0;
@@ -2457,25 +2644,25 @@ static size_t repair_mesh_orientation(Arena_T arena,
     }
 
     /* Build face→adj_list using CSR-like structure */
-    int32_t *f_degree = (int32_t *)ARENA_CALLOC(arena, (size_t)nf,
-                                                   (long)sizeof(int32_t));
+    int32_t *f_degree = (int32_t *)ARENA_CALLOC(
+        arena, nf, sizeof(int32_t));
     for (size_t ei = 0; ei < n_adj; ei++) {
         f_degree[adj_f[ei * 2 + 0]]++;
         f_degree[adj_f[ei * 2 + 1]]++;
     }
-    int32_t *f_off = (int32_t *)ARENA_ALLOC(arena,
-                        (long)(nf + 1) * (long)sizeof(int32_t));
+    int32_t *f_off = (int32_t *)ARENA_ALLOC(
+        arena, hf_array_bytes(nf + 1, sizeof(int32_t)));
     f_off[0] = 0;
     for (size_t f = 0; f < nf; f++)
         f_off[f + 1] = f_off[f] + f_degree[f];
 
     /* adj_data[i] = (neighbor_face, same_direction_flag) */
-    int32_t *adj_nb = (int32_t *)ARENA_ALLOC(arena,
-                         (long)(n_adj * 2) * (long)sizeof(int32_t));
-    int8_t *adj_sd = (int8_t *)ARENA_ALLOC(arena,
-                        (long)(n_adj * 2) * (long)sizeof(int8_t));
-    int32_t *cursor = (int32_t *)ARENA_ALLOC(arena,
-                         (long)nf * (long)sizeof(int32_t));
+    int32_t *adj_nb = (int32_t *)ARENA_ALLOC(
+        arena, hf_array_bytes(n_adj, 2u * sizeof(int32_t)));
+    int8_t *adj_sd = (int8_t *)ARENA_ALLOC(
+        arena, hf_array_bytes(n_adj, 2u * sizeof(int8_t)));
+    int32_t *cursor = (int32_t *)ARENA_ALLOC(
+        arena, hf_array_bytes(nf, sizeof(int32_t)));
     memcpy(cursor, f_off, nf * sizeof(int32_t));
 
     for (size_t ei = 0; ei < n_adj; ei++) {
@@ -2488,12 +2675,10 @@ static size_t repair_mesh_orientation(Arena_T arena,
 
     /* BFS from face 0.  Track whether each face should be flipped
      * relative to face 0 (which we define as "correct"). */
-    uint8_t *visited = (uint8_t *)ARENA_CALLOC(arena, (size_t)nf,
-                                                  (long)sizeof(uint8_t));
-    uint8_t *should_flip = (uint8_t *)ARENA_CALLOC(arena, (size_t)nf,
-                                                      (long)sizeof(uint8_t));
-    int32_t *queue = (int32_t *)ARENA_ALLOC(arena,
-                        (long)nf * (long)sizeof(int32_t));
+    uint8_t *visited = (uint8_t *)ARENA_CALLOC(arena, nf, sizeof(uint8_t));
+    uint8_t *should_flip = (uint8_t *)ARENA_CALLOC(arena, nf, sizeof(uint8_t));
+    int32_t *queue = (int32_t *)ARENA_ALLOC(
+        arena, hf_array_bytes(nf, sizeof(int32_t)));
     size_t q_head = 0, q_tail = 0;
 
     visited[0] = 1;
@@ -2557,7 +2742,7 @@ static size_t build_dir_boundary(Arena_T arena, const int32_t *faces, size_t nf,
 {
     size_t n_he = nf * 3;
     DirBHE *all = (DirBHE *)ARENA_ALLOC(arena,
-                    (long)(n_he ? n_he : 1) * (long)sizeof(DirBHE));
+                    (n_he ? n_he : 1) * sizeof(DirBHE));
     for (size_t f = 0; f < nf; f++) {
         int32_t tri[3] = { faces[f*3+0], faces[f*3+1], faces[f*3+2] };
         for (int e = 0; e < 3; e++) {
@@ -2569,7 +2754,7 @@ static size_t build_dir_boundary(Arena_T arena, const int32_t *faces, size_t nf,
     }
     qsort(all, n_he, sizeof(DirBHE), cmp_dirbhe);
     DirBHE *bhe = (DirBHE *)ARENA_ALLOC(arena,
-                    (long)(n_he ? n_he : 1) * (long)sizeof(DirBHE));
+                    (n_he ? n_he : 1) * sizeof(DirBHE));
     size_t nb = 0, i = 0;
     while (i < n_he) {
         size_t j = i + 1;
@@ -2795,6 +2980,93 @@ static void log_loop_geom(const char *tag, size_t loop_idx,
 #define MAX_SUBLOOPS 32
 #define PINCH_EPS    0.05f   /* verts within this (vox) are the same pinch pt */
 
+/* In chart-topology mode a boundary loop is a simple topological cycle even
+ * when two distinct boundary vertices occupy the same 3-D position.  Peeling
+ * that cycle into geometric lobes loses the original chart boundary: the two
+ * fill patches close onto different vertex indices and leave the annulus alive.
+ * Instead, gently separate each non-adjacent coincident pair along the
+ * difference of its two local boundary bisectors.  This edits the surrounding
+ * chart geometry by a tiny fraction of one edge, keeps every vertex/face and
+ * makes the original cycle directly triangulable as one disk. */
+static size_t spread_chart_loop_pinches(float *verts,
+                                        const int32_t *loop_verts,
+                                        size_t n, float eps)
+{
+    size_t moved = 0;
+    float eps2 = eps * eps;
+    if (!verts || !loop_verts || n < 4) return 0;
+    for (size_t i = 0; i < n; i++) {
+        for (size_t j = i + 2; j < n; j++) {
+            int32_t vi, vj, vip, vin, vjp, vjn;
+            float *pi, *pj;
+            double dz, dy, dx, d2;
+            double si[3], sj[3], sep[3], norm;
+            double local = 1e30, step;
+            if (i == 0 && j == n - 1) continue;
+            vi = loop_verts[i]; vj = loop_verts[j];
+            if (vi == vj) continue; /* an actual repeated index is not movable */
+            pi = &verts[(size_t)vi * 3];
+            pj = &verts[(size_t)vj * 3];
+            dz = (double)pi[0] - pj[0];
+            dy = (double)pi[1] - pj[1];
+            dx = (double)pi[2] - pj[2];
+            d2 = dz*dz + dy*dy + dx*dx;
+            if (d2 > (double)eps2) continue;
+
+            vip = loop_verts[(i + n - 1) % n];
+            vin = loop_verts[(i + 1) % n];
+            vjp = loop_verts[(j + n - 1) % n];
+            vjn = loop_verts[(j + 1) % n];
+            for (int k = 0; k < 3; k++) {
+                si[k] = 0.5 * ((double)verts[(size_t)vip*3+(size_t)k] +
+                               (double)verts[(size_t)vin*3+(size_t)k]) - pi[k];
+                sj[k] = 0.5 * ((double)verts[(size_t)vjp*3+(size_t)k] +
+                               (double)verts[(size_t)vjn*3+(size_t)k]) - pj[k];
+                sep[k] = si[k] - sj[k];
+            }
+            norm = sqrt(sep[0]*sep[0] + sep[1]*sep[1] + sep[2]*sep[2]);
+            if (norm < 1e-9) {
+                for (int k = 0; k < 3; k++)
+                    sep[k] = ((double)verts[(size_t)vin*3+(size_t)k] -
+                              (double)verts[(size_t)vip*3+(size_t)k]) -
+                             ((double)verts[(size_t)vjn*3+(size_t)k] -
+                              (double)verts[(size_t)vjp*3+(size_t)k]);
+                norm = sqrt(sep[0]*sep[0] + sep[1]*sep[1] + sep[2]*sep[2]);
+            }
+            if (norm < 1e-9) {
+                /* Deterministic last resort for exactly coincident, locally
+                 * identical samples.  This case is vanishingly rare and the
+                 * displacement remains sub-voxel. */
+                sep[0] = 0.0; sep[1] = 1.0; sep[2] = 0.0; norm = 1.0;
+            }
+            for (int k = 0; k < 3; k++) sep[k] /= norm;
+            {
+                const int32_t around[4] = {vip, vin, vjp, vjn};
+                const float *base[2] = {pi, pj};
+                for (int side = 0; side < 2; side++)
+                    for (int q = side*2; q < side*2+2; q++) {
+                        const float *pn = &verts[(size_t)around[q]*3];
+                        double ez=(double)base[side][0]-pn[0];
+                        double ey=(double)base[side][1]-pn[1];
+                        double ex=(double)base[side][2]-pn[2];
+                        double len=sqrt(ez*ez+ey*ey+ex*ex);
+                        if (len < local) local = len;
+                    }
+            }
+            step = 0.04 * local;
+            if (step < 0.75 * eps) step = 0.75 * eps;
+            if (step > (double)HOLEFILL_CHART_PINCH_MAX_STEP_VOX)
+                step = (double)HOLEFILL_CHART_PINCH_MAX_STEP_VOX;
+            for (int k = 0; k < 3; k++) {
+                pi[k] = (float)((double)pi[k] + step * sep[k]);
+                pj[k] = (float)((double)pj[k] - step * sep[k]);
+            }
+            moved++;
+        }
+    }
+    return moved;
+}
+
 /* Non-static so the unit test (holefill_interior_test, gate G4) can drive it
  * directly with hand-built figure-8 loops -- there is no public prototype. */
 size_t split_pinched_loop(Arena_T arena,
@@ -2806,7 +3078,7 @@ size_t split_pinched_loop(Arena_T arena,
     if (n < 3 || max_subs == 0) return 0;
 
     /* Canonical position id per slot: smallest j<=i at the same position. */
-    int32_t *cid = (int32_t *)ARENA_ALLOC(arena, (size_t)n * (size_t)sizeof(int32_t));
+    int32_t *cid = (int32_t *)ARENA_ALLOC(arena, n * sizeof(int32_t));
     float eps2 = eps * eps;
     int any_pinch = 0;
     for (size_t i = 0; i < n; i++) {
@@ -2826,8 +3098,8 @@ size_t split_pinched_loop(Arena_T arena,
 
     /* Peel simple cycles with a stack of slot indices; stack_pos[cid] is the
      * slot's stack position or -1. cid in [0,n), so size stack_pos by n. */
-    int32_t *stack     = (int32_t *)ARENA_ALLOC(arena, (size_t)n * (size_t)sizeof(int32_t));
-    int32_t *stack_pos = (int32_t *)ARENA_ALLOC(arena, (size_t)n * (size_t)sizeof(int32_t));
+    int32_t *stack     = (int32_t *)ARENA_ALLOC(arena, n * sizeof(int32_t));
+    int32_t *stack_pos = (int32_t *)ARENA_ALLOC(arena, n * sizeof(int32_t));
     for (size_t i = 0; i < n; i++) stack_pos[i] = -1;
     size_t top = 0, n_sub = 0;
 
@@ -2839,7 +3111,7 @@ size_t split_pinched_loop(Arena_T arena,
             size_t clen = top - k;
             if (clen >= 3 && n_sub < max_subs) {
                 int32_t *sub = (int32_t *)ARENA_ALLOC(arena,
-                                  (long)clen * (long)sizeof(int32_t));
+                                  clen * sizeof(int32_t));
                 for (size_t t = 0; t < clen; t++) sub[t] = loop_verts[stack[k + t]];
                 out_sub[n_sub] = sub; out_len[n_sub] = clen; n_sub++;
             }
@@ -2855,7 +3127,7 @@ size_t split_pinched_loop(Arena_T arena,
     }
     /* The walk is closed, so the residual stack is the outermost cycle. */
     if (top >= 3 && n_sub < max_subs) {
-        int32_t *sub = (int32_t *)ARENA_ALLOC(arena, (size_t)top * (size_t)sizeof(int32_t));
+        int32_t *sub = (int32_t *)ARENA_ALLOC(arena, top * sizeof(int32_t));
         for (size_t t = 0; t < top; t++) sub[t] = loop_verts[stack[t]];
         out_sub[n_sub] = sub; out_len[n_sub] = top; n_sub++;
     }
@@ -2865,8 +3137,10 @@ size_t split_pinched_loop(Arena_T arena,
 /* ------------------------------------------------------------------ */
 /* HoleFill_process[_ex] — public entry point                          */
 /*                                                                     */
-/* interior_only != 0: fill ONLY geometrically-interior holes (the     */
+/* interior_only == 1: fill ONLY geometrically-interior holes (the     */
 /* surface surrounds them), leaving outer perimeters and open bays.    */
+/* interior_only == 2: preserve one perimeter PER CONNECTED CHART and  */
+/* fill every other loop.  This is the topology/provenance-driven mode.*/
 /* interior_only == 0: fill every cleanly-fillable closed 4+ loop (the */
 /* per-cube behaviour; HoleFill_process wraps this).                   */
 /* ------------------------------------------------------------------ */
@@ -2881,7 +3155,7 @@ static void hf_eidx_build(Arena_T arena, const int32_t *faces, size_t nf,
 {
     memset(out, 0, sizeof(*out));
     if (nf == 0 || n_bdry == 0 || nv == 0) return;
-    uint8_t *isb = (uint8_t *)ARENA_CALLOC(arena, (size_t)nv, 1L);
+    uint8_t *isb = (uint8_t *)ARENA_CALLOC(arena, nv, 1L);
     for (size_t e = 0; e < n_bdry; e++) {
         isb[bdry_edges[e].v0] = 1;
         isb[bdry_edges[e].v1] = 1;
@@ -2898,9 +3172,9 @@ static void hf_eidx_build(Arena_T arena, const int32_t *faces, size_t nf,
     size_t T = 64;
     while (T < cnt * 2) T <<= 1;
     out->keys = (uint64_t *)ARENA_ALLOC(arena,
-                    (long)T * (long)sizeof(uint64_t));
+                    T * sizeof(uint64_t));
     out->minf = (int32_t *)ARENA_ALLOC(arena,
-                    (long)T * (long)sizeof(int32_t));
+                    T * sizeof(int32_t));
     memset(out->keys, 0xFF, T * sizeof(uint64_t));
     out->tsize = T;
     for (size_t f = 0; f < nf; f++) {
@@ -2923,6 +3197,26 @@ static void hf_eidx_build(Arena_T arena, const int32_t *faces, size_t nf,
             }
         }
     }
+}
+
+static int32_t hf_component_find(int32_t *parent, int32_t x)
+{
+    while (parent[x] != x) {
+        parent[x] = parent[parent[x]];
+        x = parent[x];
+    }
+    return x;
+}
+
+static void hf_component_union(int32_t *parent, uint8_t *rank,
+                               int32_t a, int32_t b)
+{
+    a = hf_component_find(parent, a);
+    b = hf_component_find(parent, b);
+    if (a == b) return;
+    if (rank[a] < rank[b]) { int32_t t = a; a = b; b = t; }
+    parent[b] = a;
+    if (rank[a] == rank[b] && rank[a] < UINT8_MAX) rank[a]++;
 }
 
 int HoleFill_process_ex(Arena_T arena,
@@ -2969,7 +3263,7 @@ int HoleFill_process_ex(Arena_T arena,
                                                   fnv, v, &pre_loops);
         }
         int32_t *merge = (int32_t *)ARENA_ALLOC(arena,
-                           (long)fnv * (long)sizeof(int32_t));
+                           fnv * sizeof(int32_t));
         for (size_t i = 0; i < fnv; i++) merge[i] = (int32_t)i;
 
         size_t n_merged = 0;
@@ -3024,7 +3318,7 @@ int HoleFill_process_ex(Arena_T arena,
                  * (e.g. (A,B,C) vs (A,C,B)) are NOT treated as duplicates
                  * — only true duplicates (same cyclic order) are removed. */
                 int32_t *keys = (int32_t *)ARENA_ALLOC(arena,
-                                  (long)dst * 4 * (long)sizeof(int32_t));
+                                  dst * 4 * sizeof(int32_t));
                 for (size_t fi = 0; fi < dst; fi++) {
                     int32_t a = f[fi * 3 + 0];
                     int32_t b = f[fi * 3 + 1];
@@ -3046,7 +3340,7 @@ int HoleFill_process_ex(Arena_T arena,
 
                 /* Mark duplicates in a flag array */
                 uint8_t *keep = (uint8_t *)ARENA_ALLOC(arena,
-                                  (long)dst * (long)sizeof(uint8_t));
+                                  dst * sizeof(uint8_t));
                 memset(keep, 1, dst);
                 for (size_t fi = 1; fi < dst; fi++) {
                     if (keys[fi * 4 + 0] == keys[(fi-1) * 4 + 0] &&
@@ -3107,6 +3401,59 @@ int HoleFill_process_ex(Arena_T arena,
         return 0;
     }
 
+    /* Chart mode: keep one geometrically largest perimeter for EACH connected
+     * component, not merely one global loop.  The older projected signed-area
+     * classifier is unreliable on steep/folded scroll corners: genuine
+     * punctures project with either sign and were left as thousands of holes.
+     * Componentwise perimeter selection uses the chart topology directly. */
+    uint8_t *chart_perimeter = NULL;
+    if (interior_only == 2) {
+        int32_t *cparent = (int32_t *)ARENA_ALLOC(
+            arena, (*nv * sizeof(int32_t)));
+        uint8_t *crank = (uint8_t *)ARENA_CALLOC(arena, *nv, 1L);
+        int32_t *best_loop = (int32_t *)ARENA_ALLOC(
+            arena, (*nv * sizeof(int32_t)));
+        double *best_length = (double *)ARENA_CALLOC(
+            arena, *nv, sizeof(double));
+        chart_perimeter = (uint8_t *)ARENA_CALLOC(
+            arena, n_loops, 1L);
+        for (size_t v = 0; v < *nv; v++) {
+            cparent[v] = (int32_t)v;
+            best_loop[v] = -1;
+        }
+        for (size_t f = 0; f < *nf; f++) {
+            int32_t a = (*faces)[f*3+0];
+            int32_t b = (*faces)[f*3+1];
+            int32_t c = (*faces)[f*3+2];
+            hf_component_union(cparent, crank, a, b);
+            hf_component_union(cparent, crank, b, c);
+        }
+        for (size_t i = 0; i < n_loops; i++) {
+            size_t loop_n = loops[i].len > 0 ? loops[i].len - 1 : 0;
+            if (loop_n == 0) continue;
+            int32_t root = hf_component_find(cparent, loops[i].verts[0]);
+            double length = 0.0;
+            for (size_t k = 0; k < loop_n; k++) {
+                int32_t a = loops[i].verts[k];
+                int32_t b = loops[i].verts[(k + 1) % loop_n];
+                double dz = (double)(*verts)[(size_t)a*3+0] -
+                            (double)(*verts)[(size_t)b*3+0];
+                double dy = (double)(*verts)[(size_t)a*3+1] -
+                            (double)(*verts)[(size_t)b*3+1];
+                double dx = (double)(*verts)[(size_t)a*3+2] -
+                            (double)(*verts)[(size_t)b*3+2];
+                length += sqrt(dz*dz + dy*dy + dx*dx);
+            }
+            if (best_loop[root] < 0 || length > best_length[root]) {
+                best_loop[root] = (int32_t)i;
+                best_length[root] = length;
+            }
+        }
+        for (size_t v = 0; v < *nv; v++)
+            if (cparent[v] == (int32_t)v && best_loop[v] >= 0)
+                chart_perimeter[(size_t)best_loop[v]] = 1;
+    }
+
     /* Find largest loop (outer boundary) — skip it */
     size_t largest_idx = 0;
     size_t largest_len = 0;
@@ -3128,21 +3475,23 @@ int HoleFill_process_ex(Arena_T arena,
      * below as a hard backstop against overflow). */
     size_t max_fills = n_loops * 4 + 64;
     HoleFillResult *fills = (HoleFillResult *)ARENA_ALLOC(arena,
-                              (long)max_fills * (long)sizeof(HoleFillResult));
+                              max_fills * sizeof(HoleFillResult));
     size_t n_fills = 0;
     size_t n_interior = 0;
     size_t n_micro = 0;
+    size_t n_cycle_fallback = 0;
     double t_hf0 = ves_clock_sec();      /* per-hole timing: flag slow / hung holes */
     /* Per-hole OBJ dumps (debug). grid_weld --dump-stages sets these so each
      * hole's input boundary is dumped before the fill and its patch after --
      * a hang leaves the culprit's polygon as the last *_in.obj on disk. */
-    const char *hole_dump_dir = sf_env("SEAM_HOLE_DUMP_DIR");
-    const char *hole_dump_prefix = sf_env("SEAM_HOLE_DUMP_PREFIX");
+    const char *hole_dump_dir = getenv("SEAM_HOLE_DUMP_DIR");
+    const char *hole_dump_prefix = getenv("SEAM_HOLE_DUMP_PREFIX");
     if (!hole_dump_prefix) hole_dump_prefix = "weld";
 
     /* interior_only: directed boundary half-edges for the signed-area test. */
     DirBHE *bhe = NULL; size_t n_bhe = 0;
-    if (interior_only) n_bhe = build_dir_boundary(arena, *faces, *nf, &bhe);
+    if (interior_only == 1)
+        n_bhe = build_dir_boundary(arena, *faces, *nf, &bhe);
 
     fprintf(stderr, "  [hole_fill] %zu boundary loops (largest=%zu with %zu verts)\n",
             n_loops, largest_idx, largest_len);
@@ -3151,7 +3500,6 @@ int HoleFill_process_ex(Arena_T arena,
     HFFLUSH();
 
     for (size_t i = 0; i < n_loops; i++) {
-        RunCtx_check();   /* one poll per hole (CDT fills can be slow) */
         /* Never fill the single largest loop: it is an outer perimeter, not a
          * hole (the giant loop is "most likely the outer one"). This applies in
          * BOTH modes. In interior_only mode the signed-area winding test (below)
@@ -3159,11 +3507,40 @@ int HoleFill_process_ex(Arena_T arena,
          * every open bay, which is essential for a multi-component mesh where
          * only ONE of the N perimeters is the global largest -- and this
          * single-largest skip is a cheap belt-and-suspenders guard on top. */
-        if (i == largest_idx) continue;
+        if (i == largest_idx || (chart_perimeter && chart_perimeter[i]))
+            continue;
 
         size_t parent_n = loops[i].len - 1; /* exclude closing vertex */
-        /* 3-loops are PinholeFill's job (the exact single-triangle path); this
-         * CDT/Liepa path owns 4+ closed loops only. */
+        /* Chart mode already proved that this is a secondary boundary of one
+         * connected source chart.  A 3-cycle therefore has one unique repair:
+         * the missing triangle on its existing three edges.  Do it here rather
+         * than sending it through PinholeFill's small seam-gap diameter gate;
+         * coarse source triangles routinely exceed that gate, while adding
+         * this face introduces no edge and cannot join two charts. */
+        if (parent_n == 3 && interior_only == 2) {
+            HoleFillResult res;
+            int rc;
+            if (n_fills >= max_fills) {
+                fprintf(stderr, "  [hole_fill] WARNING: fill cap %zu reached, "
+                        "stopping\n", max_fills);
+                break;
+            }
+            n_interior++;
+            memset(&res, 0, sizeof(res));
+            rc = fill_micro_hole(arena, *verts, &eidx,
+                                 loops[i].verts, parent_n, &res);
+            if (rc == 0) {
+                fills[n_fills++] = res;
+                n_micro++;
+                HFLOG("  [hole_fill] loop %zu: exact chart triangle filled\n",
+                      i);
+            } else {
+                HFLOG("  [hole_fill] loop %zu: exact chart triangle FAILED "
+                      "(rc=%d)\n", i, rc);
+            }
+            continue;
+        }
+        /* Other modes leave 3-loops to PinholeFill; CDT/Liepa owns 4+ loops. */
         if (parent_n < 4) continue;
 
         /* Retopologize a self-pinching "<><>" loop into simple sub-cycles. A
@@ -3175,9 +3552,22 @@ int HoleFill_process_ex(Arena_T arena,
          * original (no copy), so the common case is unchanged. */
         int32_t *subs[MAX_SUBLOOPS];
         size_t   sublen[MAX_SUBLOOPS];
-        size_t   n_subs = split_pinched_loop(arena, loops[i].verts, parent_n,
-                                             *verts, PINCH_EPS,
-                                             subs, sublen, MAX_SUBLOOPS);
+        size_t n_spread = 0;
+        size_t n_subs;
+        if (interior_only == 2)
+            n_spread = spread_chart_loop_pinches(*verts, loops[i].verts,
+                                                 parent_n, PINCH_EPS);
+        if (n_spread > 0) {
+            subs[0] = loops[i].verts;
+            sublen[0] = parent_n;
+            n_subs = 1;
+            HFLOG("  [hole_fill] loop %zu: separated %zu geometric pinch "
+                  "pair(s), preserving one chart cycle\n", i, n_spread);
+        } else {
+            n_subs = split_pinched_loop(arena, loops[i].verts, parent_n,
+                                        *verts, PINCH_EPS,
+                                        subs, sublen, MAX_SUBLOOPS);
+        }
         if (n_subs > 1)
             HFLOG("  [hole_fill] loop %zu: %zu verts -> PINCHED, "
                     "retopologized into %zu sub-loops\n", i, parent_n, n_subs);
@@ -3231,7 +3621,7 @@ int HoleFill_process_ex(Arena_T arena,
 
             /* interior_only: fill only loops the surface surrounds. Leaves outer
              * perimeters and still-open bays. Geometric, world-coord agnostic. */
-            if (interior_only &&
+            if (interior_only == 1 &&
                 !loop_is_interior(*verts, *faces, bhe, n_bhe, lv, loop_n)) {
                 HFLOG("  [hole_fill] loop %zu.%zu: %zu verts -> SKIP "
                         "(exterior: perimeter / open bay)\n", i, s, loop_n);
@@ -3259,6 +3649,16 @@ int HoleFill_process_ex(Arena_T arena,
             HoleFillResult res;
             memset(&res, 0, sizeof(res));
             int rc = fill_one_hole(arena, *verts, &eidx, lv, loop_n, &res);
+            if (rc != 0) {
+                memset(&res, 0, sizeof(res));
+                rc = fill_chart_cycle_3d(arena, *verts, &eidx,
+                                         lv, loop_n, &res);
+                if (rc == 0) {
+                    n_cycle_fallback++;
+                    HFLOG("  [hole_fill] loop %zu.%zu: projection-free "
+                          "chart-cycle fallback\n", i, s);
+                }
+            }
             double t_hole_ms = (ves_clock_sec() - t_hole0) * 1000.0;
             if (rc == 0) {
                 HFLOG("  [hole_fill] loop %zu.%zu: filled OK (%zu verts, %zu faces) [%.1f ms]\n",
@@ -3282,7 +3682,8 @@ int HoleFill_process_ex(Arena_T arena,
     }
 
     fprintf(stderr, "  [hole_fill] %zu loops, %zu interior, %zu micro, "
-            "%zu filled in %.2f s\n", n_loops, n_interior, n_micro, n_fills,
+            "%zu filled (%zu chart-cycle fallback) in %.2f s\n",
+            n_loops, n_interior, n_micro, n_fills, n_cycle_fallback,
             ves_clock_sec() - t_hf0);
     HFFLUSH();
 
