@@ -28,6 +28,7 @@
 #include "sparse_solve.h"         /* TAUCS Cholesky for the consistency IRLS */
 
 #include <assert.h>
+#include <float.h>
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>
@@ -328,6 +329,8 @@ void RibbonOpts_default(RibbonOpts *opts)
     opts->match_ang_deg = 20.0f;
     opts->relax_iters   = 5;
     opts->final_iters   = 2;
+    opts->metric_iters  = 0;
+    opts->metric_weight = 4.0f;
     opts->solve_threads = 0;
     opts->solve_amg     = 1;
     opts->grid_u        = 2.0f;
@@ -880,6 +883,31 @@ typedef struct {
     double w;         /* base weight */
     double like;      /* reweighted likelihood */
 } Pair;
+
+/* Pair::k is otherwise an integer winding jump.  Metric projection adds
+ * face-topology observations only after winding has been assigned, so this
+ * impossible jump value can mark evidence that is part of the input surface
+ * itself.  Such a relation is still phase/tangent/island gated, but it must
+ * not be dismissed merely because the carried U frame contains the block
+ * offset that the relation is meant to repair. */
+enum { RIB_PAIR_K_TRUSTED_TOPOLOGY = INT32_MIN };
+
+/* A coherent cube/row block offset can easily be a few dozen voxels, so face
+ * topology keeps full influence through this residual.  Beyond it the same
+ * observation retains Huber influence (it is never Gaussian-killed), but a
+ * single leaked/sliver connection cannot drag a whole gauge component by
+ * thousands of voxels. */
+static const double RIB_METRIC_TOPOLOGY_FULL_RESIDUAL = 64.0;
+static const double RIB_METRIC_CERT_ANCHOR_ODDS = 1023.0;
+
+static double rib_metric_topology_likelihood(double residual)
+{
+    residual = fabs(residual);
+    if (!isfinite(residual)) return 1e-6;
+    if (residual <= RIB_METRIC_TOPOLOGY_FULL_RESIDUAL) return 1.0;
+    double like = RIB_METRIC_TOPOLOGY_FULL_RESIDUAL / residual;
+    return like > 1e-6 ? like : 1e-6;
+}
 
 typedef struct {
     Pair  *pairs;  size_t n_pairs;
@@ -1741,6 +1769,14 @@ typedef struct {
      * one race-free gather per variable; adjacent U rows may share an edge. */
     size_t *var_coeff_off;
     int32_t *var_coeff;
+
+    /* Objective weights are state, not compile-time constants: the final
+     * continuation freezes C(u) and ramps the physical stroke metric without
+     * changing any correspondence or introducing per-fragment gauges. */
+    double length_weight;
+    double align_weight;
+    double local_weight;
+    double cont_weight;
 } RibStripSet;
 
 static double rib_strip_sample_dual(const SliceSet *S, int32_t sample)
@@ -1761,12 +1797,12 @@ static double rib_strip_sample_dual(const SliceSet *S, int32_t sample)
 }
 
 static double rib_strip_pair_score(const SliceSet *S, const Pair *p,
-                                   const RibbonOpts *o)
+                                   int score_by_u)
 {
     double d1 = S->smp[p->a].c1 - S->smp[p->b].c1;
     double d2 = S->smp[p->a].c2 - S->smp[p->b].c2;
     double geom = d1 * d1 + d2 * d2;
-    if (o->reference_u != NULL && o->solve_reference_u) {
+    if (score_by_u) {
         double du = S->smp[p->a].u - S->smp[p->b].u;
         return du * du + 1e-6 * geom;
     }
@@ -1779,12 +1815,53 @@ static double rib_strip_pair_score(const SliceSet *S, const Pair *p,
  * discrete "connected run" contract: no run can contain two observations from
  * one slice, and a gap or ambiguous branch terminates rather than merging two
  * material coordinates.  No sample or geometry is deleted by this operation. */
+/* A slice chain can retain coincident samples at a welded/fill degeneracy.
+ * Such a sample has no usable local metric derivative and therefore cannot
+ * contribute to a StrokeStrip length row.  Prefer the forward edge (the
+ * historical convention), fall back to the backward edge, and fail closed
+ * only when both are zero. */
+static int rib_strip_sample_derivative(const SliceSet *S, int32_t sample,
+                                       int32_t *lo, int32_t *hi,
+                                       double *length)
+{
+    if (sample < 0 || (size_t)sample >= S->n_smp) return 0;
+    int32_t chain = S->smp[sample].chain;
+    if (chain < 0 || (size_t)chain >= S->n_chn) return 0;
+    const Chain *st = &S->chn[chain];
+    int32_t ordinal = sample - st->first;
+    if (ordinal < 0 || ordinal >= st->count) return 0;
+    if (ordinal + 1 < st->count) {
+        double d = S->smp[sample + 1].s - S->smp[sample].s;
+        if (d > RIB_STRIP_GEOM_EPS) {
+            if (lo != NULL) *lo = sample;
+            if (hi != NULL) *hi = sample + 1;
+            if (length != NULL) *length = d;
+            return 1;
+        }
+    }
+    if (ordinal > 0) {
+        double d = S->smp[sample].s - S->smp[sample - 1].s;
+        if (d > RIB_STRIP_GEOM_EPS) {
+            if (lo != NULL) *lo = sample - 1;
+            if (hi != NULL) *hi = sample;
+            if (length != NULL) *length = d;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int rib_strip_build_runs(Arena_T arena, const SliceSet *S,
-                                 PairSet *P, const RibbonOpts *o,
+                                 PairSet *P, int score_by_u,
+                                 double initial_like,
                                  RibStripSet *R)
 {
     size_t n = S->n_smp, ncross = P->n_cross;
     memset(R, 0, sizeof(*R));
+    R->length_weight = RIB_STRIP_LENGTH_W;
+    R->align_weight = RIB_STRIP_ALIGN_W;
+    R->local_weight = RIB_STRIP_LOCAL_W;
+    R->cont_weight = RIB_STRIP_CONT_W;
     int32_t *out_pair = RIB_ALLOC_ARRAY(arena, int32_t, n + 1);
     int32_t *in_pair = RIB_ALLOC_ARRAY(arena, int32_t, n + 1);
     int32_t *next = RIB_ALLOC_ARRAY(arena, int32_t, n + 1);
@@ -1807,9 +1884,11 @@ static int rib_strip_build_runs(Arena_T arena, const SliceSet *S,
         int32_t ca = S->smp[pr->a].chain;
         int32_t cb = S->smp[pr->b].chain;
         if (ca < 0 || cb < 0 || S->chn[ca].count < 2 ||
-            S->chn[cb].count < 2)
+            S->chn[cb].count < 2 ||
+            !rib_strip_sample_derivative(S, pr->a, NULL, NULL, NULL) ||
+            !rib_strip_sample_derivative(S, pr->b, NULL, NULL, NULL))
             continue;
-        double score = rib_strip_pair_score(S, pr, o);
+        double score = rib_strip_pair_score(S, pr, score_by_u);
         if (score < out_score[pr->a] - RIB_STRIP_GEOM_EPS ||
             (fabs(score - out_score[pr->a]) <= RIB_STRIP_GEOM_EPS &&
              (out_pair[pr->a] < 0 || (int32_t)pi < out_pair[pr->a]))) {
@@ -1877,20 +1956,11 @@ static int rib_strip_build_runs(Arena_T arena, const SliceSet *S,
             m->sample = at;
             m->run = (int32_t)ri;
             m->dual_width = rib_strip_sample_dual(S, at);
-            m->like = RIB_STRIP_INITIAL_LIKE;
-            int32_t chain = S->smp[at].chain;
-            const Chain *st = &S->chn[chain];
-            int32_t ordinal = at - st->first;
-            if (ordinal + 1 < st->count) {
-                m->deriv_lo = at;
-                m->deriv_hi = at + 1;
-            } else {
-                m->deriv_lo = at - 1;
-                m->deriv_hi = at;
-            }
-            m->deriv_length = S->smp[m->deriv_hi].s -
-                              S->smp[m->deriv_lo].s;
-            if (!(m->deriv_length > RIB_STRIP_GEOM_EPS)) return -1;
+            m->like = initial_like;
+            if (!rib_strip_sample_derivative(
+                    S, at, &m->deriv_lo, &m->deriv_hi,
+                    &m->deriv_length))
+                return -1; /* pair selection above makes this unreachable */
             R->sample_member[at] = (int32_t)mi;
             mi++;
             run->count++;
@@ -1962,7 +2032,12 @@ static void rib_strip_update_length_coefficients(const SliceSet *S,
         run->like_sum = 0.0;
         for (int32_t j = 0; j < run->count; j++) {
             RibStripMember *m = &R->member[run->first + (size_t)j];
-            denom += m->dual_width * m->base_weight * m->like;
+            /* StrokeStrip Eq. 6 uses the cross-section dual width d_a.
+             * Robust WTS likelihood belongs to E_similar (Eq. 13), not to
+             * E_length: allowing a bad correspondence to redefine the metric
+             * made the length target move during the local/global loop.  The
+             * run's normalized transverse quadrature is base_weight. */
+            denom += m->base_weight;
             run->like_sum += m->base_weight * m->like;
         }
         if (denom < 1e-30) denom = 1e-30;
@@ -1970,8 +2045,8 @@ static void rib_strip_update_length_coefficients(const SliceSet *S,
             size_t mi = run->first + (size_t)j;
             RibStripMember *m = &R->member[mi];
             double projection = v3dot(S->smp[m->sample].tau, run->tangent);
-            double a = m->dual_width * m->base_weight * m->like /
-                       denom * projection / m->deriv_length;
+            double a = m->base_weight / denom *
+                       projection / m->deriv_length;
             R->coeff[2 * mi].value = -a;
             R->coeff[2 * mi + 1].value = a;
         }
@@ -2610,7 +2685,7 @@ static int rib_amg_build_initial_hyperrows(Arena_T arena,
         if (nk - first >= 2) {
             L->hrow[nr].first = first;
             L->hrow[nr].count = (int32_t)(nk - first);
-            L->hrow[nr].weight = RIB_STRIP_LENGTH_W * run->weight;
+            L->hrow[nr].weight = R->length_weight * run->weight;
             nr++;
         } else {
             nk = first;
@@ -2642,7 +2717,7 @@ static int rib_amg_build_initial_hyperrows(Arena_T arena,
                 L->hrow[nr].first = first;
                 L->hrow[nr].count = (int32_t)(nk - first);
                 L->hrow[nr].weight =
-                    -RIB_STRIP_ALIGN_W * run->weight / run->like_sum;
+                    -R->align_weight * run->weight / run->like_sum;
                 nr++;
             } else {
                 nk = first;
@@ -2816,7 +2891,7 @@ static int rib_amg_build_initial(Arena_T arena, const SliceSet *S,
          * Its negative rank-one part is emitted by the hyper-row builder. */
         for (size_t r = 0; r < R->nrun; r++) {
             const RibStripRun *run = &R->run[r];
-            double w = RIB_STRIP_ALIGN_W * run->weight;
+            double w = R->align_weight * run->weight;
             for (int32_t j = 0; j < run->count; j++) {
                 const RibStripMember *member =
                     &R->member[run->first + (size_t)j];
@@ -2843,7 +2918,7 @@ static int rib_amg_build_initial(Arena_T arena, const SliceSet *S,
             double length_eps = R != NULL ? RIB_STRIP_GEOM_EPS : 1e-9;
             if (l < length_eps) l = length_eps;
             tmp[m].key = ((uint64_t)a << 32) | (uint64_t)b;
-            tmp[m].w = (R != NULL ? RIB_STRIP_LOCAL_W : 1.0) / l;
+            tmp[m].w = (R != NULL ? R->local_weight : 1.0) / l;
             m++;
         }
     }
@@ -2863,7 +2938,7 @@ static int rib_amg_build_initial(Arena_T arena, const SliceSet *S,
          * hierarchy is only a preconditioner; the PCG operator and RHS still
          * contain every constraint exactly.  Continuation edges are sparse
          * and often unique, so they are always retained at their true weight. */
-        tmp[m].w = (R != NULL ? RIB_STRIP_CONT_W : pr->w) * pr->like *
+        tmp[m].w = (R != NULL ? R->cont_weight : pr->w) * pr->like *
                    (double)(is_cont ? 1 : H->pair_stride);
         m++;
     }
@@ -3619,14 +3694,14 @@ static double solve_graph_weight(const SolveCtx *cx, size_t i,
     if (pref >= 0) {
         const Pair *pr = &cx->P->pairs[pref];
         if (pr->like <= 0.0) return 0.0;
-        return cx->strip != NULL ? RIB_STRIP_CONT_W * pr->like
+        return cx->strip != NULL ? cx->strip->cont_weight * pr->like
                                  : pr->w * pr->like;
     }
     {
         double l = fabs(cx->S->smp[i].s - cx->S->smp[j].s);
         double length_eps = cx->strip != NULL ? RIB_STRIP_GEOM_EPS : 1e-9;
         if (l < length_eps) l = length_eps;
-        return (cx->strip != NULL ? RIB_STRIP_LOCAL_W : 1.0) / l;
+        return (cx->strip != NULL ? cx->strip->local_weight : 1.0) / l;
     }
 }
 
@@ -3673,14 +3748,14 @@ static void apply_A(const SolveCtx *cx, const double *x, double *y)
             for (size_t q = R->var_coeff_off[i];
                  q < R->var_coeff_off[i + 1]; q++) {
                 const RibStripCoeff *c = &R->coeff[R->var_coeff[q]];
-                yi += RIB_STRIP_LENGTH_W * R->run[c->run].weight *
+                yi += R->length_weight * R->run[c->run].weight *
                       c->value * cx->strip_dot[c->run];
             }
             int32_t mi = R->sample_member[i];
             if (mi >= 0) {
                 const RibStripMember *m = &R->member[mi];
                 const RibStripRun *run = &R->run[m->run];
-                yi += RIB_STRIP_ALIGN_W * run->weight *
+                yi += R->align_weight * run->weight *
                       m->base_weight * m->like *
                       (xi - cx->strip_mean[m->run]);
             }
@@ -3745,7 +3820,7 @@ static void build_b_diag(const SolveCtx *cx, double *b, double *diag)
             for (size_t q = R->var_coeff_off[i];
                  q < R->var_coeff_off[i + 1]; q++) {
                 const RibStripCoeff *c = &R->coeff[R->var_coeff[q]];
-                double w = RIB_STRIP_LENGTH_W * R->run[c->run].weight;
+                double w = R->length_weight * R->run[c->run].weight;
                 bi += w * c->value;
                 di += w * c->value * c->value;
             }
@@ -3754,7 +3829,7 @@ static void build_b_diag(const SolveCtx *cx, double *b, double *diag)
                 const RibStripMember *m = &R->member[mi];
                 const RibStripRun *run = &R->run[m->run];
                 double mw = m->base_weight * m->like;
-                double w = RIB_STRIP_ALIGN_W * run->weight;
+                double w = R->align_weight * run->weight;
                 double offset = cx->strip_final
                               ? v3dot(run->tangent, cx->S->smp[i].p) : 0.0;
                 bi += w * mw * (offset - cx->strip_mean[m->run]);
@@ -3805,14 +3880,14 @@ static void rib_line_solve(const SolveCtx *cx, const double *diag,
                 double length_eps = cx->strip != NULL
                                   ? RIB_STRIP_GEOM_EPS : 1e-9;
                 if (l < length_eps) l = length_eps;
-                a = -(cx->strip != NULL ? RIB_STRIP_LOCAL_W : 1.0) / l;
+                a = -(cx->strip != NULL ? cx->strip->local_weight : 1.0) / l;
             }
             if (k + 1 < cn) {
                 double l = cx->S->smp[i + 1].s - cx->S->smp[i].s;
                 double length_eps = cx->strip != NULL
                                   ? RIB_STRIP_GEOM_EPS : 1e-9;
                 if (l < length_eps) l = length_eps;
-                c = -(cx->strip != NULL ? RIB_STRIP_LOCAL_W : 1.0) / l;
+                c = -(cx->strip != NULL ? cx->strip->local_weight : 1.0) / l;
             }
             double den = diag[i] - (k > 0 ? a * cp[k - 1] : 0.0);
             if (den < 1e-12) den = 1e-12;
@@ -4065,7 +4140,7 @@ static int rib_strip_chol_build(SolveCtx *cx, double ridge, int round)
         m_arr = (int32_t *)calloc(R->nrun + 1, sizeof *m_arr);
         if (cl_var == NULL || cl_val == NULL || m_arr == NULL) goto done;
         for (size_t rr = 0; rr < R->nrun; rr++) {
-            if (!(RIB_STRIP_LENGTH_W * R->run[rr].weight > 0.0)) continue;
+            if (!(R->length_weight * R->run[rr].weight > 0.0)) continue;
             m_arr[rr] = (int32_t)rib_chol_run_merge(R, rr, cl_var, cl_val);
         }
         /* cap ladder: the largest per-run clique size whose total fits the
@@ -4142,7 +4217,7 @@ static int rib_strip_chol_build(SolveCtx *cx, double ridge, int round)
         size_t si = 0;
         for (size_t rr = 0; rr < R->nrun; rr++) {
             const RibStripRun *run = &R->run[rr];
-            double w = RIB_STRIP_LENGTH_W * run->weight;
+            double w = R->length_weight * run->weight;
             size_t m = (size_t)m_arr[rr];
             if (!(w > 0.0) || m == 0) continue;
             if (m <= run_cap) {
@@ -4192,7 +4267,7 @@ static int rib_strip_chol_build(SolveCtx *cx, double ridge, int round)
         sk = si;   /* rows actually collected */
         for (size_t rr = 0; rr < R->nrun; rr++) {
             const RibStripRun *run = &R->run[rr];
-            double w = RIB_STRIP_ALIGN_W * run->weight;
+            double w = R->align_weight * run->weight;
             size_t aux = n + rr;
             if (!(w > 0.0)) continue;
             if (run->like_sum > 0.0) {
@@ -4727,8 +4802,10 @@ static size_t rib_project_monotone(const SliceSet *S, double *u,
     return moved;
 }
 
-static const char *rib_strip_round_phase(int round, int relaxed_rounds)
+static const char *rib_strip_round_phase(int round, int relaxed_rounds,
+                                         int final_rounds)
 {
+    if (round >= relaxed_rounds + final_rounds) return "metric";
     if (round >= relaxed_rounds) return "final";
     if (round == 0) return "initial";
     return round <= 3 ? "l1" : "likelihood";
@@ -4739,7 +4816,8 @@ static const char *rib_strip_round_phase(int round, int relaxed_rounds)
  * each one into a PNG while the next solve round is running. */
 static int rib_write_solve_round_manifest(const RibbonOpts *o,
                                           int total_rounds,
-                                          int relaxed_rounds)
+                                          int relaxed_rounds,
+                                          int final_rounds)
 {
     char path[2600];
     if (o->solve_level_prefix == NULL) return 0;
@@ -4758,7 +4836,8 @@ static int rib_write_solve_round_manifest(const RibbonOpts *o,
         fprintf(fp,
                 "    { \"ordinal\": %d, \"phase\": \"%s\", "
                 "\"vmesh\": \"%s_solve_round_%02d.vmesh\" }%s\n",
-                round, rib_strip_round_phase(round, relaxed_rounds),
+                round, rib_strip_round_phase(
+                           round, relaxed_rounds, final_rounds),
                 ves_path_basename(o->solve_level_prefix), round,
                 round + 1 < total_rounds ? "," : "");
     }
@@ -4979,6 +5058,17 @@ static void rib_strip_audit_phase_gauges(
 {
     const double bin_width = 0.02;
     if (ncomp <= 1) return;
+    /* This is a read-only O(C^2) diagnostic, not part of the solve.  Torn
+     * quadribbons can legitimately contain hundreds of thousands of tiny
+     * metric components; allocating every possible component pair then costs
+     * terabytes and used to abort an otherwise completed solve. */
+    if (ncomp > 4096) {
+        fprintf(stderr,
+                "  phase-gauge audit: skipped pairwise diagnostic for %d "
+                "components (safe cap 4096)\n",
+                ncomp);
+        return;
+    }
     Arena_Mark mark = Arena_save(arena);
     RibGaugeComponent *component = RIB_ALLOC_ARRAY(
         arena, RibGaugeComponent, (size_t)ncomp);
@@ -5252,24 +5342,10 @@ static void solve_parameterization(Arena_T arena, SliceSet *S, PairSet *P,
             RAISE(Arena_Failed);
         }
     }
-    if (use_reference_seed) {
-        int32_t max_count = 1;
-        for (size_t c = 0; c < nc; c++)
-            if (S->chn[c].count > max_count) max_count = S->chn[c].count;
-        double *gauge_sample = RIB_ALLOC_ARRAY(
-            arena, double, (size_t)max_count);
-        for (size_t c = 0; c < nc; c++) {
-            int32_t f = S->chn[c].first, count = S->chn[c].count;
-            for (int32_t j = 0; j < count; j++)
-                gauge_sample[j] = S->smp[f + j].u - S->smp[f + j].s;
-            double gauge = select_median_dbl(gauge_sample, (size_t)count);
-            for (int32_t j = 0; j < count; j++)
-                u[f + j] = gauge + S->smp[f + j].s;
-        }
+    if (use_reference_seed)
         fprintf(stderr,
-                "  quadribbon U initializer: exact per-chain XYZ arclength; "
-                "carried U supplies robust chain gauges only\n");
-    }
+                "  winding-certificate initializer: carried U enters the "
+                "global solve unchanged; no per-stroke gauge projection\n");
 
     /* Drop CROSS-SLICE pairs whose two ends landed on winding-inconsistent phi
      * (a spurious cross-wrap match). Continuation pairs (the last n_cont, laid
@@ -5290,8 +5366,18 @@ static void solve_parameterization(Arena_T arena, SliceSet *S, PairSet *P,
             pr->like = -1.0;   /* permanently off */
     }
 
+    /* rib_strip_build_runs marks non-selected cross-slice alternatives off in
+     * Pair.like.  Keep the post-geometry/post-winding candidate support so the
+     * final StrokeStrip step can rebuild C(u) from the relaxed isovalues rather
+     * than being trapped in the initial mutual-nearest topology. */
+    double *cross_pair_support = RIB_ALLOC_ARRAY(
+        arena, double, P->n_cross ? P->n_cross : 1);
+    for (size_t p = 0; p < P->n_cross; p++)
+        cross_pair_support[p] = P->pairs[p].like;
+
     RibStripSet strip;
-    if (rib_strip_build_runs(arena, S, P, o, &strip) != 0) {
+    if (rib_strip_build_runs(arena, S, P, use_reference_seed,
+                             RIB_STRIP_INITIAL_LIKE, &strip) != 0) {
         fprintf(stderr, "ribbon: cannot construct V-connected StrokeStrip runs\n");
         RAISE(Arena_Failed);
     }
@@ -5366,10 +5452,11 @@ static void solve_parameterization(Arena_T arena, SliceSet *S, PairSet *P,
         if (useful < 1) useful = 1;
         if (solve_threads > useful) solve_threads = useful;
     }
-    double *strip_dot = RIB_ALLOC_ARRAY(
-        arena, double, strip.nrun + 1);
-    double *strip_mean = RIB_ALLOC_ARRAY(
-        arena, double, strip.nrun + 1);
+    /* A rebuilt final C(u) can contain a different number of runs.  n samples
+     * is a strict upper bound, and these two arrays are the only O(n) scratch
+     * needed to let the topology change without reallocating the solver. */
+    double *strip_dot = RIB_ALLOC_ARRAY(arena, double, n + 1);
+    double *strip_mean = RIB_ALLOC_ARRAY(arena, double, n + 1);
     SolveCtx cx;
     memset(&cx, 0, sizeof cx);
     cx.S = S;
@@ -5406,9 +5493,10 @@ static void solve_parameterization(Arena_T arena, SliceSet *S, PairSet *P,
     int reweight_rounds = o->relax_iters > 0 ? o->relax_iters : 0;
     int relaxed_rounds = 1 + reweight_rounds;
     int final_rounds = o->final_iters > 0 ? o->final_iters : 0;
-    int total_rounds = relaxed_rounds + final_rounds;
+    int metric_rounds = o->metric_iters > 0 ? o->metric_iters : 0;
+    int total_rounds = relaxed_rounds + final_rounds + metric_rounds;
     if (rib_write_solve_round_manifest(
-            o, total_rounds, relaxed_rounds) != 0) {
+            o, total_rounds, relaxed_rounds, final_rounds) != 0) {
         fprintf(stderr, "ribbon: cannot publish solve-round manifest\n");
         RAISE(Arena_Failed);
     }
@@ -5422,30 +5510,86 @@ static void solve_parameterization(Arena_T arena, SliceSet *S, PairSet *P,
     }
     double strip_sigma = fmax(longest / 30.0, 1e-3);
     size_t mono_total = 0;
-    double *round_u = RIB_ALLOC_ARRAY(arena, double, n);
-    double *round_like = RIB_ALLOC_ARRAY(
-        arena, double, strip.nmember ? strip.nmember : 1);
     double *admm_z = RIB_ALLOC_ARRAY(arena, double, n);
     double *admm_y = RIB_ALLOC_ARRAY(arena, double, n);
     double *admm_prev_z = RIB_ALLOC_ARRAY(arena, double, n);
     double *admm_target = RIB_ALLOC_ARRAY(arena, double, n);
-    double accepted_length_rms = 0.0;
-    double accepted_local_mean = 0.0;
-    double accepted_local_rms = 0.0;
-    int accepted_rounds = 0;
     int accepted_final_mode = 0;
+    Arena_Mark final_strip_mark = Arena_save(arena);
+    int final_rebuilds = 0;
     for (int round = 0; round < total_rounds; round++) {
         int relaxed = round < relaxed_rounds;
+        int final_phase = round >= relaxed_rounds &&
+                          round < relaxed_rounds + final_rounds;
+        int metric_phase = round >= relaxed_rounds + final_rounds;
         int local_round = relaxed ? round : round - relaxed_rounds;
-        const char *phase = rib_strip_round_phase(round, relaxed_rounds);
+        int metric_round = metric_phase
+                         ? round - relaxed_rounds - final_rounds : -1;
+        const char *phase = rib_strip_round_phase(
+            round, relaxed_rounds, final_rounds);
         double like_change = 0.0;
-        memcpy(round_u, u, n * sizeof(*u));
-        for (size_t m = 0; m < strip.nmember; m++)
-            round_like[m] = strip.member[m].like;
+
+        if (final_phase || (metric_phase && final_rebuilds == 0)) {
+            /* Section 5.3: form new cross-sections from the current parameter
+             * isovalues before every final solve.  The dense samples make a
+             * direct-sample intersection accurate to sample_h; mutual nearest
+             * selection in U is the discrete counterpart of grouping stroke
+             * intersections at a common isovalue.  Geometry is the stable tie
+             * breaker.  New final cross-sections have unit membership: the
+             * relaxed likelihoods classified the initial candidates, whereas
+             * these correspondences are induced by the solved field itself. */
+            if (final_rebuilds > 0) Arena_restore(arena, final_strip_mark);
+            for (size_t i = 0; i < n; i++) S->smp[i].u = u[i];
+            for (size_t p = 0; p < P->n_cross; p++)
+                P->pairs[p].like = cross_pair_support[p];
+            RibStripSet rebuilt;
+            if (rib_strip_build_runs(arena, S, P, 1, 1.0, &rebuilt) != 0) {
+                fprintf(stderr,
+                        "ribbon: cannot rebuild final isovalue cross-sections\n");
+                rib_gmg_snapshots_dispose(level_capture);
+                RAISE(Arena_Failed);
+            }
+            strip = rebuilt;
+            rib_strip_update_length_coefficients(S, &strip);
+            cx.strip = &strip;
+            out->n_strip_runs = strip.nrun;
+            out->n_strip_members = strip.nmember;
+            out->n_strip_links = strip.nlink;
+            out->n_strip_links_pruned = strip.npruned;
+            final_rebuilds++;
+            fprintf(stderr,
+                    "  StrokeStrip final C(u) rebuild %d/%d: runs=%zu "
+                    "members=%zu links=%zu pruned=%zu\n",
+                    final_rebuilds, final_rounds > 0 ? final_rounds : 1,
+                    strip.nrun,
+                    strip.nmember, strip.nlink, strip.npruned);
+        }
         if (relaxed && local_round > 0) {
             like_change = rib_strip_update_likelihoods(
                 &strip, u, local_round <= 3, strip_sigma);
             rib_strip_update_length_coefficients(S, &strip);
+        }
+        if (metric_phase) {
+            /* Continuation, not IRLS: C(u), its tangent offsets, and robust
+             * memberships are now frozen.  Only the ordinary quadratic weight
+             * on measured stroke edges (and certified same-stroke fragment
+             * continuations) increases.  Geometric interpolation avoids a
+             * sudden ill-conditioned jump from the paper's gentle local term. */
+            double target = (double)o->metric_weight;
+            if (!isfinite(target) || target < RIB_STRIP_LOCAL_W)
+                target = RIB_STRIP_LOCAL_W;
+            double alpha = (double)(metric_round + 1) /
+                           (double)metric_rounds;
+            strip.local_weight = RIB_STRIP_LOCAL_W *
+                pow(target / RIB_STRIP_LOCAL_W, alpha);
+            strip.cont_weight = RIB_STRIP_CONT_W *
+                pow(fmax(1.0, target / RIB_STRIP_CONT_W), alpha);
+            fprintf(stderr,
+                    "  StrokeStrip metric continuation %d/%d: "
+                    "stroke_weight=%.4g continuation_weight=%.4g; "
+                    "C(u) frozen\n",
+                    metric_round + 1, metric_rounds,
+                    strip.local_weight, strip.cont_weight);
         }
         cx.strip_final = !relaxed;
         double round_t0 = ves_clock_sec();
@@ -5517,24 +5661,19 @@ static void solve_parameterization(Arena_T arena, SliceSet *S, PairSet *P,
         int cg_iters = 0, admm_iters = 0;
         double primal_rms = 0.0, dual_rms = 0.0;
         size_t mono_round = 0;
-        if (round == 0 && use_reference_seed) {
-            memcpy(admm_z, u, n * sizeof(*admm_z));
-            mono_round = rib_project_monotone(
-                S, admm_z, scr, lb, thread_moved, maxchain, solve_threads);
-            memcpy(u, admm_z, n * sizeof(*u));
-            fprintf(stderr,
-                    "    StrokeStrip coarse level: exact per-chain arclength "
-                    "with carried-U gauges (projection=%zu)\n",
-                    mono_round);
-        } else {
         cx.ridge_weight = 0.0;
         cx.ridge_target = NULL;
-        cx.tol = o->scaffold_solve ? RIB_STRIP_SCAFFOLD_TOL
-                                   : RIB_STRIP_CG_TOL;
+        /* On a topology-preserving quadribbon, 1e-4 relative residual is
+         * already far below the sampled voxel scale.  The 1e-6 research
+         * tolerance costs hundreds of Krylov iterations on million-sample
+         * systems without a visible or metric benefit.  Feasibility is not
+         * relaxed: the published ADMM z remains an exact PAVA projection. */
+        int sampled_metric_tol = o->scaffold_solve || o->preserve_input_rows;
+        cx.tol = sampled_metric_tol ? RIB_STRIP_SCAFFOLD_TOL
+                                    : RIB_STRIP_CG_TOL;
         int base_iters = 0;
-        /* The scaffold skips the unconstrained warm solve: ADMM's first
-         * x-update performs the same work with the ridge already in place,
-         * and stage-3 metric projection re-solves u regardless. */
+        /* A scaffold may skip the unconstrained warm solve: ADMM's first
+         * x-update performs the same work with the ridge already in place. */
         if (!o->scaffold_solve) {
             base_iters = cg_solve(arena, &cx, u, &cg_relres, NULL);
             if (base_iters < 0) {
@@ -5561,7 +5700,9 @@ static void solve_parameterization(Arena_T arena, SliceSet *S, PairSet *P,
         memcpy(u, admm_z, n * sizeof(*u));
         cx.ridge_weight = admm_rho;
         cx.ridge_target = admm_target;
-        int admm_maxit = o->scaffold_solve ? 3 : RIB_STRIP_ADMM_MAXIT;
+        int admm_maxit = o->scaffold_solve ? 3
+                       : o->preserve_input_rows ? 8
+                       : RIB_STRIP_ADMM_MAXIT;
         for (int admm = 0; admm < admm_maxit; admm++) {
             memcpy(admm_prev_z, admm_z, n * sizeof(*admm_prev_z));
             int si_target;
@@ -5627,12 +5768,11 @@ static void solve_parameterization(Arena_T arena, SliceSet *S, PairSet *P,
             }
         }
         }
-        }
         memcpy(u, admm_z, n * sizeof(*u));
         cx.ridge_weight = 0.0;
         cx.ridge_target = NULL;
-        cx.tol = o->scaffold_solve ? RIB_STRIP_SCAFFOLD_TOL
-                                   : RIB_STRIP_CG_TOL;
+        cx.tol = sampled_metric_tol ? RIB_STRIP_SCAFFOLD_TOL
+                                    : RIB_STRIP_CG_TOL;
         if (admm_iters > 0 && (primal_rms > RIB_STRIP_ADMM_TOL ||
             dual_rms > RIB_STRIP_ADMM_TOL)
            )
@@ -5679,49 +5819,11 @@ static void solve_parameterization(Arena_T arena, SliceSet *S, PairSet *P,
                 mono_round, like_change,
                 length_rms, local_mean, local_rms, align_rms, strip_sigma);
 
-        /* Correspondence reweighting is subordinate to the intrinsic metric.
-         * The production likelihood jump demonstrated that a lower alignment
-         * residual can otherwise buy a badly stretched chart.  Permit normal
-         * numerical movement, but reject an order-changing degradation of
-         * either the averaged or per-edge arc-length error. */
-        if (accepted_rounds > 0) {
-            double length_limit = fmax(2.0 * accepted_length_rms,
-                                       accepted_length_rms + 0.05);
-            double mean_limit = fmax(2.0 * accepted_local_mean,
-                                     accepted_local_mean + 0.05);
-            double local_limit = fmax(2.0 * accepted_local_rms,
-                                      accepted_local_rms + 0.05);
-            if (length_rms > length_limit || local_mean > mean_limit ||
-                local_rms > local_limit) {
-                memcpy(u, round_u, n * sizeof(*u));
-                for (size_t m = 0; m < strip.nmember; m++)
-                    strip.member[m].like = round_like[m];
-                rib_strip_update_length_coefficients(S, &strip);
-                mono_total -= mono_round;
-                if (round_capture != NULL)
-                    rib_gmg_snapshots_dispose(level_capture);
-                fprintf(stderr,
-                        "  StrokeStrip %s round %d REJECTED: intrinsic metric "
-                        "would change length %.4f->%.4f, local-mean "
-                        "%.4f->%.4f, local-rms %.4f->%.4f; restored round %d\n",
-                        phase, round + 1,
-                        accepted_length_rms, length_rms,
-                        accepted_local_mean, local_mean,
-                        accepted_local_rms, local_rms, accepted_rounds);
-                if (rib_write_solve_round_manifest(
-                        o, accepted_rounds, relaxed_rounds) != 0) {
-                    fprintf(stderr,
-                            "ribbon: cannot truncate rejected round manifest\n");
-                    RAISE(Arena_Failed);
-                }
-                break;
-            }
-        }
-        accepted_length_rms = length_rms;
-        accepted_local_mean = local_mean;
-        accepted_local_rms = local_rms;
+        /* Do not veto a valid StrokeStrip step merely because individual
+         * stroke speeds temporarily move away from one.  The paper constrains
+         * the cross-section average here.  Per-edge unit speed is recovered by
+         * the later metric-continuation phase after C(u) has stabilized. */
         accepted_final_mode = cx.strip_final;
-        accepted_rounds++;
         if (o->solve_level_prefix != NULL) {
             /* A round is useful to a human only when it is visible while the
              * following round is still running.  Copy the just-projected U to
@@ -5761,7 +5863,7 @@ static void solve_parameterization(Arena_T arena, SliceSet *S, PairSet *P,
      * Outside the main chart's observed phi range this is explicitly a smooth
      * atlas extrapolation, not a claim that radius determined physical U. */
     out->reg_max_shift = 0.0;
-    if (n_pins > 1 && !spiral_ok) {
+    if (n_pins > 1 && !spiral_ok && !use_reference_seed) {
         Arena_Mark regm = Arena_save(arena);
         int32_t mainroot = uf_find(&uf, bigchain);
         /* per-sample solve-component root (resolved once) */
@@ -11058,6 +11160,7 @@ static int rib_gmg_dump_levels(Arena_T arena, SliceSet *S,
 static int solve_reference_chain_gauges(Arena_T arena, SliceSet *S,
                                          const PairSet *P,
                                          const RibbonOpts *o,
+                                         const float *sample_gauge_conf,
                                          ChainRelationGraph *relations,
                                          RibbonResult *out)
 {
@@ -11067,6 +11170,22 @@ static int solve_reference_chain_gauges(Arena_T arena, SliceSet *S,
     Arena_Mark mark = Arena_save(arena);
     double *g0 = RIB_ALLOC_ARRAY(arena, double, nc);
     double *g  = RIB_ALLOC_ARRAY(arena, double, nc);
+    double *chain_conf = NULL;
+    if (sample_gauge_conf != NULL) {
+        chain_conf = RIB_ALLOC_ARRAY(arena, double, nc);
+        for (size_t c = 0; c < nc; c++) {
+            int32_t f = S->chn[c].first, n = S->chn[c].count;
+            double sum = 0.0;
+            for (int32_t i = 0; i < n; i++) {
+                double q = (double)sample_gauge_conf[f + i];
+                if (!isfinite(q)) q = 0.0;
+                if (q < 0.0) q = 0.0;
+                if (q > 1.0) q = 1.0;
+                sum += q;
+            }
+            chain_conf[c] = n > 0 ? sum / (double)n : 0.0;
+        }
+    }
     for (size_t c = 0; c < nc; c++) {
         int32_t f = S->chn[c].first;
         g0[c] = S->smp[f].u - S->chn[c].atlas_shift - S->smp[f].s;
@@ -11078,6 +11197,7 @@ static int solve_reference_chain_gauges(Arena_T arena, SliceSet *S,
     Q.pairs = RIB_ALLOC_ARRAY(arena, Pair, P->n_pairs + 1);
     UnionFind uf = UF_new(arena, (int32_t)nc);
     size_t phase_rejected = 0, island_rejected = 0, same_chain = 0;
+    size_t trusted_topology = 0;
     for (size_t p = 0; p < P->n_pairs; p++) {
         const Pair *src = &P->pairs[p];
         if (src->a < 0 || src->b < 0 ||
@@ -11102,13 +11222,14 @@ static int solve_reference_chain_gauges(Arena_T arena, SliceSet *S,
         Pair *dst = &Q.pairs[qi];
         dst->a = ca;
         dst->b = cb;
-        dst->k = 0;
+        dst->k = src->k;
         /* Convert the absolute physical gauge equation into a correction
          * equation.  At delta=0, -dst->d is exactly the residual of the frozen
          * graph gauge against this geometric correspondence. */
         dst->d = src->d - sa->s + sb->s - g0[ca] + g0[cb];
         dst->w = src->w > 0.0 ? src->w : RIB_ALIGN_W;
         dst->like = 1.0;
+        if (dst->k == RIB_PAIR_K_TRUSTED_TOPOLOGY) trusted_topology++;
         uf_union(&uf, ca, cb);
     }
     if (Q.n_pairs == 0) {
@@ -11151,6 +11272,8 @@ static int solve_reference_chain_gauges(Arena_T arena, SliceSet *S,
     double *pin_val = RIB_ALLOC_ARRAY(arena, double, nc);
     double *pin_weight = NULL;
     size_t n_pins = 0;
+    double anchor_mult_sum = 0.0, anchor_obs_sum = 0.0;
+    double anchor_mult_min = INFINITY, anchor_mult_max = 0.0;
     if (o->reference_anchor_gauges) {
         /* One actual graph observation per slice sample.  Using its count as
          * the anchor weight makes both sides of the objective data-counted:
@@ -11159,8 +11282,18 @@ static int solve_reference_chain_gauges(Arena_T arena, SliceSet *S,
         for (size_t c = 0; c < nc; c++) {
             pin_idx[c] = (int32_t)c;
             pin_val[c] = 0.0;
-            pin_weight[c] = S->chn[c].count > 0
-                          ? (double)S->chn[c].count : 1.0;
+            double obs = S->chn[c].count > 0
+                       ? (double)S->chn[c].count : 1.0;
+            double mult = 1.0;
+            if (chain_conf != NULL) {
+                double q2 = chain_conf[c] * chain_conf[c];
+                mult += RIB_METRIC_CERT_ANCHOR_ODDS * q2 * q2;
+            }
+            pin_weight[c] = obs * mult;
+            anchor_mult_sum += obs * mult;
+            anchor_obs_sum += obs;
+            if (mult < anchor_mult_min) anchor_mult_min = mult;
+            if (mult > anchor_mult_max) anchor_mult_max = mult;
         }
         n_pins = nc;
     } else {
@@ -11205,8 +11338,13 @@ static int solve_reference_chain_gauges(Arena_T arena, SliceSet *S,
     if (initial_sigma < 2.0) initial_sigma = 2.0;
     {
         double inv2s2 = 1.0 / (2.0 * initial_sigma * initial_sigma);
-        for (size_t p = 0; p < Q.n_pairs; p++) {
-            double r = -Q.pairs[p].d;
+    for (size_t p = 0; p < Q.n_pairs; p++) {
+        if (Q.pairs[p].k == RIB_PAIR_K_TRUSTED_TOPOLOGY) {
+            Q.pairs[p].like = rib_metric_topology_likelihood(
+                -Q.pairs[p].d);
+            continue;
+        }
+        double r = -Q.pairs[p].d;
             double like = exp(-r * r * inv2s2);
             Q.pairs[p].like = like > 1e-6 ? like : 1e-6;
         }
@@ -11261,6 +11399,12 @@ static int solve_reference_chain_gauges(Arena_T arena, SliceSet *S,
         if (sigma < 2.0) sigma = 2.0;
         double inv2s2 = 1.0 / (2.0 * sigma * sigma);
         for (size_t p = 0; p < Q.n_pairs; p++) {
+            if (Q.pairs[p].k == RIB_PAIR_K_TRUSTED_TOPOLOGY) {
+                double r = g[Q.pairs[p].a] - g[Q.pairs[p].b]
+                         - Q.pairs[p].d;
+                Q.pairs[p].like = rib_metric_topology_likelihood(r);
+                continue;
+            }
             double r = g[Q.pairs[p].a] - g[Q.pairs[p].b] - Q.pairs[p].d;
             double like = exp(-r * r * inv2s2);
             Q.pairs[p].like = like > 1e-6 ? like : 1e-6;
@@ -11320,13 +11464,18 @@ static int solve_reference_chain_gauges(Arena_T arena, SliceSet *S,
     out->chain_gauge_shift_p95 = select_p95_dbl(resbuf, nc);
     out->chain_gauge_shift_max = shiftmax;
     fprintf(stderr,
-            "  fast chain-gauge solve: %s components=%d phase-rejected=%zu "
+            "  fast chain-gauge solve: %s components=%d trusted-topology=%zu "
+            "phase-rejected=%zu "
             "same-chain=%zu island-rejected=%zu/%zu "
+            "cert-anchor=%.1f[%.1f..%.1f] "
             "pair-med/p95=%.4f/%.4f->%.4f/%.4f "
             "shift-rms/p95/max=%.3f/%.3f/%.3f\n",
             o->reference_anchor_gauges ? "ANCHORED" : "legacy",
-            nsolve, phase_rejected, same_chain, island_rejected,
+            nsolve, trusted_topology, phase_rejected, same_chain, island_rejected,
             P->relation_island_rejects,
+            anchor_obs_sum > 0.0 ? anchor_mult_sum / anchor_obs_sum : 1.0,
+            isfinite(anchor_mult_min) ? anchor_mult_min : 1.0,
+            anchor_mult_max > 0.0 ? anchor_mult_max : 1.0,
             before_med, before_p95, after_med, after_p95,
             out->chain_gauge_shift_rms, out->chain_gauge_shift_p95, shiftmax);
     Arena_restore(arena, mark);
@@ -11639,11 +11788,13 @@ static int rib_rows_from_quadribbon(Arena_T arena,
                                     const RibbonOpts *o, SliceSet *S,
                                     int32_t **out_vertex_sample,
                                     float **out_sample_uref,
+                                    float **out_sample_uconf,
                                     double *out_du_lat)
 {
     memset(S, 0, sizeof(*S));
     *out_vertex_sample = NULL;
     *out_sample_uref = NULL;
+    *out_sample_uconf = NULL;
     *out_du_lat = 1.0;
     if (o->reference_u == NULL || nv == 0) return -1;
     RibRowKey *key = RIB_ALLOC_ARRAY(arena, RibRowKey, nv);
@@ -11795,6 +11946,17 @@ static int rib_rows_from_quadribbon(Arena_T arena,
         *out_sample_uref = uref_raw;
         *out_du_lat = du_lat;
     }
+    if (o->reference_u_confidence != NULL) {
+        float *uconf = RIB_ALLOC_ARRAY(arena, float, nk);
+        for (size_t k = 0; k < nk; k++) {
+            double q = (double)o->reference_u_confidence[(size_t)key[k].vid];
+            if (!isfinite(q)) q = 0.0;
+            if (q < 0.0) q = 0.0;
+            if (q > 1.0) q = 1.0;
+            uconf[k] = (float)q;
+        }
+        *out_sample_uconf = uconf;
+    }
     fprintf(stderr,
             "  quadribbon row slicing: %zu rows (%zu lattice planes), "
             "%zu chains, %zu samples (= finite-U vertices; %zu skipped), "
@@ -11841,6 +12003,409 @@ static const double RIB_PCONS_HUBER_C = 1.0;   /* vox: vertical drift scale */
  * verticals still need the tight scale to reject genuine defects */
 static const double RIB_PCONS_HUBER_C_CONTACT = 6.0;
 enum { RIB_PCONS_IRLS_ROUNDS = 3 };
+
+typedef struct {
+    double value;
+    double weight;
+} RibMetricGaugeVote;
+
+static int cmp_rib_metric_gauge_vote(const void *pa, const void *pb)
+{
+    const RibMetricGaugeVote *a = (const RibMetricGaugeVote *)pa;
+    const RibMetricGaugeVote *b = (const RibMetricGaugeVote *)pb;
+    return a->value < b->value ? -1 : (a->value > b->value ? 1 : 0);
+}
+
+static double rib_metric_weighted_median(RibMetricGaugeVote *vote, size_t n)
+{
+    if (n == 0) return 0.0;
+    qsort(vote, n, sizeof(*vote), cmp_rib_metric_gauge_vote);
+    double total = 0.0;
+    for (size_t i = 0; i < n; i++)
+        if (vote[i].weight > 0.0 && isfinite(vote[i].weight))
+            total += vote[i].weight;
+    if (!(total > 0.0)) return vote[n / 2].value;
+    double accum = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        if (vote[i].weight > 0.0 && isfinite(vote[i].weight))
+            accum += vote[i].weight;
+        if (accum >= 0.5 * total) return vote[i].value;
+    }
+    return vote[n - 1].value;
+}
+
+/* Project the common certificate map onto the exact metric family of every
+ * observed row,
+ *
+ *                         u_i = g_chain + s_i.
+ *
+ * Only the additive gauge is estimated.  A posterior-backed, locally metric
+ * observation is the best gauge vote; when a short/torn row has none, the
+ * selection falls back in explicit stages (posterior, local metric, all)
+ * rather than leaving the row unconstrained.  Confidence weights affect only
+ * the robust median -- they can never change an intra-row derivative.  This is
+ * the certificate-preserving replacement for clipping individual samples
+ * after the old full consistency solve, which measured 55% bad derivatives on
+ * the 4x5x5 control despite a correct winding order. */
+static int rib_project_exact_chain_metric(Arena_T arena, SliceSet *S,
+                                           const float *sample_uconf,
+                                           RibbonResult *out)
+{
+    if (S == NULL || S->n_chn == 0) return -1;
+    Arena_Mark mark = Arena_save(arena);
+    int32_t max_count = 1;
+    for (size_t c = 0; c < S->n_chn; c++)
+        if (S->chn[c].count > max_count) max_count = S->chn[c].count;
+    RibMetricGaugeVote *vote = RIB_ALLOC_ARRAY(
+        arena, RibMetricGaugeVote, (size_t)max_count);
+    double *displacement = RIB_ALLOC_ARRAY(arena, double, S->n_smp + 1);
+    size_t ndisp = 0, confident_votes = 0, fallback_chains = 0;
+    size_t exact_edges = 0;
+
+    for (size_t c = 0; c < S->n_chn; c++) {
+        int32_t f = S->chn[c].first, count = S->chn[c].count;
+        if (count <= 0) continue;
+        size_t nv = 0;
+        int selected_pass = -1;
+        /* pass 0: posterior + locally metric; 1: posterior; 2: locally
+         * metric; 3: every finite sample.  Without a posterior, pass 0 is
+         * simply the locally-metric tier and pass 1 is skipped. */
+        for (int pass = 0; pass < 4 && nv == 0; pass++) {
+            if (sample_uconf == NULL && pass == 1) continue;
+            for (int32_t i = 0; i < count; i++) {
+                size_t q = (size_t)(f + i);
+                double u = S->smp[q].u, s = S->smp[q].s;
+                if (!isfinite(u) || !isfinite(s)) continue;
+                double conf = sample_uconf != NULL
+                            ? (double)sample_uconf[q] : 1.0;
+                if (!isfinite(conf)) conf = 0.0;
+                if (conf < 0.0) conf = 0.0;
+                if (conf > 1.0) conf = 1.0;
+                int posterior = sample_uconf != NULL && conf >= 0.75;
+                int32_t ia = i > 0 ? i - 1 : i;
+                int32_t ib = i + 1 < count ? i + 1 : i;
+                int metric = 0;
+                if (ib > ia) {
+                    double ds = S->smp[f + ib].s - S->smp[f + ia].s;
+                    double du = S->smp[f + ib].u - S->smp[f + ia].u;
+                    metric = ds > 1e-9 && isfinite(du) &&
+                             fabs(du / ds - 1.0) <= 0.15;
+                }
+                int accept = pass == 0 ? (sample_uconf != NULL
+                                           ? posterior && metric : metric)
+                           : pass == 1 ? posterior
+                           : pass == 2 ? metric : 1;
+                if (!accept) continue;
+                vote[nv].value = u - s;
+                /* Posterior odds are deliberately bounded: one near-certain
+                 * sample may lead a short row, but cannot overwhelm a rowful
+                 * of agreeing observations. */
+                vote[nv].weight = sample_uconf != NULL
+                                ? 0.05 + conf * conf : 1.0;
+                if (metric) vote[nv].weight *= 2.0;
+                nv++;
+            }
+            if (nv != 0) selected_pass = pass;
+        }
+        if (nv == 0) {
+            Arena_restore(arena, mark);
+            return -1;
+        }
+        if (selected_pass > 0) fallback_chains++;
+        if (sample_uconf != NULL && selected_pass <= 1)
+            confident_votes += nv;
+        double gauge = rib_metric_weighted_median(vote, nv);
+        for (int32_t i = 0; i < count; i++) {
+            size_t q = (size_t)(f + i);
+            double next = gauge + S->smp[q].s;
+            displacement[ndisp++] = fabs(next - S->smp[q].u);
+            S->smp[q].u = next;
+            if (i > 0 && S->smp[q].s - S->smp[q - 1].s > 1e-9)
+                exact_edges++;
+        }
+    }
+
+    double p95 = ndisp ? select_p95_dbl(displacement, ndisp) : 0.0;
+    double dmax = 0.0;
+    for (size_t i = 0; i < ndisp; i++)
+        if (displacement[i] > dmax) dmax = displacement[i];
+    out->certificate_samples += confident_votes;
+    out->certificate_drift_p95 = p95;
+    out->certificate_drift_max = dmax;
+    fprintf(stderr,
+            "  exact chain metric: %zu chains, %zu edges; posterior votes=%zu "
+            "fallback chains=%zu; projection |dU| p95/max=%.2f/%.2f vox\n",
+            S->n_chn, exact_edges, confident_votes, fallback_chains,
+            p95, dmax);
+    Arena_restore(arena, mark);
+    return 0;
+}
+
+/* A carried U coordinate is useful evidence, but it cannot be allowed to veto
+ * the very observation that diagnoses a carried block offset.  The input mesh
+ * supplies stronger evidence: two vertices joined by a face edge are on the
+ * same material surface.  Quotient those edges directly to additive row-gauge
+ * relations,
+ *
+ *   g_a - g_b = dot(tau_bar, p_a-p_b) - s_a + s_b,
+ *
+ * and robustly combine all observations for each chain pair.  This retains
+ * both true verticals and quad diagonals (their tangent projection supplies
+ * the correct nonzero rest offset) without consulting U_ref.  The quotient is
+ * important: a million-vertex quadribbon normally yields only O(rows) gauge
+ * relations, so this stage stays cheap on whole-scroll meshes. */
+static const double RIB_METRIC_TOPOLOGY_WEIGHT = 1024.0;
+static const double RIB_METRIC_TOPOLOGY_CERT_WEIGHT = 8.0;
+static const double RIB_METRIC_TOPOLOGY_HUBER = 1.0;
+
+typedef struct {
+    uint64_t key;
+    double sum;
+    double robust_sum;
+    double confidence_sum;
+    uint64_t count;
+    uint64_t robust_count;
+    int32_t sa, sb;
+} RibMetricTopologyBin;
+
+typedef struct {
+    RibMetricTopologyBin *bin;
+    size_t capacity;
+    size_t count;
+} RibMetricTopologyTable;
+
+static int rib_metric_topology_rehash(RibMetricTopologyTable *tab,
+                                      size_t capacity)
+{
+    RibMetricTopologyBin *next;
+    if (capacity < 16 || (capacity & (capacity - 1)) != 0 ||
+        capacity > SIZE_MAX / sizeof(*next))
+        return -1;
+    next = (RibMetricTopologyBin *)malloc(capacity * sizeof(*next));
+    if (next == NULL) return -1;
+    for (size_t i = 0; i < capacity; i++) next[i].key = UINT64_MAX;
+    if (tab->bin != NULL) {
+        size_t mask = capacity - 1;
+        for (size_t i = 0; i < tab->capacity; i++) {
+            if (tab->bin[i].key == UINT64_MAX) continue;
+            size_t slot = chain_relation_slot(tab->bin[i].key, mask);
+            while (next[slot].key != UINT64_MAX) slot = (slot + 1) & mask;
+            next[slot] = tab->bin[i];
+        }
+    }
+    free(tab->bin);
+    tab->bin = next;
+    tab->capacity = capacity;
+    return 0;
+}
+
+/* Return one canonical chain-pair observation from a mesh edge. */
+static int rib_metric_topology_observation(
+    const SliceSet *S, const int32_t *vertex_sample, size_t nv,
+    int32_t va, int32_t vb, const RibbonOpts *o,
+    int32_t *out_sa, int32_t *out_sb, double *out_target)
+{
+    if (va < 0 || vb < 0 || (size_t)va >= nv || (size_t)vb >= nv)
+        return 0;
+    int32_t sa = vertex_sample[va], sb = vertex_sample[vb];
+    if (sa < 0 || sb < 0 || sa == sb ||
+        (size_t)sa >= S->n_smp || (size_t)sb >= S->n_smp)
+        return 0;
+    int32_t ca = S->smp[sa].chain, cb = S->smp[sb].chain;
+    if (ca < 0 || cb < 0 || ca == cb ||
+        (size_t)ca >= S->n_chn || (size_t)cb >= S->n_chn)
+        return 0;
+    if (S->chn[ca].winding_island != S->chn[cb].winding_island)
+        return 0;
+    if (o->reference_phi != NULL &&
+        (!isfinite(S->smp[sa].phi) || !isfinite(S->smp[sb].phi) ||
+         fabs(S->smp[sa].phi - S->smp[sb].phi) > RIB_CONT_DPHI_MAX))
+        return 0;
+
+    double cos_gate = cos((double)o->match_ang_deg * M_PI / 180.0);
+    double tdot = v3dot(S->smp[sa].tau, S->smp[sb].tau);
+    if (!isfinite(tdot) || tdot < cos_gate) return 0;
+    if (ca > cb) {
+        int32_t tmp = sa; sa = sb; sb = tmp;
+        tmp = ca; ca = cb; cb = tmp;
+    }
+    double tau[3] = { S->smp[sa].tau[0] + S->smp[sb].tau[0],
+                      S->smp[sa].tau[1] + S->smp[sb].tau[1],
+                      S->smp[sa].tau[2] + S->smp[sb].tau[2] };
+    double tn = sqrt(v3dot(tau, tau));
+    if (!(tn > 1e-12) || !isfinite(tn)) return 0;
+    tau[0] /= tn; tau[1] /= tn; tau[2] /= tn;
+    double dp[3] = { S->smp[sa].p[0] - S->smp[sb].p[0],
+                     S->smp[sa].p[1] - S->smp[sb].p[1],
+                     S->smp[sa].p[2] - S->smp[sb].p[2] };
+    double target = v3dot(tau, dp) - S->smp[sa].s + S->smp[sb].s;
+    if (!isfinite(target)) return 0;
+    *out_sa = sa;
+    *out_sb = sb;
+    *out_target = target;
+    return 1;
+}
+
+static int rib_metric_add_topology_gauge_pairs(
+    Arena_T arena, const int32_t *faces, size_t nf,
+    const int32_t *vertex_sample, size_t nv, const SliceSet *S,
+    const float *sample_uconf, const RibbonOpts *o,
+    const PairSet *base, PairSet *out)
+{
+    RibMetricTopologyTable tab;
+    memset(&tab, 0, sizeof(tab));
+    if (vertex_sample == NULL || faces == NULL || nf == 0) {
+        *out = *base;
+        return 0;
+    }
+    if (rib_metric_topology_rehash(&tab, 1024) != 0) return -1;
+
+    size_t observations = 0, same_v = 0, cross_v = 0;
+    for (size_t f = 0; f < nf; f++) for (int e = 0; e < 3; e++) {
+        int32_t sa, sb;
+        double target;
+        if (!rib_metric_topology_observation(
+                S, vertex_sample, nv, faces[3*f+e], faces[3*f+(e+1)%3],
+                o, &sa, &sb, &target))
+            continue;
+        int32_t ca = S->smp[sa].chain, cb = S->smp[sb].chain;
+        uint64_t key = chain_relation_key(ca, cb);
+        if ((tab.count + 1) * 10 >= tab.capacity * 7) {
+            if (tab.capacity > SIZE_MAX / 2 ||
+                rib_metric_topology_rehash(&tab, tab.capacity * 2) != 0) {
+                free(tab.bin);
+                return -1;
+            }
+        }
+        size_t slot = chain_relation_slot(key, tab.capacity - 1);
+        while (tab.bin[slot].key != UINT64_MAX &&
+               tab.bin[slot].key != key)
+            slot = (slot + 1) & (tab.capacity - 1);
+        if (tab.bin[slot].key == UINT64_MAX) {
+            memset(&tab.bin[slot], 0, sizeof(tab.bin[slot]));
+            tab.bin[slot].key = key;
+            tab.bin[slot].sa = sa;
+            tab.bin[slot].sb = sb;
+            tab.count++;
+        }
+        tab.bin[slot].sum += target;
+        if (sample_uconf != NULL) {
+            double qa = (double)sample_uconf[sa];
+            double qb = (double)sample_uconf[sb];
+            if (!isfinite(qa)) qa = 0.0;
+            if (!isfinite(qb)) qb = 0.0;
+            if (qa < 0.0) qa = 0.0; if (qa > 1.0) qa = 1.0;
+            if (qb < 0.0) qb = 0.0; if (qb > 1.0) qb = 1.0;
+            /* A binary relation is only as certificate-backed as its weaker
+             * endpoint.  Low-confidence rows deliberately hand authority to
+             * topology; two certain rows retain the certificate frame. */
+            tab.bin[slot].confidence_sum += qa < qb ? qa : qb;
+        }
+        tab.bin[slot].count++;
+        observations++;
+        if (S->smp[sa].slice == S->smp[sb].slice) same_v++;
+        else cross_v++;
+    }
+
+    /* A second linear mesh pass gives a winsorized mean.  It costs much less
+     * than sorting all face edges and prevents one long/sliver triangle from
+     * moving an otherwise unanimous chain relation. */
+    for (size_t f = 0; f < nf; f++) for (int e = 0; e < 3; e++) {
+        int32_t sa, sb;
+        double target;
+        if (!rib_metric_topology_observation(
+                S, vertex_sample, nv, faces[3*f+e], faces[3*f+(e+1)%3],
+                o, &sa, &sb, &target))
+            continue;
+        uint64_t key = chain_relation_key(S->smp[sa].chain,
+                                          S->smp[sb].chain);
+        size_t slot = chain_relation_slot(key, tab.capacity - 1);
+        while (tab.bin[slot].key != key) {
+            if (tab.bin[slot].key == UINT64_MAX) break;
+            slot = (slot + 1) & (tab.capacity - 1);
+        }
+        if (tab.bin[slot].key != key || tab.bin[slot].count == 0) continue;
+        double mean = tab.bin[slot].sum / (double)tab.bin[slot].count;
+        double r = target - mean;
+        if (r > RIB_METRIC_TOPOLOGY_HUBER) r = RIB_METRIC_TOPOLOGY_HUBER;
+        if (r < -RIB_METRIC_TOPOLOGY_HUBER) r = -RIB_METRIC_TOPOLOGY_HUBER;
+        tab.bin[slot].robust_sum += mean + r;
+        tab.bin[slot].robust_count++;
+    }
+
+    if (base->n_pairs > SIZE_MAX - tab.count) {
+        free(tab.bin);
+        return -1;
+    }
+    Pair *pairs = RIB_ALLOC_ARRAY(arena, Pair, base->n_pairs + tab.count + 1);
+    if (base->n_pairs != 0)
+        memcpy(pairs, base->pairs, base->n_pairs * sizeof(*pairs));
+    size_t np = base->n_pairs;
+    double support_sum = 0.0, weighted_base_sum = 0.0;
+    for (size_t slot = 0; slot < tab.capacity; slot++) {
+        RibMetricTopologyBin *b = &tab.bin[slot];
+        if (b->key == UINT64_MAX || b->count == 0) continue;
+        double target = b->robust_count != 0
+                      ? b->robust_sum / (double)b->robust_count
+                      : b->sum / (double)b->count;
+        Pair *pr = &pairs[np++];
+        pr->a = b->sa;
+        pr->b = b->sb;
+        pr->k = RIB_PAIR_K_TRUSTED_TOPOLOGY;
+        pr->d = target + S->smp[b->sa].s - S->smp[b->sb].s;
+        /* Interior face edges are normally seen twice, once from each
+         * incident triangle.  Half-counting makes support approximately the
+         * number of independent vertices while retaining boundary evidence. */
+        double support = 0.5 * (double)b->count;
+        if (support < 1.0) support = 1.0;
+        double confidence = sample_uconf != NULL
+                          ? b->confidence_sum / (double)b->count : 0.0;
+        double uncertainty = 1.0 - confidence;
+        double base_weight = RIB_METRIC_TOPOLOGY_CERT_WEIGHT +
+            (RIB_METRIC_TOPOLOGY_WEIGHT - RIB_METRIC_TOPOLOGY_CERT_WEIGHT) *
+            uncertainty * uncertainty;
+        pr->w = base_weight * support;
+        pr->like = 1.0;
+        support_sum += support;
+        weighted_base_sum += support * base_weight;
+    }
+    *out = *base;
+    out->pairs = pairs;
+    out->n_pairs = np;
+    fprintf(stderr,
+            "  exact-chain topology: %zu face-edge observations -> %zu "
+            "chain relations (same-v=%zu cross-v=%zu, effective "
+            "support=%.0f, mean weight=%.1f/support, range=%.0f..%.0f)\n",
+            observations, tab.count, same_v, cross_v, support_sum,
+            support_sum > 0.0 ? weighted_base_sum / support_sum : 0.0,
+            RIB_METRIC_TOPOLOGY_CERT_WEIGHT, RIB_METRIC_TOPOLOGY_WEIGHT);
+    free(tab.bin);
+    return 0;
+}
+
+/* ARMING GUARD: the consistency solve is a REFINEMENT stage -- pieces must
+ * be placed before it runs (island placement, or an inherently coherent
+ * frame).  Contacts entering at packing scale mean the frame is unplaced
+ * and the solve would be asked to do placement through millions of stiff
+ * long-range ties (measured sec00 failure: +-103k entry drift, Cholesky
+ * fill explosion).  The 0143-hybrid's honest wave entered at +-1300 and
+ * must pass; an atlas packing at +-100k must refuse loudly. */
+static const double RIB_PCONS_ENTRY_DRIFT_MAX = 10000.0;
+/* Factor-once PCG: the TAUCS factor sees only the banded grid (rows +
+ * verticals + pins, round-constant); contacts and Huber reweights live in
+ * the matrix-free operator PCG applies.  The grid ridge keeps the factor
+ * SPD: pins are assigned on the FULL solve graph (which includes contacts),
+ * so fragments held together only by contacts would otherwise float in the
+ * contact-free grid matrix and zero-pivot the Cholesky.  Preconditioner
+ * only -- the PCG operator stays exact. */
+static const double RIB_PCONS_PCG_TOL = 1e-6;
+static const double RIB_PCONS_GRID_RIDGE = 1e-4;
+enum { RIB_PCONS_PCG_MAXIT = 600 };
+/* Below this size the EXACT per-round factor is cheaper than PCG's matvec
+ * budget (measured at the 5%-density operating point: exact 14 s/round at
+ * 0.93M vs 200 s of capped PCG); above it the connected multifrontal factor
+ * is the pathology and the grid-PCG path wins. */
+enum { RIB_PCONS_PCG_MIN_N = 4000000 };
 
 typedef struct { int64_t key; double delta; } RibPairDelta;
 
@@ -11906,6 +12471,7 @@ static int rib_project_consistency_solve(Arena_T arena,
                                          const int32_t *faces, size_t nf,
                                          const int32_t *vertex_sample,
                                          const float *sample_uref,
+                                         const float *sample_uconf,
                                          double du_lat,
                                          const RibbonOpts *o,
                                          SliceSet *S, RibbonResult *out)
@@ -12210,14 +12776,49 @@ static int rib_project_consistency_solve(Arena_T arena,
             ncontact, gated_out, n_pins);
     rib_pcons_metrics(S, &Q, nvert_pairs, u, arena, "BEFORE");
 
-    /* --- assemble the normal equations and solve exactly (IRLS/TAUCS) ---
-     * minimize sum w*(u_b - u_a - d)^2: each term adds +w to both diagonal
-     * entries, -w to the (hi,lo) off-diagonal, and -/+ w*d to the rhs.
-     * Sparse_solve_sym wants the lower triangle (row >= col) and sums
-     * duplicate triplets, so assembly is a flat append. */
+    /* arming guard: refuse an unplaced frame (see RIB_PCONS_ENTRY_DRIFT_MAX) */
+    if (ncontact > 0) {
+        Arena_Mark gmark = Arena_save(arena);
+        double *cd = RIB_ALLOC_ARRAY(arena, double, ncontact + 1);
+        size_t ncd = 0;
+        for (size_t p = nvert_pairs; p < Q.n_pairs; p++)
+            cd[ncd++] = fabs(u[Q.pairs[p].a] - u[Q.pairs[p].b]);
+        qsort(cd, ncd, sizeof(*cd), cmp_dbl);
+        {
+            double p90 = cd[(ncd * 9) / 10];
+            Arena_restore(arena, gmark);
+            if (p90 > RIB_PCONS_ENTRY_DRIFT_MAX) {
+                fprintf(stderr,
+                        "  consistency solve: REFUSED -- contact ties enter "
+                        "at p90=%.0f vox (max %.0f): the frame is UNPLACED "
+                        "(an atlas packing?).  This solve refines placed "
+                        "frames; it must not do placement through stiff "
+                        "long-range ties.  Provide the phase sidecar so "
+                        "island placement can run (ribbon_phase.f32 beside "
+                        "the input; ribbon_sections carves it), or supply a "
+                        "coherent carried frame.\n",
+                        p90, RIB_PCONS_ENTRY_DRIFT_MAX);
+                Arena_restore(arena, mark);
+                return -1;
+            }
+        }
+    }
+
+    /* --- factor-once grid preconditioner + contact-carrying PCG (IRLS) ---
+     * minimize sum w*(u_b - u_a - d)^2.  The TAUCS factorization sees ONLY
+     * the banded grid part (row metric + vertical drift at unit Huber +
+     * pins): its topology AND values are round-constant, so ONE factor
+     * serves every IRLS round.  Contacts -- and each round's Huber
+     * reweights -- live in the matrix-free operator that PCG applies; they
+     * cost iterations, never fill.  This keeps the factor banded no matter
+     * how far contact ties reach (the former full-matrix factor exploded
+     * when ties spanned an atlas packing).  The rhs is round-constant too:
+     * every d=0 pair contributes nothing, and chain/pin targets never
+     * reweight.  If the grid factor cannot be built, fall back to the exact
+     * per-round assembly. */
     size_t ncq = S->n_chn;
     size_t nchain_edges = n - ncq;
-    size_t max_nt = 3u * (nchain_edges + Q.n_pairs) + n_pins;
+    size_t max_nt = 3u * (nchain_edges + Q.n_pairs) + n_pins + n + 8u;
     if (n > (size_t)INT32_MAX || max_nt > (size_t)INT32_MAX) {
         fprintf(stderr, "  consistency solve: system too large (n=%zu "
                 "nt=%zu)\n", n, max_nt);
@@ -12231,10 +12832,32 @@ static int rib_project_consistency_solve(Arena_T arena,
     double *hub = RIB_ALLOC_ARRAY(arena, double, Q.n_pairs + 1);
     for (size_t p = 0; p < Q.n_pairs; p++) hub[p] = 1.0;
 
-    for (int round = 0; round < RIB_PCONS_IRLS_ROUNDS; round++) {
-        double tr0 = ves_clock_sec();
+    /* round-constant rhs: chain metric targets + pins */
+    memset(rhs, 0, n * sizeof(*rhs));
+    for (size_t c = 0; c < ncq; c++) {
+        int32_t f2 = S->chn[c].first, cn2 = S->chn[c].count;
+        for (int32_t i = 1; i < cn2; i++) {
+            int a = f2 + i - 1, b = f2 + i;
+            double l = S->smp[b].s - S->smp[a].s;
+            if (l < 1e-9) l = 1e-9;
+            double w = 1.0 / l;
+            rhs[a] -= w * l;
+            rhs[b] += w * l;
+        }
+    }
+    for (size_t pi2 = 0; pi2 < n_pins; pi2++)
+        rhs[pin_idx[pi2]] += pin_val[pi2];
+    double bnorm = 0.0;
+    for (size_t i = 0; i < n; i++) bnorm += rhs[i] * rhs[i];
+    bnorm = sqrt(bnorm);
+    if (bnorm < 1e-30) bnorm = 1.0;
+
+    /* grid-only factor (chains + verticals + pins) -- only where the
+     * connected full factor would hurt (see RIB_PCONS_PCG_MIN_N) */
+    SparseFactor_T grid_f = NULL;
+    if (n > (size_t)RIB_PCONS_PCG_MIN_N) {
+        double tf0 = ves_clock_sec();
         size_t nt = 0;
-        memset(rhs, 0, n * sizeof(*rhs));
         for (size_t c = 0; c < ncq; c++) {
             int32_t f2 = S->chn[c].first, cn2 = S->chn[c].count;
             for (int32_t i = 1; i < cn2; i++) {
@@ -12245,38 +12868,183 @@ static int rib_project_consistency_solve(Arena_T arena,
                 t_row[nt] = a; t_col[nt] = a; t_val[nt] = w; nt++;
                 t_row[nt] = b; t_col[nt] = b; t_val[nt] = w; nt++;
                 t_row[nt] = b; t_col[nt] = a; t_val[nt] = -w; nt++;
-                rhs[a] -= w * l;       /* d = measured ds */
-                rhs[b] += w * l;
             }
         }
-        for (size_t p = 0; p < Q.n_pairs; p++) {
+        for (size_t p = 0; p < nvert_pairs; p++) {
             int a = Q.pairs[p].a, b = Q.pairs[p].b;
-            double w = Q.pairs[p].w * hub[p];
-            if (w <= 0.0) continue;
+            double w = Q.pairs[p].w;
             int lo = a < b ? a : b, hi2 = a < b ? b : a;
+            if (w <= 0.0) continue;
             t_row[nt] = a; t_col[nt] = a; t_val[nt] = w; nt++;
             t_row[nt] = b; t_col[nt] = b; t_val[nt] = w; nt++;
             t_row[nt] = hi2; t_col[nt] = lo; t_val[nt] = -w; nt++;
-            /* d = 0: drift/contact targets add nothing to the rhs */
         }
         for (size_t pi2 = 0; pi2 < n_pins; pi2++) {
             t_row[nt] = pin_idx[pi2];
             t_col[nt] = pin_idx[pi2];
             t_val[nt] = 1.0;
-            rhs[pin_idx[pi2]] += pin_val[pi2];
             nt++;
         }
-        int src = Sparse_solve_sym((int)n, (int)nt, t_row, t_col, t_val,
-                                   rhs, u, SPARSE_SPD);
-        if (src != 0) {
-            fprintf(stderr, "  consistency solve: TAUCS factorization "
-                    "FAILED (n=%zu nnz=%zu round=%d)\n", n, nt, round + 1);
-            Arena_restore(arena, mark);
-            return -1;
+        /* PRECONDITIONER-ONLY additions (the operator stays the historical
+         * exact system): (a) the contacts' DIAGONAL lumping, so fragments
+         * whose only global restraint is a contact are restrained in M at
+         * the same magnitude A restrains them (their off-diagonals ride
+         * PCG; no fill); (b) a feather ridge for fragments with no
+         * restraint at all, so the Cholesky never zero-pivots. */
+        for (size_t p = nvert_pairs; p < Q.n_pairs; p++) {
+            int a = Q.pairs[p].a, b = Q.pairs[p].b;
+            double w = Q.pairs[p].w;
+            if (w <= 0.0) continue;
+            t_row[nt] = a; t_col[nt] = a; t_val[nt] = w; nt++;
+            t_row[nt] = b; t_col[nt] = b; t_val[nt] = w; nt++;
         }
-        /* Huber reweight from the exact residuals: a drift/contact term
-         * still far off after an exact solve is evidence the model tied the
-         * wrong samples, so its influence decays as c/|r|. */
+        for (size_t i = 0; i < n; i++) {
+            t_row[nt] = (int)i;
+            t_col[nt] = (int)i;
+            t_val[nt] = RIB_PCONS_GRID_RIDGE;
+            nt++;
+        }
+        if (Sparse_factor_spd((int)n, (int)nt, t_row, t_col, t_val,
+                              &grid_f) == 0)
+            fprintf(stderr,
+                    "  consistency grid factor: n=%zu nnz=%zu "
+                    "factor_sec=%.1f (one factor for all IRLS rounds; "
+                    "contacts ride PCG)\n",
+                    n, nt, ves_clock_sec() - tf0);
+        else {
+            grid_f = NULL;
+            fprintf(stderr,
+                    "  consistency grid factor unavailable; exact "
+                    "per-round fallback\n");
+        }
+    }
+
+    double *pcg_r = RIB_ALLOC_ARRAY(arena, double, n + 1);
+    double *pcg_z = RIB_ALLOC_ARRAY(arena, double, n + 1);
+    double *pcg_p = RIB_ALLOC_ARRAY(arena, double, n + 1);
+    double *pcg_ap = RIB_ALLOC_ARRAY(arena, double, n + 1);
+
+    for (int round = 0; round < RIB_PCONS_IRLS_ROUNDS; round++) {
+        double tr0 = ves_clock_sec();
+        int pcg_iters = 0;
+        double relres = 0.0;
+        if (grid_f != NULL) {
+            /* PCG on the full operator (chains + all pairs*hub + pins),
+             * preconditioned by the grid factor, warm-started from u. */
+#define RIB_PCONS_APPLY(SRC, DST)                                         \
+            do {                                                          \
+                memset((DST), 0, n * sizeof(double));                     \
+                for (size_t c2 = 0; c2 < ncq; c2++) {                     \
+                    int32_t f3 = S->chn[c2].first;                        \
+                    int32_t cn3 = S->chn[c2].count;                       \
+                    for (int32_t i2 = 1; i2 < cn3; i2++) {                \
+                        int a2 = f3 + i2 - 1, b2 = f3 + i2;               \
+                        double l2 = S->smp[b2].s - S->smp[a2].s;          \
+                        double w2 = 1.0 / (l2 < 1e-9 ? 1e-9 : l2);        \
+                        double t2 = w2 * ((SRC)[a2] - (SRC)[b2]);         \
+                        (DST)[a2] += t2;                                  \
+                        (DST)[b2] -= t2;                                  \
+                    }                                                     \
+                }                                                         \
+                for (size_t p2 = 0; p2 < Q.n_pairs; p2++) {               \
+                    int a2 = Q.pairs[p2].a, b2 = Q.pairs[p2].b;           \
+                    double w2 = Q.pairs[p2].w * hub[p2];                  \
+                    double t2 = 0.0;                                      \
+                    if (w2 <= 0.0) continue;                              \
+                    t2 = w2 * ((SRC)[a2] - (SRC)[b2]);                    \
+                    (DST)[a2] += t2;                                      \
+                    (DST)[b2] -= t2;                                      \
+                }                                                         \
+                for (size_t p2 = 0; p2 < n_pins; p2++)                    \
+                    (DST)[pin_idx[p2]] += (SRC)[pin_idx[p2]];             \
+            } while (0)
+            double rn = 0.0, rz = 0.0;
+            RIB_PCONS_APPLY(u, pcg_ap);
+            for (size_t i = 0; i < n; i++) {
+                pcg_r[i] = rhs[i] - pcg_ap[i];
+                rn += pcg_r[i] * pcg_r[i];
+            }
+            relres = sqrt(rn) / bnorm;
+            if (relres > RIB_PCONS_PCG_TOL) {
+                if (Sparse_factor_solve(grid_f, pcg_r, pcg_z) != 0)
+                    memcpy(pcg_z, pcg_r, n * sizeof(double));
+                for (size_t i = 0; i < n; i++) {
+                    pcg_p[i] = pcg_z[i];
+                    rz += pcg_r[i] * pcg_z[i];
+                }
+                for (pcg_iters = 0; pcg_iters < RIB_PCONS_PCG_MAXIT;
+                     pcg_iters++) {
+                    double pap = 0.0, alpha = 0.0, rn2 = 0.0, rz2 = 0.0;
+                    RIB_PCONS_APPLY(pcg_p, pcg_ap);
+                    for (size_t i = 0; i < n; i++)
+                        pap += pcg_p[i] * pcg_ap[i];
+                    if (pap <= 0.0) break;
+                    alpha = rz / pap;
+                    for (size_t i = 0; i < n; i++) {
+                        u[i] += alpha * pcg_p[i];
+                        pcg_r[i] -= alpha * pcg_ap[i];
+                        rn2 += pcg_r[i] * pcg_r[i];
+                    }
+                    relres = sqrt(rn2) / bnorm;
+                    if (relres < RIB_PCONS_PCG_TOL) {
+                        pcg_iters++;
+                        break;
+                    }
+                    if (Sparse_factor_solve(grid_f, pcg_r, pcg_z) != 0)
+                        memcpy(pcg_z, pcg_r, n * sizeof(double));
+                    for (size_t i = 0; i < n; i++)
+                        rz2 += pcg_r[i] * pcg_z[i];
+                    {
+                        double beta = rz2 / rz;
+                        rz = rz2;
+                        for (size_t i = 0; i < n; i++)
+                            pcg_p[i] = pcg_z[i] + beta * pcg_p[i];
+                    }
+                }
+            }
+#undef RIB_PCONS_APPLY
+        } else {
+            /* exact per-round fallback: assemble everything and factor */
+            size_t nt = 0;
+            for (size_t c = 0; c < ncq; c++) {
+                int32_t f2 = S->chn[c].first, cn2 = S->chn[c].count;
+                for (int32_t i = 1; i < cn2; i++) {
+                    int a = f2 + i - 1, b = f2 + i;
+                    double l = S->smp[b].s - S->smp[a].s;
+                    if (l < 1e-9) l = 1e-9;
+                    double w = 1.0 / l;
+                    t_row[nt] = a; t_col[nt] = a; t_val[nt] = w; nt++;
+                    t_row[nt] = b; t_col[nt] = b; t_val[nt] = w; nt++;
+                    t_row[nt] = b; t_col[nt] = a; t_val[nt] = -w; nt++;
+                }
+            }
+            for (size_t p = 0; p < Q.n_pairs; p++) {
+                int a = Q.pairs[p].a, b = Q.pairs[p].b;
+                double w = Q.pairs[p].w * hub[p];
+                if (w <= 0.0) continue;
+                int lo = a < b ? a : b, hi2 = a < b ? b : a;
+                t_row[nt] = a; t_col[nt] = a; t_val[nt] = w; nt++;
+                t_row[nt] = b; t_col[nt] = b; t_val[nt] = w; nt++;
+                t_row[nt] = hi2; t_col[nt] = lo; t_val[nt] = -w; nt++;
+            }
+            for (size_t pi2 = 0; pi2 < n_pins; pi2++) {
+                t_row[nt] = pin_idx[pi2];
+                t_col[nt] = pin_idx[pi2];
+                t_val[nt] = 1.0;
+                nt++;
+            }
+            if (Sparse_solve_sym((int)n, (int)nt, t_row, t_col, t_val,
+                                 rhs, u, SPARSE_SPD) != 0) {
+                fprintf(stderr, "  consistency solve: TAUCS factorization "
+                        "FAILED (n=%zu nnz=%zu round=%d)\n",
+                        n, nt, round + 1);
+                Arena_restore(arena, mark);
+                return -1;
+            }
+        }
+        /* Huber reweight from the solved residuals: a drift/contact term
+         * still far off is evidence the model tied the wrong samples, so
+         * its influence decays as c/|r|. */
         size_t ndown = 0;
         double wchg = 0.0;
         for (size_t p = 0; p < Q.n_pairs; p++) {
@@ -12291,13 +13059,15 @@ static int rib_project_consistency_solve(Arena_T arena,
         char tag[24];
         snprintf(tag, sizeof tag, "round %d", round + 1);
         fprintf(stderr,
-                "  consistency IRLS round %d: n=%zu nnz=%zu solve=%.2fs, "
-                "%zu/%zu drift pairs downweighted (max dw=%.3f)\n",
-                round + 1, n, nt, ves_clock_sec() - tr0, ndown, Q.n_pairs,
-                wchg);
+                "  consistency IRLS round %d: n=%zu solve=%.2fs "
+                "(pcg_iters=%d relres=%.2e), %zu/%zu drift pairs "
+                "downweighted (max dw=%.3f)\n",
+                round + 1, n, ves_clock_sec() - tr0, pcg_iters, relres,
+                ndown, Q.n_pairs, wchg);
         rib_pcons_metrics(S, &Q, nvert_pairs, u, arena, tag);
         if (wchg < 1e-3) break;   /* weights stable: IRLS converged */
     }
+    Sparse_factor_free(&grid_f);
 
     /* Placement restore: every energy term except the pins is a difference,
      * so each component's translation lands exactly where its single pin
@@ -12351,7 +13121,69 @@ static int rib_project_consistency_solve(Arena_T arena,
                     "translation %.2f vox\n", shift_max);
     }
 
-    /* per-row monotonicity: expected untouched; repaired + counted if not */
+    /* The probabilistic winding certificate is an ORDER constraint, not just
+     * another least-squares vote.  The common map u0 is monotone in carried U.
+     * On confident samples, keep the metric refinement inside a small fraction
+     * of one local turn (2*pi*r).  This still permits seam/metric cleanup but
+     * makes an adjacent-ply exchange impossible unless the winding posterior
+     * explicitly abstained.  Bounds scale continuously with uncertainty and
+     * remain meaningful on cropped scrolls that do not contain the axis. */
+    double *cert_lo = NULL, *cert_hi = NULL;
+    if (sample_uconf != NULL) {
+        enum { RIB_CERT_MIN_CONF_PCT = 75 };
+        const double min_conf = (double)RIB_CERT_MIN_CONF_PCT / 100.0;
+        cert_lo = RIB_ALLOC_ARRAY(arena, double, n + 1);
+        cert_hi = RIB_ALLOC_ARRAY(arena, double, n + 1);
+        double *drift = RIB_ALLOC_ARRAY(arena, double, n + 1);
+        double *bound = RIB_ALLOC_ARRAY(arena, double, n + 1);
+        size_t nc = 0, nclip = 0;
+        for (size_t i = 0; i < n; i++) {
+            double conf = (double)sample_uconf[i];
+            cert_lo[i] = -DBL_MAX;
+            cert_hi[i] = DBL_MAX;
+            if (!isfinite(conf) || conf < min_conf) continue;
+            if (conf > 1.0) conf = 1.0;
+            double turn_radius = S->smp[i].r;
+            double radius_floor = 4.0 * (double)o->wrap_spacing;
+            if (!(radius_floor > 0.0)) radius_floor = 4.0 * 9.5;
+            if (turn_radius < radius_floor) turn_radius = radius_floor;
+            /* 1% of a turn at confidence 1, rising to 3% at the 0.75
+             * arming threshold. */
+            double frac = 0.01 + 0.08 * (1.0 - conf);
+            double b = frac * (2.0 * M_PI) * turn_radius;
+            double bmin = 2.0 * (double)o->sample_h;
+            if (bmin < 2.0) bmin = 2.0;
+            if (b < bmin) b = bmin;
+            cert_lo[i] = u0[i] - b;
+            cert_hi[i] = u0[i] + b;
+            drift[nc] = fabs(u[i] - u0[i]);
+            bound[nc] = b;
+            nc++;
+            if (u[i] < cert_lo[i]) { u[i] = cert_lo[i]; nclip++; }
+            else if (u[i] > cert_hi[i]) { u[i] = cert_hi[i]; nclip++; }
+        }
+        if (nc != 0) {
+            out->certificate_samples += nc;
+            out->certificate_clamps += nclip;
+            out->certificate_drift_p95 = select_p95_dbl(drift, nc);
+            for (size_t i = 0; i < nc; i++)
+                if (drift[i] > out->certificate_drift_max)
+                    out->certificate_drift_max = drift[i];
+            out->certificate_bound_p50 = select_median_dbl(bound, nc);
+            fprintf(stderr,
+                    "  certificate trust region: %zu confident samples, "
+                    "%zu clamped; |drift| p95/max=%.2f/%.2f vox, "
+                    "median bound=%.2f vox\n",
+                    nc, nclip, out->certificate_drift_p95,
+                    out->certificate_drift_max,
+                    out->certificate_bound_p50);
+        }
+    }
+
+    /* Per-row monotonicity plus the certificate boxes.  PAVA supplies the L2
+     * monotone projection.  Prefix-lower/suffix-upper envelopes then make the
+     * individual boxes monotone-feasible; a final forward pass cannot exceed
+     * those nondecreasing upper bounds. */
     size_t mono_bad = 0, mono_chains = 0;
     int32_t max_chain = 2;
     for (size_t c = 0; c < S->n_chn; c++)
@@ -12367,6 +13199,28 @@ static int rib_project_consistency_solve(Arena_T arena,
         if (!bad) continue;
         mono_chains++;
         (void)pava_chain(&u[f], lb, cn, scr);
+    }
+    if (cert_lo != NULL) {
+        for (size_t c = 0; c < S->n_chn; c++) {
+            int32_t f = S->chn[c].first, cn = S->chn[c].count;
+            for (int32_t i = 1; i < cn; i++)
+                if (cert_lo[f+i] < cert_lo[f+i-1])
+                    cert_lo[f+i] = cert_lo[f+i-1];
+            for (int32_t i = cn - 1; i-- > 0; )
+                if (cert_hi[f+i] > cert_hi[f+i+1])
+                    cert_hi[f+i] = cert_hi[f+i+1];
+            for (int32_t i = 0; i < cn; i++) {
+                if (cert_lo[f+i] > cert_hi[f+i]) {
+                    /* u0 is monotone, so this is only reachable through
+                     * numerical noise in an extreme radius envelope. */
+                    double mid = 0.5 * (cert_lo[f+i] + cert_hi[f+i]);
+                    cert_lo[f+i] = cert_hi[f+i] = mid;
+                }
+                if (u[f+i] < cert_lo[f+i]) u[f+i] = cert_lo[f+i];
+                if (u[f+i] > cert_hi[f+i]) u[f+i] = cert_hi[f+i];
+                if (i > 0 && u[f+i] < u[f+i-1]) u[f+i] = u[f+i-1];
+            }
+        }
     }
     if (mono_bad != 0)
         fprintf(stderr,
@@ -12563,20 +13417,23 @@ int Ribbon_run(Arena_T arena,
         if (t[i] > tmax) tmax = t[i];
     }
 
-    /* A: slice (+ bridge cut).  The metric-projection path slices by the
-     * quadribbon's own param-v rows -- geometric planes cannot align with
+    /* A: slice (+ bridge cut).  A topology-preserving quadribbon solve uses
+     * the input's own param-v rows -- geometric planes cannot align with
      * several phase-offset component lattices at once. */
     SliceSet S;
     int32_t *row_vertex_sample = NULL;
     float *row_sample_uref = NULL;
+    float *row_sample_uconf = NULL;
     double row_du_lat = 1.0;
-    if (opts->metric_project_only && opts->reference_u != NULL &&
+    if ((opts->preserve_input_rows || opts->metric_project_only) &&
+        opts->reference_u != NULL &&
         opts->solve_reference_u) {
         if (rib_rows_from_quadribbon(arena, verts, nv, vertex_mesh_comp,
                                      mesh_comp_island, mesh_comp_chart, t,
                                      e1, e2, opts->axis_point, opts,
                                      &S, &row_vertex_sample,
-                                     &row_sample_uref, &row_du_lat) != 0) {
+                                     &row_sample_uref, &row_sample_uconf,
+                                     &row_du_lat) != 0) {
             memset(out, 0, sizeof(*out));
             return -1;
         }
@@ -12803,7 +13660,8 @@ int Ribbon_run(Arena_T arena,
         memset(&fast_relations, 0, sizeof(fast_relations));
         if (build_pairs(arena, &S, opts, &fast_pairs) != 0 ||
             solve_reference_chain_gauges(
-                arena, &S, &fast_pairs, opts, &fast_relations, out) != 0) {
+                arena, &S, &fast_pairs, opts, NULL,
+                &fast_relations, out) != 0) {
             chain_relation_graph_dispose(&fast_relations);
             Arena_restore(arena, fast_mark);
             memset(out, 0, sizeof(*out));
@@ -12947,21 +13805,18 @@ int Ribbon_run(Arena_T arena,
      * slice-origin mode before any fine sample solve; asking millions of sample
      * variables to rediscover a few hundred gauges was both ill-conditioned and
      * the source of the diagonal wedge artifacts. */
-    if (opts->reference_u != NULL && opts->solve_reference_u) {
+    if (opts->reference_u != NULL && opts->solve_reference_u &&
+        opts->metric_project_only) {
         stage_t0 = ves_clock_sec();
         int32_t max_chain = 2;
         for (size_t c = 0; c < S.n_chn; c++)
             if (S.chn[c].count > max_chain) max_chain = S.chn[c].count;
         double *gauge_sample = RIB_ALLOC_ARRAY(
             arena, double, (size_t)max_chain);
-        /* Metric-projection gauges are TRUST-GATED: a sample votes for its
-         * chain's gauge only where the seeded coordinate is locally metric
-         * (|du/ds - 1| <= 0.15 over a central window).  Fill/rim stretches
-         * whose carried coordinate is distorted lose their vote, so adjacent
-         * rows gauge from the same coherent evidence -- the measured
-         * alternative to reconciling gauges with a solver.  (A +30-voxel
-         * inter-row lurch at a 4x hole rim came exactly from such votes.)
-         * The classic solver path keeps the plain median. */
+        /* The classic solver path keeps the plain median.  Metric projection
+         * uses rib_project_exact_chain_metric below, after the pair/winding
+         * graph exists, so its posterior-gated gauges can be reconciled
+         * without ever releasing the exact within-row metric. */
         if (!opts->metric_project_only) {
             /* classic solver pre-step: plain per-chain metric gauge */
             for (size_t c = 0; c < S.n_chn; c++) {
@@ -12978,7 +13833,7 @@ int Ribbon_run(Arena_T arena,
             RibbonOpts gauge_opts = *opts;
             gauge_opts.reference_anchor_gauges = 0;
             if (solve_reference_chain_gauges(
-                    arena, &S, &P, &gauge_opts, NULL, out) != 0) {
+                    arena, &S, &P, &gauge_opts, NULL, NULL, out) != 0) {
                 fprintf(stderr, "ribbon: coarse chain-gauge solve failed\n");
                 rib_gmg_snapshots_dispose(level_capture_ptr);
                 return -1;
@@ -12986,12 +13841,11 @@ int Ribbon_run(Arena_T arena,
             fprintf(stderr, "  ribbon stage coarse chain gauges: %.2fs\n",
                     ves_clock_sec() - stage_t0);
         } else {
-            /* Metric projection v2: the common map F(u_ref) IS the init --
-             * u depends only on u_ref, so cross-row agreement holds by
-             * construction (per-column consensus at integer columns broke
-             * on non-lattice carried frames; F's rate-median bins are its
-             * lattice-agnostic form).  Then rigid island placement, then
-             * ONE drift-penalized consistency solve on the grid. */
+            /* Metric projection v3: F(u_ref) supplies the common cover frame;
+             * rigid phase placement (when authoritative) removes upstream
+             * atlas packing; exact per-chain projection supplies geometry;
+             * and a chain-only anchored solve reconciles crack/vertical ties.
+             * There is no sample-space solve and no post-solve clipping. */
             /* Islands: with an AUTHORITATIVE carried phase (the fit's
              * registration sidecar), carried U is atlas packing and carried
              * phase is the physical placement evidence -- rigid median
@@ -13005,32 +13859,31 @@ int Ribbon_run(Arena_T arena,
                 fprintf(stderr,
                         "  island placement: carried registration kept "
                         "(no authoritative phase sidecar)\n");
-            if (rib_project_consistency_solve(arena, verts, nv, faces, nf,
-                                              row_vertex_sample,
-                                              row_sample_uref, row_du_lat,
-                                              opts, &S, out) != 0) {
-                fprintf(stderr,
-                        "ribbon: consistency solve failed\n");
+            if (rib_project_exact_chain_metric(
+                    arena, &S, row_sample_uconf, out) != 0) {
+                fprintf(stderr, "ribbon: exact chain metric failed\n");
                 rib_gmg_snapshots_dispose(level_capture_ptr);
                 return -1;
             }
-            /* Second placement round against the SOLVED u: the first
-             * placement's phi->u map was built from the carried u, which is
-             * atlas-scrambled at the inner turns (measured 4x: PAVA flattens
-             * the map's inner end and every inner chart lands at the same
-             * plateau -- two wraps 17 vox apart in u).  The solved u is
-             * coherent, so a second placement + solve puts phase-placed
-             * charts in winding order; extrapolated placements may go
-             * negative and the global re-zero below restores u >= 0. */
-            if (opts->reference_phi_authoritative) {
-                rib_project_register_islands(arena, &S, r_ref,
-                                             (double)opts->wrap_spacing, 1,
-                                             out);
-                if (rib_project_consistency_solve(
-                        arena, verts, nv, faces, nf, row_vertex_sample,
-                        row_sample_uref, row_du_lat, opts, &S, out) != 0) {
+            {
+                PairSet gauge_pairs;
+                RibbonOpts gauge_opts = *opts;
+                gauge_opts.reference_anchor_gauges = 1;
+                if (rib_metric_add_topology_gauge_pairs(
+                        arena, faces, nf, row_vertex_sample, nv, &S,
+                        row_sample_uconf, &gauge_opts, &P,
+                        &gauge_pairs) != 0) {
                     fprintf(stderr,
-                            "ribbon: consistency solve (round 2) failed\n");
+                            "ribbon: cannot build exact-chain topology "
+                            "relations\n");
+                    rib_gmg_snapshots_dispose(level_capture_ptr);
+                    return -1;
+                }
+                if (solve_reference_chain_gauges(
+                        arena, &S, &gauge_pairs, &gauge_opts,
+                        row_sample_uconf, NULL, out) != 0) {
+                    fprintf(stderr,
+                            "ribbon: anchored chain-gauge solve failed\n");
                     rib_gmg_snapshots_dispose(level_capture_ptr);
                     return -1;
                 }
@@ -13049,8 +13902,8 @@ int Ribbon_run(Arena_T arena,
                 }
             }
             fprintf(stderr,
-                    "  ribbon stage metric projection v2: F init + placement "
-                    "+ consistency solve (x2 with solved-u re-placement) "
+                    "  ribbon stage metric projection v3: F init + phase "
+                    "placement + exact chains + anchored chain gauges "
                     "(%.2fs)\n",
                     ves_clock_sec() - stage_t0);
         }
@@ -13071,7 +13924,8 @@ int Ribbon_run(Arena_T arena,
             S.chn[c].group = (int32_t)c;
         }
         out->n_qp_comps = (int)S.n_chn;
-        if (rib_strip_build_runs(arena, &S, &P, opts, &strip) != 0) {
+        if (rib_strip_build_runs(arena, &S, &P, 1,
+                                 RIB_STRIP_INITIAL_LIKE, &strip) != 0) {
             fprintf(stderr,
                     "ribbon: cannot construct StrokeStrip audit runs\n");
             rib_gmg_snapshots_dispose(level_capture_ptr);
@@ -13134,10 +13988,32 @@ int Ribbon_run(Arena_T arena,
         }
         chain_relation_graph_dispose(&branch_relations);
     }
-    if (opts->component_global && !opts->emit_global)
-        pack_metric_islands(arena, &S, (double)opts->grid_u,
-                            NULL, NULL, NULL, NULL, NULL, NULL, 0,
-                            level_capture_ptr, out);
+    /* A carried reference U is an observed cover coordinate, not an arbitrary
+     * solve-component gauge.  Packing reconstruction components here used to
+     * translate pieces of that certificate independently after the consistency
+     * pass had preserved it, creating new cross-ply order inversions.
+     * Unobserved solver gauges still require atlas packing; a carried
+     * certificate must retain its single global gauge.
+     *
+     * metric_project_only and preserve_input_rows are two named instances of
+     * that contract, but a quadribbon --scaffold-solve fit of a winding-only
+     * VMESH carries the same certificate: winding registration already placed
+     * every mesh component on one global U.  Re-packing its several hundred
+     * branch-derived reconstruction lanes shredded a 21.8k-vox cover into a
+     * 71.2k-vox atlas of confetti.  Gate on the certificate itself. */
+    if (opts->component_global && !opts->emit_global) {
+        int carried_certificate = opts->reference_u != NULL &&
+                                  opts->solve_reference_u;
+        if (carried_certificate) {
+            fprintf(stderr,
+                    "  ribbon certificate contract: retained solved U gauge "
+                    "(metric-island packing disabled)\n");
+        } else {
+            pack_metric_islands(arena, &S, (double)opts->grid_u,
+                                NULL, NULL, NULL, NULL, NULL, NULL, 0,
+                                level_capture_ptr, out);
+        }
+    }
     {
         double lo = 1e300, hi = -1e300;
         for (size_t i = 0; i < S.n_smp; i++) {
@@ -13733,7 +14609,8 @@ int Ribbon_selftest(void)
             P.n_pairs = P.n_cross = (size_t)pn;
 
             Arena_Mark mark = Arena_save(arena);
-            int rc = rib_strip_build_runs(arena, &S, &P, &o, &R);
+            int rc = rib_strip_build_runs(arena, &S, &P, 0,
+                                          RIB_STRIP_INITIAL_LIKE, &R);
             int ok = rc == 0;
             size_t expect_runs = fixture == 1 ? 4u : 3u;
             size_t expect_links = fixture == 1 ? 8u : 9u;
@@ -13894,7 +14771,7 @@ int Ribbon_selftest(void)
             P[run].pairs = pair[run];
             P[run].n_pairs = run == 2 ? NGOOD : NP;
             rc[run] = solve_reference_chain_gauges(
-                arena, &S[run], &P[run], &o, NULL, &R[run]);
+                arena, &S[run], &P[run], &o, NULL, NULL, &R[run]);
         }
 
         double order_delta = 0.0, outlier_delta = 0.0;
@@ -15811,6 +16688,9 @@ int Ribbon_selftest(void)
         o.reference_u = uref_run;
         o.solve_reference_u = 1;
         o.metric_project_only = 1;
+        /* Exercise the production branch that reconstructs components.  Its
+         * atlas pack must never translate an observed cover certificate. */
+        o.component_global = 1;
         o.stitch_solve_gauges = 1;
         o.reference_phi = phir;
         o.reference_phi_authoritative = 1;

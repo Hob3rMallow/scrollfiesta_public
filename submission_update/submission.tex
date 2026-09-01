@@ -10,6 +10,34 @@
 %% For multi-panel figures. acmart already loads graphicx and caption.
 \usepackage{subcaption}
 \usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,fit,backgrounds}
+
+%% Geometry for the Figure 1 pipeline strip.  The two rows are sized so each
+%% row exactly fills \textwidth: row 1 holds three panels of aspect 1.000,
+%% 1.182, 1.195 and row 2 holds two of aspect 2.740, in both cases separated
+%% by \pnlgap.  Re-derive these if the panel crops change.
+\newlength{\pnlgap}\setlength{\pnlgap}{0.0235\textwidth}
+\newlength{\rowgap}\setlength{\rowgap}{0.045\textwidth}
+\newlength{\rowah}\setlength{\rowah}{0.2822\textwidth}
+\newlength{\rowbh}\setlength{\rowbh}{0.1782\textwidth}
+\newlength{\rowaw}\setlength{\rowaw}{0.30\textwidth}
+\newlength{\rowbw}\setlength{\rowbw}{0.46\textwidth}
+
+%% Appendix A marks the delta against the July 31 public paper in blue.  The
+%% body of the paper describes the current system as one continuous account
+%% and does not use these.
+\newenvironment{revision}{\begingroup\color{blue}}{\endgroup}
+\newcommand{\rev}[1]{\textcolor{blue}{#1}}
+
+%% Plain-language gloss used at the head of technical subsections.
+\newcommand{\plain}[1]{\par\noindent\textit{#1}\par\medskip}
+
+%% Placeholder for a figure that still needs to be confirmed.  Deliberately
+%% loud: nothing marked \nick{} may ship.  Grep for "\nick{" to find every
+%% outstanding one.
+\newcommand{\nick}[1]{\textcolor{red}{\textbf{#1}}}
 
 %% This is a technical progress submission rather than an ACM publication.
 %% Suppress placeholder publication metadata while retaining the ACM two-column
@@ -18,30 +46,6 @@
 \authorsaddresses{}
 \setlength{\emergencystretch}{1em}
 
-%%
-%% Submission ID.
-%% Use this when submitting an article to a sponsored event. You'll
-%% receive a unique submission ID from the organizers
-%% of the event, and this ID should be used as the parameter to this command.
-%%\acmSubmissionID{123-A56-BU3}
-
-%%
-%% For managing citations, it is recommended to use bibliography
-%% files in BibTeX format.
-%%
-%% You can then either use BibTeX with the ACM-Reference-Format style,
-%% or BibLaTeX with the acmnumeric or acmauthoryear sytles, that include
-%% support for advanced citation of software artefact from the
-%% biblatex-software package, also separately available on CTAN.
-%%
-%% Look at the sample-*-biblatex.tex files for templates showcasing
-%% the biblatex styles.
-%%
-
-%%
-%% The majority of ACM publications use numbered citations and
-%% references.  The command \citestyle{authoryear} switches to the
-%% "author year" style.
 %%
 %% If you are preparing content for an event
 %% sponsored by ACM SIGGRAPH, you must use the "author year" style of
@@ -52,46 +56,85 @@
 %% end of the preamble, start of the body of the document source.
 \begin{document}
 
-%%
-%% The "title" command has an optional parameter,
-%% allowing the author to define a "short title" to be used in page headers.
 \title{ScrollFiesta: A Virtual Meshing and Unwrapping Toolkit for the Herculaneum Papyri}
 
-%%
-%% By default, the full list of authors will be used in the page
-%% headers. Often, this list is too long, and will overlap
-%% other information printed in the page headers. This command allows
-%% the author to define a more concise list
-%% of authors' names for this purpose.
 \renewcommand{\shortauthors}{ScrollFiesta}
 
-%%
-%% The abstract is a short summary of the work to be presented in the
-%% article.
 \begin{abstract}
-Reading a carbonized Herculaneum papyrus requires recovering the topology of a tightly folded sheet from CT data, separating wraps that a segmentation has fused, and placing the surface in a plane without destroying the metric structure needed to read ink. We present \emph{ScrollFiesta}, an end-to-end system for that task. We use a moving least squares estimator to collapse binary or probabilistic voxel evidence to a thin point set; consistently oriented, guarded ball pivoting then reconstructs an open, single-sided surface from that point set, at which point we can apply mesh-space cuts, resurfacing, hole filling and handle severing operations to repair sheet topology. We use a centroidal/restricted Voronoi (CVT/RVD) remeshing to provide level of detail mechanisms for large patches of scroll data, and enable welding across individual cubes of mesh data for connected seam bands. Our output sheets, regardless of if they are welded or not, cano then be flattened by employing a hybrid discrete-combinatorial optimization pass, which alternates finding metric-developed length using a least-squares solve with a tabu search to assign integer winding depths to charts before the next stage of continuous re-registration. Our parameterization and CT read-back are then used to drive overlap quilting, RAW-guided surface snapping, recto-transition refinement, and finally atlas export. We validate our outputs on various subregions of the {\em pherc0139} test scroll, as well as initial results on other scrolls. On a 100-cube \emph{PHerc0139} block, weld-chain-relative graded moves reduce exact UV triangle overlaps from 373,536 pairs to 1,874 (99.5\%) while retaining coherent CT fibre texture. ScrollFiesta delivers surfaces that VC3D, Villa, and Spiral can consume directly, each one carrying the provenance and the audit that says how far it can be trusted. Our implementation is available as command-line tools, a public C API, and a remote-volume Python workflow. The result is a complete, auditable and automatic path from volume prediction to readable surface, with the current atlas and snap limitations reported rather than hidden.
+Virtually unwrapping a carbonized Herculaneum papyrus poses a geometry problem of an unusual shape. The target is not the boundary of a solid but a single open sheet, many meters long, wound into a hundred or more turns that touch, fuse, delaminate, and tear. Standard machinery fits it badly: isosurfacing and Poisson reconstruction recover closed, two-sided boundaries; a flattener minimizes distortion against whatever mesh it is handed, so two fused turns flatten into one clean page; and the freedom an atlas packer relies on --- place a chart wherever space allows --- is exactly the freedom this problem lacks, because horizontal position on the page \emph{is} developed arc length, shared by every fragment of a turn and fixed only up to a whole number of turns.
+
+We present \emph{ScrollFiesta}, a meshing and unwrapping toolkit organized around one geometric instrument: a branch-cut-free winding coordinate that measures, for any two samples, whether they lie on the same turn of the roll or on different ones. It reappears as the decision variable at every scale, and it is the quantity no mesh-quality measure can see.
+
+ScrollFiesta takes a completed surface-probability volume as its input; producing that volume is the subject of the companion \emph{Socratic Method} report, and is deliberately out of scope here. We contribute three pieces. \emph{First}, we separate local geometry from large-scale identity. Geometry is extracted per cube by an iterated moving-least-squares collapse, ball pivoting guarded by anti-parallel and accumulated-winding tests, topology repair, and CVT remeshing; identity is carried independently as sheet tracks whose pairwise integer winding relations compose through a maximum-support forest with integer subtree-shift loop closure, so geometry is never fused to make an order graph connected. \emph{Second}, winding is inferred rather than obtained by rounding one fragile measurement. A two-sided generalized winding number field supplies noisy absolute per-component observations, local continuation and radial-order measurements supply pairwise factors, and an integer-label Markov random field reconciles both by alpha--beta swap graph cuts. \emph{Third}, the accepted geometry is fitted to a ribbon of quadrilaterals whose horizontal coordinate is exact developed arc length, reconciled by Huber-IRLS sparse least squares, untangled by exact triangle-contact response, and composited against CT.
+
+On a fresh $4\times5\times5$ block the winding MRF resolves 882,219 vertices in 10.8 seconds, lowering energy from 221.37 to 200.49 at continuation/order satisfaction 0.9997/0.9982; sheet books carry over 70\% of evidenced material at every rung through $21\times21\times21$, ordering 15,457 tracks across 112 turns; and the metric fit conserves all 4.03M faces of the $4\times5\times5$ ribbon in 9.6 seconds. We also report the negative results that shaped the design, including a slab splitter that separates 0 of 246 fused runs and an overlap-minimizing tabu atlas that removes 99.5\% of UV overlaps while tearing 41 weld relations --- both instances of a geometric objective being asked to decide a question geometry cannot see.
 \end{abstract}
 
-%%
-%% This command processes the author and affiliation and title
-%% information and builds the first part of the formatted document.
 \begin{teaserfigure}
   \centering
-  \begin{subfigure}[b]{0.175\textwidth}
-    \centering
-    \includegraphics[width=\linewidth]{figures/teaser_geometry.png}
-    \caption{Welded geometry}
-    \label{fig:overview_mesh}
-  \end{subfigure}
-  \hfill
-  \begin{subfigure}[b]{0.800\textwidth}
-    \centering
-    \includegraphics[width=\linewidth]{figures/teaser_ribbon.png}
-    \caption{Raw CT read-back through the finished atlas --- fibre bundles run continuously across the chart seams}
-    \label{fig:overview_unwrap}
-  \end{subfigure}
-  \caption{The current ScrollFiesta path on the $4\times5\times5$ PHerc0139 fixture, from reconstructed geometry to a readable sheet. The component-coloured weld (a) is lifted onto integer windings, which places every chart on the wrap it belongs to (Fig.~\ref{fig:tabu_winding}). Sampling raw volumetric CT data using this mesh produces the continuous fibres across seams in (b), validating that geometry, winding, and flattening are correct.}
-  \Description{Two panels: a coloured concentric scroll mesh shaded by surface normal, and a wide grayscale flattened CT strip containing continuous papyrus fibres.}
+  \begin{tikzpicture}[
+      panel/.style={inner sep=0pt, outer sep=0pt, draw=black!35, line width=0.4pt},
+      stage/.style={font=\sffamily\footnotesize\bfseries, align=center,
+                    inner sep=0pt, text width=\rowaw},
+      wide/.style={font=\sffamily\footnotesize\bfseries, align=center,
+                   inner sep=0pt, text width=\rowbw},
+      secref/.style={font=\sffamily\scriptsize, text=black!55, inner sep=0pt},
+      fl/.style={-{Latex[length=2.2mm,width=1.8mm]}, line width=1.0pt,
+                 draw=black!45}]
+  %% ---- row 1: the volume becomes geometry ------------------------------
+  \node[panel] (P1)
+    {\includegraphics[height=\rowah]{figures/pipe_ct_pred.png}};
+  \node[panel, right=\pnlgap of P1] (P2)
+    {\includegraphics[height=\rowah]{figures/pipe_cube_extract.png}};
+  \node[panel, right=\pnlgap of P2] (P3)
+    {\includegraphics[height=\rowah]{figures/pipe_weld_axial.png}};
+  \draw[fl] (P1.east) -- (P2.west);
+  \draw[fl] (P2.east) -- (P3.west);
+  \node[secref, above=2pt of P1] (S1) {\S\ref{sec:problem}};
+  \node[secref, above=2pt of P2] (S2) {\S\ref{sec:percube}};
+  \node[secref, above=2pt of P3] (S3) {\S\ref{sec:weld}--\ref{sec:sheetbooks}};
+  \node[stage, above=1pt of S1] {1\ \ Input prediction};
+  \node[stage, above=1pt of S2] {2\ \ Per-cube surfaces};
+  \node[stage, above=1pt of S3] {3\ \ Welded wraps};
+  %% ---- row 2: the geometry becomes a page -------------------------------
+  \node[panel, below=\rowgap of P1.south west, anchor=north west] (P4)
+    {\includegraphics[height=\rowbh]{figures/pipe_atlas_charts.png}};
+  \node[panel, right=\pnlgap of P4] (P5)
+    {\includegraphics[height=\rowbh]{figures/pipe_readback_page.png}};
+  \draw[fl] (P4.east) -- (P5.west);
+  \node[wide, below=2pt of P4] (T4) {4\ \ Metric quad ribbon};
+  \node[wide, below=2pt of P5] (T5) {5\ \ CT read-back};
+  \node[secref, below=1pt of T4] {\S\ref{sec:quadribbon}};
+  \node[secref, below=1pt of T5] {\S\ref{sec:finishing}};
+  %% ---- the wrap from the end of row 1 into the start of row 2 -----------
+  \draw[fl, rounded corners=3pt]
+    (P3.south) -- ++(0,-0.55\rowgap) -| (P4.north);
+  \end{tikzpicture}
+  \caption{\textbf{ScrollFiesta end to end, on one PHerc0139 $4\times5\times5$
+  block.} (1)~The input: a completed coarse surface prediction (red) over raw CT
+  at $z{=}4416$. Producing that volume without inventing a connection onto
+  a neighbouring turn is the subject of the companion \emph{Socratic
+  Method} report; ScrollFiesta takes it as given
+  (Section~\ref{sec:problem}).
+  (2)~One $128^3$ cube after moving-least-squares collapse, guarded ball
+  pivoting, and topological cleanup, with each extracted sheet coloured
+  separately. The sheets stay distinct components, so no two wraps in this
+  cube are fused into one surface. (3)~The welded block seen down the scroll axis. Welding joins
+  fronts across cube seams only where both cubes agree on the wrap, so the
+  wraps survive as long, separately identified spirals rather than one merged
+  surface. (4)~A window of the solved flat atlas, coloured by atlas group and
+  cut into metric quad cells. (5)~The same window of the CT read-back --- the
+  papyrus those exact cells carry. Black is absent material rather than missing
+  texture: no layer supplies papyrus there, and the pipeline leaves the hole
+  visible rather than interpolating across it.
+  Figure~\ref{fig:dataflow} gives the same pipeline as a data-flow diagram.}
+  \Description{A two-row pipeline strip. The top row shows a CT cross-section
+  of the rolled scroll with the input surface prediction overlaid in red, then one
+  cube of extracted papyrus sheets each drawn in a different colour, then the
+  whole welded block viewed along the scroll axis as concentric coloured
+  spirals. An arrow wraps from the end of the top row to the start of the
+  bottom row, which shows a window of the flat atlas as coloured quad cells
+  beside the same window of the grayscale CT read-back of the papyrus.}
   \label{fig:overview}
 \end{teaserfigure}
 
@@ -101,22 +144,24 @@ Reading a carbonized Herculaneum papyrus requires recovering the topology of a t
 % Body. One file per section under sections/; edit those, not this list.
 % ---------------------------------------------------------------------------
 \input{sections/01_introduction}
-\input{sections/02_related_work}
-\input{sections/03_algorithm_overview}
-\input{sections/04_per_cube_extraction}
-\input{sections/05_global_cube_welding}
-\input{sections/06_unwrapping}
-\input{sections/07_repair_parametric}
-\input{sections/08_interfaces}
-\input{sections/09_results_validation}
-\input{sections/10_conclusions}
-\input{sections/11_appendix_developments}
-\input{sections/12_appendix_technical}
+\input{sections/02_background}
+\input{sections/03_related_work}
+\input{sections/04_overview}
+\input{sections/05_per_cube}
+\input{sections/06_weld}
+\input{sections/07_sheet_books}
+\input{sections/08_quad_ribbon}
+\input{sections/09_finishing}
+\input{sections/10_interfaces}
+\input{sections/11_results}
+\input{sections/12_conclusions}
+
+\appendix
+\input{sections/A_developments}
+\input{sections/B_gallery}
+\input{sections/C_terms}
 
 \bibliographystyle{ACM-Reference-Format}
 \bibliography{bibliography}
 
 \end{document}
-\endinput
-%%
-%% End of file `sample-acmtog.tex'.

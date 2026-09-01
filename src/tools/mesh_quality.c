@@ -3,7 +3,7 @@
  *   mesh_quality <mesh.obj>
  *   mesh_quality --selftest
  *
- * Reports the metrics that separate a CVT/RVD remesh from a QEM decimation:
+ * Reports CVT/RVD remesh quality metrics:
  *   - min-angle histogram (the sliver signature): worst angle, mean/median of
  *     per-triangle minimum angle, and the fraction of triangles below 10/20/30 deg.
  *   - radius-ratio q = 2*r_in/r_circ in [0,1] (1 = equilateral, ->0 = sliver): mean.

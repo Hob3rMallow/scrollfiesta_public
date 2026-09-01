@@ -24,8 +24,6 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "seam_audit", "seam_audit.vc
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "atlas_overlap_fix", "atlas_overlap_fix.vcxproj", "{B83E1A27-4F02-4DC1-8A5E-C9E4F0D2A103}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "pred_fixup", "pred_fixup.vcxproj", "{4E7A2B91-6C3D-4F58-A2E9-8B1D5C7F3A26}"
-EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -36,10 +34,6 @@ Global
 	{B83E1A27-4F02-4DC1-8A5E-C9E4F0D2A103}.Debug|x64.Build.0 = Debug|x64
 	{B83E1A27-4F02-4DC1-8A5E-C9E4F0D2A103}.Release|x64.ActiveCfg = Release|x64
 	{B83E1A27-4F02-4DC1-8A5E-C9E4F0D2A103}.Release|x64.Build.0 = Release|x64
-	{4E7A2B91-6C3D-4F58-A2E9-8B1D5C7F3A26}.Debug|x64.ActiveCfg = Debug|x64
-	{4E7A2B91-6C3D-4F58-A2E9-8B1D5C7F3A26}.Debug|x64.Build.0 = Debug|x64
-	{4E7A2B91-6C3D-4F58-A2E9-8B1D5C7F3A26}.Release|x64.ActiveCfg = Release|x64
-	{4E7A2B91-6C3D-4F58-A2E9-8B1D5C7F3A26}.Release|x64.Build.0 = Release|x64
 		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Debug|x64.ActiveCfg = Debug|x64
 		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Debug|x64.Build.0 = Debug|x64
 		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Release|x64.ActiveCfg = Release|x64

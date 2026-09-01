@@ -2,9 +2,9 @@
 #
 # Builds the public C library (target `scrollfiesta`, alias
 # `scrollfiesta::scrollfiesta`, header include/scrollfiesta.h) plus, when
-# top-level, the six CLI tools that the .sln / src/Makefile also build.
-# The legacy builds remain supported; this file mirrors their source lists
-# and flags (see src/Makefile and cube_mesh.vcxproj, the CI-verified pair).
+# top-level, the supported pipeline CLI tools and small diagnostics. The
+# legacy MSBuild and Makefile builds remain available for narrower workflows;
+# CMake is the portable, CI-verified build of record.
 #
 # Standalone:
 #     cmake -S . -B build && cmake --build build
@@ -25,7 +25,7 @@ project(scrollfiesta VERSION 0.10.0 LANGUAGES C CXX)
 # Options (standalone builds get everything; embedded builds get the library)
 # ---------------------------------------------------------------------------
 option(SCROLLFIESTA_BUILD_TOOLS
-       "Build the six supported CLI front ends plus small diagnostic tools"
+       "Build the supported CLI front ends plus small diagnostic tools"
        ${PROJECT_IS_TOP_LEVEL})
 option(SCROLLFIESTA_BUILD_TESTS
        "Build the ctest suite"
@@ -161,7 +161,6 @@ set(SF_COMMON_SRC
     ${SF_SRC}/common/obj_io.c
     ${SF_SRC}/common/dump_obj.c
     ${SF_SRC}/common/ves_platform.c
-    ${SF_SRC}/common/qem.c
     ${SF_SRC}/common/raw_snapback.c
     ${SF_SRC}/common/snap_cg.c
     ${SF_SRC}/common/eig3.c
@@ -266,6 +265,12 @@ if(MSVC)
     # seam_cut.c ships at warning level 1 in the .vcxproj.
     set_source_files_properties(${SF_SRC}/topology/seam_cut.c
                                 PROPERTIES COMPILE_OPTIONS /W1)
+    # Keep project code at /W4 without inheriting warning noise from the
+    # vendored third-party GCoptimization 3.0 sources.
+    set_source_files_properties(
+        ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/gco-v3.0/GCoptimization.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/gco-v3.0/LinkedBlockList.cpp
+        PROPERTIES COMPILE_OPTIONS /W1)
 else()
     target_compile_options(scrollfiesta_core PRIVATE
         $<$<COMPILE_LANGUAGE:C>:-Wall;-Wextra;-Wshadow;-Wformat=2;-Werror=implicit-function-declaration>)
@@ -574,6 +579,8 @@ if(SCROLLFIESTA_INSTALL)
 
     if(SCROLLFIESTA_BUILD_TOOLS)
         install(TARGETS cube_mesh grid_pipeline grid_weld
+                        scroll_whole scroll_unroll
+                        atlas_overlap_fix atlas_ribbon_fit
                         obj_components pinhole_verdict seam_audit
                 RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     endif()

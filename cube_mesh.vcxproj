@@ -186,9 +186,6 @@ if exist "$(SolutionDir)deps\lib\win64\Release\cubecl-cuda-runtime\*.dll" copy /
     <ClCompile Include="src\common\ves_platform.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
-    <ClCompile Include="src\common\qem.c">
-      <CompileAs>CompileAsC</CompileAs>
-    </ClCompile>
     <ClCompile Include="src\common\raw_snapback.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
@@ -380,7 +377,6 @@ if exist "$(SolutionDir)deps\lib\win64\Release\cubecl-cuda-runtime\*.dll" copy /
     <ClInclude Include="src\common\mesh_types.h" />
     <ClInclude Include="src\common\pipeline_constants.h" />
     <ClInclude Include="src\common\ves_platform.h" />
-    <ClInclude Include="src\common\qem.h" />
     <ClInclude Include="src\common\raw_snapback.h" />
     <ClInclude Include="src\common\snap_cg.h" />
     <ClInclude Include="src\common\mesh_manifold.h" />

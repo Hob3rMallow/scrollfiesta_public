@@ -10,13 +10,15 @@
  * plain triangle mesh with UV: the lattice quad-cell becomes an occupied
  * UV bucket (~one column step wide, one row pitch tall), the grid
  * 4-neighbourhood becomes the mesh vertex adjacency, and red/black
- * Gauss-Seidel becomes two-buffer Jacobi with doubled sweeps.  Everything
- * that gates acceptance is unchanged: the exact BVH audit
- * (IntersectionCleanup_audit_visit_parallel), the baseline-relative
- * orientation preflight, the trust-region alpha ladder with feathered local
- * rollbacks, phase-violation progress under bounded pair churn, the
- * persistent contact ledger with return-path adoption, and the
- * lexicographically-best partial publication.
+ * Gauss-Seidel becomes two-buffer Jacobi with doubled sweeps.
+ *
+ * ACCEPTANCE GATES PERMANENTLY DISARMED (user directive 2026-08-30): the
+ * exact BVH audit and the orientation preflight still run on every trial,
+ * but only as measurements -- verdicts are logged ("accept
+ * (gate-would-reject)") and every trial commits.  The final state ships;
+ * require_collision_free is measurement-only.  Enforcement code is kept
+ * under #if 0 in the .c, not behind a flag, so it cannot re-arm by
+ * accident.  Judge runs by inspection: bakes and cross sections.
  *
  * Motion is RADIAL ONLY about the scroll axis (axis parallel to +Z in zyx
  * coordinates, the house frame): one scalar displacement per vertex from the
@@ -25,7 +27,8 @@
  * geometry. */
 
 typedef struct QuadribbonUntangleOpts {
-    int require_collision_free;   /* 1: roll back unless fully untangled */
+    int require_collision_free;   /* measurement-only since 2026-08-30 (the
+                                   * rollback it armed is #if 0'd out) */
     int collision_patience;       /* accepted rounds without a new best */
     int collision_rounds;         /* active-set round cap */
     double collision_collar;      /* speculative contact collar, vox */

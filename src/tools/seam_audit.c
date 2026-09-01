@@ -484,7 +484,7 @@ static double tri_area(const double p0[3], const double p1[3], const double p2[3
 
 /* Minimum altitude of a triangle = 2*area / longest edge. A sliver (near-
  * degenerate triangle) has a tiny min altitude even when its area is not quite
- * zero -- this is the quantity an edge-collapse / QEM pass keys on, and the
+ * zero -- this is the quantity an edge-collapse pass keys on, and the
  * better "is this a sliver?" signal than area alone. Returns 0 for a point. */
 static double tri_min_alt(const double p0[3], const double p1[3], const double p2[3])
 {

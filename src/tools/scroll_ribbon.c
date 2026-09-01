@@ -9,6 +9,8 @@
  *
  *   <out_dir>/<id>_ribbon.obj/.vmesh  -- fitted ribbon grid
  *   <out_dir>/<id>_ribbon_stats.json  -- diagnostics
+ *   <out_dir>/<id>_winding_index.f32  -- registered turns, input-vertex order
+ *   <out_dir>/<id>_winding_confidence.f32 -- MRF/jump confidence
  *
  * Usage:
  *   scroll_ribbon <input.obj> <out_dir> [--id <id>]
@@ -21,6 +23,10 @@
  * (y,x) = (3405, 2878) -- override with --axis-point/--axis-dir for other data.
  */
 #include "../common/ves_platform.h"
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 #include <math.h>
 #include <stdint.h>
@@ -101,6 +107,23 @@ static int sibling_path(const char *input, const char *name,
     return 0;
 }
 
+/* Replace the final extension while retaining the input stem and directory. */
+static int stem_suffix_path(const char *input, const char *suffix,
+                            char *out, size_t cap)
+{
+    const char *a = strrchr(input, '/');
+    const char *b = strrchr(input, '\\');
+    const char *slash = a != NULL && (b == NULL || a > b) ? a : b;
+    const char *dot = strrchr(input, '.');
+    if (dot == NULL || (slash != NULL && dot < slash)) dot = input + strlen(input);
+    size_t prefix = (size_t)(dot - input);
+    size_t n = strlen(suffix);
+    if (prefix >= cap || n >= cap - prefix) return -1;
+    memcpy(out, input, prefix);
+    memcpy(out + prefix, suffix, n + 1);
+    return 0;
+}
+
 static void *read_raw_exact(Arena_T arena, const char *path,
                             size_t element_size, size_t count)
 {
@@ -120,6 +143,126 @@ static void *read_raw_exact(Arena_T arena, const char *path,
     extra = fgetc(file);
     if (extra != EOF || ferror(file) || fclose(file) != 0) return NULL;
     return data;
+}
+
+static int write_raw_exact(const char *path, const void *data,
+                           size_t element_size, size_t count)
+{
+    if (path == NULL || data == NULL || element_size == 0 ||
+        count > SIZE_MAX / element_size)
+        return -1;
+    ves_ensure_parent_dir(path);
+    FILE *file = fopen(path, "wb");
+    if (file == NULL) return -1;
+    int ok = fwrite(data, element_size, count, file) == count && !ferror(file);
+    if (fclose(file) != 0) ok = 0;
+    return ok ? 0 : -1;
+}
+
+/* Materialize the probabilistic winding certificate as a topology-preserving
+ * VMESH that the fixed-topology metric solve can consume directly.  U is a
+ * generously scaled winding coordinate (one turn = 1200 units); V is axial Z.
+ * Geometry and triangle indices are unchanged. */
+static int write_winding_ready_vmesh(
+        Arena_T arena, const char *input_path, const char *out_dir,
+        const char *id, const float *verts, size_t nv,
+         const int32_t *faces, size_t nf, const UnwrapResult *ures,
+         double winding_seconds, int conflict_correction_enabled)
+{
+    const double pixels_per_turn = 1200.0;
+    char vmesh_path[4096], report_path[4096];
+    char json_input[4096], json_output[4096];
+    float *uv;
+    double winding_lo = 1e300, winding_hi = -1e300;
+    double z_lo = 1e300, z_hi = -1e300;
+
+    if (ures == NULL || ures->winding_index == NULL || nv == 0) return -1;
+    uv = (float *)ARENA_ALLOC(arena, nv * 2 * sizeof(*uv));
+    for (size_t i = 0; i < nv; i++) {
+        double winding = (double)ures->winding_index[i];
+        double z = (double)verts[i*3];
+        if (!isfinite(winding) || !isfinite(z)) return -1;
+        if (winding < winding_lo) winding_lo = winding;
+        if (winding > winding_hi) winding_hi = winding;
+        if (z < z_lo) z_lo = z;
+        if (z > z_hi) z_hi = z;
+    }
+    for (size_t i = 0; i < nv; i++) {
+        uv[i*2] = (float)(((double)ures->winding_index[i] - winding_lo) *
+                          pixels_per_turn);
+        uv[i*2+1] = (float)((double)verts[i*3] - z_lo);
+    }
+
+    snprintf(vmesh_path, sizeof vmesh_path, "%s/%s_winding.vmesh",
+             out_dir, id);
+    ves_ensure_parent_dir(vmesh_path);
+    if (MeshBin_write(vmesh_path, verts, nv, faces, nf, uv) != 0) return -1;
+
+    snprintf(report_path, sizeof report_path,
+             "%s/%s_winding_visualization.json", out_dir, id);
+    json_escape_copy(json_input, sizeof json_input, input_path);
+    json_escape_copy(json_output, sizeof json_output, vmesh_path);
+    FILE *report = fopen(report_path, "w");
+    if (report == NULL) return -1;
+    fprintf(report,
+        "{\n"
+        "  \"schema\": \"vesuvius-winding-certificate-v2\",\n"
+        "  \"source\": \"%s\",\n"
+        "  \"output\": \"%s\",\n"
+        "  \"vertices\": %zu,\n"
+        "  \"faces\": %zu,\n"
+        "  \"pixels_per_turn\": %.1f,\n"
+        "  \"winding_range\": [%.9g, %.9g],\n"
+        "  \"winding_span\": %.9g,\n"
+        "  \"z_range\": [%.9g, %.9g],\n"
+        "  \"registration\": {\n"
+        "    \"mesh_components\": %d,\n"
+        "    \"continuation_components\": %zu,\n"
+        "    \"relation_components\": %zu,\n"
+        "    \"relations\": %zu,\n"
+        "    \"eligible_relations\": %zu,\n"
+        "    \"residual_conflicts\": %zu,\n"
+        "    \"continuation_satisfaction\": %.9g,\n"
+        "    \"order_satisfaction\": %.9g,\n"
+        "    \"mrf_rounds\": %zu,\n"
+        "    \"mrf_label_changes\": %zu,\n"
+        "    \"mrf_abstained_sites\": %zu,\n"
+        "    \"mrf_energy_before\": %.9g,\n"
+        "    \"mrf_energy_after\": %.9g,\n"
+         "    \"mrf_mean_confidence\": %.9g,\n"
+         "    \"conflict_resolution\": { \"enabled\": %s, "
+         "\"rounds\": %zu, "
+        "\"bins_before\": %zu, \"bins_after\": %zu, "
+        "\"losing_claims\": %zu, \"forbidden_assignments\": %zu, "
+        "\"winner_locks\": %zu, "
+        "\"label_changes\": %zu, \"converged\": %s }\n"
+        "  },\n"
+        "  \"timing_sec\": { \"winding\": %.3f }\n"
+        "}\n",
+        json_input, json_output, nv, nf, pixels_per_turn,
+        winding_lo, winding_hi, winding_hi - winding_lo, z_lo, z_hi,
+        ures->n_components, ures->winding_continuation_components,
+        ures->winding_relation_components, ures->winding_relations,
+        ures->winding_eligible_relations, ures->winding_relation_conflicts,
+        ures->continuation_satisfaction, ures->order_satisfaction,
+        ures->winding_mrf_rounds, ures->winding_mrf_label_changes,
+        ures->winding_mrf_abstained_sites, ures->winding_mrf_energy_before,
+         ures->winding_mrf_energy_after, ures->winding_mrf_mean_confidence,
+         conflict_correction_enabled ? "true" : "false",
+         ures->winding_mrf_conflict_rounds,
+        ures->winding_mrf_conflict_bins_before,
+        ures->winding_mrf_conflict_bins_after,
+        ures->winding_mrf_conflict_losing_claims,
+        ures->winding_mrf_conflict_exclusions,
+        ures->winding_mrf_conflict_winner_locks,
+        ures->winding_mrf_conflict_label_changes,
+        ures->winding_mrf_conflict_converged ? "true" : "false",
+        winding_seconds);
+    if (fclose(report) != 0) return -1;
+    fprintf(stderr,
+            "  winding-only: wrote %s + %s (topology preserved)\n",
+            vmesh_path, report_path);
+    return 0;
 }
 
 int main(int argc, char *argv[])
@@ -144,8 +287,13 @@ int main(int argc, char *argv[])
         fprintf(stderr,
             "Usage: %s <input.obj> <out_dir> [--id <id>]\n"
             "          [--axis-point z y x] [--axis-dir z y x] [--wrap-spacing B]\n"
+            "          [--no-winding-field] [--winding-field-eps F] [--winding-field-beta F]\n"
+            "          [--no-winding-conflict-correction]\n"
+            "                            (diagnostic: retain initial MRF certificate)\n"
             "          [--slice-h F] [--sample-h F] [--match-r F] [--match-ang F]\n"
-            "          [--iters N] [--final-iters N] [--threads N] [--no-amg]\n"
+            "          [--iters N] [--final-iters N] [--metric-iters N]\n"
+            "          [--metric-weight F] [--threads N] [--no-amg]\n"
+            "          [--winding-only] (emit certificate VMESH + sidecars; skip ribbon solve)\n"
             "          [--dump-gmg-levels] [--dump-gmg-level-objs]\n"
             "                            (fitted VMESH immediately after every\n"
             "                             robust solve round, then per final\n"
@@ -154,6 +302,10 @@ int main(int argc, char *argv[])
             "          [--preserve-input-topology]\n"
             "                            (parameterize the input ribbon in place:\n"
             "                             identical vertices/faces, new UV only)\n"
+            "          [--metric-project-only]\n"
+            "                            (diagnostic legacy exact-row projection;\n"
+            "                             requires --preserve-input-topology)\n"
+            "          [--vmesh-only]    (skip the redundant text OBJ output)\n"
              "          [--fit-cover-width] (diagnostic: retain cover grid extent)\n"
             "          [--verify-fit-width] (diagnostic: compare compact/padded fits)\n"
             "          [--no-sever]     (skip fusion-handle severing)\n"
@@ -195,6 +347,10 @@ int main(int argc, char *argv[])
     int dump_gmg_levels = 0;
     int dump_gmg_level_objs = 0;
     int preserve_input_topology = 0;
+    int metric_iters_explicit = 0;
+    int metric_project_only_requested = 0;
+    int winding_only = 0;
+    int write_text_obj = 1;
     char gmg_level_prefix[4096];
 
     for (int i = 3; i < argc; i++) {
@@ -210,6 +366,16 @@ int main(int argc, char *argv[])
             uopts.axis_dir[2]=(float)atof(argv[++i]);
         } else if (strcmp(argv[i], "--wrap-spacing") == 0 && i + 1 < argc) {
             uopts.wrap_spacing = atof(argv[++i]);
+        } else if (strcmp(argv[i], "--no-winding-field") == 0) {
+            uopts.winding_field_mode = -1;
+        } else if (strcmp(argv[i], "--winding-field-eps") == 0 &&
+                   i + 1 < argc) {
+            uopts.winding_field_epsilon = atof(argv[++i]);
+        } else if (strcmp(argv[i], "--winding-field-beta") == 0 &&
+                   i + 1 < argc) {
+            uopts.winding_field_beta = atof(argv[++i]);
+        } else if (strcmp(argv[i], "--no-winding-conflict-correction") == 0) {
+            uopts.winding_conflict_mode = -1;
         } else if (strcmp(argv[i], "--slice-h") == 0 && i + 1 < argc) {
             ropts.slice_h = (float)atof(argv[++i]);
         } else if (strcmp(argv[i], "--sample-h") == 0 && i + 1 < argc) {
@@ -222,14 +388,29 @@ int main(int argc, char *argv[])
             ropts.relax_iters = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--final-iters") == 0 && i + 1 < argc) {
             ropts.final_iters = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--metric-iters") == 0 && i + 1 < argc) {
+            ropts.metric_iters = atoi(argv[++i]);
+            metric_iters_explicit = 1;
+        } else if (strcmp(argv[i], "--metric-weight") == 0 && i + 1 < argc) {
+            ropts.metric_weight = (float)atof(argv[++i]);
         } else if (strcmp(argv[i], "--scaffold-solve") == 0) {
             /* fit-for-reparameterization: Stage-C u is a scaffold the
              * pipeline re-solves, so one round each and a capped ADMM */
             ropts.scaffold_solve = 1;
             ropts.relax_iters = 1;
             ropts.final_iters = 1;
+            ropts.metric_iters = 0;
+            metric_iters_explicit = 1;
         } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
             ropts.solve_threads = atoi(argv[++i]);
+            /* --threads used to bound only the Stage-C solve workers, so
+             * every other parallel region in the ribbon lane still opened
+             * an OpenMP team of one thread per logical core.  A `--threads 8`
+             * 10x fit measured 52 cores busy.  Cap the whole process. */
+#ifdef _OPENMP
+            if (ropts.solve_threads > 0)
+                omp_set_num_threads(ropts.solve_threads);
+#endif
         } else if (strcmp(argv[i], "--no-amg") == 0) {
             ropts.solve_amg = 0;
         } else if (strcmp(argv[i], "--dump-gmg-levels") == 0) {
@@ -241,6 +422,12 @@ int main(int argc, char *argv[])
             ropts.grid_u = (float)atof(argv[++i]);
         } else if (strcmp(argv[i], "--preserve-input-topology") == 0) {
             preserve_input_topology = 1;
+        } else if (strcmp(argv[i], "--metric-project-only") == 0) {
+            metric_project_only_requested = 1;
+        } else if (strcmp(argv[i], "--winding-only") == 0) {
+            winding_only = 1;
+        } else if (strcmp(argv[i], "--vmesh-only") == 0) {
+            write_text_obj = 0;
         } else if (strcmp(argv[i], "--fit-cover-width") == 0) {
             ropts.fit_cover_width = 1;
         } else if (strcmp(argv[i], "--verify-fit-width") == 0) {
@@ -279,19 +466,21 @@ int main(int argc, char *argv[])
          * per-vertex UV may change.  Do not sever the input, rebuild a fitted
          * grid, select claimants, or emit reconstructed faces.
          *
-         * The parameterization itself is the direct metric projection: exact
-         * per-chain XYZ arclength placed by the carried frame's per-chain
-         * median gauge.  Contacts/intersections were already resolved by the
-         * upstream ribbon fit that produced the carried frame, so NO gauge
-         * machinery runs here -- no chain-gauge solve, no Stage-C solve, no
-         * interval stitching, no registration, no orientation flip.
-         * stitch_solve_gauges stays set solely to keep the legacy
-         * transfer-time gauge reconciliation and atlas packing disabled. */
+         * The input constant-V rows become the StrokeStrip observations.  The
+         * carried coordinate is the global initializer/correspondence evidence;
+         * the staged solve first establishes cross-sections, then freezes them
+         * while ramping physical stroke-edge unit speed. */
         sever_handles = 0;
         ropts.direct_ribbon = 0;
         ropts.fit_ribbon = 0;
-        ropts.stitch_solve_gauges = 1;
-        ropts.metric_project_only = 1;
+        ropts.preserve_input_rows = 1;
+        ropts.pin_orient = 1;
+        ropts.stitch_solve_gauges = 0;
+        ropts.metric_project_only = metric_project_only_requested;
+        if (!metric_iters_explicit && !metric_project_only_requested)
+            ropts.metric_iters = 3;
+        if (metric_project_only_requested)
+            ropts.metric_iters = 0;
         if (dump_gmg_levels) {
             fprintf(stderr,
                     "ERROR: solve checkpoints currently rebuild fitted grids; "
@@ -299,6 +488,12 @@ int main(int argc, char *argv[])
                     "--preserve-input-topology\n");
             return 1;
         }
+    }
+    if (metric_project_only_requested && !preserve_input_topology) {
+        fprintf(stderr,
+                "ERROR: --metric-project-only requires "
+                "--preserve-input-topology\n");
+        return 1;
     }
     if (ropts.discard_conflicting_claims && !ropts.component_global) {
         fprintf(stderr,
@@ -321,24 +516,29 @@ int main(int argc, char *argv[])
     fprintf(stderr, "scroll_ribbon: input=%s out_dir=%s id=%s\n"
             "  axis point(zyx)=(%.1f,%.1f,%.1f) dir(zyx)=(%.2f,%.2f,%.2f)\n"
             "  slice_h=%.2f sample_h=%.2f match_r=%.2f match_ang=%.1f "
-            "iters=%d+%d threads=%d amg=%d grid_u=%.2f component_global=%d "
-            "ownership=%s conflict_policy=%s radial_bridge_cut=%s "
+            "iters=%d+%d+%d metric_weight=%.3g threads=%d amg=%d "
+            "grid_u=%.2f component_global=%d "
+            "ownership=%s conflict_policy=%s winding_conflict=%s "
+            "radial_bridge_cut=%s "
             "wrap_spacing=%.3f%s gmg_levels=%d%s output=%s\n",
             input_path, out_dir, id,
             (double)uopts.axis_point[0], (double)uopts.axis_point[1], (double)uopts.axis_point[2],
             (double)uopts.axis_dir[0], (double)uopts.axis_dir[1], (double)uopts.axis_dir[2],
             (double)ropts.slice_h, (double)ropts.sample_h, (double)ropts.match_r,
             (double)ropts.match_ang_deg, ropts.relax_iters, ropts.final_iters,
+            ropts.metric_iters, (double)ropts.metric_weight,
             ropts.solve_threads, ropts.solve_amg,
             (double)ropts.grid_u, ropts.component_global,
             ropts.ownership_construction ? "construction" : "claims",
             ropts.discard_conflicting_claims ? "discard-to-minimal" : "select",
+            uopts.winding_conflict_mode < 0 ? "initial-only" : "corrected",
             ropts.radial_bridge_cut > 0 ? "forced" :
             ropts.radial_bridge_cut < 0 ? "off" : "auto",
             (double)ropts.wrap_spacing,
             ropts.wrap_spacing > 0.0f ? " (pinned)" : " (auto)",
             dump_gmg_levels,
             dump_gmg_level_objs ? " (text OBJ too)" : "",
+            winding_only ? "winding certificate only" :
             preserve_input_topology ? "input topology + solved UV" :
                                       "fitted ribbon grid");
 
@@ -356,6 +556,7 @@ int main(int argc, char *argv[])
         /* --- Load. --- */
         float *verts = NULL; int32_t *faces = NULL;
         double *input_reference_u = NULL;
+        float *input_reference_u_confidence = NULL;
         float *sidecar_phase = NULL;
         int32_t *sidecar_material = NULL;
         char sidecar_phase_path[4096], sidecar_material_path[4096];
@@ -374,7 +575,15 @@ int main(int argc, char *argv[])
                 }
                 verts = mesh.verts; nv = mesh.nv;
                 faces = mesh.faces; nf = mesh.nf;
-                if (preserve_input_topology && mesh.uv != NULL) {
+                /* Both fixed-topology metric refinement and a quadribbon
+                 * scaffold fit consume carried winding U.  The latter used
+                 * to advertise Stage-C U as a scaffold while silently
+                 * discarding it here, because only preserve-input-topology
+                 * armed the reference.  That made a direct fit from a
+                 * winding-only VMESH recompute its own gauge instead of
+                 * fitting the supplied certificate. */
+                if ((preserve_input_topology || ropts.scaffold_solve) &&
+                    mesh.uv != NULL) {
                     double ulo = 1e300, uhi = -1e300;
                     input_reference_u = (double *)ARENA_ALLOC(
                         arena, nv * sizeof(*input_reference_u));
@@ -396,6 +605,29 @@ int main(int argc, char *argv[])
                             "  quadribbon U scaffold: input VMESH U=[%.3f,%.3f] "
                             "orients/gates Stage-C correspondences\n",
                             ulo, uhi);
+                    {
+                        char confidence_path[4096];
+                        if (stem_suffix_path(input_path, "_confidence.f32",
+                                             confidence_path,
+                                             sizeof confidence_path) == 0) {
+                            input_reference_u_confidence = (float *)read_raw_exact(
+                                arena, confidence_path, sizeof(float), nv);
+                        }
+                        if (input_reference_u_confidence != NULL) {
+                            size_t armed = 0;
+                            for (size_t vi = 0; vi < nv; vi++) {
+                                double q = input_reference_u_confidence[vi];
+                                if (isfinite(q) && q >= 0.75 && q <= 1.0)
+                                    armed++;
+                            }
+                            ropts.reference_u_confidence =
+                                input_reference_u_confidence;
+                            fprintf(stderr,
+                                    "  quadribbon winding posterior: %s "
+                                    "(%zu/%zu samples arm hard order)\n",
+                                    confidence_path, armed, nv);
+                        }
+                    }
                 }
             } else if (ObjIO_read(
                            arena, input_path, &verts, &nv, &faces, &nf) != 0) {
@@ -444,7 +676,7 @@ int main(int argc, char *argv[])
 
         /* --- Reference winding scaffold. The graph trace supplies absolute
          * turn placement; Ribbon retains its own slice-domain arc-length solve.
-         * Runs on the FULL mesh -- there is no internal QEM proxy: decimating
+         * Runs on the FULL mesh -- there is no internal coarse proxy: remeshing
          * the crumpled core pinched thin necks apart (fragmenting a 1-component
          * sheet into hundreds), so parameterization uses the input resolution. */
         ta = ves_clock_sec();
@@ -452,6 +684,37 @@ int main(int argc, char *argv[])
         t_unwrap = ves_clock_sec() - ta;
         if (urc == 0) {
             ropts.reference_phi = ures.phi;
+            {
+                char winding_path[4096];
+                snprintf(winding_path, sizeof winding_path,
+                         "%s/%s_winding_index.f32", out_dir, id);
+                int sidecar_rc = write_raw_exact(
+                    winding_path, ures.winding_index, sizeof(float), nv);
+                snprintf(winding_path, sizeof winding_path,
+                         "%s/%s_winding_confidence.f32", out_dir, id);
+                sidecar_rc |= write_raw_exact(
+                    winding_path, ures.winding_confidence, sizeof(float), nv);
+                if (ures.winding_field_used && ures.field_winding != NULL &&
+                    ures.field_jump != NULL) {
+                    snprintf(winding_path, sizeof winding_path,
+                             "%s/%s_winding_field.f32", out_dir, id);
+                    sidecar_rc |= write_raw_exact(
+                        winding_path, ures.field_winding, sizeof(float), nv);
+                    snprintf(winding_path, sizeof winding_path,
+                             "%s/%s_winding_jump.f32", out_dir, id);
+                    sidecar_rc |= write_raw_exact(
+                        winding_path, ures.field_jump, sizeof(float), nv);
+                }
+                if (sidecar_rc != 0) {
+                    fprintf(stderr,
+                            "  ERROR: winding-index sidecar emission failed\n");
+                    RAISE(IO_Failed);
+                }
+                fprintf(stderr,
+                    "  winding index: wrote %s/%s_winding_{index,confidence}.f32"
+                    "%s\n", out_dir, id,
+                    ures.winding_field_used ? " (+field,jump)" : "");
+            }
             /* Positive same-sheet continuation is material identity, not an
              * atlas layout.  Use it only to prevent adjacent physical branches
              * from entering one StrokeStrip run; every input face still emits. */
@@ -464,6 +727,21 @@ int main(int argc, char *argv[])
                 ures.n_components, ures.winding_continuation_components,
                 ures.winding_relation_components, ures.turns, ures.r_ref,
                 ures.spiral_b, ures.spiral_r2, t_unwrap);
+            fprintf(stderr,
+                "              field=%s clean=%.1f%% supported=%zu/%d; "
+                "MRF rounds=%zu changes=%zu abstain=%zu conf=%.3f; "
+                "exclude=%zu rounds %zu->%zu bins (%s)\n",
+                ures.winding_field_used ? "on" : "off",
+                100.0 * ures.winding_field_clean_fraction,
+                ures.winding_field_supported_components, ures.n_components,
+                ures.winding_mrf_rounds, ures.winding_mrf_label_changes,
+                ures.winding_mrf_abstained_sites,
+                ures.winding_mrf_mean_confidence,
+                ures.winding_mrf_conflict_rounds,
+                ures.winding_mrf_conflict_bins_before,
+                ures.winding_mrf_conflict_bins_after,
+                ures.winding_mrf_conflict_converged
+                    ? "converged" : "fixed-point residual");
             if (ures.n_components != 1)
                 fprintf(stderr, "  note: %d components -- unwrapping ALL sheets in one "
                         "global (u,v) frame\n",
@@ -560,6 +838,17 @@ int main(int argc, char *argv[])
             ropts.reference_island_count = 0;
         }
 
+        if (winding_only) {
+            if (urc != 0 || write_winding_ready_vmesh(
+                     arena, input_path, out_dir, id, verts, nv, faces, nf,
+                     &ures, t_unwrap,
+                     uopts.winding_conflict_mode >= 0) != 0) {
+                fprintf(stderr,
+                        "ERROR: winding-only certificate emission failed\n");
+                RAISE(IO_Failed);
+            }
+            ok = 1;
+        } else {
         /* --- Ribbon parameterization (on the full mesh). --- */
         ta = ves_clock_sec();
         int rrc = Ribbon_run(arena, verts, nv, faces, nf, &ropts, &rres);
@@ -570,10 +859,11 @@ int main(int argc, char *argv[])
         }
         if (preserve_input_topology)
             fprintf(stderr,
-                    "  fixed-topology contract: V is axial; U is the direct "
-                    "metric projection of the carried frame (per-chain XYZ "
-                    "arclength at the carried median gauge; no solver, no "
-                    "gauge stitching)\n");
+                    "  fixed-topology contract: V is axial; U is the staged "
+                    "StrokeStrip solution on input rows%s\n",
+                    ropts.metric_project_only
+                        ? " (legacy exact-row projection diagnostic)"
+                        : " (final C(u) frozen during metric continuation)");
         fprintf(stderr,
             "  ribbon: slices=%d chains=%d (closed=%d, fragmented slices=%d)\n"
             "          samples=%zu pairs=%zu(+%zu cont) cover=%.1f%% bridge_cuts=%zu\n"
@@ -629,14 +919,20 @@ int main(int argc, char *argv[])
 
             snprintf(path, sizeof path, "%s/%s_ribbon.obj", out_dir, id);
             ves_ensure_parent_dir(path);
-            if (ObjIO_write_uv(path, verts, nv, faces, nf, rres.uv) != 0) {
+            char vmesh_path[4096];
+            if (MeshBin_companion_path(
+                    path, vmesh_path, sizeof vmesh_path) != 0) {
+                fprintf(stderr,
+                        "  ERROR: cannot derive authoritative VMESH path from %s\n",
+                        path);
+                RAISE(IO_Failed);
+            }
+            if (write_text_obj &&
+                ObjIO_write_uv(path, verts, nv, faces, nf, rres.uv) != 0) {
                 fprintf(stderr, "  ERROR: UV OBJ emission failed: %s\n", path);
                 RAISE(IO_Failed);
             }
-            char vmesh_path[4096];
-            if (MeshBin_companion_path(
-                    path, vmesh_path, sizeof vmesh_path) != 0 ||
-                MeshBin_write(vmesh_path, verts, nv, faces, nf, rres.uv) != 0) {
+            if (MeshBin_write(vmesh_path, verts, nv, faces, nf, rres.uv) != 0) {
                 fprintf(stderr,
                         "  ERROR: authoritative VMESH emission failed: %s\n",
                         vmesh_path);
@@ -644,10 +940,16 @@ int main(int argc, char *argv[])
             }
             rib_nv = nv;
             rib_nf = nf;
-            fprintf(stderr,
-                    "  wrote %s and %s (%zu verts, %zu faces; topology "
-                    "identical to input)\n",
-                    path, vmesh_path, rib_nv, rib_nf);
+            if (write_text_obj)
+                fprintf(stderr,
+                        "  wrote %s and %s (%zu verts, %zu faces; topology "
+                        "identical to input)\n",
+                        path, vmesh_path, rib_nv, rib_nf);
+            else
+                fprintf(stderr,
+                        "  wrote %s (%zu verts, %zu faces; topology "
+                        "identical to input; text OBJ skipped)\n",
+                        vmesh_path, rib_nv, rib_nf);
             fprintf(stderr,
                     "          UV transfer: %zu direct, %zu neighbor-filled, "
                     "%zu unmapped\n",
@@ -658,7 +960,7 @@ int main(int argc, char *argv[])
             memset(&wstats, 0, sizeof wstats);
             snprintf(path, sizeof path, "%s/%s_ribbon.obj", out_dir, id);
             ves_ensure_parent_dir(path);
-            if (Ribbon_write_obj(path, &rres, 1, 0, &wstats) != 0) {
+            if (Ribbon_write_obj(path, &rres, write_text_obj, 0, &wstats) != 0) {
                 fprintf(stderr,"  ERROR: fitted ribbon emission failed: %s\n",path);
                 RAISE(IO_Failed);
             }
@@ -667,8 +969,24 @@ int main(int argc, char *argv[])
             rib_atlas_cols = wstats.atlas_columns;
             rib_atlas_runs = wstats.atlas_runs;
             rib_empty_cols_removed = wstats.empty_columns_removed;
-            fprintf(stderr, "  wrote %s (%zu verts, %zu faces, direct grid %zux%zu)\n",
-                    path, rib_nv, rib_nf, rres.nu, rres.nk);
+            if (write_text_obj) {
+                fprintf(stderr,
+                        "  wrote %s (%zu verts, %zu faces, direct grid %zux%zu)\n",
+                        path, rib_nv, rib_nf, rres.nu, rres.nk);
+            } else {
+                char vmesh_path[4096];
+                if (MeshBin_companion_path(
+                        path, vmesh_path, sizeof vmesh_path) != 0) {
+                    fprintf(stderr,
+                            "  ERROR: cannot derive fitted VMESH path from %s\n",
+                            path);
+                    RAISE(IO_Failed);
+                }
+                fprintf(stderr,
+                        "  wrote %s (%zu verts, %zu faces, direct grid %zux%zu; "
+                        "text OBJ skipped)\n",
+                        vmesh_path, rib_nv, rib_nf, rres.nu, rres.nk);
+            }
             fprintf(stderr,
                     "          confidence: %zu fixed support, %zu generated continuation\n",
                     wstats.supported_vertices, wstats.generated_vertices);
@@ -715,6 +1033,7 @@ int main(int argc, char *argv[])
                 "  \"axis_dir_zyx\": [%.6f, %.6f, %.6f],\n"
                 "  \"opts\": { \"slice_h\": %.3f, \"sample_h\": %.3f, \"match_r\": %.3f,\n"
                 "            \"match_ang_deg\": %.1f, \"relax_iters\": %d, \"final_iters\": %d,\n"
+                "            \"metric_iters\": %d, \"metric_weight\": %.6g,\n"
                 "            \"grid_u\": %.3f, \"component_global\": %s,\n"
                 "            \"ownership\": \"%s\", \"discard_conflicting_claims\": %s,\n"
                 "            \"wrap_spacing_requested\": %.4f },\n"
@@ -726,7 +1045,16 @@ int main(int argc, char *argv[])
                 "    \"continuation_components\": %zu, \"relation_components\": %zu, \"packed_relation_components\": %zu, \"packed_mesh_components\": %zu,\n"
                 "    \"relation_conflicts\": %zu, \"observations_dropped\": %zu,\n"
                 "    \"continuation_satisfaction\": %.9g, \"order_satisfaction\": %.9g,\n"
-                "    \"turn_correction_min\": %d, \"turn_correction_max\": %d },\n"
+                "    \"turn_correction_min\": %d, \"turn_correction_max\": %d,\n"
+                "    \"repair_closers\": %zu, \"repair_conflicts_pre\": %zu, \"repair_shifts\": %zu, \"repair_capped_roots\": %zu,\n"
+                "    \"anchor_span_pre_turns\": %.6g, \"anchor_span_turns\": %.6g,\n"
+                "    \"mrf_rounds\": %zu, \"mrf_label_changes\": %zu, \"mrf_abstained_sites\": %zu,\n"
+                "    \"mrf_energy_before\": %.9g, \"mrf_energy_after\": %.9g, \"mrf_mean_confidence\": %.9g,\n"
+                "    \"conflict_resolution\": { \"rounds\": %zu, \"bins_before\": %zu, \"bins_after\": %zu,\n"
+                "      \"losing_claims\": %zu, \"forbidden_assignments\": %zu, \"winner_locks\": %zu, \"label_changes\": %zu, \"converged\": %s } },\n"
+                "  \"winding_field\": { \"used\": %s, \"backend\": %d, \"samples\": %zu,\n"
+                "    \"supported_components\": %zu, \"clean_vertices\": %zu, \"invalid_vertices\": %zu,\n"
+                "    \"clean_fraction\": %.9g },\n"
                 "  \"handles_cut\": %ld,\n"
                 "  \"slicing\": { \"n_slices\": %d, \"n_chains\": %d, \"n_closed\": %d,\n"
                 "               \"fragmented_slices\": %d, \"n_samples\": %zu, \"bridge_cuts\": %zu },\n"
@@ -784,6 +1112,7 @@ int main(int argc, char *argv[])
                 (double)uopts.axis_dir[0], (double)uopts.axis_dir[1], (double)uopts.axis_dir[2],
                 (double)ropts.slice_h, (double)ropts.sample_h, (double)ropts.match_r,
                 (double)ropts.match_ang_deg, ropts.relax_iters, ropts.final_iters,
+                 ropts.metric_iters, (double)ropts.metric_weight,
                  (double)ropts.grid_u, ropts.component_global ? "true" : "false",
                  ropts.ownership_construction ? "construction" : "claims",
                  ropts.discard_conflicting_claims ? "true" : "false",
@@ -805,6 +1134,31 @@ int main(int argc, char *argv[])
                 ures.winding_observations_dropped,
                 ures.continuation_satisfaction, ures.order_satisfaction,
                 ures.turn_correction_min, ures.turn_correction_max,
+                ures.winding_repair_closers, ures.winding_repair_conflicts_pre,
+                ures.winding_repair_shifts, ures.winding_repair_capped_roots,
+                ures.winding_anchor_span_pre_turns,
+                ures.winding_anchor_span_turns,
+                ures.winding_mrf_rounds,
+                ures.winding_mrf_label_changes,
+                ures.winding_mrf_abstained_sites,
+                ures.winding_mrf_energy_before,
+                ures.winding_mrf_energy_after,
+                ures.winding_mrf_mean_confidence,
+                ures.winding_mrf_conflict_rounds,
+                ures.winding_mrf_conflict_bins_before,
+                ures.winding_mrf_conflict_bins_after,
+                ures.winding_mrf_conflict_losing_claims,
+                ures.winding_mrf_conflict_exclusions,
+                ures.winding_mrf_conflict_winner_locks,
+                ures.winding_mrf_conflict_label_changes,
+                ures.winding_mrf_conflict_converged ? "true" : "false",
+                ures.winding_field_used ? "true" : "false",
+                ures.winding_field_backend,
+                ures.winding_field_samples,
+                ures.winding_field_supported_components,
+                ures.winding_field_clean_vertices,
+                ures.winding_field_invalid_vertices,
+                ures.winding_field_clean_fraction,
                 handles_cut,
                 rres.n_slices, rres.n_chains, rres.n_closed,
                 rres.n_multi_slices, rres.n_samples, rres.bridge_cuts,
@@ -869,6 +1223,7 @@ int main(int argc, char *argv[])
             fprintf(stderr, "  wrote %s\n", path);
         }
         ok = 1;
+        }
     EXCEPT(IO_Failed)
         fprintf(stderr, "scroll_ribbon: I/O failure\n");
     EXCEPT(Arena_Failed)

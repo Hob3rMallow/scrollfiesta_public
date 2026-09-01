@@ -60,7 +60,7 @@ static void project_to_mesh(const double *V, const int32_t *F, size_t nf,
 /* Closest point on the mesh via a triangle-centroid KD-tree. Any triangle that
  * could be the closest has its centroid within (nearest-centroid distance +
  * 2*max_tri_r) of p, so one ball query returns all candidates. Replaces the O(nf)
- * brute force -- the dominant cost on the dense pre-QEM meshes. */
+ * brute force -- the dominant cost on dense input meshes. */
 static void project_to_mesh_kd(KDTree_T kd, const double *V, const int32_t *F,
                                double max_tri_r, const double p[3], double out[3],
                                int32_t *cand, size_t cand_cap) {
@@ -208,7 +208,7 @@ static void place_on_loop(const double *V, const int32_t *idx, int n, int m, dou
     }
 }
 
-/* No CVT-level Arena_save/restore (QEM model; avoids nested-mark aliasing with the
+/* No CVT-level Arena_save/restore (avoids nested-mark aliasing with the
  * dual `tris` Rvd_accumulate returns). */
 int CVT_remesh(Arena_T arena,
                const float *in_verts, size_t in_nv,

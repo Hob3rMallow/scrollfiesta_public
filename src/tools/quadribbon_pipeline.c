@@ -570,7 +570,7 @@ static int qp_debug_bake(const QpConfig *cfg, const char *vmesh,
         argv[a++] = "--raster-auto";
         argv[a] = NULL;
         if (qp_spawn("obj_bake_raw", argv) != 0) {
-            fprintf(stderr, "[debug-bake] %s FAILED (non-fatal)\n", tag);
+            fprintf(stderr, "[debug-bake] %s FAILED\n", tag);
             return -1;
         }
     }
@@ -641,6 +641,8 @@ static int qp_stage_sheet(Arena_T arena, const QpConfig *cfg,
     char strips_dir[QP_MAX_PATH], strip_prefix[QP_MAX_PATH];
     char tool[QP_MAX_PATH];
     char tex_png[QP_MAX_PATH], prov_png[QP_MAX_PATH];
+    char layer_png[SHEET_COMPOSITE_MAX_LAYERS][QP_MAX_PATH];
+    const char *layer_paths[SHEET_COMPOSITE_MAX_LAYERS] = { NULL, NULL, NULL };
     SheetCompositeLayer layers[SHEET_COMPOSITE_MAX_LAYERS];
     SheetCompositeStats stats;
     double min_u[SHEET_COMPOSITE_MAX_LAYERS];
@@ -776,13 +778,33 @@ static int qp_stage_sheet(Arena_T arena, const QpConfig *cfg,
     }
 
     snprintf(tex_png, sizeof tex_png, "%s/big_sheet_%s.png", out_root, tag);
-    snprintf(prov_png, sizeof prov_png, "%s/big_sheet_provenance.png",
-             out_root);
+    snprintf(prov_png, sizeof prov_png, "%s/big_sheet_%s_provenance.png",
+             out_root, tag);
     if (SheetComposite_run(layers, n_layers, tex_png,
-                           strcmp(tag, "post") == 0 ? prov_png : NULL,
-                           out_tex, &stats) != 0) {
+                           prov_png, out_tex, &stats) != 0) {
         fprintf(stderr, "[sheet-%s] composite failed\n", tag);
         return -1;
+    }
+    for (size_t s = 0; s < n_layers; s++) {
+        snprintf(layer_png[s], sizeof layer_png[s],
+                 "%s/big_sheet_%s_provenance_%zu.png", out_root, tag, s);
+        layer_paths[s] = layer_png[s];
+    }
+    if (SheetComposite_write_layer_views(
+            layers, n_layers, layer_paths) != 0) {
+        fprintf(stderr, "[sheet-%s] individual provenance views failed\n",
+                tag);
+        return -1;
+    }
+    if (strcmp(tag, "post") == 0) {
+        char legacy_prov[QP_MAX_PATH];
+        snprintf(legacy_prov, sizeof legacy_prov,
+                 "%s/big_sheet_provenance.png", out_root);
+        if (qp_copy_file(prov_png, legacy_prov) != 0) {
+            fprintf(stderr, "[sheet-%s] legacy provenance alias failed\n",
+                    tag);
+            return -1;
+        }
     }
     if (out_w != NULL) *out_w = stats.width;
     if (out_h != NULL) *out_h = stats.height;
@@ -1062,7 +1084,8 @@ int main(int argc, char **argv)
     } else {
         qp_logf("[stage 2 fit] resume: already complete\n");
     }
-    qp_debug_bake(&cfg, fit_vmesh, out_dir, "stage2_fit");
+    if (qp_debug_bake(&cfg, fit_vmesh, out_dir, "stage2_fit") != 0)
+        return 1;
     qp_logf("[stage 2 fit] done\n");
     if (stop_stage == 2) {
         qp_logf("quadribbon: STOP after stage 2 fit as requested "
@@ -1095,7 +1118,8 @@ int main(int argc, char **argv)
     } else {
         qp_logf("[stage 3 reopt] resume: already complete\n");
     }
-    qp_debug_bake(&cfg, reopt1_vmesh, out_dir, "stage3_reopt");
+    if (qp_debug_bake(&cfg, reopt1_vmesh, out_dir, "stage3_reopt") != 0)
+        return 1;
     qp_logf("[stage 3 reopt] done\n");
     if (stop_stage == 3) {
         qp_logf("quadribbon: STOP after stage 3 reopt as requested "
@@ -1127,7 +1151,9 @@ int main(int argc, char **argv)
     } else {
         qp_logf("[stage 4 untangle] resume: already complete\n");
     }
-    qp_debug_bake(&cfg, untangled_vmesh, out_dir, "stage4_untangle");
+    if (qp_debug_bake(&cfg, untangled_vmesh, out_dir,
+                      "stage4_untangle") != 0)
+        return 1;
     qp_logf("[stage 4 untangle] done\n");
     if (stop_stage == 4) {
         qp_logf("quadribbon: STOP after stage 4 untangle as requested "
@@ -1160,7 +1186,8 @@ int main(int argc, char **argv)
     } else {
         qp_logf("[stage 5 reopt] resume: already complete\n");
     }
-    qp_debug_bake(&cfg, reopt2_vmesh, out_dir, "stage5_reopt");
+    if (qp_debug_bake(&cfg, reopt2_vmesh, out_dir, "stage5_reopt") != 0)
+        return 1;
     qp_logf("[stage 5 reopt] done\n");
     if (stop_stage == 5) {
         qp_logf("quadribbon: STOP after stage 5 reopt2 as requested "
@@ -1189,18 +1216,19 @@ int main(int argc, char **argv)
         if (tex_pre != NULL && tex_post != NULL) {
             size_t W = wpre > wpost ? wpre : wpost;
             size_t H = hpre + 8 + hpost;
-            uint8_t *cmp = (uint8_t *)calloc(W * H, 1);
+            uint8_t *cmp = (uint8_t *)calloc(W * H, 3);
             if (cmp != NULL) {
                 char cmp_png[QP_MAX_PATH];
-                memset(cmp, 24, W * H);
+                memset(cmp, 24, W * H * 3);
                 for (size_t y = 0; y < hpre; y++)
-                    memcpy(cmp + y * W, tex_pre + y * wpre, wpre);
+                    memcpy(cmp + y * W * 3, tex_pre + y * wpre * 3,
+                           wpre * 3);
                 for (size_t y = 0; y < hpost; y++)
-                    memcpy(cmp + (hpre + 8 + y) * W, tex_post + y * wpost,
-                           wpost);
+                    memcpy(cmp + (hpre + 8 + y) * W * 3,
+                           tex_post + y * wpost * 3, wpost * 3);
                 qp_join(cmp_png, sizeof cmp_png, out_dir,
                         "big_sheet_pre_vs_post.png");
-                VesPng_write_gray(cmp_png, cmp, (int)W, (int)H);
+                VesPng_write_rgb(cmp_png, cmp, (int)W, (int)H);
                 free(cmp);
             }
         }

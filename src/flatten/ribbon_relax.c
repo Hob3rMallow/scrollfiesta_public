@@ -19,6 +19,7 @@ typedef struct {
     double a_rest;                   /* 3D triangle area */
     double dfx, dfy;                 /* material-frame fiber unit direction */
     double coh;                      /* aggregated fiber coherence (0 => no align) */
+    double qc_initial;               /* stretch in the immutable input chart */
     int    s;                        /* sign of initial UV signed area (+1/-1) */
     int    ok;                       /* 1 = non-degenerate */
 } FaceRelax;
@@ -102,6 +103,7 @@ static int face_precompute(const float *P0, const float *P1, const float *P2,
 {
     double e1[3], e2[3], L1, e1h[3], d, h2, det_m, area2, J0[4], detJ0, wx, wy, dx, dy, dn;
     double E0, G0, F0, disc0, l1, l2, s1, s2, qc0;
+    double qc_start, start_s1, start_s2;
     int i;
     memset(fr, 0, sizeof *fr);
     if (reference_metric) {
@@ -141,6 +143,9 @@ static int face_precompute(const float *P0, const float *P1, const float *P2,
     s1 = sqrt(fmax(l1, 0.0)); s2 = sqrt(fmax(l2, 0.0));
     qc0 = (s2 > 1e-9) ? s1 / s2 : 1e18;
     if (qc_reject > 0.0 && qc0 > qc_reject) return 0;   /* fr->ok stays 0 -> excluded */
+    face_stretch(fr, start0, start1, start2,
+                 &qc_start, &start_s1, &start_s2);
+    fr->qc_initial = qc_start;
 
     fr->coh = 0.0; fr->dfx = 1.0; fr->dfy = 0.0;
     if (coh_in >= coh_gate && fabs(area2) > RLX_AREA_EPS && fabs(detJ0) > 1e-12) {
@@ -610,6 +615,8 @@ void RibbonRelax_defaults(RibbonRelaxOpts *o)
     o->line_search  = 24;
     o->max_disp     = 40.0;
     o->qc_reject    = 50.0;
+    o->max_stretch_growth = 0.0;
+    o->stretch_guard_floor = 1.0;
     o->reference_metric = 0;
     o->fix_boundary = 0;     /* free: lets the sheet rotate/shear u onto the fibers */
     o->convex_boundary = 0;
@@ -673,6 +680,7 @@ int RibbonRelax_run_double(Arena_T arena,
     double *guide_area = NULL;
     size_t f, i, v, sweep, n_fiber = 0, n_move_total = 0, n_interior = 0, n_reject = 0;
     size_t n_convex_reject = 0;
+    size_t n_stretch_guard_reject = 0;
     size_t n_boundary_reject = 0, n_boundary_edges = 0;
     size_t boundary_before = 0, boundary_after = 0;
     int ref_sign = 1;
@@ -681,6 +689,9 @@ int RibbonRelax_run_double(Arena_T arena,
 
     if (arena == NULL || verts == NULL || faces == NULL || uv_in == NULL || uv_out == NULL) return -1;
     if (opts) o = *opts; else RibbonRelax_defaults(&o);
+    if (o.max_stretch_growth > 0.0 &&
+        (o.max_stretch_growth < 1.0 || o.stretch_guard_floor < 1.0))
+        return -1;
     if (du <= 0) du = 1.0; if (dv <= 0) dv = 1.0;
     lambda = o.lambda_align;
     reference_uv = o.reference_uv != NULL ? o.reference_uv : uv_in;
@@ -1023,7 +1034,7 @@ int RibbonRelax_run_double(Arena_T arena,
             dispmax2 = o.max_disp > 0.0 ? o.max_disp * o.max_disp : 0.0;
             t = 1.0;
             for (nls = 0; nls < (size_t)o.line_search; nls++) {
-                double ddx, ddy; int flip = 0; double ecand;
+                double ddx, ddy; int flip = 0, stretch_reject = 0; double ecand;
                 trial[0] = cur[0] + t * step_u;
                 trial[1] = cur[1] + t * step_v;
                 ddx = trial[0] - reference_uv[v*2];
@@ -1041,7 +1052,28 @@ int RibbonRelax_run_double(Arena_T arena,
                     double a2 = signed_area2(u0, u1, u2);
                     if ((a2 >= 0 ? 1 : -1) != fr[ff].s || fabs(a2) < RLX_AREA_EPS) flip = 1;
                 }
-                if (!flip && o.convex_boundary && bnd[v]) {
+                if (!flip && o.max_stretch_growth > 0.0) {
+                    for (s = s0; s < s1 && !stretch_reject; s++) {
+                        size_t ff = vf_idx[s];
+                        int32_t a, b, c;
+                        const double *u0, *u1, *u2;
+                        double qc, sigma1, sigma2, limit;
+                        if (!fr[ff].ok) continue;
+                        a = faces[ff*3+0]; b = faces[ff*3+1]; c = faces[ff*3+2];
+                        u0 = ((size_t)a==v)?trial:uv+(size_t)a*2;
+                        u1 = ((size_t)b==v)?trial:uv+(size_t)b*2;
+                        u2 = ((size_t)c==v)?trial:uv+(size_t)c*2;
+                        face_stretch(&fr[ff], u0, u1, u2,
+                                     &qc, &sigma1, &sigma2);
+                        limit = fr[ff].qc_initial * o.max_stretch_growth;
+                        if (limit < o.stretch_guard_floor)
+                            limit = o.stretch_guard_floor;
+                        if (!isfinite(qc) || qc > limit + 1e-10)
+                            stretch_reject = 1;
+                    }
+                    if (stretch_reject) n_stretch_guard_reject++;
+                }
+                if (!flip && !stretch_reject && o.convex_boundary && bnd[v]) {
                     size_t n0 = (size_t)bnd_neighbor0[v];
                     size_t n1 = (size_t)bnd_neighbor1[v];
                     if (!boundary_turn_preserved(v, v, trial, uv,
@@ -1057,7 +1089,7 @@ int RibbonRelax_run_double(Arena_T arena,
                         n_convex_reject++;
                     }
                 }
-                if (!flip && have_boundary_grid && bnd[v]) {
+                if (!flip && !stretch_reject && have_boundary_grid && bnd[v]) {
                     size_t n0 = (size_t)bnd_neighbor0[v];
                     size_t n1 = (size_t)bnd_neighbor1[v];
                     if (!rlx_boundary_move_safe(&boundary_grid, v, n0, n1,
@@ -1066,7 +1098,7 @@ int RibbonRelax_run_double(Arena_T arena,
                         n_boundary_reject++;
                     }
                 }
-                if (!flip) {
+                if (!flip && !stretch_reject) {
                     LOCAL_E(trial[0], trial[1], ecand);
                     if (ecand < base - 1e-12) {
                         uv[v*2] = trial[0]; uv[v*2+1] = trial[1];
@@ -1143,6 +1175,7 @@ int RibbonRelax_run_double(Arena_T arena,
             stats->flips_after = fl1; stats->n_interior = n_interior;
             stats->n_moved = n_move_total; stats->n_fiber_faces = n_fiber;
             stats->n_reject = n_reject;
+            stats->n_stretch_guard_reject = n_stretch_guard_reject;
             stats->n_convex_reject = n_convex_reject;
             stats->n_boundary_collision_reject = n_boundary_reject;
             stats->boundary_intersections_after = boundary_after;
@@ -1292,6 +1325,34 @@ int RibbonRelax_selftest(void)
         if (coded != truth) {
             fprintf(stderr, "[relax selftest]   FAIL: >2 GB alloc size truncates (got %zu want %zu)\n",
                     coded, truth); fails++;
+        }
+    }
+
+    /* (a2) the fixed-input L-infinity stretch guard cannot let repeated
+     * vertex updates trade one new outlier for a lower global energy. */
+    RibbonRelax_defaults(&o);
+    o.lambda_align = 0.0;
+    o.sweeps = 12;
+    o.max_stretch_growth = 1.0;
+    o.stretch_guard_floor = 1.25;
+    if (RibbonRelax_run(arena, V, nv, F, nf, uv_in, NULL, NULL, 1.0, 1.0,
+                        &o, uv_out, &st) != 0) {
+        fprintf(stderr, "[relax selftest]   FAIL: guarded run\n");
+        fails++;
+    } else {
+        double allowed = fmax(st.stretch_max_before, o.stretch_guard_floor);
+        if (st.stretch_max_after > allowed + 1e-8) {
+            fprintf(stderr,
+                    "[relax selftest]   FAIL: stretch guard %.9g > %.9g\n",
+                    st.stretch_max_after, allowed);
+            fails++;
+        }
+        if (!(st.energy_after < st.energy_before) || st.reverted) {
+            fprintf(stderr,
+                    "[relax selftest]   FAIL: guarded energy %.9g -> %.9g%s\n",
+                    st.energy_before, st.energy_after,
+                    st.reverted ? " reverted" : "");
+            fails++;
         }
     }
 

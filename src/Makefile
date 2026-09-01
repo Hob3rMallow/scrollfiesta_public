@@ -38,7 +38,7 @@ COMMON_SRC = common/arena.c common/except.c common/csr.c common/kdtree.c \
              common/vert_weld.c common/mesh_normals.c common/tiff_io.c common/halo_loader.c \
              common/raw_sample.c \
              common/mesh_trim.c common/ply_io.c common/obj_io.c common/mesh_bin.c common/dump_obj.c \
-             common/ves_platform.c common/qem.c common/raw_snapback.c common/snap_cg.c \
+             common/ves_platform.c common/raw_snapback.c common/snap_cg.c \
              common/eig3.c common/dev_metric.c common/mesh_manifold.c
 EXTRACT_SRC  = extract/mesh_extract.c extract/mesh_resplit.c extract/pred_reject.c
 SPLIT_SRC    = split/oracle.c split/bridge_cut.c split/overlap_sep.c split/overlap_merge.c split/dev_cut.c split/depth_peel.c
@@ -104,7 +104,7 @@ cube_mesh: main.o $(CORE_OBJ) $(CPP_OBJ)
 	$(CC) $(CFLAGS) $(BUILD_FLAGS) $^ -o $@ $(LDFLAGS) $(EXT_LIB)
 
 # CVT-based LOD simplifier (== cvt_simplify.exe): per-component CVT decimation,
-# boundary-preserving; the quality-keeping replacement for qslim in the pyramid.
+# boundary-preserving; the sole supported LOD simplifier in the pyramid.
 cvt_simplify: tools/cvt_simplify.o remesh/cvt_remesh.o remesh/rvd_clip.o \
               common/closest_tri.o common/kdtree.o \
               remesh/manifold_guard.o remesh/pinhole_fill.o remesh/orient_mesh.o \
@@ -171,21 +171,6 @@ common/attene_predicates_wrap.o: common/attene_predicates_wrap.cpp
 grid_pipeline: tools/grid_pipeline.o common/ves_platform.o common/arena.o \
                common/except.o common/tiff_io.o extract/pred_reject.o
 	$(CC) $(CFLAGS) $(BUILD_FLAGS) $^ -o $@ $(LDFLAGS)
-
-# 2D prediction gap fixup (== pred_fixup.exe). Assembles a whole grid's
-# cubes_PRED into full z-planes, closes per-plane mask gaps by skeleton-
-# endpoint matching + Bezier painting (src/fixup/), and writes a parallel
-# grid dir grid_pipeline consumes unchanged. Mirrors pred_fixup.vcxproj.
-pred_fixup: tools/pred_fixup.o fixup/slice_trace.o fixup/slice_match.o \
-            fixup/join_tracks.o fixup/join_paint.o fixup/bridge_scan.o \
-            fixup/fixup_viz.o \
-            common/ves_platform.o common/arena.o common/except.o \
-            common/tiff_io.o common/ves_png.o common/union_find.o
-	$(CC) $(CFLAGS) $(BUILD_FLAGS) $^ -o $@ $(LDFLAGS) -lz
-
-# Its unit tests are the embedded module selftests (exit 3 on failure).
-pred_fixup_test: pred_fixup
-	./pred_fixup --selftest
 
 # Register and place per-cube charts in one scroll coordinate frame.
 scroll_whole: tools/scroll_whole.o whole/cube_schedule.o whole/axis_warp.o \
@@ -321,6 +306,6 @@ weld_recoarsen_test: ../scripts/remesh/weld_recoarsen_test.c remesh/weld_cleanup
 
 clean:
 	rm -f common/*.o extract/*.o split/*.o remesh/*.o holefill/*.o pipeline/*.o \
-	      flatten/*.o whole/*.o unroll/*.o tools/*.o fixup/*.o *.o cube_mesh grid_weld \
-	      grid_pipeline pred_fixup scroll_whole welded_winding_lift obj_bake_raw \
+	      flatten/*.o whole/*.o unroll/*.o tools/*.o *.o cube_mesh grid_weld \
+	      grid_pipeline scroll_whole welded_winding_lift obj_bake_raw \
 	      obj_reorient topology_audit test_common dev_cut_test depth_peel_test sheet_reweld_test

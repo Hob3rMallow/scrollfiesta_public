@@ -104,12 +104,6 @@
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <!-- Tests for the active code path -->
-    <ClCompile Include="scripts\extract\qem_test.c">
-      <CompileAs>CompileAsC</CompileAs>
-    </ClCompile>
-    <ClCompile Include="scripts\extract\qem_pin_test.c">
-      <CompileAs>CompileAsC</CompileAs>
-    </ClCompile>
     <ClCompile Include="scripts\extract\mesh_trim_pin_test.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
@@ -316,9 +310,6 @@
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <ClCompile Include="src\common\ves_platform.c">
-      <CompileAs>CompileAsC</CompileAs>
-    </ClCompile>
-    <ClCompile Include="src\common\qem.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <ClCompile Include="src\common\vert_weld.c">

@@ -1,11 +1,9 @@
 /*
  * weld_cleanup.c -- post-weld sliver / T-junction cleanup (see weld_cleanup.h).
  *
- * Self-contained on purpose: grid_weld does NOT link the QEM solver stack
- * (quadric / cg / cotan / kdtree), so the Surazhsky-Gotsman flip pass here is a
- * faithful copy of the canonical one in src/common/qem.c (qem_edge_flip_pass),
- * kept separate rather than dragging that whole dependency tree into the
- * terminal weld step. The collapse pass is new: a guarded short-edge collapse
+ * Self-contained on purpose: grid_weld does not link an external simplifier.
+ * The Surazhsky-Gotsman flip pass is local to the terminal weld step. The
+ * collapse pass is a guarded short-edge collapse
  * with the Dey-Edelsbrunner-Guha link condition + a normal-flip guard, run on a
  * freshly-rebuilt adjacency each round (so there is no stale-adjacency
  * bookkeeping to get wrong).
@@ -76,8 +74,7 @@ static int is_target(const float *V, int32_t a, int32_t b, int32_t c,
 }
 
 /* ===================================================================
- * Boundary detection (verts on any face-count==1 edge). Mirrors
- * qem.c::qem_detect_boundary.
+ * Boundary detection (verts on any face-count==1 edge).
  * =================================================================== */
 typedef VesU64Record16 HE;
 static uint64_t wc_edge_key(int32_t a, int32_t b)
@@ -148,8 +145,7 @@ static void detect_boundary(Arena_T arena, const int32_t *faces, size_t nf,
 }
 
 /* ===================================================================
- * Surazhsky-Gotsman min-angle edge flip (faithful copy of
- * qem.c::qem_edge_flip_pass). Vertices never move; boundary edges never flip;
+ * Surazhsky-Gotsman min-angle edge flip. Vertices never move; boundary edges never flip;
  * a flip is taken only if it strictly improves the min angle AND keeps both new
  * faces' normals on the same side as the original (no fold). One locked pass
  * flips only non-adjacent edges, so iterate to convergence.
@@ -203,7 +199,7 @@ static float min_angle(const float *V, int32_t a, int32_t b, int32_t c)
 
 /* True if edge (u,w) already exists in the sorted-by-(v0,v1) MHE list. A flip
  * onto an existing edge gives that edge a 3rd/4th face -> non-manifold. Same
- * guard as qem.c::maint_edge_exists. */
+ * duplicate-edge guard used throughout remeshing. */
 static int mhe_edge_exists(const MHE *mhe, size_t n_he, int32_t u, int32_t w)
 {
     uint64_t key=wc_edge_key(u,w);
@@ -287,7 +283,7 @@ static size_t flip_pass(Arena_T arena, const float *V, int32_t *faces,
             /* Orientation-preserving flip: (c,a,d)+(d,b,c) keeps the quad
              * a->d->b->c boundary directions. Guard and write must match -- a
              * reversed (c,d,a)+(d,c,b) write injects same_dir on folds (see
-             * qem.c::qem_edge_flip_pass). */
+             * the local edge-flip pass). */
             face_normal(V,a,b,c,n_orig); face_normal(V,c,a,d,n1); face_normal(V,d,b,c,n2);
             dot1=n_orig[0]*n1[0]+n_orig[1]*n1[1]+n_orig[2]*n1[2];
             dot2=n_orig[0]*n2[0]+n_orig[1]*n2[1]+n_orig[2]*n2[2];

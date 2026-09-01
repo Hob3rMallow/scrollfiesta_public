@@ -1,0 +1,44 @@
+\section{Developments Since the July 31 Update}
+\label{app:developments}
+
+\begin{revision}
+This is the only part of the paper organized by date. The body of the paper (Sections~\ref{sec:background}--\ref{sec:conclusions}) describes the current system as one continuous account, without distinguishing which parts of it are recent; this appendix records what changed, module by module, between August 1 and August 31, 2026, relative to public commit \texttt{4f43cfc}. It is intended for a reader who has the July 31 paper and wants the delta rather than the whole story. A complete pre-edit copy of the July paper is retained beside the working repository, and the retired methods referenced below remain documented in Appendix~\ref{app:terms}. Prediction-domain work from the same period --- cross-resolution distillation, connection mining, and additive bridge filling --- has moved to the companion \emph{Socratic Method} repository and is recorded there instead.
+
+{\small
+\begin{itemize}
+  \setlength{\itemsep}{0pt}
+
+  \item \textbf{Slice tracing and in-plane fusion cuts.} Z-plane skeleton paths are associated across axial shards into material tracks. A new along-curve ownership test splits paths that travel from one wrap through a prediction fusion onto another and then reruns bootstrap association. Coverage remains unchanged while fused paths become separately checkable pieces.
+
+  \item \textbf{Sheet books.} Batch lifting freezes geometry before held-out RAW, records direct and interpolation masks, and rejects crashes, black phantoms, normal flips, and unsupported interpolation. The books pass 49/50 sheets at 83.7\% material on $4\times5\times5$, 385/400 at 74.3\% on $10\times10\times10$, 1,104/1,150 at 71.9\% on $4\times21\times21$, and 6,188/6,500 at 71.4\% on $21\times21\times21$.
+
+  \item \textbf{Winding assembly.} Local signed radial contacts snap to integer relations only within 0.25 turns of a pair-specific pitch. A maximum-support forest and strict subtree-shift repair establish reading order without fusing geometry. The largest rung orders 15,457 tracks across 112 winds, retains 99.3\% of assigned material, and suspends the order of 174 contradictory tracks.
+
+  \item \textbf{Probabilistic winding field and MRF.} A two-sided generalized winding-number field measures a mean and clean-sheet jump at mesh vertices, robust component summaries become calibrated unary terms, and continuation/order observations become pairwise factors in an integer-label MRF. On the fresh $4\times5\times5$ pile, 99.1\% of 313,615 probed vertices exhibit the unit-jump law; two graph-cut rounds change four labels and reduce energy from 221.369 to 200.486 while retaining 0.99971/0.99816 continuation/order satisfaction. A standalone winding-only command writes geometry-identical output and field, jump, label, confidence, and JSON sidecars.
+
+  \item \textbf{Guarded winding-conflict penalties.} Sparse near-hard unaries can forbid an exact component/label assignment when spatially remote geometry repeatedly claims the same developed cell. Broad winner/context locks reduce 21,420 conflicting cells to 11,099/10,214 but damage relation satisfaction. Restricting to cells with at least four claimant clusters finds two. A one-bin trial clears them using 20 exclusions but creates 42 residual relation conflicts and raises MRF energy to 1,119.330; requiring two cells makes no exclusion and preserves the base labels. Synthetic tests pass; no real-data configuration resolves the conflict without spending more relation evidence than it recovers.
+
+  \item \textbf{Sheet compositor.} Continuously lifted phase replaces principal-angle folding; exact metric offsets join accepted same-wrap continuations. The output is a native-resolution texture plus contributor and label maps, with a separate page-layout review image. Unpainted graph bridges may transmit order but never contribute texture.
+
+  \item \textbf{Solid quad ribbons.} A dense C implementation builds a regular quad lattice inside each material component, fills interior holes by harmonic or cylindrical continuation, and never fills between components. Direct, interpolation, filled, and seam vertices remain separately labelled. VMESH, OBJ, topology, snap transaction, and streamable snip outputs make the large meshes inspectable.
+
+  \item \textbf{Recto attachment.} Snap now alternates winding-aware CT targets, robust vector quilting, smooth displacement, correspondence remeshing, fixed-window RAW bake, and per-component selection. Exact collision, orientation, coverage, darkness, and Sander measurements accept or reject each proposal. V83 is the measured $4\times5\times5$ fixed point, not a hand-selected iteration.
+
+  \item \textbf{Phase-ordered elastic shell.} Exact triangle contacts create a persistent phase and radial-order set; a screened radial field opens penetrations, and settle-to-rest returns the sheet toward measured geometry without pass-through. Parallel exact tests, active bands, frontier dilation, confidence-preserving coarse grids, and relative stopping reduce full-sheet wall time from a 16.5-hour non-converged predecessor to 7 minutes 29 seconds.
+
+  \item \textbf{Final-state quality masks.} The output now retains fitted pixels and only those filled pixels whose final RAW and distortion states support them, removes small pepper islands, and excludes the pitch-ambiguous core. At coverage parity this lowers $10\times10\times10$ dark rate from 4.58\% to 3.59\%, Sander p95 from 2.73 to 1.45, and the $\ge4\times$ tail from 2.53\% to 0.03\%.
+
+  \item \textbf{Solver-free metric projection.} A controlled fixed-topology path replaces floating chart gauges with exact chain arclength, one shared metric-rate map, robust median offsets, and rigid detached-island placement by authoritative phase. The $4\times5\times5$ run conserves all 4,033,291 faces, recovers every marked layered dropout, and completes parameterization in 9.6 seconds without Krylov iteration.
+
+  \item \textbf{Guarded post-projection Sander pass.} A preliminary UV-only experiment on the boundary-complete $4\times5\times5$ pile runs eight symmetric-Dirichlet sweeps under immutable input-orientation, per-face stretch, and two-voxel displacement guards. In 8.1 seconds it lowers mean anisotropy from 1.761554 to 1.628350 and raster condition-number p95 from 2.661 to 2.413 without changing any face's input orientation. The 24,340 faces already over the stretch bound are left untouched; the pass is not yet a default or a scaling result.
+
+  \item \textbf{TAUCS IRLS consistency.} The active pre-weld fit now assembles metric, vertical, contact, and crack rows into normal equations, solves by supernodal multifrontal Cholesky, and applies Huber IRLS to exact residuals. A 2.04-million-variable, 12.2-million-nonzero system factors in 8--11 seconds; 28,597 crack ties reduce $\pm20$--25-pixel slips to approximately $\pm1.3$. The matrix-free CG and its ad-hoc compensation passes were removed from this lane.
+
+  \item \textbf{Raster and layer correctness.} A half-texel face-bound bug at generic sub-voxel UV phases was fixed, reducing bounded void-fill on the metric $4\times5\times5$ sheet from 1,268,329 to 3,707 pixels. Hard ply conflicts become separate layer sheets; soft boundary kisses remain recorded; direct coverage from any layer outranks earlier generated fill in the final composite.
+
+  \item \textbf{One quadribbon command.} \texttt{quadribbon} takes a mesh directory and an output directory, replacing the experimental driver stack and enforcing one order: concatenate the pre-weld per-cube pile, fit and optimize metric coordinates, untangle, re-optimize, bake layer sheets, and composite. It resumes by stage, uses one production configuration, and retains stage-local tools only for diagnosis. The canonical $4\times5\times5$ full run now completes end-to-end. The $21\times21\times21$ run has completed the maintained pre-fit boundary through stage-1 concat; global fit remains unrun.
+
+  \item \textbf{Measured retirements.} The current lane no longer uses global geometric welding as a mandatory precondition, the July tabu atlas as winding authority, the matrix-free consistency solver, or the geometric slab splitter. Each remains reproducible where useful, and Section~\ref{sec:deadends} gives the measurement that retired it.
+\end{itemize}
+}
+\end{revision}

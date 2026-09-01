@@ -17,6 +17,55 @@ static const uint8_t SC_PROV[SHEET_COMPOSITE_MAX_LAYERS][2][3] = {
 static const uint8_t SC_BG[3]    = { 12, 12, 18 };
 static const uint8_t SC_FILLC[3] = { 210, 200, 120 };
 
+/* Luminance-preserving chroma blend.  The auxiliary palette is normalized by
+ * its integer BT.709 luminance before 3/5 of its chroma is mixed into the gray
+ * texture.  Fibers therefore remain readable at approximately the same
+ * brightness instead of becoming a flat provenance swatch. */
+enum { SC_TINT_NUM = 3, SC_TINT_DEN = 5 };
+
+static void sc_tint_pixel(uint8_t gray, size_t layer, uint8_t rgb[3])
+{
+    if (layer == 0 || layer >= SHEET_COMPOSITE_MAX_LAYERS) {
+        rgb[0] = rgb[1] = rgb[2] = gray;
+        return;
+    }
+    const uint8_t *base = SC_PROV[layer][0];
+    int luma = (54 * (int)base[0] + 183 * (int)base[1] +
+                19 * (int)base[2] + 128) / 256;
+    int denominator = SC_TINT_DEN * luma;
+    for (int c = 0; c < 3; c++) {
+        int scale = (SC_TINT_DEN - SC_TINT_NUM) * luma +
+                    SC_TINT_NUM * (int)base[c];
+        int value = ((int)gray * scale + denominator / 2) / denominator;
+        rgb[c] = (uint8_t)(value > 255 ? 255 : value);
+    }
+}
+
+static int sc_canvas_size(const SheetCompositeLayer *layers, size_t n_layers,
+                          size_t *out_w, size_t *out_h)
+{
+    size_t W = 0, H = 0;
+    if (layers == NULL || n_layers == 0 ||
+        n_layers > SHEET_COMPOSITE_MAX_LAYERS)
+        return -1;
+    for (size_t l = 0; l < n_layers; l++) {
+        const SheetCompositeLayer *L = &layers[l];
+        if (L->tex == NULL || L->cov == NULL || L->w == 0 || L->h == 0 ||
+            L->off_u < 0 || L->off_v < 0)
+            return -1;
+        if ((size_t)L->off_u > SIZE_MAX - L->w ||
+            (size_t)L->off_v > SIZE_MAX - L->h)
+            return -1;
+        if ((size_t)L->off_u + L->w > W) W = (size_t)L->off_u + L->w;
+        if ((size_t)L->off_v + L->h > H) H = (size_t)L->off_v + L->h;
+    }
+    if (W == 0 || H == 0 || W > SIZE_MAX / H || W * H > SIZE_MAX / 3)
+        return -1;
+    *out_w = W;
+    *out_h = H;
+    return 0;
+}
+
 static void *sc_calloc(size_t n, size_t sz)
 {
     void *p = calloc(n, sz);
@@ -30,31 +79,23 @@ int SheetComposite_run(const SheetCompositeLayer *layers, size_t n_layers,
 {
     size_t W = 0, H = 0;
     if (out_tex_data != NULL) *out_tex_data = NULL;
-    if (layers == NULL || n_layers == 0 ||
-        n_layers > SHEET_COMPOSITE_MAX_LAYERS || out == NULL)
+    if (out == NULL || sc_canvas_size(layers, n_layers, &W, &H) != 0)
         return -1;
     memset(out, 0, sizeof *out);
-    for (size_t l = 0; l < n_layers; l++) {
-        const SheetCompositeLayer *L = &layers[l];
-        if (L->tex == NULL || L->cov == NULL || L->w == 0 || L->h == 0 ||
-            L->off_u < 0 || L->off_v < 0)
-            return -1;
-        if ((size_t)L->off_u + L->w > W) W = (size_t)L->off_u + L->w;
-        if ((size_t)L->off_v + L->h > H) H = (size_t)L->off_v + L->h;
-    }
-    if (W == 0 || H == 0 || W > SIZE_MAX / H) return -1;
 
     uint8_t *tex = (uint8_t *)sc_calloc(W * H, 1);
     uint8_t *prov = (uint8_t *)sc_calloc(W * H, 3);
     uint8_t *painted = (uint8_t *)sc_calloc(W * H, 1);
-    if (tex == NULL || prov == NULL || painted == NULL) {
-        free(tex); free(prov); free(painted);
+    uint8_t *owner = (uint8_t *)sc_calloc(W * H, 1);
+    if (tex == NULL || prov == NULL || painted == NULL || owner == NULL) {
+        free(tex); free(prov); free(painted); free(owner);
         return -1;
     }
     for (size_t p = 0; p < W * H; p++) {
         prov[p * 3 + 0] = SC_BG[0];
         prov[p * 3 + 1] = SC_BG[1];
         prov[p * 3 + 2] = SC_BG[2];
+        owner[p] = UINT8_MAX;
     }
 
     /* Two passes: DIRECT face coverage from any layer beats a void-filled
@@ -73,6 +114,7 @@ int SheetComposite_run(const SheetCompositeLayer *layers, size_t n_layers,
                     tex[drow + x] = L->tex[srow + x];
                     memcpy(&prov[(drow + x) * 3],
                            SC_PROV[l][want_direct ? 0 : 1], 3);
+                    owner[drow + x] = (uint8_t)l;
                     painted[drow + x] = 1;
                     taken++;
                 }
@@ -105,7 +147,8 @@ int SheetComposite_run(const SheetCompositeLayer *layers, size_t n_layers,
     uint8_t *take = (uint8_t *)sc_calloc(W * H, 1);
     uint8_t *tval = (uint8_t *)sc_calloc(W * H, 1);
     if (take == NULL || tval == NULL) {
-        free(tex); free(prov); free(painted); free(take); free(tval);
+        free(tex); free(prov); free(painted); free(owner);
+        free(take); free(tval);
         return -1;
     }
     for (int pass = 0; pass < 2; pass++) {
@@ -171,17 +214,58 @@ int SheetComposite_run(const SheetCompositeLayer *layers, size_t n_layers,
     out->empty_px = W * H - np;
 
     int rc = 0;
-    if (out_tex_png != NULL &&
-        VesPng_write_gray(out_tex_png, tex, (int)W, (int)H) != 0)
-        rc = -1;
+    uint8_t *view = NULL;
+    if (out_tex_png != NULL || out_tex_data != NULL) {
+        view = (uint8_t *)sc_calloc(W * H, 3);
+        if (view == NULL) {
+            rc = -1;
+        } else {
+            for (size_t p = 0; p < W * H; p++)
+                sc_tint_pixel(tex[p], owner[p], &view[p * 3]);
+            if (out_tex_png != NULL &&
+                VesPng_write_rgb(out_tex_png, view, (int)W, (int)H) != 0)
+                rc = -1;
+        }
+    }
     if (out_prov_png != NULL &&
         VesPng_write_rgb(out_prov_png, prov, (int)W, (int)H) != 0)
         rc = -1;
-    if (out_tex_data != NULL && rc == 0) *out_tex_data = tex;
-    else free(tex);
+    if (out_tex_data != NULL && rc == 0) *out_tex_data = view;
+    else free(view);
+    free(tex);
     free(prov);
     free(painted);
+    free(owner);
     return rc;
+}
+
+int SheetComposite_write_layer_views(
+    const SheetCompositeLayer *layers, size_t n_layers,
+    const char *const out_layer_png[SHEET_COMPOSITE_MAX_LAYERS])
+{
+    size_t W = 0, H = 0;
+    if (out_layer_png == NULL ||
+        sc_canvas_size(layers, n_layers, &W, &H) != 0)
+        return -1;
+    for (size_t l = 0; l < n_layers; l++) {
+        const SheetCompositeLayer *L = &layers[l];
+        if (out_layer_png[l] == NULL) return -1;
+        uint8_t *view = (uint8_t *)sc_calloc(W * H, 3);
+        if (view == NULL) return -1;
+        for (size_t y = 0; y < L->h; y++) {
+            size_t drow = ((size_t)L->off_v + y) * W + (size_t)L->off_u;
+            size_t srow = y * L->w;
+            for (size_t x = 0; x < L->w; x++) {
+                if (L->cov[srow + x] == 0) continue;
+                sc_tint_pixel(L->tex[srow + x], l,
+                              &view[(drow + x) * 3]);
+            }
+        }
+        int rc = VesPng_write_rgb(out_layer_png[l], view, (int)W, (int)H);
+        free(view);
+        if (rc != 0) return -1;
+    }
+    return 0;
 }
 
 int SheetComposite_selftest(void)
@@ -221,6 +305,18 @@ int SheetComposite_selftest(void)
     L[1].off_u = 2; L[1].off_v = 0;
 
     SheetCompositeStats S;
+    {
+        uint8_t neutral[3], orange[3], blue[3];
+        sc_tint_pixel(100, 0, neutral);
+        sc_tint_pixel(100, 1, orange);
+        sc_tint_pixel(100, 2, blue);
+        if (neutral[0] != 100 || neutral[1] != 100 || neutral[2] != 100 ||
+            !(orange[0] > orange[1] && orange[1] > orange[2]) ||
+            !(blue[2] > blue[1] && blue[1] > blue[0])) {
+            fprintf(stderr, "  FAIL: provenance texture tint palette\n");
+            fails++;
+        }
+    }
     int rc = SheetComposite_run(L, 2, NULL, NULL, NULL, &S);
     if (rc != 0) { fprintf(stderr, "  FAIL: composite rc\n"); fails++; }
     if (S.width != 8 || S.height != 4) {

@@ -13,13 +13,16 @@
  *                               own fallback, promoted to primary) with an
  *                               optional |pitch| prior from the config
  *
- * The acceptance machinery is transcribed, not redesigned: exact BVH audits
- * gate every candidate, orientation preflights are baseline-relative, the
- * alpha ladder feathers local rollbacks, progress is measured in phase
- * violations under a bounded pair-count churn, rejected settle pulls adopt
- * their return-path contacts, and a partial solve publishes only the
- * lexicographically best fully audited state.  The long evidence comments
- * from the original are preserved where the predicate they justify moved.
+ * ACCEPTANCE GATES PERMANENTLY DISARMED (user directive 2026-08-30): every
+ * trial is exact-audited, its gated verdict computed and logged verbatim
+ * ("accept (gate-would-reject)" marks a trial the old machinery would have
+ * refused), and then committed unconditionally.  The final state ships --
+ * never a lex-best snapshot, never a rollback.  Rejections and failures are
+ * research data judged by inspection (bakes + cross sections), not stop
+ * conditions.  The enforcement code (preflight rejection, rollback ladders,
+ * lexicographic partial publication, return-path adoption, transaction
+ * rollback) is preserved under #if 0 -- deliberately NOT behind a runtime
+ * flag, so it cannot re-arm by accident.
  *
  * Allocation is malloc/free (matching the source region); motion is radial
  * about an axis parallel to +Z in zyx coordinates.
@@ -970,6 +973,21 @@ static int qr_repair_turn_order(const QrGrid *g, float *verts,
                     orientation_bad = qr_orientation_violations(
                         candidate, base, nv, faces, nf, orientation_input_bad,
                         NULL, NULL);
+                    /* GATES DISARMED (user directive 2026-08-30): every
+                     * acceptance predicate in this module is now
+                     * measurement-only -- computed and logged in full, never
+                     * enforced.  The algorithm's raw effect is judged by
+                     * inspection (bakes + cross sections); rejections and
+                     * failures are research data, not stop conditions.  The
+                     * enforcement code is preserved under #if 0 -- NOT behind
+                     * a runtime flag -- so it cannot re-arm by accident. */
+                    if (orientation_bad)
+                        fprintf(stderr,
+                                "[turn-order] preflight measurement alpha "
+                                "%.3f: orientation violations=%zu (gate "
+                                "disarmed, proceeding to audit)\n",
+                                trial_scale[trial], orientation_bad);
+#if 0               /* disarmed: preflight rejection + feathered rollback */
                     if (orientation_bad) {
                         size_t orientation_marked = 0;
                         fprintf(stderr,
@@ -989,6 +1007,7 @@ static int qr_repair_turn_order(const QrGrid *g, float *verts,
                                 orientation_marked);
                         continue;
                     }
+#endif
                     memset(&after, 0, sizeof after);
                     if (qr_audit(candidate, nv, faces, nf, uv,
                                  minimum_u_separation, NULL, local_after,
@@ -1007,11 +1026,24 @@ static int qr_repair_turn_order(const QrGrid *g, float *verts,
                             "[turn-order] %s trial alpha %.3f rollback %d: "
                             "move rms/max %.3f/%.3f; conflicts %zu->%zu, long "
                             "%zu->%zu, local %zu->%zu, folds %zu->%zu\n",
-                            safe ? "accept" : "reject", trial_scale[trial],
+                            safe ? "accept" : "accept (gate-would-reject)",
+                            trial_scale[trial],
                             rollback, move_rms, move_max, before.conflicts,
                             after.conflicts, before_scan.count,
                             after_scan.count, before_local, after_local,
                             before.fold_pairs, after.fold_pairs);
+                    /* GATE DISARMED: commit every exact-audited trial. */
+                    memcpy(verts, candidate, nv * 3 * sizeof *verts);
+                    accepted = 1;
+                    s->turn_order_rounds++;
+                    {
+                        size_t *tmp = local_before;
+                        local_before = local_after;
+                        local_after = tmp;
+                    }
+                    free(after_scan.pair);
+                    break;
+#if 0               /* disarmed: lexicographic acceptance + rollback ladder */
                     if (safe) {
                         memcpy(verts, candidate, nv * 3 * sizeof *verts);
                         accepted = 1;
@@ -1054,6 +1086,7 @@ static int qr_repair_turn_order(const QrGrid *g, float *verts,
                                 "rings\n",
                                 marked);
                     }
+#endif
                 }
                 if (accepted) break;
             }
@@ -1616,7 +1649,6 @@ static void qr_settle_toward_rest(
         {
             double rms_after = 0.0, max_after = 0.0;
             size_t orientation_bad;
-            int accept = 0, audited = 0;
             QrScan after_scan;
             IntersectionCleanupStats after;
             memset(&after_scan, 0, sizeof after_scan);
@@ -1625,41 +1657,49 @@ static void qr_settle_toward_rest(
             orientation_bad = qr_orientation_violations_list(
                 trial, base, nv, faces, band_face, nband_face,
                 orientation_input_bad, NULL, NULL);
-            if (orientation_bad == 0 && rms_after + 1e-9 < 0.995 * previous_rms) {
-                if (qr_audit(trial, nv, faces, nf, uv, minimum_u_separation,
-                             NULL, NULL, &after_scan, &after) != 0) {
-                    free(list); free(band_face); free(active);
-                    return;
-                }
-                audited = 1;
-                accept = after_scan.count == 0 && after.stab_pairs == 0 &&
-                         after.fold_pairs <= transaction_input_fold;
-            }
-            fprintf(stderr,
-                    "[elastic-shell] settle round %d: beta %.4f, displacement "
-                    "rms %.4f -> %.4f, exact long/stab/fold=%zu/%zu/%zu (%s)\n",
-                    round + 1, beta, rms_before, rms_after,
-                    audited ? after_scan.count : (size_t)0,
-                    audited ? after.stab_pairs : (size_t)0,
-                    audited ? after.fold_pairs : (size_t)0,
-                    accept ? "accept"
-                           : (orientation_bad ? "reject-orientation"
-                                              : (audited ? "reject-audit"
-                                                         : "reject-no-progress")));
-            s->settle_rounds_run++;
-            if (accept) {
-                memcpy(verts, trial, nv * 3 * sizeof *verts);
-                free(cached_scan->pair);
-                *cached_scan = after_scan;
-                *cached_stats = after;
-                s->settle_rms_after = rms_after;
-                accepted_rounds++;
-                previous_rms = rms_after;
-                previous_reject_conflicts = SIZE_MAX;
-                stale_merges = 0;
+            /* GATE DISARMED (2026-08-30): every settle pull is audited and
+             * committed; the gated verdict (the original predicate,
+             * verbatim) is computed for the log only.  NOTE: the return-path
+             * contact adoption in the #if 0 region below was reachable only
+             * through rejection -- with gates disarmed it is dead code.  If
+             * inspection shows settle re-colliding, that loss is the first
+             * suspect. */
+            if (qr_audit(trial, nv, faces, nf, uv, minimum_u_separation,
+                         NULL, NULL, &after_scan, &after) != 0) {
                 free(list); free(band_face); free(active);
-                continue;
+                return;
             }
+            {
+                int gated = orientation_bad == 0 &&
+                            rms_after + 1e-9 < 0.995 * previous_rms &&
+                            after_scan.count == 0 && after.stab_pairs == 0 &&
+                            after.fold_pairs <= transaction_input_fold;
+                fprintf(stderr,
+                        "[elastic-shell] settle round %d: beta %.4f, "
+                        "displacement rms %.4f -> %.4f, exact "
+                        "long/stab/fold=%zu/%zu/%zu, orientation=%zu (%s)\n",
+                        round + 1, beta, rms_before, rms_after,
+                        after_scan.count, after.stab_pairs, after.fold_pairs,
+                        orientation_bad,
+                        gated ? "accept" : "accept (gate-would-reject)");
+            }
+            s->settle_rounds_run++;
+            (void)betas_weakened; (void)previous_reject_conflicts;
+            (void)stale_merges;
+            memcpy(verts, trial, nv * 3 * sizeof *verts);
+            free(cached_scan->pair);
+            *cached_scan = after_scan;
+            *cached_stats = after;
+            s->settle_rms_after = rms_after;
+            accepted_rounds++;
+            previous_rms = rms_after;
+            previous_reject_conflicts = SIZE_MAX;
+            stale_merges = 0;
+            free(list); free(band_face); free(active);
+            continue;
+#if 0       /* disarmed: settle rejection handling (return-path contact
+             * adoption + beta weakening), unreachable behind the
+             * unconditional commit above */
             if (audited && (after_scan.count > 0 || after.stab_pairs > 0)) {
                 /* The return path crossed pairs the escape ledger never saw --
                  * the pull re-collides where the coil originally
@@ -1709,6 +1749,7 @@ static void qr_settle_toward_rest(
             betas_weakened++;
             if (betas_weakened > 3) break;
             beta = (1.0 + beta) * 0.5;
+#endif
         }
     }
     s->settle_accepted = accepted_rounds;
@@ -1989,6 +2030,16 @@ static int qr_resolve_self_collisions(
                             orientation_bad = qr_orientation_violations_list(
                                 trial, base, nv, faces, band_face, nband_face,
                                 orientation_input_bad, NULL, NULL);
+                            /* GATE DISARMED (2026-08-30): preflight is
+                             * measurement-only; see the turn-order note. */
+                            if (orientation_bad)
+                                fprintf(stderr,
+                                        "[cloth-collision] preflight "
+                                        "measurement alpha %.4f: orientation "
+                                        "violations=%zu (gate disarmed, "
+                                        "proceeding to audit)\n",
+                                        alpha[attempt], orientation_bad);
+#if 0                       /* disarmed: preflight rejection + rollback */
                             if (orientation_bad) {
                                 size_t orientation_marked = 0;
                                 fprintf(stderr,
@@ -2007,6 +2058,7 @@ static int qr_resolve_self_collisions(
                                 qr_feather_motion_scale(g, keep, keep_tmp, 8);
                                 continue;
                             }
+#endif
                             memset(&after, 0, sizeof after);
                             if (qr_audit(trial, nv, faces, nf, uv,
                                          minimum_u_separation, NULL,
@@ -2048,7 +2100,9 @@ static int qr_resolve_self_collisions(
                                     "%d: exact %zu->%zu, long %zu->%zu, "
                                     "folds %zu->%zu; phase violations "
                                     "%zu->%zu rms %.6f->%.6f\n",
-                                    safe ? "accept" : "reject", alpha[attempt],
+                                    safe ? "accept"
+                                         : "accept (gate-would-reject)",
+                                    alpha[attempt],
                                     rollback, before.conflicts,
                                     after.conflicts, before_scan.count,
                                     after_scan.count, before.fold_pairs,
@@ -2056,7 +2110,8 @@ static int qr_resolve_self_collisions(
                                     violation_count_after,
                                     violation_rms_before,
                                     violation_rms_after);
-                            if (safe) {
+                            /* GATE DISARMED: commit every audited trial. */
+                            {
                                 memcpy(verts, trial, nv * 3 * sizeof *verts);
                                 accepted = 1;
                                 s->accepted_rounds++;
@@ -2139,6 +2194,7 @@ static int qr_resolve_self_collisions(
                                 }
                                 break;
                             }
+#if 0                       /* disarmed: rejection + local rollback ladder */
                             if (rollback == maximum_local_rollbacks ||
                                 !phase_progress || !bounded_churn) {
                                 free(after_scan.pair);
@@ -2178,6 +2234,7 @@ static int qr_resolve_self_collisions(
                                         "and feathered 8 rings\n",
                                         marked);
                             }
+#endif
                         }
                         if (accepted) break;
                     }
@@ -2194,7 +2251,7 @@ static int qr_resolve_self_collisions(
             fprintf(stderr,
                     "[cloth-collision] stopping after %d accepted rounds "
                     "without a better exact-audited topology (patience=%d); "
-                    "retaining the best state\n",
+                    "the FINAL state ships (gates disarmed 2026-08-30)\n",
                     rounds_since_best, o->collision_patience);
             break;
         }
@@ -2207,7 +2264,17 @@ static int qr_resolve_self_collisions(
             break;
         }
     }
-    if (cached_audit && cached_scan.count == 0 && cached_stats.stab_pairs == 0 &&
+    /* GATE DISARMED (2026-08-30): settle runs whenever a contact ledger
+     * exists.  The original entry additionally required a fully clean
+     * audited state:
+     *   cached_scan.count == 0 && cached_stats.stab_pairs == 0        */
+    if (cached_audit && ncontact_ledger > 0 && pitch != 0.0 &&
+        (cached_scan.count != 0 || cached_stats.stab_pairs != 0))
+        fprintf(stderr,
+                "[elastic-shell] settle entry with unresolved long=%zu "
+                "stab=%zu (clean-entry gate disarmed)\n",
+                cached_scan.count, cached_stats.stab_pairs);
+    if (cached_audit &&
         ncontact_ledger > 0 && pitch != 0.0)
         qr_settle_toward_rest(g, verts, movable, rest_target, rest_radius,
                               &contact_ledger, &ncontact_ledger, pitch,
@@ -2236,6 +2303,17 @@ static int qr_resolve_self_collisions(
         }
         complete = final_scan.count == 0 && final_stats.stab_pairs == 0 &&
                    final_stats.fold_pairs <= transaction_input_fold;
+        /* GATE DISARMED (2026-08-30): the FINAL state ships; the
+         * lexicographic-best snapshot is logged as measurement only. */
+        if (!complete && best_initialized)
+            fprintf(stderr,
+                    "[cloth-collision] gate disarmed: retaining FINAL state "
+                    "(long=%zu stab=%zu folds=%zu); lex-best snapshot would "
+                    "have been long=%zu stab=%zu folds=%zu (input folds=%zu)\n",
+                    final_scan.count, final_stats.stab_pairs,
+                    final_stats.fold_pairs, best_long, best_stats.stab_pairs,
+                    best_stats.fold_pairs, transaction_input_fold);
+#if 0   /* disarmed: lexicographic-best partial restore */
         if (!complete && !o->require_collision_free && best_initialized) {
             free(final_scan.pair);
             memset(&final_scan, 0, sizeof final_scan);
@@ -2250,6 +2328,7 @@ static int qr_resolve_self_collisions(
                     final_scan.count, final_stats.stab_pairs,
                     final_stats.fold_pairs, transaction_input_fold);
         }
+#endif
         s->complete = complete;
         s->output_conflicts = final_stats.conflicts;
         s->output_long_conflicts = final_scan.count;
@@ -2261,6 +2340,13 @@ static int qr_resolve_self_collisions(
                 final_stats.overlap_pairs, final_stats.stab_pairs,
                 final_stats.fold_pairs);
         qr_audit_report("elastic-shell");
+        /* GATE DISARMED (2026-08-30): the full-transaction rollback is
+         * suppressed; an armed require_collision_free is logged only. */
+        if (!complete && o->require_collision_free)
+            fprintf(stderr,
+                    "[cloth-collision] gate disarmed: require_collision_free "
+                    "rollback suppressed; shipping the final state\n");
+#if 0   /* disarmed: full-transaction rollback */
         if (!complete && o->require_collision_free) {
             fprintf(stderr,
                     "[cloth-collision] ROLLBACK: the elastic-shell "
@@ -2271,6 +2357,7 @@ static int qr_resolve_self_collisions(
             rc = 1;
             goto cleanup;
         }
+#endif
         free(final_scan.pair);
     }
     rc = 0;

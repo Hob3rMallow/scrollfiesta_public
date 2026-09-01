@@ -126,9 +126,9 @@ SF_API sf_status sf_pipeline_run(const sf_volume *vol,
         pin.cube_H           = cfg->cube_size;
         pin.cube_W           = cfg->cube_size;
         pin.n_threads        = cfg->common.n_threads > 0 ? cfg->common.n_threads : 1;
-        pin.qem_target_ratio = cfg->qem_target_ratio;
+        pin.cvt_target_ratio = cfg->cvt_target_ratio;
         pin.dump_dir         = cfg->dump_dir;
-        pin.skip_qem         = cfg->skip_qem;
+        pin.skip_simplify    = cfg->skip_simplify;
         pin.vol_in           = vol->data;
         pin.p_size_in        = vol->nx;
         pin.cube_origin_zyx[0] = cfg->origin_xyz[2];
@@ -142,7 +142,7 @@ SF_API sf_status sf_pipeline_run(const sf_volume *vol,
         } else {
             if (rep) {
                 rep->t_extract    = pout.t_extract;
-                rep->t_qem        = pout.t_qem;
+                rep->t_cvt        = pout.t_cvt;
                 rep->t_trim       = pout.t_trim;
                 rep->t_dump       = pout.t_dump;
                 rep->n_bad_sheets = pout.n_bad_sheets;

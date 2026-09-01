@@ -1,7 +1,7 @@
 /*
  * component_cull.c -- connectivity pass + surface-area filter. See header.
  *
- * After hole-fill/QEM a cube can carry small disconnected "kibble" (stray BPA
+ * After hole-fill/CVT a cube can carry small disconnected "kibble" (stray BPA
  * islands, cut-zone crumbs). This splits every mesh into its connectivity-
  * components and drops any whose area is below a fraction of the total meshed
  * area, leaving only the real sheets.

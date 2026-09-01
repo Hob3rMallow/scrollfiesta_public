@@ -7,7 +7,7 @@
 
 /*
  * "Kibble" removal: a connectivity pass + surface-area filter, run after
- * hole-fill/QEM. Splits every input mesh into its mesh-connectivity-components,
+ * hole-fill/CVT. Splits every input mesh into its mesh-connectivity-components,
  * computes each component's triangle-area sum, and drops any component whose area
  * is < min_frac of its PARENT input mesh's area. The input array already carries
  * the semantic sheet split; using the whole-cube total catastrophically removes

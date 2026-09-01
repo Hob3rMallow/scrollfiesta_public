@@ -54,9 +54,8 @@ int cc_label_3d(Arena_T arena, const uint8_t *vol,
  * If halo_voxels == 0: tiff_path is loaded directly (legacy behavior);
  * pin_mask is NULL on output meshes; pred_dir is unused.
  *
- * dump_cube_dir / cube_id: if both non-NULL, writes pre- and post-QEM
- * OBJ meshes into {dump_cube_dir}/{cube_id}_step0_pre_qem/ and
- * {dump_cube_dir}/{cube_id}_step0/ respectively.
+ * dump_cube_dir / cube_id: if both non-NULL, writes the dense BPA surface
+ * into {dump_cube_dir}/{cube_id}_step0_pre_simplify/.
  *
  * Returns 0 on success, nonzero on failure.
  * On success, *out_meshes points to an arena-allocated array of
@@ -83,7 +82,6 @@ int MeshExtract_run(Arena_T          arena,
                     int              n_threads,
                     const char      *dump_cube_dir,
                     const char      *cube_id,
-                    int              skip_qem,
                     float            trim_inset,      /* owned-box inset, vox;
                                                        * < 0 = the
                                                        * BPA_OWNED_TRIM_INSET

@@ -3,8 +3,8 @@
  *
  * Builds a level-of-detail pyramid over a grid of already-meshed cubes. For
  * each level L = 1..N it partitions the level-(L-1) nodes into fanout^3 blocks,
- * WELDS each block (grid_weld.exe --subgrid), then SIMPLIFIES the welded block
- * a lot (qslim_obj.exe). Each decimated block becomes a node for level L+1.
+ * WELDS each block (grid_weld.exe --subgrid), then CVT-remeshes the welded
+ * block. Each coarse CVT block becomes a node for level L+1.
  * Because every weld is bounded to <= fanout^3 inputs and each level is
  * decimated before the next weld, the pipeline never materializes a
  * full-resolution monolith -- sidestepping the whole-grid weld OOM -- while
@@ -15,7 +15,7 @@
  *   hierarchical_weld --selftest
  *
  * This is a PURE ORCHESTRATOR: directory enumeration + subprocess spawning +
- * text aggregation. It never holds a mesh in memory (no arena / obj_io / qem).
+ * text aggregation. It never holds a mesh in memory.
  *
  * ---- Global-anchoring rule (correctness-critical) ----
  * grid_weld's detect_planes finds seams only at GLOBAL multiples of --cube-size.
@@ -29,8 +29,8 @@
  *
  * ---- Merger safety ----
  * grid_weld caps bridge faces at 2*rho_max=6 vox < 7-vox inter-wrap clearance,
- * and QEM edge-collapse only simplifies existing topology (proximity anti-fusion
- * guard), so decimation cannot merge two wraps. The optional winding gate is
+ * and every accepted CVT block is independently winding/topology certified,
+ * so remeshing cannot silently merge two wraps. The optional winding gate is
  * armed for every weld via SEAM_UMBILICUS_Y/X + SEAM_WRAP_PITCH env (set once in
  * main, inherited by all children).
  */
@@ -71,14 +71,14 @@ typedef struct {
 #define RES_OK   0
 #define RES_WARN 1   /* weld reported non-manifold/pinch but OBJ is usable */
 #define RES_SKIP 2   /* final node already complete (resume) */
-#define RES_FAIL 3   /* spawn fail / timeout / crash / qslim fail -> no output */
+#define RES_FAIL 3   /* spawn fail / timeout / crash / CVT fail -> no output */
 
 typedef struct {
     int           status;
-    unsigned long weld_exit, qslim_exit;
+    unsigned long weld_exit, simplify_exit;
     long long     weld_verts, weld_faces;             /* from weld_report.json */
     long long     unpaired, non_manifold, same_dir, pinch;
-    long long     final_faces;                        /* counted post-qslim */
+    long long     final_faces;                        /* counted after CVT */
     int           n_children;
     int           no_holefill;                        /* 1 = weld retried w/o holefill */
     int           repair_passes;
@@ -103,17 +103,12 @@ typedef struct {
     double      block_timeout_sec;
     int         skip_existing;
     int         simplify_top;
-    int         no_decimate;   /* 1 = never qslim: weld-only every level (band-CVT
+    int         no_decimate;   /* 1 = never simplify: weld-only every level (band-CVT
                                 * welds already carry CVT quality; decimation only
                                 * re-scars them with slivers). Trades bounded
                                 * per-level memory for preserved quality. */
-    int         cvt_simplify;  /* 1 = decimate each level with cvt_simplify (CVT
-                                * per-component, boundary-preserving) instead of
-                                * qslim: a proper mip pyramid that KEEPS CVT
-                                * quality at every tier. Seams coarsen with the
-                                * rest and are re-refined by the next weld. */
     int         dry_run;
-    int         remesh;        /* 1 = pass --remesh to qslim (default on) */
+    int         remesh;        /* terminal weld-only isotropic cleanup */
     int         topology_first;/* preserve faces, disable generative closers,
                                 * iteratively cut supported winding shortcuts,
                                 * then exact/topology/winding validate each node */
@@ -122,7 +117,6 @@ typedef struct {
     double      umb_y, umb_x, wrap_pitch;
     const char *axis_table;
     const char *grid_weld_exe;
-    const char *qslim_exe;
     const char *cvt_simplify_exe;
     const char *manifold_exe;
     const char *obj_reorient_exe;
@@ -142,7 +136,7 @@ typedef struct {
     long long   child_pitch;   /* P_{level-1} = grid_weld --cube-size */
     Origin      domain_lo;     /* original leaf-domain lower bound */
     Origin      domain_hi;     /* original leaf-domain upper bound, exclusive */
-    int         do_simplify;   /* 0 = weld only (terminal), 1 = weld + qslim */
+    int         do_simplify;   /* 0 = weld only (terminal), 1 = weld + CVT */
 } LevelCtx;
 
 /* ================================================================
@@ -1121,7 +1115,7 @@ static void run_one_block(const LevelCtx *lc, const Block *blk, BlockResult *res
     const Options *opt = lc->opt;
     char id[128], final[1024], weld_out[1024], report[1088], marker[1088];
     char preconditioned[1088];
-    char weld_log[1024], qslim_log[1024], final_tmp[1088];
+    char weld_log[1024], simplify_log[1024], final_tmp[1088];
     char sz0[32], sz1[32], sy0[32], sy1[32], sx0[32], sx1[32];
     char pitch_s[32], ratio_s[32];
     const char *argv[40];
@@ -1151,7 +1145,7 @@ static void run_one_block(const LevelCtx *lc, const Block *blk, BlockResult *res
     if (ves_ensure_parent_dir(final) != 0) { res->status = RES_FAIL; return; }
 
     /* Weld destination: for weld-only (terminal) levels, grid_weld writes the
-     * final node directly; otherwise it writes _weld.obj which qslim reads. */
+     * final node directly; otherwise it writes _weld.obj which CVT reads. */
     if (lc->do_simplify || opt->topology_first)
         snprintf(weld_out, sizeof(weld_out), "%s/%s/_weld.obj", lc->this_dir, id);
     else
@@ -1276,10 +1270,9 @@ static void run_one_block(const LevelCtx *lc, const Block *blk, BlockResult *res
         return;
     }
 
-    if (lc->do_simplify && opt->cvt_simplify) {
-        /* CVT-decimate (per-component, boundary-preserving) instead of qslim:
-         * keeps CVT quality at every tier. Seams coarsen with the interior and
-         * are re-refined by the next level's weld. */
+    if (lc->do_simplify) {
+        /* CVT-remesh per component while preserving boundaries. Seams coarsen
+         * with the interior and are re-refined by the next level's weld. */
         snprintf(final_tmp, sizeof(final_tmp), "%s.tmp", final);
         snprintf(ratio_s, sizeof(ratio_s), "%.6f", opt->keep_ratio);
         ac = 0;
@@ -1289,29 +1282,13 @@ static void run_one_block(const LevelCtx *lc, const Block *blk, BlockResult *res
         argv[ac++] = "--keep-ratio";
         argv[ac++] = ratio_s;
         argv[ac] = NULL;
-        snprintf(qslim_log, sizeof(qslim_log), "%s/%s/_cvtsimplify.log", lc->this_dir, id);
-        st = spawn_logged(opt->cvt_simplify_exe, argv, qslim_log,
+        snprintf(simplify_log, sizeof(simplify_log), "%s/%s/_cvtsimplify.log", lc->this_dir, id);
+        st = spawn_logged(opt->cvt_simplify_exe, argv, simplify_log,
                           opt->block_timeout_sec, &ex);
-        res->qslim_exit = ex;
+        res->simplify_exit = ex;
         if (st != 0 || ex != 0) { res->status = RES_FAIL; res->seconds = ves_clock_sec() - t0; return; }
         if (atomic_replace(final_tmp, final) != 0) { res->status = RES_FAIL; res->seconds = ves_clock_sec() - t0; return; }
-    } else if (lc->do_simplify) {
-        snprintf(final_tmp, sizeof(final_tmp), "%s.tmp", final);
-        snprintf(ratio_s, sizeof(ratio_s), "%.6f", opt->keep_ratio);
-        ac = 0;
-        argv[ac++] = opt->qslim_exe;
-        argv[ac++] = weld_out;
-        argv[ac++] = final_tmp;
-        argv[ac++] = ratio_s;
-        if (opt->remesh) argv[ac++] = "--remesh";
-        argv[ac] = NULL;
-        snprintf(qslim_log, sizeof(qslim_log), "%s/%s/_qslim.log", lc->this_dir, id);
-        st = spawn_logged(opt->qslim_exe, argv, qslim_log,
-                          opt->block_timeout_sec, &ex);
-        res->qslim_exit = ex;
-        if (st != 0 || ex != 0) { res->status = RES_FAIL; res->seconds = ves_clock_sec() - t0; return; }
-        if (atomic_replace(final_tmp, final) != 0) { res->status = RES_FAIL; res->seconds = ves_clock_sec() - t0; return; }
-    } else if (opt->remesh && !opt->cvt_simplify) {
+    } else if (opt->remesh) {
         /* Terminal weld-only apex: it never saw a remesh, and the BPA seam weld
          * leaves it sliver-heavy (measured 65% -> 47% faces <15deg after remesh).
          * Run the isotropic remesh as a cleanup (fail-closed, ~same face count).
@@ -1322,8 +1299,8 @@ static void run_one_block(const LevelCtx *lc, const Block *blk, BlockResult *res
         argv[ac++] = final;
         argv[ac++] = final_tmp;
         argv[ac] = NULL;
-        snprintf(qslim_log, sizeof(qslim_log), "%s/%s/_remesh.log", lc->this_dir, id);
-        st = spawn_logged(opt->remesh_exe, argv, qslim_log,
+        snprintf(simplify_log, sizeof(simplify_log), "%s/%s/_remesh.log", lc->this_dir, id);
+        st = spawn_logged(opt->remesh_exe, argv, simplify_log,
                           opt->block_timeout_sec, &ex);
         if (st == 0 && ex == 0) (void)atomic_replace(final_tmp, final);
     }
@@ -1334,8 +1311,7 @@ static void run_one_block(const LevelCtx *lc, const Block *blk, BlockResult *res
 }
 
 /* ================================================================
- * Terminal re-orient: qslim's global winding-repair can flip regions on a
- * wrapped surface and (unlike intermediate levels) no further weld re-orients
+ * Terminal re-orient: unlike intermediate levels, no later weld re-orients
  * the top node. Re-run grid_weld on the single node with a huge cube-size so
  * detect_planes finds 0 seams (no bridge) but the orient/cleanup tail still
  * runs. Only used with --simplify-top.
@@ -1377,7 +1353,7 @@ static void reorient_node(const Options *opt, const char *dir,
         atomic_replace(tmp, node);
         fprintf(stderr, "  [reorient] %s\n", id);
     } else {
-        fprintf(stderr, "  [reorient] FAILED for %s (exit=%lu) -- keeping qslim output\n",
+        fprintf(stderr, "  [reorient] FAILED for %s (exit=%lu) -- keeping CVT output\n",
                 id, ex);
     }
 }
@@ -1438,7 +1414,7 @@ static int run_level(const LevelCtx *lc, Block *blocks, size_t nblk,
     snprintf(csv_path, sizeof(csv_path), "%s/_summary.csv", lc->this_dir);
     cf = fopen(csv_path, "w");
     if (cf) {
-        fprintf(cf, "block_id,n_children,status,weld_exit,qslim_exit,"
+        fprintf(cf, "block_id,n_children,status,weld_exit,simplify_exit,"
                     "weld_verts,weld_faces,final_faces,unpaired,non_manifold,"
                     "same_dir,pinch,repair_passes,shortcuts_before,"
                     "shortcuts_after,repair_cut_edges,repair_components_delta,"
@@ -1452,7 +1428,7 @@ static int run_level(const LevelCtx *lc, Block *blocks, size_t nblk,
             else if (res[k].status == RES_FAIL) tag = "fail";
             fprintf(cf, "%s,%d,%s,%lu,%lu,%lld,%lld,%lld,%lld,%lld,%lld,%lld,"
                         "%d,%lld,%lld,%lld,%lld,%lld,%d,%.2f\n",
-                    id, res[k].n_children, tag, res[k].weld_exit, res[k].qslim_exit,
+                    id, res[k].n_children, tag, res[k].weld_exit, res[k].simplify_exit,
                     (long long)res[k].weld_verts, (long long)res[k].weld_faces,
                     (long long)res[k].final_faces, (long long)res[k].unpaired,
                     (long long)res[k].non_manifold, (long long)res[k].same_dir,
@@ -1722,12 +1698,10 @@ static void usage(const char *prog)
         "  --leaf-stage NAME     leaf OBJ stage (default step12_final)\n"
         "  --fanout N            block edge in nodes (default 2 = 2x2x2)\n"
         "  --keep-ratio R        decimate to R of faces each level (default 0.25)\n"
-        "  --no-decimate         weld-only every level, NO qslim (preserves band-CVT\n"
+        "  --no-decimate         weld-only every level, no CVT reduction\n"
         "                        quality; face count stays ~constant up the pyramid,\n"
         "                        so pair with a low --max-concurrent for memory)\n"
-        "  --cvt-simplify        decimate each level with cvt_simplify (CVT per-\n"
-        "                        component, boundary-preserving) instead of qslim:\n"
-        "                        a mip pyramid that KEEPS CVT quality at every tier\n"
+        "  --cvt-simplify-exe P  CVT simplifier (default build/Release/cvt_simplify.exe)\n"
         "  --topology-first      no decimation/holefill/recoarsen/band-CVT; after\n"
         "                        every weld iteratively cut supported winding\n"
         "                        shortcuts and require all exact/topology gates\n"
@@ -1742,7 +1716,6 @@ static void usage(const char *prog)
         "  --wrap-pitch F        winding-gate wrap pitch (default 9.5)\n"
         "  --block-timeout S     per-block wall-clock timeout sec (default 900)\n"
         "  --grid-weld PATH      grid_weld.exe (default build/Release/grid_weld.exe)\n"
-        "  --qslim PATH          qslim_obj.exe (default build/Release/qslim_obj.exe)\n"
         "  --manifold PATH       manifold_check.exe (default build/Release/manifold_check.exe)\n"
         "  --obj-reorient PATH    obj_reorient.exe (default build/Release/obj_reorient.exe)\n"
         "  --wind-audit PATH     wind_audit.exe (default build/Release/wind_audit.exe)\n"
@@ -1770,7 +1743,6 @@ static int parse_args(int argc, char **argv, Options *o)
     o->shortcut_tol = 0.58;
     o->umb_y = 3405.0; o->umb_x = 2878.0; o->wrap_pitch = 9.5;
     o->grid_weld_exe = "build/Release/grid_weld.exe";
-    o->qslim_exe = "build/Release/qslim_obj.exe";
     o->cvt_simplify_exe = "build/Release/cvt_simplify.exe";
     o->manifold_exe = "build/Release/manifold_check.exe";
     o->obj_reorient_exe = "build/Release/obj_reorient.exe";
@@ -1795,14 +1767,12 @@ static int parse_args(int argc, char **argv, Options *o)
         else if (!strcmp(argv[i], "--wrap-pitch") && i + 1 < argc) o->wrap_pitch = atof(argv[++i]);
         else if (!strcmp(argv[i], "--block-timeout") && i + 1 < argc) o->block_timeout_sec = atof(argv[++i]);
         else if (!strcmp(argv[i], "--grid-weld") && i + 1 < argc) o->grid_weld_exe = argv[++i];
-        else if (!strcmp(argv[i], "--qslim") && i + 1 < argc) o->qslim_exe = argv[++i];
         else if (!strcmp(argv[i], "--manifold") && i + 1 < argc) o->manifold_exe = argv[++i];
         else if (!strcmp(argv[i], "--obj-reorient") && i + 1 < argc) o->obj_reorient_exe = argv[++i];
         else if (!strcmp(argv[i], "--remesh-exe") && i + 1 < argc) o->remesh_exe = argv[++i];
         else if (!strcmp(argv[i], "--skip-existing") || !strcmp(argv[i], "--resume")) o->skip_existing = 1;
         else if (!strcmp(argv[i], "--simplify-top")) o->simplify_top = 1;
         else if (!strcmp(argv[i], "--no-decimate")) o->no_decimate = 1;
-        else if (!strcmp(argv[i], "--cvt-simplify")) o->cvt_simplify = 1;
         else if (!strcmp(argv[i], "--cvt-simplify-exe") && i + 1 < argc) o->cvt_simplify_exe = argv[++i];
         else if (!strcmp(argv[i], "--topology-first")) o->topology_first = 1;
         else if (!strcmp(argv[i], "--axis-table") && i + 1 < argc) o->axis_table = argv[++i];

@@ -146,7 +146,6 @@
     <ClCompile Include="src\common\dump_obj.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\mesh_bin.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\ves_platform.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
-    <ClCompile Include="src\common\qem.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\mesh_manifold.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\raw_snapback.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\snap_cg.c"><CompileAs>CompileAsC</CompileAs></ClCompile>

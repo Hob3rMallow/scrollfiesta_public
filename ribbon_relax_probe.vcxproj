@@ -96,6 +96,7 @@
     <ClCompile Include="src\tools\ribbon_relax_probe.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\flatten\ribbon_relax.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\flatten\fiber_field.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\mesh_bin.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\obj_io.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\tiff_io.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\arena.c"><CompileAs>CompileAsC</CompileAs></ClCompile>

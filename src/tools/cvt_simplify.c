@@ -1,13 +1,12 @@
 /*
  * cvt_simplify -- CVT-decimate a welded block, per connected component,
- * boundary-preserving. The quality-preserving replacement for qslim in the
- * hierarchical LOD pyramid (hierarchical_weld --cvt-simplify).
+ * boundary-preserving. This is the sole supported simplifier in the
+ * hierarchical LOD pyramid.
  *
  *   cvt_simplify <in.obj> <out.obj> --keep-ratio R
  *                [--iters N] [--min-faces M] [--seed S]
  *
- * qslim decimates fast but re-scars every LOD tier with slivers, undoing the
- * band-CVT weld quality. Instead: split the welded block into connected
+ * Split the welded block into connected
  * components (scroll wraps), and uniformly CVT-remesh each to keep_ratio of its
  * vertices. CVT's boundary seeds sit ON each component's boundary loop and are
  * projected back to it every iteration, so the block's OUTER boundary survives

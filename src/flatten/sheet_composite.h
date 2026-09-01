@@ -34,14 +34,22 @@ typedef struct SheetCompositeStats {
     size_t occluded_px[SHEET_COMPOSITE_MAX_LAYERS];
 } SheetCompositeStats;
 
-/* Composites the layers and writes <out_tex_png> (8-bit gray) and
- * <out_prov_png> (24-bit RGB provenance); either path may be NULL to skip.
- * If out_tex_data is non-NULL it receives the composited grayscale canvas
- * (malloc'd, width*height bytes; caller frees) so callers can build stacked
+/* Composites the layers and writes <out_tex_png> as a texture-bearing RGB
+ * provenance view (layer 0 neutral, layer 1 orange, layer 2 blue) and
+ * <out_prov_png> as the flat 24-bit provenance key; either path may be NULL.
+ * If out_tex_data is non-NULL it receives the same tinted RGB canvas
+ * (malloc'd, width*height*3 bytes; caller frees) so callers can build stacked
  * comparison views without re-reading PNGs.  Returns 0 on success. */
 int SheetComposite_run(const SheetCompositeLayer *layers, size_t n_layers,
                        const char *out_tex_png, const char *out_prov_png,
                        uint8_t **out_tex_data, SheetCompositeStats *out);
+
+/* Write one texture-bearing, full-common-canvas PNG per provenance layer.
+ * Pixels outside that layer's own coverage are black.  Paths for existing
+ * layers must be non-NULL; the array has SHEET_COMPOSITE_MAX_LAYERS slots. */
+int SheetComposite_write_layer_views(
+    const SheetCompositeLayer *layers, size_t n_layers,
+    const char *const out_layer_png[SHEET_COMPOSITE_MAX_LAYERS]);
 
 int SheetComposite_selftest(void);
 

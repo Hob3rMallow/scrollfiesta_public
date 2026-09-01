@@ -31,92 +31,6 @@
 #define GARBAGE_RECT_FRAC      0.20f   /* reject needs >= this frac of slices be rect frames */
 #define GARBAGE_RECT_RUN        12     /* ...AND a run of >= this many consecutive rect frames */
 
-/* Pre-Step 0 — 2D prediction gap fixup (src/fixup/, tool src/tools/pred_fixup.c).
- * Closes visible per-z-plane gaps in the binary prediction by matching skeleton
- * endpoints (greedy stable matching on one symmetric score + crossing bans,
- * per the MATCHING_ANALYSIS.md post-mortem of the 2026-05 prototype) and
- * painting cubic-Bezier joins, with cross-plane ConnectionTrack consistency.
- * ADDITIVE ONLY: never erases prediction foreground.
- * Reach respects the wrap-safety envelope (2*BRIDGE_RHO_MAX = 6 <
- * CUT_GAP_DEPTH = 7; observed inter-wrap spacing tightens to 2-3 vox near the
- * core). The prototype's drifted MAX_GAP_DIST = 250-320 px is deliberately
- * NOT adopted. Calibrated on PHerc0139-4x5x5 (pitch 9.5, umbilicus 3405,2878). */
-#define FIXUP_REACH_SAFE_PX      6.0f  /* joins <= this: standard gates only (== 2*BRIDGE_RHO_MAX) */
-#define FIXUP_REACH_MAX_PX      21.0f  /* hard cap for the far tier, set by the MEASURED 2.4um
-                                        * dose-response (2026-08-18, 597 decided joins): connected
-                                        * 98.6% at d<=6, 97.0% at 6-10, ~85% plateau 10-21, then a
-                                        * CLIFF to 51.2% in (21,24] — beyond ~2 wrap pitches a
-                                        * persistent "gap" is usually a persistent real fray, and
-                                        * L0 continuity there is partial-volume illusion (the
-                                        * z=4377 d=23.4 poster join itself read SEPARATE at hi-res).
-                                        * Support does NOT rescue long joins (76-81% at any level).
-                                        * Wrap safety comes from the RADIAL gate, not this cap:
-                                        * |dr|<=4 forbids cross-wrap joins at any reach. Unarmed
-                                        * (no umbilicus) runs stay evidence-gated instead. */
-#define FIXUP_RADIAL_DR_MAX      3.0f  /* max |r_a - r_b| from the umbilicus. Was 4.0; tightened
-                                        * after the run3 mesh A/B showed ONE full-turn fusion at
-                                        * (z4803,y3589,x2963) seeded by a join track with dr~3.3 —
-                                        * near-limit radial steps chain across delamination stacks
-                                        * (|dw|~0.35/join) until the weld walks a full turn. Hi-res
-                                        * precision is flat in dr (87-90% at 2.5-4.0), so the cap
-                                        * is a topology dial, not an accuracy dial. */
-#define FIXUP_MERGER_MARGIN      2     /* third-CC clearance (px) along the painted path */
-#define FIXUP_PAINT_RADIUS       1     /* disk radius of the painted join stroke */
-#define FIXUP_MIN_SUPPORT        3     /* a join's ConnectionTrack must recur in >= this many
-                                        * planes (mirrors skeleton_stack junction_tube_min_planes) */
-#define FIXUP_PRUNE_LEN          5     /* skeleton spur branches shorter than this are pruned */
-#define FIXUP_MIN_CURVE_PX       8     /* endpoints on skeleton CCs smaller than this are dropped */
-#define FIXUP_TANGENT_WALK       8     /* skeleton px walked for the outward tangent. Short on
-                                        * purpose: the walk-chord tilts inward by walk/(2r) rad
-                                        * on curvature radius r — 12px rejected real gaps at
-                                        * bends (measured on 4x5x5 z04353/z04354) */
-#define FIXUP_CURV_WALK         24     /* skeleton px walked for the turning-angle estimate */
-#define FIXUP_MIN_SCORE          0.30f /* score floor for a FINAL-round candidate pair */
-#define FIXUP_MIN_SCORE_PROV     0.22f /* round-1 (provisional) floor: long gaps must be able to
-                                        * seed ConnectionTracks or the track term can never rescue
-                                        * them in round 2 (round-1 joins are never painted) */
-#define FIXUP_DIST_SIGMA        10.0f  /* Gaussian distance falloff (px). 6 crushed d>=14 below the
-                                        * floor before the track term could speak (measured: the
-                                        * z4372-4382 track decayed 0.58 -> 0.39 over d 5 -> 12) */
-#define FIXUP_FACING_MIN_COS     0.866f/* far tier: both tangents within 30 deg of the partner.
-                                        * Cross-wrap diagonal pairs this admits are killed by the
-                                        * radial gate (armed on 0139) + merger + support */
-#define FIXUP_FACING_MIN_COS_NEAR 0.707f /* safe tier (d <= reach_safe): 45 deg. Walk-estimated
-                                        * tangents at hooks/bends are noisy at 4px gaps; the short
-                                        * chord + radial + merger + support gates carry safety
-                                        * (measured refusal: z4374-76 (3471,2853) d=4.2 hook) */
-#define FIXUP_OPPOSE_MAX_DOT    -0.40f /* far tier: tangents anti-parallel-ish, dot(tanA,tanB) <= this */
-#define FIXUP_OPPOSE_MAX_DOT_NEAR 0.0f /* safe tier: consistent with the 45-deg facing gate */
-/* Thin-neck bridge SCAN (cross-wrap prediction welds — "lumpy joined to
- * bumpy by one pixel"). Detection is always on and reported; CUTTING is
- * opt-in (--cut-bridges) and only ever touches radial-certified, persistent
- * necks, because it breaks the additive-only contract. */
-#define FIXUP_BRIDGE_MAX_WIDTH   1.9f  /* max chamfer half-width (px) along a neck (<= ~3px band) */
-#define FIXUP_BRIDGE_MAX_LEN    12     /* max neck run length (skeleton px) */
-#define FIXUP_BRIDGE_END_WIDTH   2.4f  /* both ends must open into material at least this thick */
-#define FIXUP_BRIDGE_MIN_DR      2.0f  /* radial offset across the neck (cross-wrap certificate);
-                                        * near-core wraps compress to 2-3 px so the bar sits low */
-#define FIXUP_BRIDGE_RADIAL_DOT  0.60f /* neck direction must be mostly radial */
-#define FIXUP_BRIDGE_MIN_SUPPORT 3     /* persistence across planes before a bridge is certified */
-#define FIXUP_MAX_ARC_RATIO      1.15f /* Bezier arc/chord cap (curvature sanity) */
-#define FIXUP_ADJ_CORRIDOR       4     /* corridor dilation (px) for the local adjacent-plane flood */
-#define FIXUP_ADJ_SEED_R         2     /* endpoint seed radius in the adjacent plane */
-#define FIXUP_ADJ_MIN_EVIDENCE   0.5f  /* s_adj >= this counts as evidence for the far reach tier */
-#define FIXUP_CROSS_CHECK_RANGE  2     /* z +/- planes for the cross-sheet corridor check */
-#define FIXUP_BORDER_EXCLUDE     2     /* endpoints within this of plane/absent border: unmatchable */
-#define FIXUP_W_DIST             0.30f /* symmetric score weights (sum 1.0 incl. W_TRACK) */
-#define FIXUP_W_DIR              0.30f
-#define FIXUP_W_ADJ              0.15f
-#define FIXUP_W_TRACK            0.25f /* contributes 0 in round 1 (no tracks yet) */
-#define FIXUP_TRACK_SPATIAL      8.0f  /* endpoint-track association radius (px) */
-#define FIXUP_TRACK_GAP_TOL     10     /* max plane gap before an endpoint track goes stale */
-#define FIXUP_TRACK_BOOST_STRONG 0.85f /* s_track: conf >= CONF_STRONG and confirmed >= MIN_SUPPORT */
-#define FIXUP_TRACK_BOOST_MOD    0.50f /* s_track: conf >= CONF_MOD */
-#define FIXUP_TRACK_ANTI        -0.30f /* s_track: either endpoint's best conn is a DIFFERENT track */
-#define FIXUP_TRACK_CONF_STRONG  0.70f
-#define FIXUP_TRACK_CONF_MOD     0.40f
-#define FIXUP_MAX_EPS_PER_PLANE  4096  /* hard cap; a plane beyond this is left untouched */
-
 /* Step 0 */
 #define MIN_CC_SIZE          500    /* voxels - discard smaller components. Also
                                      * the "empty garbage" floor: a cube whose
@@ -132,7 +46,7 @@
                                      * disconnected fragments are dropped) */
 #define KIBBLE_AREA_FRAC     0.02f  /* component_cull: drop connectivity-components
                                      * whose surface area is < this fraction of the
-                                     * total meshed cube area (post hole-fill/QEM) */
+                                     * total meshed cube area (post hole-fill/CVT) */
 
 /* Step 0 — MLS-midpoint projection (LOP family, μ=0). Collapses the
  * MC double-envelope to its single-sided centerline. Halo-deterministic:
@@ -329,7 +243,7 @@
 #define SEAM_SLIVER_MIN_ALT     0.3f
 
 /* Cross-cube seam bridge (no eat-back). The bridge ball radius adapts to the
- * post-QEM boundary spacing: base = BRIDGE_RHO_K * median near-seam boundary-
+ * post-CVT boundary spacing: base = BRIDGE_RHO_K * median near-seam boundary-
  * edge length, clamped to [MIN, MAX], with the caller's SEAM_RHO as a floor.
  * The front escalates rho -> 1.5rho -> 2rho capped at MAX so sparse boundaries
  * still close, while 2*MAX stays below the inter-wrap clearance (NO inter-wrap
@@ -474,47 +388,15 @@
 /* Step 6 */
 #define MIN_BARY_SUBDIV        6   /* minimum barycentric samples per edge */
 
-/* Step 0 — QEM mesh simplification */
-#define QEM_TARGET_RATIO          0.075f  /* keep 7.5% of faces. History: 0.10
-                                            * -> 0.15 (2026-05, interior was
-                                            * oversimplified) -> 0.075 (2026-05-30,
-                                            * ~50% more aggressive; the post-QEM
-                                            * edge-flip pass cleans up slivers the
-                                            * heavier decimation leaves). */
-#define QEM_BOUNDARY_WEIGHT       10.0    /* penalty for boundary edge planes */
-#define QEM_MIN_FACES_FOR_SIMPLIFY 400    /* skip simplification below this */
-#define QEM_DET_THRESHOLD         1e-12   /* 3x3 solve singularity guard */
-#define QEM_NORMAL_DOT_THRESHOLD  0.0f    /* reject collapse if dot(n_v0, n_v1) < this */
-#define QEM_FLIP_COS_THRESHOLD    0.0f    /* fold guard angle as a cosine. 0.0 = the original
-                                           * >90deg reversal-only behaviour (reverted from the
-                                           * 0.5/60deg experiment, which was the wrong lever --
-                                           * the real fault is upstream in the multicut). */
-#define QEM_DISPLACEMENT_CLAMP    1.0f    /* max opt_pos distance = clamp * edge_len (was 2.0) */
-#define QEM_SAFE_RADIUS_FACTOR    0.5f    /* proximity radius = factor * median_edge_len */
-#define QEM_KDTREE_REBUILD_INTERVAL 500   /* rebuild spatial index every N collapses */
-#define QEM_PROB_SIGMA_FACTOR     0.05    /* σ_n = factor * median_edge_len */
-#define QEM_PROB_SIGMA_POS_FACTOR 0.05    /* σ_p = factor * median_edge_len (position noise,
-                                           * full per-face probabilistic quadric only) */
-#define QEM_MAINTENANCE_INTERVAL  10000   /* collapses between maintenance passes */
-#define QEM_MAINT_SMOOTH_LAMBDA   0.1f    /* gentle smoothing factor (vs 0.5 in tri_quality) */
-#define QEM_FLIP_MAX_ROUNDS       8       /* post-QEM Surazhsky-Gotsman edge-flip rounds:
-                                           * iterate to convergence. One locked pass only
-                                           * flips non-adjacent edges, so the heavier 7.5%
-                                           * decimation needs several rounds to clear the
-                                           * slivers it leaves (flips never move verts). */
-#define QEM_LME_MAX_ROUNDS        50      /* safety limit on outer LME round count
-                                             (Ozaki & Kanai 2015 algorithm) */
-#define QEM_LME_MIN_PROGRESS_FRAC 0.001   /* stop LME-rounds when a single round
-                                             collapses fewer than 0.1% of the remaining
-                                             faces — converged short of target_nf */
-
-/* Step 0 — CVT/RVD variational remesher (the DEFAULT simplifier; --simplify qem
- * selects the old QEM path, also the fail-closed fallback). The CWF energy converges
+/* Step 0 — CVT/RVD variational remesher. The CWF energy converges
  * by ~12-15 iterations with the decaying lambda_CVT, well short of the standalone
  * default of 50; the pipeline trades the tail for throughput. */
-#define CVT_PIPELINE_ITERS          12    /* Lloyd/CWF iterations per component      */
-#define CVT_WIND_MAX_RETRIES         4    /* winding shortcut: density may cure it    */
+#define CVT_PIPELINE_ITERS          12    /* Lloyd/CWF iterations per component       */
+#define CVT_WIND_TOL_DEFAULT      0.30    /* max branch-free turn span on any edge     */
+#define CVT_TARGET_SPACING_PITCH  0.44    /* initial uniform edge spacing / wrap pitch */
+#define CVT_WIND_MAX_RETRIES         4    /* winding shortcut: density may cure it     */
 #define CVT_TOPOLOGY_MAX_RETRIES     1    /* one 2x attempt, then retain source chart */
+#define CVT_MIN_FACES_FOR_REMESH    400    /* retain already-small dense charts        */
 
 /* GRADED density (the pipeline default): the CVT target edge length varies with
  * depth into the owned box -- fine (weldable) near the cube faces, coarse in the
@@ -535,28 +417,19 @@
                                     * comfort point, so watch ramp-ring min-angle in the A/B;
                                     * ~8-12 is the floor before ramp-ring quality degrades. */
 
-#define CVT_TARGET_RATIO         0.0025f  /* uniform-density knob: sites = this * input faces.
-                                           * THE operative default again (the pipeline passes
-                                           * field==NULL unless VES_CVT_GRADED=1): 0.0025's
-                                           * ~13-vox seams are now weldable because grid_weld
-                                           * refines the seam band to ~3.5 vox before bridging
-                                           * and recoarsens it after (seam_refine.h). History:
-                                           * bare 0.0025 could not weld (seam-rim circumradius
-                                           * ~7 > rho_max=3 -> 2 bridge faces); 0.012 welded at
-                                           * ~0.9M faces; the graded rim welded at 1.3M (band
-                                           * 6+30) / 0.61M (band 2+10) -- all superseded by
-                                           * weld-time refine+recoarsen. VES_CVT_RATIO overrides. */
+#define CVT_TARGET_RATIO         0.0025f  /* Legacy/diagnostic uniform-density ratio.
+                                           * Scroll runs with an axis and pitch derive their
+                                           * default site count from physical area and
+                                           * CVT_TARGET_SPACING_PITCH instead.  An explicit
+                                           * --cvt-ratio or VES_CVT_RATIO overrides that default
+                                           * for density ablations.  Axis-free callers retain
+                                           * this ratio as a compatibility fallback. */
 #define CVT_MIN_SITES               50    /* floor: a component needs at least this many
                                            * generators to form a valid RVD dual; small sheets
                                            * never simplify below it. */
-#define CVT_MAX_COMPONENT_FACES     200000 /* safety valve: a component denser than this
-                                            * falls back to QEM so one pathological sheet
-                                            * cannot dominate a cube's wall-clock. Normal
-                                            * per-sheet inputs sit far below this.       */
-
 /* Post-weld cleanup (grid_weld terminal step — WeldCleanup_process).
  * The BPA seam bridge leaves slivers / zero-area faces / T-junctions the
- * per-cube QEM never sees (QEM runs before the weld). Flip-first, then guarded
+ * per-cube CVT never sees (CVT runs before the weld). Flip-first, then guarded
  * collapse. Thresholds mirror seam_audit's --degen census so what the audit
  * flags is what the cleanup targets. */
 #define WELD_CLEANUP_SLIVER_MIN_ALT   0.10  /* triangle min-altitude < this (vox) => sliver  */
@@ -585,7 +458,7 @@
                                            * split/round; 8 converges with margin */
 
 /* Post-recoarsen seam-band CVT beautification (SeamBandCvt_process). The
- * guarded collapse leaves the band QEM-scarred and anisotropic next to the
+ * guarded collapse leaves the band collapse-scarred and anisotropic next to the
  * blue-noise CVT interior; this re-meshes each band patch with the SAME
  * CVT/RVD engine, pinned-boundary (junction ring + hole rims immutable,
  * bit-exact -> conforming stitch, open boundaries unchanged) and FAIL-CLOSED
@@ -640,14 +513,14 @@
 #define WELD_RECOARSEN_MAX_ROUNDS     8     /* collapse-round cap (1-ring locking clears ~half
                                              * a chain per round; 2.0 -> ~5 vox needs ~3) */
 
-/* Isotropic incremental remeshing (Remesh_isotropic — post-QEM quality pass).
+/* Isotropic incremental remeshing (Remesh_isotropic quality pass).
  * Botsch-Kobbelt / Surazhsky-Gotsman: split long edges, collapse short edges,
  * flip for max-min-angle, tangential relax. Interior-only (boundary frozen),
  * same target face count, fail-closed. Runs AFTER decimation to repair the
- * slivers / coarse-center-vs-fine-rim anisotropy that collapse-only QEM leaves. */
+ * slivers / coarse-center-vs-fine-rim anisotropy left by collapse-only meshes. */
 #define REMESH_ITERS               5      /* outer split/collapse/flip/relax iterations */
 /* Split/collapse band deliberately WIDER than the textbook 4/3-4/5: the input is
- * an already-decimated mesh that QEM's own flip+smooth maintenance has converged,
+ * an already-decimated mesh whose flip+smooth maintenance has converged,
  * so a tight band just churns good geometry into slivers with no net gain. Only
  * genuinely-coarse edges (>1.5 L) are split and genuine needles (<0.5 L) removed;
  * flip + tangential relax carry the rest. */
@@ -672,7 +545,7 @@
 #define HALO_PIN_EPS 1.5f  /* voxels: pin verts within this distance of an
                             * integer-cube_size boundary. This is the FULL
                             * pin radius — verts further into the halo are
-                            * LOP-projected and QEM-simplifiable. Wider
+                            * LOP-projected and CVT-remeshable. Wider
                             * halo (halo_voxels) is still loaded for MC
                             * determinism; only the pin set is tight.
                             *

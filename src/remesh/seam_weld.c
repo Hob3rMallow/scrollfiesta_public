@@ -320,7 +320,7 @@ int SeamWeld_bridge(Arena_T arena,
     if (out_n_bridge) *out_n_bridge = 0;
     if (nf == 0) return 0;
 
-    /* 1) Per-vertex normals from faces (QEM mesh carries none). */
+    /* 1) Per-vertex normals from faces (CVT mesh carries none). */
     float *normals = (float *)malloc(nv * 3 * sizeof(float));
     compute_vertex_normals(verts, nv, faces, nf, normals);
 
@@ -658,7 +658,7 @@ int SeamWeld_bridge(Arena_T arena,
     /* 5) Adaptive + escalating + capped ball radius. base = K * median near-
      *    seam boundary-edge length, clamped to [MIN, MAX], with the caller's
      *    rho (SEAM_RHO) as a floor; the front escalates up to rho_max (= MAX,
-     *    env SEAM_RHO_MAX) so post-QEM sparse boundaries still close while
+     *    env SEAM_RHO_MAX) so post-CVT sparse boundaries still close while
      *    2*rho_max stays below the inter-wrap clearance (NO inter-wrap merge). */
     double *elen = (double *)malloc(n_init * sizeof(double));
     for (size_t i = 0; i < n_init; i++)

@@ -43,6 +43,15 @@ typedef struct RibbonRelaxOpts {
     double qc_reject;      /* drop faces whose INITIAL stretch sigma1/sigma2 exceeds this
                             * (pre-broken UV-collapsed slivers + overlap-relocated faces);
                             * they otherwise dominate the energy. <=0 disables. (def 50) */
+    double max_stretch_growth; /* optional transaction guard against moving
+                            * distortion into a few faces.  A candidate face
+                            * must remain <= max(initial_stretch * this,
+                            * stretch_guard_floor).  0 disables; otherwise
+                            * must be >= 1 (default 0). */
+    double stretch_guard_floor; /* absolute slack for initially near-isometric
+                            * faces when max_stretch_growth is enabled.  This
+                            * is fixed to the input, so repeated sweeps cannot
+                            * compound the allowance (default 1). */
     int    reference_metric; /* 1 = use reference_uv's planar metric as the
                             * rest metric instead of frozen XYZ (default 0).
                             * Local robust repair uses this when the detector
@@ -86,6 +95,7 @@ typedef struct RibbonRelaxStats {
     double guide_rms_before, guide_rms_after;
     int    flips_before, flips_after;                /* UV signed-area sign flips vs first face */
     size_t n_interior, n_moved, n_fiber_faces, n_reject;
+    size_t n_stretch_guard_reject;
     size_t n_convex_reject;
     size_t n_boundary_edges, n_boundary_collision_reject;
     size_t boundary_intersections_before, boundary_intersections_after;

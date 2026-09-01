@@ -13,7 +13,6 @@
 #include "../common/dump_obj.h"
 #include "../common/pipeline_constants.h"
 #include "../common/mesh_types.h"
-#include "../common/qem.h"
 #include "../common/obj_colors.h"
 #include "../common/csr.h"
 #include "../remesh/ball_pivot.h"
@@ -564,7 +563,6 @@ int MeshExtract_run(Arena_T          arena,
                     int              n_threads,
                     const char      *dump_cube_dir,
                     const char      *cube_id,
-                    int              skip_qem,
                     float            trim_inset,
                     const uint8_t   *vol_in,
                     int              p_size_in,
@@ -1489,11 +1487,7 @@ int MeshExtract_run(Arena_T          arena,
             if (surf_nf == 0 || surf_nv == 0) continue;
         }
 
-        /* Dump BPA surface output (stage name still "step0_pre_simplify";
-         * QEM has been moved
-         * to post-Step-6 in main.c so there is no in-Step-0 QEM call
-         * anymore). The `skip_qem` parameter is now ignored here. */
-        (void)skip_qem;
+        /* Dump the dense BPA surface before downstream chart remeshing. */
         if (dump_cube_dir && cube_id && getenv("EXTRACT_DIAG")) {
             char sub[1024];
             snprintf(sub, sizeof(sub), "%s/%s_step0_pre_simplify",

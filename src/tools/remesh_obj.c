@@ -1,7 +1,7 @@
 /* remesh_obj.c -- incremental isotropic remeshing of an OBJ mesh
  * (Remesh_isotropic: split long / collapse short / flip / tangential relax at a
  * fixed target face count, interior-only with the open boundary frozen). Runs
- * AFTER decimation to repair QEM's slivers + coarse-center/fine-rim anisotropy.
+ * After decimation to repair slivers + coarse-center/fine-rim anisotropy.
  * OBJ in -> OBJ out. Fail-closed: never emits a non-manifold mesh (falls back to
  * a verbatim copy of the input if the remesh would degrade topology).
  *

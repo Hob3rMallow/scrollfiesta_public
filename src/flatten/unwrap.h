@@ -50,6 +50,16 @@ typedef struct {
      * diagnostic spiral fit; it never predicts an absolute component turn.
      * <=0 = estimate a local pitch from the largest component. */
     double wrap_spacing;
+    /* Generalized-winding unary for disconnected-component registration.
+     * 0 = auto (enabled when the mesh has >1 component), >0 = force, <0 =
+     * disable.  epsilon/beta <=0 select scale-aware defaults. */
+    int    winding_field_mode;
+    double winding_field_epsilon;
+    double winding_field_beta;
+    /* Iterative winner/loser conflict correction after the initial relation
+     * MRF.  Zero is the production default (enabled); a negative value keeps
+     * the initial MRF certificate for controlled before/after diagnostics. */
+    int    winding_conflict_mode;
     /* Nonzero: also return the raw per-vertex winding field in out->phi and
      * its measured relation-graph island identity in out->island. */
     int    keep_phi;
@@ -73,6 +83,10 @@ typedef struct {
     int32_t *mesh_component; /* [nv] source mesh connected-component identity,
                              * before any winding observations are considered.
                              * NULL unless opts->keep_phi. */
+    float  *winding_index; /* [nv] globally registered winding coordinate, turns. */
+    float  *winding_confidence; /* [nv] MRF sharpness x local jump reliability. */
+    float  *field_winding; /* [nv] raw two-sided GWN mean; keep_phi only. */
+    float  *field_jump;    /* [nv] w-minus - w-plus; keep_phi only. */
     float   axis[3];       /* chosen winding axis, (z,y,x) order */
     float   centroid[3];   /* global centroid, (z,y,x) order */
     int     n_components;  /* connected components in the mesh graph */
@@ -108,6 +122,40 @@ typedef struct {
     double  order_satisfaction;
     int     turn_correction_min;
     int     turn_correction_max;
+    /* integer loop closure (subtree-shift repair) inside registration */
+    size_t  winding_repair_closers;
+    size_t  winding_repair_conflicts_pre;
+    size_t  winding_repair_shifts;
+    size_t  winding_repair_capped_roots;
+    double  winding_anchor_span_pre_turns;
+    double  winding_anchor_span_turns;
+    size_t  winding_mrf_rounds;
+    size_t  winding_mrf_label_changes;
+    size_t  winding_mrf_abstained_sites;
+    double  winding_mrf_energy_before, winding_mrf_energy_after;
+    double  winding_mrf_mean_confidence;
+    size_t  winding_mrf_field_calibrated_roots;
+    size_t  winding_mrf_field_calibrated_sites;
+    double  winding_mrf_field_calibration_r2;
+    size_t  winding_mrf_conflict_rounds;
+    size_t  winding_mrf_conflict_bins_before;
+    size_t  winding_mrf_conflict_bins_after;
+    size_t  winding_mrf_conflict_losing_claims;
+    size_t  winding_mrf_conflict_exclusions;
+    size_t  winding_mrf_conflict_winner_locks;
+    size_t  winding_mrf_conflict_label_changes;
+    int     winding_mrf_conflict_converged;
+    /* generalized-winding field diagnostics */
+    int     winding_field_used;
+    int     winding_field_backend;
+    size_t  winding_field_samples;
+    size_t  winding_field_supported_components;
+    size_t  winding_field_clean_vertices;
+    size_t  winding_field_invalid_vertices;
+    double  winding_field_clean_fraction;
+    /* junction-radius island gauging (7a2) */
+    size_t  island_gauge_shifts;
+    size_t  island_gauge_abstains;
 } UnwrapResult;
 
 /* Compute the UV parameterization.

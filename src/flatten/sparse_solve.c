@@ -160,16 +160,43 @@ int Sparse_factor_spd(int n, int nt,
     }
 
     f->A = sp_build_ccs(n, nt, rows, cols, vals);
-    if (!f->A) { free(f); return -1; }
+    if (!f->A) {
+        fprintf(stderr,
+                "Sparse_factor_spd: CCS build failed (n=%d nt=%d; likely "
+                "allocation)\n", n, nt);
+        free(f);
+        return -1;
+    }
 
     char *opt_factor[]       = { "taucs.factor.LLT=true",
                                  "taucs.factor.mf=true", NULL };
     char *opt_factor_small[] = { "taucs.factor.LLT=true",
                                  "taucs.factor.mf=true",
                                  "taucs.factor.ordering=identity", NULL };
-    int rc = taucs_linsolve(f->A, &f->F, 0, NULL, NULL,
-                            (n <= 64) ? opt_factor_small : opt_factor, NULL);
+    /* Factor through a one-shot solve against a throwaway rhs, KEEPING the
+     * factorization handle: this is the exact call shape the one-shot
+     * solver uses (proven at 16-25M unknowns); the factor-only nrhs=0 path
+     * failed at large connected systems where this succeeds. */
+    double *dummy_b = (double *)calloc((size_t)n, sizeof(double));
+    double *dummy_x = (double *)calloc((size_t)n, sizeof(double));
+    int rc = -1;
+    if (dummy_b == NULL || dummy_x == NULL) {
+        fprintf(stderr, "Sparse_factor_spd: scratch allocation failed "
+                "(n=%d)\n", n);
+        free(dummy_b);
+        free(dummy_x);
+        taucs_ccs_free(f->A);
+        free(f);
+        return -1;
+    }
+    rc = taucs_linsolve(f->A, &f->F, 1, dummy_x, dummy_b,
+                        (n <= 64) ? opt_factor_small : opt_factor, NULL);
+    free(dummy_b);
+    free(dummy_x);
     if (rc != TAUCS_SUCCESS || f->F == NULL) {
+        fprintf(stderr,
+                "Sparse_factor_spd: taucs_linsolve factor rc=%d F=%s "
+                "(n=%d nt=%d)\n", rc, f->F != NULL ? "set" : "null", n, nt);
         if (f->F) { void *Fp = f->F; taucs_linsolve(NULL, &Fp, 0, NULL, NULL, NULL, NULL); }
         taucs_ccs_free(f->A);
         free(f);

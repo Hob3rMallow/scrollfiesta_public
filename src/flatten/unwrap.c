@@ -1,5 +1,6 @@
 #define _USE_MATH_DEFINES
 #include "unwrap.h"
+#include "winding_field.h"
 #include "winding_register.h"
 
 #include "../common/csr.h"
@@ -22,6 +23,11 @@
  * its innermost (smallest-radius) vertex via one ascending sort. */
 typedef struct { double r; int32_t idx; } RIdx;
 
+typedef struct {
+    int32_t component;
+    float value, reliability;
+} UnwrapFieldSample;
+
 static int cmp_ridx(const void *pa, const void *pb)
 {
     const RIdx *a = (const RIdx *)pa;
@@ -39,6 +45,236 @@ static double wrap_to_pi(double a)
     double x = fmod(a + M_PI, 2.0 * M_PI);
     if (x < 0.0) x += 2.0 * M_PI;
     return x - M_PI;
+}
+
+static int unwrap_compare_field_sample(const void *pa, const void *pb)
+{
+    const UnwrapFieldSample *a = (const UnwrapFieldSample *)pa;
+    const UnwrapFieldSample *b = (const UnwrapFieldSample *)pb;
+    if (a->component != b->component)
+        return a->component < b->component ? -1 : 1;
+    if (a->value != b->value) return a->value < b->value ? -1 : 1;
+    return 0;
+}
+
+static double unwrap_weighted_field_median(
+    const UnwrapFieldSample *sample, size_t first, size_t last)
+{
+    double total = 0.0;
+    for (size_t i = first; i < last; i++) total += sample[i].reliability;
+    if (!(total > 0.0)) return NAN;
+    double cumulative = 0.0;
+    for (size_t i = first; i < last; i++) {
+        cumulative += sample[i].reliability;
+        if (2.0 * cumulative >= total) return sample[i].value;
+    }
+    return sample[last - 1].value;
+}
+
+/* Build the GWN field over a consistently radial-oriented copy of the mesh,
+ * then turn its imperfect values into robust per-component unaries.  For an
+ * outward normal, w-minus - w-plus is +1 and -w increases toward larger
+ * radius, matching q's registered convention. */
+static int unwrap_build_field_unary(
+    Arena_T arena,
+    const float *verts, size_t nv, const int32_t *faces, size_t nf,
+    const double *c1, const double *c2,
+    const double basis1[3], const double basis2[3], const double *q,
+    const int32_t *component, int32_t ncomponents,
+    int32_t anchor_component, double pitch,
+    double epsilon_option, double beta_option,
+    double **out_center, double **out_sigma, double **out_weight,
+    float **out_mean, float **out_jump,
+    WindingFieldStats *out_build_stats,
+    WindingFieldEvalStats *out_eval_stats,
+    size_t *out_samples, size_t *out_supported,
+    size_t *out_clean, size_t *out_invalid)
+{
+    enum { UNWRAP_FIELD_MAX_SAMPLES = 2000000 };
+    int32_t *oriented = (int32_t *)ARENA_ALLOC(
+        arena, nf * 3 * sizeof *oriented);
+    memcpy(oriented, faces, nf * 3 * sizeof *oriented);
+    double *vote = (double *)ARENA_CALLOC(
+        arena, (size_t)ncomponents, sizeof *vote);
+    for (size_t f = 0; f < nf; f++) {
+        int32_t ia = faces[f*3], ib = faces[f*3+1], ic = faces[f*3+2];
+        const float *a = &verts[(size_t)ia * 3];
+        const float *b = &verts[(size_t)ib * 3];
+        const float *c = &verts[(size_t)ic * 3];
+        double ab[3] = { b[0]-a[0], b[1]-a[1], b[2]-a[2] };
+        double ac[3] = { c[0]-a[0], c[1]-a[1], c[2]-a[2] };
+        double normal[3] = {
+            ab[1]*ac[2] - ab[2]*ac[1],
+            ab[2]*ac[0] - ab[0]*ac[2],
+            ab[0]*ac[1] - ab[1]*ac[0]
+        };
+        double rc1 = (c1[ia] + c1[ib] + c1[ic]) / 3.0;
+        double rc2 = (c2[ia] + c2[ib] + c2[ic]) / 3.0;
+        double radial[3] = {
+            rc1*basis1[0] + rc2*basis2[0],
+            rc1*basis1[1] + rc2*basis2[1],
+            rc1*basis1[2] + rc2*basis2[2]
+        };
+        double normal_norm = sqrt(normal[0]*normal[0] +
+                                  normal[1]*normal[1] +
+                                  normal[2]*normal[2]);
+        double radial_norm = hypot(rc1, rc2);
+        if (normal_norm > 0.0 && radial_norm > 0.0)
+            vote[component[ia]] += normal[0]*radial[0] +
+                                   normal[1]*radial[1] +
+                                   normal[2]*radial[2];
+    }
+    size_t flipped_faces = 0;
+    for (size_t f = 0; f < nf; f++) {
+        int32_t c = component[faces[f*3]];
+        if (vote[c] < 0.0) {
+            int32_t swap = oriented[f*3+1];
+            oriented[f*3+1] = oriented[f*3+2];
+            oriented[f*3+2] = swap;
+            flipped_faces++;
+        }
+    }
+
+    float *normal = (float *)ARENA_CALLOC(arena, nv * 3, sizeof *normal);
+    for (size_t f = 0; f < nf; f++) {
+        int32_t ia = oriented[f*3], ib = oriented[f*3+1], ic = oriented[f*3+2];
+        const float *a = &verts[(size_t)ia * 3];
+        const float *b = &verts[(size_t)ib * 3];
+        const float *c = &verts[(size_t)ic * 3];
+        double ab[3] = { b[0]-a[0], b[1]-a[1], b[2]-a[2] };
+        double ac[3] = { c[0]-a[0], c[1]-a[1], c[2]-a[2] };
+        float n[3] = {
+            (float)(ab[1]*ac[2] - ab[2]*ac[1]),
+            (float)(ab[2]*ac[0] - ab[0]*ac[2]),
+            (float)(ab[0]*ac[1] - ab[1]*ac[0])
+        };
+        for (int k = 0; k < 3; k++) {
+            normal[(size_t)ia*3 + (size_t)k] += n[k];
+            normal[(size_t)ib*3 + (size_t)k] += n[k];
+            normal[(size_t)ic*3 + (size_t)k] += n[k];
+        }
+    }
+    float *mean = (float *)ARENA_ALLOC(arena, nv * sizeof *mean);
+    float *jump = (float *)ARENA_ALLOC(arena, nv * sizeof *jump);
+    WindingFieldOptions field_options;
+    WindingField_default_options(&field_options);
+    if (beta_option > 0.0 && isfinite(beta_option))
+        field_options.beta = beta_option;
+    WindingField_T field = NULL;
+    if (WindingField_build(arena, verts, nv, oriented, nf, &field_options,
+                           &field, out_build_stats) != 0)
+        return -1;
+    double epsilon = epsilon_option;
+    if (!(epsilon > 0.0) || !isfinite(epsilon)) {
+        epsilon = pitch > 0.0 && isfinite(pitch) ? 0.10 * pitch : 1.0;
+        if (epsilon < 0.25) epsilon = 0.25;
+        if (epsilon > 1.5) epsilon = 1.5;
+    }
+    if (WindingField_evaluate_sides(
+            field, verts, normal, nv, epsilon, WINDING_FIELD_AUTO,
+            mean, jump, out_eval_stats) != 0)
+        return -1;
+
+    size_t clean = 0, invalid = 0;
+    for (size_t i = 0; i < nv; i++) {
+        if (!isfinite(mean[i]) || !isfinite(jump[i])) invalid++;
+        else if (fabs((double)jump[i] - 1.0) <= 0.5) clean++;
+    }
+    size_t stride = nv > UNWRAP_FIELD_MAX_SAMPLES
+                  ? (nv + UNWRAP_FIELD_MAX_SAMPLES - 1) /
+                    UNWRAP_FIELD_MAX_SAMPLES : 1;
+    size_t capacity = (nv + stride - 1) / stride + (size_t)ncomponents;
+    UnwrapFieldSample *sample = (UnwrapFieldSample *)ARENA_ALLOC(
+        arena, capacity * sizeof *sample);
+    uint8_t *seen = (uint8_t *)ARENA_CALLOC(
+        arena, (size_t)ncomponents, sizeof *seen);
+    size_t nsample = 0;
+    for (size_t i = 0; i < nv; i++) {
+        int32_t c = component[i];
+        if (i % stride != 0 && seen[c]) continue;
+        if (!isfinite(mean[i]) || !isfinite(jump[i])) continue;
+        double z = ((double)jump[i] - 1.0) / 0.35;
+        double reliability = exp(-0.5 * z * z);
+        if (reliability < 0.05) continue;
+        if (nsample >= capacity) return -1;
+        sample[nsample].component = c;
+        sample[nsample].value = (float)(-(double)mean[i] - q[i]);
+        sample[nsample].reliability = (float)reliability;
+        nsample++;
+        seen[c] = 1;
+    }
+    qsort(sample, nsample, sizeof *sample, unwrap_compare_field_sample);
+    double *center = (double *)ARENA_ALLOC(
+        arena, (size_t)ncomponents * sizeof *center);
+    double *sigma = (double *)ARENA_ALLOC(
+        arena, (size_t)ncomponents * sizeof *sigma);
+    double *weight = (double *)ARENA_ALLOC(
+        arena, (size_t)ncomponents * sizeof *weight);
+    for (int32_t c = 0; c < ncomponents; c++) {
+        center[c] = NAN;
+        sigma[c] = 1.0;
+        weight[c] = 0.0;
+    }
+    size_t supported = 0;
+    for (size_t first = 0; first < nsample;) {
+        size_t last = first + 1;
+        while (last < nsample &&
+               sample[last].component == sample[first].component)
+            last++;
+        double median = unwrap_weighted_field_median(sample, first, last);
+        double effective = 0.0;
+        for (size_t i = first; i < last; i++) {
+            effective += sample[i].reliability;
+            sample[i].value = (float)fabs((double)sample[i].value - median);
+        }
+        qsort(sample + first, last - first, sizeof *sample,
+              unwrap_compare_field_sample);
+        double mad = unwrap_weighted_field_median(sample, first, last);
+        int32_t c = sample[first].component;
+        center[c] = median;
+        /* MAD captures sampling noise but not the measured global compression
+         * of an incomplete field (about 25 physical wraps -> 8 GWN units on
+         * PHerc0139).  Keep a one-turn epistemic floor so a sharp-looking but
+         * biased field cannot overturn a well-supported relation. */
+        sigma[c] = fmax(1.0, 1.4826 * mad);
+        double coverage = effective / (double)(last - first);
+        weight[c] = fmin(1.0,
+            log1p(effective) * coverage / (1.0 + sigma[c]));
+        if (last - first < 3)
+            weight[c] *= (double)(last - first) / 3.0;
+        if (weight[c] > 0.0) supported++;
+        first = last;
+    }
+    if (isfinite(center[anchor_component])) {
+        double anchor = center[anchor_component];
+        for (int32_t c = 0; c < ncomponents; c++)
+            if (isfinite(center[c])) center[c] -= anchor;
+    } else {
+        for (int32_t c = 0; c < ncomponents; c++) weight[c] = 0.0;
+        supported = 0;
+    }
+    fprintf(stderr,
+        "  winding field: backend=%s nodes=%zu boundary=%zu/%zu "
+        "flipped_faces=%zu eps=%.3f clean=%zu/%zu (%.1f%%) "
+        "unary_components=%zu/%d samples=%zu\n",
+        out_eval_stats->backend_used == WINDING_FIELD_BOUNDARY_EXACT
+            ? "boundary-exact" :
+        out_eval_stats->backend_used == WINDING_FIELD_DIRECT
+            ? "direct" : "fast",
+        out_build_stats->bvh_nodes, out_build_stats->exterior_edges,
+        out_build_stats->exterior_multiplicity, flipped_faces, epsilon,
+        clean, nv, 100.0 * (double)clean / (double)nv,
+        supported, ncomponents, nsample);
+    *out_center = center;
+    *out_sigma = sigma;
+    *out_weight = weight;
+    *out_mean = mean;
+    *out_jump = jump;
+    *out_samples = nsample;
+    *out_supported = supported;
+    *out_clean = clean;
+    *out_invalid = invalid;
+    return 0;
 }
 
 /* ---- Cross-gauge-island winding sync (overlap-offset solver) -------------
@@ -397,6 +633,242 @@ static size_t unwrap_sync_gauges(Arena_T arena, size_t nv,
     return synced;
 }
 
+/* ---- Junction-radius island gauging (goal: weld-equivalent placement) -----
+ * Measured 2026-08-31 on BOTH the pre-weld pile fit and the welded fit: the
+ * phase-continuation join's candidates radius-reject with dr off by near-
+ * integer PITCH multiples (dr 22-83 vox against ~1 expected).  Mechanism:
+ * each continuation island's internal lift is fine, but the missing arcs
+ * BETWEEN islands collapse out of the global winding, so an island that
+ * physically lives k turns further out gets packed phi-adjacent to its
+ * predecessor.  Welding never fixed this in the current lane (same rejects
+ * on welded input); the claims-unwrapper lineage fixed it with radius-
+ * anchored winding.  This pass restores that, from LOCAL evidence only
+ * (subset-invariance requirement: chopping out the umbilicus or half the
+ * grid must not change the surviving islands' relative gauges):
+ *   - interval-adjacent island pairs with axial overlap contribute a
+ *     junction observation: the MEDIAN over shared 8-vox axial bins of the
+ *     per-bin mean-radius difference (same-z, same-theta-window comparison
+ *     -- immune to the scroll's eccentricity, unlike whole-window means);
+ *   - k = lround((dr_med - pitch*gap/2pi)/pitch) is accepted only when the
+ *     residual snaps within UNWRAP_JGAUGE_SNAP of that integer and
+ *     |k| <= UNWRAP_JGAUGE_MAX_TURNS; anything weaker ABSTAINS (k=0);
+ *   - accepted k accumulate along the interval-sorted chain; the LARGEST
+ *     island anchors (deterministic, locally stable); shifts apply to Phi
+ *     and turn_correction, so the downstream join sees corrected lifts,
+ *     true k-turn holes open where material is genuinely missing, and
+ *     placement lays islands at their physical turns. */
+enum {
+    UNWRAP_JGAUGE_MIN_VERTS = 24,
+    UNWRAP_JGAUGE_MIN_BINS = 4,
+    UNWRAP_JGAUGE_MAX_TURNS = 12,
+    UNWRAP_JGAUGE_MIN_BIN_N = 3,
+    /* MEASURE-ONLY (2026-08-31): applying the chained shifts was measured
+     * harmful -- interval-consecutive pairing is not sheet adjacency when
+     * lifts are broken (the pile fit's lift compressed 15.1 -> 7.6 turns,
+     * the welded fit's overspread to 49 against ~15 physical).  The same
+     * junction-radius evidence now travels as MULTI-PITCH ORDER relations
+     * through the registration's relation build + forest + loop closure
+     * (wr_collect_order), which check cycles instead of chaining blindly.
+     * The pass is retained as a per-junction measurement/log. */
+    UNWRAP_JGAUGE_APPLY = 0
+};
+#define UNWRAP_JGAUGE_WINDOW 0.45      /* rad each side of the junction */
+#define UNWRAP_JGAUGE_AXIAL_BIN 8.0    /* vox; matches WR_AXIAL_BIN */
+#define UNWRAP_JGAUGE_SNAP 0.25        /* x pitch residual gate */
+
+static int unwrap_compare_double(const void *pa, const void *pb)
+{
+    double a = *(const double *)pa, b = *(const double *)pb;
+    return a < b ? -1 : (a > b ? 1 : 0);
+}
+
+static void unwrap_gauge_islands_by_junction(
+    Arena_T arena, size_t nv, const double *t, const double *r,
+    double *Phi, const int32_t *comp, int32_t ncomp,
+    const int32_t *continuation_island, int32_t *turn_correction,
+    int winding_sense, double pitch,
+    size_t *out_shifted, size_t *out_abstained)
+{
+    Arena_Mark mark = Arena_save(arena);
+    int32_t nisl = 0;
+    *out_shifted = 0;
+    *out_abstained = 0;
+    for (int32_t c = 0; c < ncomp; c++)
+        if (continuation_island[c] >= nisl)
+            nisl = continuation_island[c] + 1;
+    if (nisl < 2 || !(pitch > 1e-6)) { Arena_restore(arena, mark); return; }
+    {
+        double *ilo = (double *)ARENA_ALLOC(
+            arena, (long)((size_t)nisl * sizeof(double)));
+        double *ihi = (double *)ARENA_ALLOC(
+            arena, (long)((size_t)nisl * sizeof(double)));
+        size_t *icount = (size_t *)ARENA_CALLOC(
+            arena, (long)nisl, (long)sizeof(size_t));
+        int32_t *order = (int32_t *)ARENA_ALLOC(
+            arena, (long)((size_t)nisl * sizeof(int32_t)));
+        int32_t *shift = (int32_t *)ARENA_CALLOC(
+            arena, (long)nisl, (long)sizeof(int32_t));
+        double tmin = INFINITY, tmax = -INFINITY;
+        size_t nbin = 0;
+        for (int32_t k = 0; k < nisl; k++) {
+            ilo[k] = INFINITY; ihi[k] = -INFINITY;
+            order[k] = k;
+        }
+        for (size_t i = 0; i < nv; i++) {
+            int32_t k = continuation_island[comp[i]];
+            double w = (double)winding_sense * Phi[i];
+            if (k < 0 || k >= nisl) continue;
+            if (w < ilo[k]) ilo[k] = w;
+            if (w > ihi[k]) ihi[k] = w;
+            if (t[i] < tmin) tmin = t[i];
+            if (t[i] > tmax) tmax = t[i];
+            icount[k]++;
+        }
+        if (!(tmax >= tmin)) { Arena_restore(arena, mark); return; }
+        nbin = (size_t)((tmax - tmin) / UNWRAP_JGAUGE_AXIAL_BIN) + 2;
+        {
+            /* per-island junction-window radius accumulators, both ends */
+            double *hi_sum = (double *)ARENA_CALLOC(
+                arena, (long)((size_t)nisl * nbin), (long)sizeof(double));
+            double *lo_sum = (double *)ARENA_CALLOC(
+                arena, (long)((size_t)nisl * nbin), (long)sizeof(double));
+            uint32_t *hi_n = (uint32_t *)ARENA_CALLOC(
+                arena, (long)((size_t)nisl * nbin), (long)sizeof(uint32_t));
+            uint32_t *lo_n = (uint32_t *)ARENA_CALLOC(
+                arena, (long)((size_t)nisl * nbin), (long)sizeof(uint32_t));
+            double *delta = (double *)ARENA_ALLOC(
+                arena, (long)(nbin * sizeof(double)));
+            for (size_t i = 0; i < nv; i++) {
+                int32_t k = continuation_island[comp[i]];
+                double w = (double)winding_sense * Phi[i];
+                size_t bin = 0;
+                if (k < 0 || k >= nisl) continue;
+                bin = (size_t)((t[i] - tmin) / UNWRAP_JGAUGE_AXIAL_BIN);
+                if (bin >= nbin) bin = nbin - 1;
+                if (w > ihi[k] - UNWRAP_JGAUGE_WINDOW) {
+                    hi_sum[(size_t)k * nbin + bin] += r[i];
+                    hi_n[(size_t)k * nbin + bin]++;
+                }
+                if (w < ilo[k] + UNWRAP_JGAUGE_WINDOW) {
+                    lo_sum[(size_t)k * nbin + bin] += r[i];
+                    lo_n[(size_t)k * nbin + bin]++;
+                }
+            }
+            /* interval-sorted island order (insertion sort; nisl is small) */
+            for (int32_t a = 1; a < nisl; a++) {
+                int32_t key = order[a];
+                int32_t b = a - 1;
+                while (b >= 0 && ilo[order[b]] > ilo[key]) {
+                    order[b + 1] = order[b];
+                    b--;
+                }
+                order[b + 1] = key;
+            }
+            /* chain of junction snaps between consecutive ELIGIBLE islands */
+            {
+                int32_t previous = -1;
+                int32_t carried = 0;
+                for (int32_t s = 0; s < nisl; s++) {
+                    int32_t b = order[s];
+                    if (icount[b] < (size_t)UNWRAP_JGAUGE_MIN_VERTS) {
+                        shift[b] = carried;   /* inherit the chain state */
+                        continue;
+                    }
+                    if (previous >= 0) {
+                        int32_t a = previous;
+                        size_t nshared = 0;
+                        double gap = ilo[b] - ihi[a];
+                        double dr_expect =
+                            pitch * (gap > 0.0 ? gap : 0.0) / (2.0 * M_PI);
+                        for (size_t bin = 0; bin < nbin; bin++) {
+                            uint32_t na = hi_n[(size_t)a * nbin + bin];
+                            uint32_t nb2 = lo_n[(size_t)b * nbin + bin];
+                            if (na < UNWRAP_JGAUGE_MIN_BIN_N ||
+                                nb2 < UNWRAP_JGAUGE_MIN_BIN_N)
+                                continue;
+                            delta[nshared++] =
+                                lo_sum[(size_t)b * nbin + bin] / nb2 -
+                                hi_sum[(size_t)a * nbin + bin] / na;
+                        }
+                        if (nshared >= (size_t)UNWRAP_JGAUGE_MIN_BINS) {
+                            double dr_med = 0.0, residual = 0.0;
+                            long snap = 0;
+                            qsort(delta, nshared, sizeof(double),
+                                  unwrap_compare_double);
+                            dr_med = delta[nshared / 2];
+                            snap = lround((dr_med - dr_expect) / pitch);
+                            residual = fabs(dr_med - dr_expect -
+                                            (double)snap * pitch);
+                            if (labs(snap) <= UNWRAP_JGAUGE_MAX_TURNS &&
+                                residual <= UNWRAP_JGAUGE_SNAP * pitch) {
+                                carried += (int32_t)snap;
+                                if (snap != 0) {
+                                    (*out_shifted)++;
+                                    fprintf(stderr,
+                                            "  island gauge: island %d sits "
+                                            "%+ld turn(s) out from island %d "
+                                            "(junction dr=%.2f expect %.2f "
+                                            "over %zu axial bins, resid "
+                                            "%.2f)\n",
+                                            b, snap, a, dr_med, dr_expect,
+                                            nshared, residual);
+                                }
+                            } else {
+                                (*out_abstained)++;
+                                fprintf(stderr,
+                                        "  island gauge: abstain %d->%d "
+                                        "(dr=%.2f expect %.2f bins=%zu "
+                                        "snap=%ld resid=%.2f)\n",
+                                        a, b, dr_med, dr_expect, nshared,
+                                        snap, residual);
+                            }
+                        } else {
+                            (*out_abstained)++;
+                        }
+                    }
+                    shift[b] = carried;
+                    previous = b;
+                }
+            }
+            /* anchor: the largest island keeps its gauge (deterministic and
+             * subset-stable -- removing other regions cannot move it) */
+            {
+                int32_t largest = 0;
+                int32_t rebase = 0;
+                int applied = 0;
+                for (int32_t k = 1; k < nisl; k++)
+                    if (icount[k] > icount[largest]) largest = k;
+                rebase = shift[largest];
+                for (int32_t k = 0; k < nisl; k++) {
+                    shift[k] -= rebase;
+                    if (shift[k] != 0) applied = 1;
+                }
+                if (UNWRAP_JGAUGE_APPLY && applied) {
+                    for (int32_t c = 0; c < ncomp; c++) {
+                        int32_t k = continuation_island[c];
+                        if (k < 0 || k >= nisl || shift[k] == 0) continue;
+                        turn_correction[c] += shift[k];
+                    }
+                    for (size_t i = 0; i < nv; i++) {
+                        int32_t k = continuation_island[comp[i]];
+                        if (k < 0 || k >= nisl || shift[k] == 0) continue;
+                        Phi[i] += (double)winding_sense * 2.0 * M_PI *
+                                  (double)shift[k];
+                    }
+                }
+                fprintf(stderr,
+                        "  island gauge: %d island(s), %zu junction snap(s) "
+                        "%s, %zu abstained, anchor=island %d\n",
+                        nisl, *out_shifted,
+                        UNWRAP_JGAUGE_APPLY ? "applied"
+                                            : "measured (apply disarmed)",
+                        *out_abstained, largest);
+            }
+        }
+    }
+    Arena_restore(arena, mark);
+}
+
 /* ---- main ----------------------------------------------------------------- */
 
 int Unwrap_run(Arena_T arena,
@@ -419,6 +891,10 @@ int Unwrap_run(Arena_T arena,
 
     /* Persistent output (survives the scratch restore below). */
     out->uv = (float *)ARENA_ALLOC(arena, (long)(nv * 2 * sizeof(float)));
+    out->winding_index = (float *)ARENA_ALLOC(
+        arena, nv * sizeof *out->winding_index);
+    out->winding_confidence = (float *)ARENA_ALLOC(
+        arena, nv * sizeof *out->winding_confidence);
     int keep_phi = (opts != NULL && opts->keep_phi != 0);
     if (keep_phi) {
         out->phi = (float *)ARENA_ALLOC(arena, (long)(nv * sizeof(float)));
@@ -428,6 +904,10 @@ int Unwrap_run(Arena_T arena,
             arena, (long)(nv * sizeof(int32_t)));
         out->mesh_component = (int32_t *)ARENA_ALLOC(
             arena, (long)(nv * sizeof(int32_t)));
+        out->field_winding = (float *)ARENA_ALLOC(
+            arena, nv * sizeof *out->field_winding);
+        out->field_jump = (float *)ARENA_ALLOC(
+            arena, nv * sizeof *out->field_jump);
     }
 
     Arena_Mark mark = Arena_save(arena);
@@ -662,16 +1142,62 @@ int Unwrap_run(Arena_T arena,
         arena, (long)(nv * sizeof(double)));
     for (size_t i = 0; i < nv; i++)
         qturn[i] = (double)winding_sense * Phi[i] / (2.0 * M_PI);
-    int32_t *turn_correction = NULL, *component_island = NULL;
-    int32_t *component_continuation_island = NULL;
-    WindingRegisterStats wstats;
+    double *field_center = NULL, *field_sigma = NULL, *field_weight = NULL;
+    float *field_mean = NULL, *field_jump = NULL;
+    WindingRegisterFieldUnary field_unary;
+    const WindingRegisterFieldUnary *field_unary_ptr = NULL;
+    WindingFieldStats field_build_stats;
+    WindingFieldEvalStats field_eval_stats;
+    memset(&field_unary, 0, sizeof field_unary);
+    memset(&field_build_stats, 0, sizeof field_build_stats);
+    memset(&field_eval_stats, 0, sizeof field_eval_stats);
+    int field_mode = opts != NULL ? opts->winding_field_mode : 0;
     double registration_pitch = wrap_spacing > 0.0
                               ? wrap_spacing : fabs(sb);
-    if (WindingRegister_run(
+    if (field_mode > 0 || (field_mode == 0 && ncomp > 1)) {
+        size_t field_samples = 0, field_supported = 0;
+        size_t field_clean = 0, field_invalid = 0;
+        double field_epsilon = opts != NULL
+                             ? opts->winding_field_epsilon : 0.0;
+        double field_beta = opts != NULL ? opts->winding_field_beta : 0.0;
+        if (unwrap_build_field_unary(
+                arena, verts, nv, faces, nf, c1, c2, e1, e2, qturn,
+                comp, ncomp, big, registration_pitch,
+                field_epsilon, field_beta,
+                &field_center, &field_sigma, &field_weight,
+                &field_mean, &field_jump,
+                &field_build_stats, &field_eval_stats,
+                &field_samples, &field_supported,
+                &field_clean, &field_invalid) == 0) {
+            field_unary.center = field_center;
+            field_unary.sigma = field_sigma;
+            field_unary.weight = field_weight;
+            field_unary_ptr = &field_unary;
+            out->winding_field_used = 1;
+            out->winding_field_backend = (int)field_eval_stats.backend_used;
+            out->winding_field_samples = field_samples;
+            out->winding_field_supported_components = field_supported;
+            out->winding_field_clean_vertices = field_clean;
+            out->winding_field_invalid_vertices = field_invalid;
+            out->winding_field_clean_fraction =
+                (double)field_clean / (double)nv;
+        } else {
+            fprintf(stderr,
+                    "unwrap: winding field unavailable; MRF is relation-only\n");
+        }
+    }
+    int32_t *turn_correction = NULL, *component_island = NULL;
+    int32_t *component_continuation_island = NULL;
+    float *component_winding_confidence = NULL;
+    WindingRegisterStats wstats;
+    if (WindingRegister_run_with_field(
             arena, verts, nv, t, r, theta, qturn, comp, ncomp, csize, big,
-            tmin, registration_pitch, winding_sense,
-            &turn_correction, &component_island,
-            &component_continuation_island, &wstats) != 0) {
+             tmin, registration_pitch, winding_sense,
+             field_unary_ptr,
+             opts == NULL || opts->winding_conflict_mode >= 0,
+             &turn_correction, &component_island,
+            &component_continuation_island, &component_winding_confidence,
+            &wstats) != 0) {
         fprintf(stderr, "unwrap: winding gauge registration failed\n");
         Arena_restore(arena, mark);
         return -1;
@@ -685,6 +1211,19 @@ int Unwrap_run(Arena_T arena,
     (void)unwrap_sync_gauges(arena, nv, t, r, Phi, comp, ncomp,
                              component_island, turn_correction,
                              winding_sense, registration_pitch);
+
+    /* --- 7a2. Junction-radius island gauging: spread interval-adjacent
+     * islands to their radius-implied turns (see the pass's comment). */
+    {
+        size_t jg_shifted = 0, jg_abstained = 0;
+        unwrap_gauge_islands_by_junction(
+            arena, nv, t, r, Phi, comp, ncomp,
+            component_continuation_island, turn_correction,
+            winding_sense, registration_pitch,
+            &jg_shifted, &jg_abstained);
+        out->island_gauge_shifts = jg_shifted;
+        out->island_gauge_abstains = jg_abstained;
+    }
 
     /* --- 7b. Join split material islands by lifted-phase continuation. ---
      * The registration's local continuation gate (3-D proximity + helix rate)
@@ -885,6 +1424,39 @@ int Unwrap_run(Arena_T arena,
     out->order_satisfaction = wstats.order_satisfaction;
     out->turn_correction_min = wstats.correction_min;
     out->turn_correction_max = wstats.correction_max;
+    out->winding_repair_closers = wstats.repair_closers;
+    out->winding_repair_conflicts_pre = wstats.repair_conflicts_pre;
+    out->winding_repair_shifts = wstats.repair_shifts;
+    out->winding_repair_capped_roots = wstats.repair_capped_roots;
+    out->winding_anchor_span_pre_turns = wstats.anchor_span_pre_turns;
+    out->winding_anchor_span_turns = wstats.anchor_span_turns;
+    out->winding_mrf_rounds = wstats.mrf_rounds;
+    out->winding_mrf_label_changes = wstats.mrf_label_changes;
+    out->winding_mrf_abstained_sites = wstats.mrf_abstained_sites;
+    out->winding_mrf_energy_before = wstats.mrf_energy_before;
+    out->winding_mrf_energy_after = wstats.mrf_energy_after;
+    out->winding_mrf_mean_confidence = wstats.mrf_mean_confidence;
+    out->winding_mrf_field_calibrated_roots =
+        wstats.mrf_field_calibrated_roots;
+    out->winding_mrf_field_calibrated_sites =
+        wstats.mrf_field_calibrated_sites;
+    out->winding_mrf_field_calibration_r2 =
+        wstats.mrf_field_calibration_r2;
+    out->winding_mrf_conflict_rounds = wstats.mrf_conflict_rounds;
+    out->winding_mrf_conflict_bins_before =
+        wstats.mrf_conflict_bins_before;
+    out->winding_mrf_conflict_bins_after =
+        wstats.mrf_conflict_bins_after;
+    out->winding_mrf_conflict_losing_claims =
+        wstats.mrf_conflict_losing_claims;
+    out->winding_mrf_conflict_exclusions =
+        wstats.mrf_conflict_exclusions;
+    out->winding_mrf_conflict_winner_locks =
+        wstats.mrf_conflict_winner_locks;
+    out->winding_mrf_conflict_label_changes =
+        wstats.mrf_conflict_label_changes;
+    out->winding_mrf_conflict_converged =
+        wstats.mrf_conflict_converged;
 
     /* --- 8. Assemble UV (length-like, each axis shifted to start at 0). ---
      * u is the winding converted to an arc length via a reference radius so the
@@ -900,6 +1472,20 @@ int Unwrap_run(Arena_T arena,
     for (size_t i = 0; i < nv; i++) {
         out->uv[i * 2 + 0] = (float)((Phi[i] - umin) * r_ref);
         out->uv[i * 2 + 1] = (float)(t[i] - tmin);
+        out->winding_index[i] = (float)(
+            (double)winding_sense * Phi[i] / (2.0 * M_PI));
+        double local_confidence = 1.0;
+        if (out->winding_field_used) {
+            if (!isfinite(field_jump[i])) local_confidence = 0.0;
+            else {
+                double z = ((double)field_jump[i] - 1.0) / 0.35;
+                local_confidence = exp(-0.5 * z * z);
+            }
+        }
+        double component_confidence = component_winding_confidence != NULL
+            ? component_winding_confidence[comp[i]] : 0.0;
+        out->winding_confidence[i] = (float)(
+            component_confidence * local_confidence);
     }
     if (keep_phi) {
         for (size_t i = 0; i < nv; i++) {
@@ -908,6 +1494,10 @@ int Unwrap_run(Arena_T arena,
             out->continuation_island[i] =
                 component_continuation_island[comp[i]];
             out->mesh_component[i] = comp[i];
+            out->field_winding[i] = out->winding_field_used
+                                  ? field_mean[i] : NAN;
+            out->field_jump[i] = out->winding_field_used
+                               ? field_jump[i] : NAN;
         }
     }
 
@@ -1080,6 +1670,108 @@ int Unwrap_selftest(void)
             fprintf(stderr,
                     "[unwrap selftest] gauge sync OK (offset +3 recovered, "
                     "%zu island re-gauged)\n", synced);
+        }
+    }
+
+    /* (1g) Junction-radius island gauging: island B's lift packs it
+     * phi-adjacent to island A while its radii sit 3 turns further out; the
+     * junction snap must shift B by +3 turns.  A noisy half-integer case
+     * must abstain. */
+    {
+        enum { GNB = 4, GPER = 9 };   /* axial bins x samples per bin end */
+        size_t nvg = 2u * GNB * GPER * 2u;
+        double *gt = (double *)ARENA_ALLOC(arena,
+                                           (long)(nvg * sizeof(double)));
+        double *gr = (double *)ARENA_ALLOC(arena,
+                                           (long)(nvg * sizeof(double)));
+        double *gphi = (double *)ARENA_ALLOC(arena,
+                                             (long)(nvg * sizeof(double)));
+        int32_t *gcomp = (int32_t *)ARENA_ALLOC(arena,
+                                                (long)(nvg *
+                                                       sizeof(int32_t)));
+        int32_t gisl[2] = { 0, 1 };
+        int32_t gtc[2] = { 0, 0 };
+        size_t at = 0;
+        size_t shifted = 0, abstained = 0;
+        /* island 0: true w in [0,4] turns; island 1: true w in [7,10] but
+         * lifted 2.8 turns low so its interval starts 0.2 turns after A */
+        for (int isl = 0; isl < 2; isl++) {
+            double wlo = isl == 0 ? 0.0 : 7.0 - 2.8;
+            double whi = isl == 0 ? 4.0 : 10.0 - 2.8;
+            double rlo = isl == 0 ? 50.0 : 50.0 + 9.5 * 7.0;
+            double rhi = isl == 0 ? 50.0 + 9.5 * 4.0 : 50.0 + 9.5 * 10.0;
+            for (int b = 0; b < GNB; b++) {
+                for (int s = 0; s < GPER; s++) {
+                    double f = (double)s / (GPER - 1) * 0.05;
+                    gt[at] = 4.0 + 8.0 * b;
+                    gphi[at] = (wlo + f) * 2.0 * M_PI;
+                    gr[at] = rlo + f * 9.5;
+                    gcomp[at] = isl;
+                    at++;
+                    gt[at] = 4.0 + 8.0 * b;
+                    gphi[at] = (whi - f) * 2.0 * M_PI;
+                    gr[at] = rhi - f * 9.5;
+                    gcomp[at] = isl;
+                    at++;
+                }
+            }
+        }
+        unwrap_gauge_islands_by_junction(
+            arena, at, gt, gr, gphi, gcomp, 2, gisl, gtc, 1, 9.5,
+            &shifted, &abstained);
+        if (shifted != 1 ||
+            (UNWRAP_JGAUGE_APPLY ? gtc[1] - gtc[0] != 3
+                                 : gtc[1] != gtc[0])) {
+            fprintf(stderr,
+                    "[unwrap selftest] FAIL: junction gauge expected +3 "
+                    "measurement (shifted=%zu tc=%d/%d apply=%d)\n",
+                    shifted, gtc[0], gtc[1], UNWRAP_JGAUGE_APPLY);
+            fails++;
+        } else {
+            fprintf(stderr,
+                    "[unwrap selftest] junction island gauge OK "
+                    "(+3 turns measured%s)\n",
+                    UNWRAP_JGAUGE_APPLY ? ", applied" : ", apply disarmed");
+        }
+        /* abstain: radii midway between integer snaps (offset 2.5 turns) */
+        at = 0;
+        gtc[0] = gtc[1] = 0;
+        for (int isl = 0; isl < 2; isl++) {
+            double wlo = isl == 0 ? 0.0 : 7.0 - 2.8;
+            double whi = isl == 0 ? 4.0 : 10.0 - 2.8;
+            double rlo = isl == 0 ? 50.0 : 50.0 + 9.5 * (7.0 - 2.5 + 2.0);
+            double rhi = isl == 0 ? 50.0 + 9.5 * 4.0
+                                  : 50.0 + 9.5 * (10.0 - 2.5 + 2.0);
+            for (int b = 0; b < GNB; b++) {
+                for (int s = 0; s < GPER; s++) {
+                    double f = (double)s / (GPER - 1) * 0.05;
+                    gt[at] = 4.0 + 8.0 * b;
+                    gphi[at] = (wlo + f) * 2.0 * M_PI;
+                    gr[at] = rlo + f * 9.5;
+                    gcomp[at] = isl;
+                    at++;
+                    gt[at] = 4.0 + 8.0 * b;
+                    gphi[at] = (whi - f) * 2.0 * M_PI;
+                    gr[at] = rhi - f * 9.5;
+                    gcomp[at] = isl;
+                    at++;
+                }
+            }
+        }
+        shifted = 0; abstained = 0;
+        unwrap_gauge_islands_by_junction(
+            arena, at, gt, gr, gphi, gcomp, 2, gisl, gtc, 1, 9.5,
+            &shifted, &abstained);
+        if (shifted != 0 || abstained == 0 || gtc[1] != gtc[0]) {
+            fprintf(stderr,
+                    "[unwrap selftest] FAIL: half-integer junction must "
+                    "abstain (shifted=%zu abstained=%zu tc=%d/%d)\n",
+                    shifted, abstained, gtc[0], gtc[1]);
+            fails++;
+        } else {
+            fprintf(stderr,
+                    "[unwrap selftest] junction island gauge abstains on "
+                    "half-integer evidence OK\n");
         }
     }
 

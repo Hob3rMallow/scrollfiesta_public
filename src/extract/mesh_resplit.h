@@ -85,7 +85,7 @@ int MeshResplit_remesh_pieces(Arena_T arena,
  * split already assigned correctly. So it cannot vacuum in an adjacent close-wrap
  * and fold (the step7_cc_bpa_003 regression), yet it still re-meshes cleanly
  * (no sliver/flipped micro-triangles, unlike topology-preserving in-place
- * smoothing, so QEM can simplify). `*m` is REPLACED with the re-surfaced mesh
+ * smoothing, so CVT can remesh). `*m` is REPLACED with the re-surfaced mesh
  * (comp_id kept; pin_mask/vert_normals reset since the vertex set is fresh); on
  * re-LOP/BPA failure `*m` is left unchanged. `cell_origin` may be NULL ({0,0,0}).
  * nv < 3 or iters <= 0 is a no-op. Returns 0.

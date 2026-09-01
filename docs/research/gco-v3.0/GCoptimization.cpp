@@ -13,9 +13,15 @@
 
 // Choose reasonably high-precision timer (sub-millisec resolution if possible).
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef VC_EXTRALEAN
 #define VC_EXTRALEAN
+#endif
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>
 
 extern "C" gcoclock_t GCO_CLOCKS_PER_SEC = 0;

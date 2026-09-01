@@ -3,7 +3,7 @@
  *
  * Self-contained on purpose (same rationale as weld_cleanup.c): the flat-array
  * flip / collapse machinery + Dey-Edelsbrunner-Guha link condition + normal-fold
- * guard are faithful copies of the canonical ones in src/common/qem.c and
+ * guard use the same conservative manifold predicates as weld cleanup and
  * src/remesh/weld_cleanup.c, rebuilt from the flat arrays each sub-pass so there
  * is no stale-adjacency bookkeeping. The genuinely new mechanic here is the
  * winding-safe edge SPLIT (2 tris -> 4) with array growth.
@@ -214,7 +214,7 @@ static size_t flip_pass(Arena_T arena, const float *V, int32_t *faces,
              * c-d: faces (c,a,d)+(d,b,c) keep every boundary-edge direction. Guard
              * normals AND the write must both use these -- a reversed write
              * (c,d,a)+(d,c,b) negates them, injecting same_dir edges on folded
-             * geometry (see qem.c::qem_edge_flip_pass, same bug). */
+             * geometry. */
             face_normal(V,a,b,c,n_orig); face_normal(V,c,a,d,n1); face_normal(V,d,b,c,n2);
             dot1=n_orig[0]*n1[0]+n_orig[1]*n1[1]+n_orig[2]*n1[2];
             dot2=n_orig[0]*n2[0]+n_orig[1]*n2[1]+n_orig[2]*n2[2];
@@ -535,7 +535,7 @@ static size_t split_round(Arena_T arena,
 }
 
 /* ===================================================================
- * Tangential Laplacian relax (adapt of qem.c::qem_smooth_pass). Interior verts
+ * Tangential Laplacian relax. Interior verts
  * move to the tangent-plane projection of their 1-ring mean; frozen verts are
  * held fixed. Displacement clamped to keep it stable.
  * =================================================================== */

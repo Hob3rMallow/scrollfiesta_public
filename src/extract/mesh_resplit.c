@@ -302,7 +302,7 @@ static int pass_pieces_through(Arena_T arena,
 }
 
 /* Re-LOP + re-BPA a mesh from its OWN vertices (no cloud relabel, so no
- * vacuuming/fold) -- the clean re-triangulation QEM needs. See mesh_resplit.h. */
+ * vacuuming/fold) -- the clean re-triangulation CVT needs. See mesh_resplit.h. */
 int MeshResplit_resurface_own(Arena_T arena, ComponentMesh *m,
                               const float cell_origin[3], int iters)
 {

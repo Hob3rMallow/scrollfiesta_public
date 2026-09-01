@@ -2629,6 +2629,80 @@ static void emit_nonmanifold_neighborhood(Arena_T arena,
     fclose(fp);
 }
 
+/* Write every face participating in an exact embedded-geometry conflict plus
+ * its vertex-adjacent 1-ring.  Assembly-only mode deliberately does not repair
+ * these faces: the diagnostic identifies source-sheet leaks without silently
+ * deleting or synthesising geometry. */
+static void emit_embedded_conflict_neighborhood(
+        Arena_T arena,
+        const int32_t *faces, size_t nf,
+        const float *verts, size_t nv,
+        const size_t *face_conflict_degree,
+        const char *out_path)
+{
+    if (nf == 0 || nv == 0 || !face_conflict_degree) return;
+
+    uint8_t *conflict_face = (uint8_t *)ARENA_CALLOC(arena, nf, 1L);
+    uint8_t *ring_face = (uint8_t *)ARENA_CALLOC(arena, nf, 1L);
+    uint8_t *vert_use = (uint8_t *)ARENA_CALLOC(arena, nv, 1L);
+    int32_t *remap = (int32_t *)ARENA_ALLOC(arena, nv * sizeof(int32_t));
+    size_t conflict_faces = 0, out_nv = 0;
+
+    for (size_t f = 0; f < nf; f++) {
+        if (face_conflict_degree[f] == 0) continue;
+        conflict_face[f] = 1;
+        conflict_faces++;
+        for (int k = 0; k < 3; k++)
+            vert_use[faces[f*3+k]] = 1;
+    }
+    if (conflict_faces == 0) return;
+
+    for (size_t f = 0; f < nf; f++) {
+        if (conflict_face[f]) continue;
+        for (int k = 0; k < 3; k++) {
+            if (vert_use[faces[f*3+k]] == 1) {
+                ring_face[f] = 1;
+                break;
+            }
+        }
+    }
+    for (size_t f = 0; f < nf; f++) {
+        if (!ring_face[f]) continue;
+        for (int k = 0; k < 3; k++) {
+            int32_t v = faces[f*3+k];
+            if (vert_use[v] == 0) vert_use[v] = 2;
+        }
+    }
+    for (size_t v = 0; v < nv; v++) {
+        if (vert_use[v]) remap[v] = (int32_t)(out_nv++);
+        else remap[v] = -1;
+    }
+
+    FILE *fp = fopen(out_path, "w");
+    if (!fp) return;
+    fprintf(fp, "# exact embedded-geometry conflict neighbourhood\n");
+    fprintf(fp, "# red  = face participating in an exact conflict\n");
+    fprintf(fp, "# grey = vertex-adjacent 1-ring context\n");
+    fprintf(fp, "# conflict_faces=%zu\n", conflict_faces);
+    for (size_t v = 0; v < nv; v++) {
+        if (!vert_use[v]) continue;
+        double r = vert_use[v] == 1 ? 1.0 : 0.5;
+        double g = vert_use[v] == 1 ? 0.0 : 0.5;
+        double b = vert_use[v] == 1 ? 0.0 : 0.5;
+        fprintf(fp, "v %.4f %.4f %.4f %.3f %.3f %.3f\n",
+                (double)verts[v*3+0], (double)verts[v*3+1],
+                (double)verts[v*3+2], r, g, b);
+    }
+    for (size_t f = 0; f < nf; f++) {
+        if (!conflict_face[f] && !ring_face[f]) continue;
+        fprintf(fp, "f %d %d %d\n",
+                remap[faces[f*3+0]] + 1,
+                remap[faces[f*3+1]] + 1,
+                remap[faces[f*3+2]] + 1);
+    }
+    fclose(fp);
+}
+
 /* ===================================================================
  * Winding repair -- BFS-propagate orientation per connected component.
  *
@@ -3779,7 +3853,7 @@ int main(int argc, char **argv)
         fprintf(stderr,
             "Usage: %s <grid_obj_dir> <output.obj> [--stage <name>] "
             "[--emit-weld-verts <path>] [--emit-lineage <path>] "
-            "[--placed-facekeep <dir>] [--stream-shard <path>]\n"
+            "[--placed-facekeep <dir>] [--stream-shard <path>] [--no-bridge]\n"
             "       %s <grid_obj_dir> <output.obj> --pair <cubeA_id> <compA> <cubeB_id> <compB> [--stage <name>]\n"
             "\n"
             "Reads <grid_obj_dir>/<cube_id>/<cube_id>_<stage>/<cube_id>_<stage>_all.obj\n"
@@ -3795,6 +3869,8 @@ int main(int argc, char **argv)
             "\n"
             "--stage <name>: which dump stage to read (default: step12_final).\n"
             "                e.g. step1_bpa, step7_cc_bpa, step12_final.\n"
+            "--no-bridge: assemble the BPA-bounded cube meshes verbatim; do not\n"
+            "                synthesize, delete, or repair cross-cube seam faces.\n"
             "--axis-table z,y,x.csv: sampled curved umbilicus for every winding\n"
             "                gate (linear interpolation + endpoint extrapolation).\n"
             "\n"
@@ -3978,7 +4054,7 @@ int main(int argc, char **argv)
      * bridge gates never veto a cross-wrap glue.  The primary weld now
      * refuses to run unarmed; --allow-unarmed is the deliberate opt-out
      * for debug/permissive welds where cloud restriction is the safety. */
-    {
+    if (!no_bridge) {
         const char *ep = getenv("SEAM_WRAP_PITCH");
         const char *ey = getenv("SEAM_UMBILICUS_Y");
         const char *ex = getenv("SEAM_UMBILICUS_X");
@@ -4004,6 +4080,8 @@ int main(int argc, char **argv)
                 "--allow-unarmed for a deliberate gates-off debug weld\n");
             return 2;
         }
+    } else {
+        printf("grid_weld: assembly-only mode (--no-bridge); seam gates unused\n");
     }
 
     /* Per-hole diagnostics are deliberately separate from --dump-stages.
@@ -5538,7 +5616,7 @@ int main(int argc, char **argv)
 
             /* Post-weld sliver / T-junction cleanup: Surazhsky-Gotsman flips
              * first, then a guarded short-edge collapse for the residue. This
-             * is the only edge-collapse the bridge faces ever see (per-cube QEM
+             * is the only edge-collapse the bridge faces ever see (per-cube CVT
              * ran before the weld). Vertices are not moved; collapsed verts are
              * orphaned so the color arrays below stay valid by index. */
             if (!no_cleanup) {
@@ -6729,15 +6807,18 @@ int main(int argc, char **argv)
          */
         {
             IntersectionCleanupParams ep;
+            size_t *face_conflict_degree = (size_t *)ARENA_CALLOC(
+                arena, n_unique_faces, sizeof(size_t));
+            int embedded_audit_rc;
             IntersectionCleanup_default_params(&ep);
             ep.gap_max = 0.0;
             ep.include_hinges = 1;
-            if(IntersectionCleanup_audit(
+            embedded_audit_rc = IntersectionCleanup_audit(
                     out_verts,out_nv,flat_faces,n_unique_faces,NULL,
-                    &ep,NULL,&embedded_stats)!=0||
-               embedded_stats.conflicts!=0){
+                    &ep,face_conflict_degree,&embedded_stats);
+            if (embedded_audit_rc != 0) {
                 fprintf(stderr,
-                        "ERROR: final embedded-geometry certificate failed: "
+                        "ERROR: final embedded-geometry audit failed: "
                         "candidates=%zu conflicts=%zu "
                         "[overlap=%zu stab=%zu fold=%zu]\n",
                         embedded_stats.candidate_pairs,
@@ -6747,11 +6828,43 @@ int main(int argc, char **argv)
                         embedded_stats.fold_pairs);
                 RAISE(IO_Failed);
             }
-            embedded_geometry_certificate = 1;
-            fprintf(stderr,
-                    "Exact embedded-geometry certificate: PASS "
-                    "(%zu candidates, 0 conflicts)\n",
-                    embedded_stats.candidate_pairs);
+            if (embedded_stats.conflicts != 0) {
+                if (!no_bridge) {
+                    fprintf(stderr,
+                            "ERROR: final embedded-geometry certificate failed: "
+                            "candidates=%zu conflicts=%zu "
+                            "[overlap=%zu stab=%zu fold=%zu]\n",
+                            embedded_stats.candidate_pairs,
+                            embedded_stats.conflicts,
+                            embedded_stats.overlap_pairs,
+                            embedded_stats.stab_pairs,
+                            embedded_stats.fold_pairs);
+                    RAISE(IO_Failed);
+                } else {
+                    char embedded_path[1024];
+                    snprintf(embedded_path, sizeof(embedded_path),
+                             "%s.embedded_conflicts.obj", out_path);
+                    emit_embedded_conflict_neighborhood(
+                        arena, flat_faces, n_unique_faces, out_verts, out_nv,
+                        face_conflict_degree, embedded_path);
+                    fprintf(stderr,
+                            "WARNING: assembly-only source geometry has %zu "
+                            "exact conflicts [overlap=%zu stab=%zu fold=%zu]; "
+                            "preserving all source faces\n",
+                            embedded_stats.conflicts,
+                            embedded_stats.overlap_pairs,
+                            embedded_stats.stab_pairs,
+                            embedded_stats.fold_pairs);
+                    fprintf(stderr, "Wrote %s (conflict neighbourhood)\n",
+                            embedded_path);
+                }
+            } else {
+                embedded_geometry_certificate = 1;
+                fprintf(stderr,
+                        "Exact embedded-geometry certificate: PASS "
+                        "(%zu candidates, 0 conflicts)\n",
+                        embedded_stats.candidate_pairs);
+            }
         }
         gw_phase("embedded");
 

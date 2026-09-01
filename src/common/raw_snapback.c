@@ -123,7 +123,7 @@ int RawSnap_process(Arena_T arena,
         Arena_Mark comp_mark = Arena_save(arena);
 
         /* Strip dangling verts (alive but in zero faces). Upstream stages
-         * (QEM, Step 5 boundary_remesh) can leave them, and snap_cg's
+         * (CVT or Step 5 boundary_remesh) can leave them, and snap_cg's
          * ILU(0) factorization on a degree-0 row reads val[diag_pos[i]]
          * which is val[-1] when diag_pos was never set — segfault. Compact
          * the mesh in-place so every emitted vert appears in some face. */

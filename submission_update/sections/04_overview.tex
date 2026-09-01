@@ -1,0 +1,172 @@
+\section{System Overview and Data Flow}
+\label{sec:overview}
+
+\subsection{Inputs and Outputs}
+\label{sec:problem}
+ScrollFiesta consumes a \emph{completed} coarse surface-probability volume and the matching CT, their world-space transforms, a cube grid, and an estimate of the scroll axis and umbilicus. The prediction volume is taken as given. It is the output of the companion \emph{Socratic Method} pipeline~\cite{socraticmethod}, which distills fine-resolution evidence into the coarse predictor and closes short dropouts in the traced sheet before any geometry exists; nothing described below writes back into it.
+
+The outputs are plural because the two domains answer different questions and a run may usefully stop at either of them: sheet tracks with their support and interpolation masks; a winding-order graph with per-component winding field, label, and confidence; per-cube or aggregated geometry; and a developed quad ribbon with its CT texture.
+
+\subsection{Five Requirements}
+
+Five properties of the problem shape everything that follows, and each is answered by a specific mechanism later in the paper.
+
+\begin{enumerate}
+  \setlength{\itemsep}{2pt}
+  \item \textbf{The target is one side of an open sheet}, not a watertight boundary --- hence guarded single-sided reconstruction rather than isosurfacing (Section~\ref{sec:percube}).
+  \item \textbf{The data exceed memory} and must compose from axial shards and per-cube geometry --- hence compact-support operators whose results agree across a halo (Sections~\ref{sec:percube} and~\ref{sec:weld}).
+  \item \textbf{One full-turn shortcut can invalidate a global unwrapping}, and connectedness and manifoldness cannot detect it --- hence an explicit winding coordinate, and generalized-winding observations reconciled with local relations in an integer MRF (Sections~\ref{sec:winding} and~\ref{sec:prob-winding}).
+  \item \textbf{A neighbouring wrap may be bright and physically touching}, so intensity does not determine topology --- hence a pivoting front guarded by accumulated winding phase rather than by proximity, and a weld that joins only where both sides agree on the wrap (Sections~\ref{sec:percube} and~\ref{sec:weld}).
+  \item \textbf{Interpolated geometry and measured geometry behave differently downstream}, so the two are labelled apart rather than merged into one coverage number (Sections~\ref{sec:finishing} and~\ref{sec:integration}).
+\end{enumerate}
+
+\subsection{The Data Flow}
+\label{sec:dataflow-text}
+
+\begin{figure*}[t]
+  \centering
+  \resizebox{\textwidth}{!}{%
+  \begin{tikzpicture}[
+    font=\sffamily\small,
+    stage/.style={draw, rounded corners=2pt, align=center, text width=30mm, minimum height=11mm, inner sep=3pt, fill=black!4},
+    outbox/.style={draw, thick, rounded corners=2pt, align=center, text width=30mm, minimum height=11mm, inner sep=3pt, fill=black!12},
+    bus/.style={draw, thick, rounded corners=2pt, align=center, minimum height=8mm, inner sep=4pt, fill=black!8},
+    fl/.style={-{Latex[length=2.2mm]}, thick},
+    pl/.style={-{Latex[length=2.2mm]}, densely dotted},
+    lbl/.style={font=\sffamily\scriptsize, inner sep=1.5pt, fill=white},
+    lane/.style={font=\sffamily\bfseries\footnotesize, anchor=east, align=right}
+  ]
+    % ---- the input artifact, produced by the companion pipeline ----------
+    \node[bus, minimum width=200mm] (BUS) at (8.4,0)
+      {Completed prediction volume\ \ \emph{(input; companion \textsc{Socratic Method} pipeline)}};
+
+    % ---- lane 1: identity ------------------------------------------------
+    \node[stage]  (B1) at (0,-1.8)    {Slice tracing +\\in-plane fusion cut};
+    \node[stage]  (B2) at (4.2,-1.8)  {Sheet lifting +\\held-out RAW\\check};
+    \node[stage]  (B3) at (8.4,-1.8)  {Sheet book\\ \footnotesize (components kept separate)};
+    \node[stage]  (B4) at (12.6,-1.8) {Winding assembly\\ \footnotesize max-support forest,\\[-1pt] \footnotesize subtree-shift repair};
+    \node[outbox] (B5) at (16.8,-1.8) {Ordered sheet book\\+ winding relations};
+
+    % ---- lane 2: geometry and metric -------------------------------------
+    \node[stage]  (C1) at (0,-4.4)    {Per-cube extraction\\ \footnotesize MLS $\to$ BPA $\to$ repair $\to$ CVT};
+    \node[stage]  (C2) at (4.2,-4.4)  {Pre-weld mesh pile\\ \footnotesize (global weld optional)};
+    \node[stage]  (C3) at (8.4,-4.4)  {Probabilistic winding\\MRF + quad-ribbon fit\\ \footnotesize then TAUCS IRLS};
+    \node[stage]  (C4) at (12.6,-4.4) {Exact untangle +\\metric re-solve};
+    \node[outbox] (C5) at (16.8,-4.4) {Layer bake +\\composite page};
+
+    % ---- lane labels ------------------------------------------------------
+    \node[lane] at (-2.5,-1.8) {1.\ Identity\\domain};
+    \node[lane] at (-2.5,-4.4) {2.\ Metric\\domain};
+
+    % ---- the shared input into both lanes ---------------------------------
+    \draw[fl] (BUS.south -| B1.north) -- (B1.north);
+    \draw[fl] (BUS.west) -- ++(-0.55,0) |- (C1.west);
+
+    % ---- lane flow --------------------------------------------------------
+    \draw[fl] (B1) -- (B2);
+    \draw[fl] (B2) -- (B3);
+    \draw[fl] (B3) -- (B4);
+    \draw[fl] (B4) -- (B5);
+    \draw[fl] (C1) -- (C2);
+    \draw[fl] (C2) -- (C3);
+    \draw[fl] (C3) -- (C4);
+    \draw[fl] (C4) -- (C5);
+    \draw[pl] (B5.south) -- ++(0,-0.85) -| node[lbl, pos=0.28, above, align=center]
+      {planned: same-wrap continuation relations (Sec.~\ref{sec:conclusions})} (C3.north);
+  \end{tikzpicture}}
+  \caption{The ScrollFiesta data flow. Solid arrows carry geometry and volumes;
+  the dotted arrow is a link that does not yet exist. The completed prediction
+  volume is an input rather than a stage: it is produced by the companion
+  \emph{Socratic Method} pipeline and is never written back to from here. The
+  identity domain decides what is one sheet without fusing geometry. In the
+  metric lane, generalized winding and local relations become uncertain factors
+  in an integer MRF before metric fitting. Both lanes read the same volume
+  independently, which is what makes a change to that volume measurable through
+  either one in isolation.}
+  \Description{A two-lane block diagram. A wide bar at the top holds the
+  completed prediction volume, marked as an input from a companion pipeline. It
+  feeds an identity lane of slice tracing, sheet lifting, sheet book, and
+  winding assembly ending in an ordered sheet book, and a metric lane of
+  per-cube extraction, pre-weld mesh pile, probabilistic winding MRF and
+  quad-ribbon fit, exact untangling, and layer compositing. A dotted arrow marks
+  a planned but absent link from the identity lane to the metric lane.}
+  \label{fig:dataflow}
+\end{figure*}
+
+Figure~\ref{fig:dataflow} shows the flow. Read it as two lanes that share one input artifact.
+
+\paragraph{The shared volume.} The completed prediction is the hand-off from the companion pipeline, and both lanes read it independently. Keeping the two lanes decoupled is what makes a prediction change measurable through either one in isolation.
+
+\paragraph{Lane 1: the identity domain (Section~\ref{sec:sheetbooks}).} Here the system decides \emph{what is one sheet} and \emph{in what order the sheets are read}. The prediction is traced as a stack of two-dimensional paths; each path is associated across planes into a material track; a path that travels from one wrap through a fusion onto another is cut along its length and re-associated, so that no downstream index inherits a fused identity. Each candidate track is lifted into a single-valued sheet over its supported domain, and CT is consulted afterwards --- the fit never sees it --- to reject phantom sheets lying where the CT is empty. Accepted sheets form a \emph{book}. Signed radial contacts between coexisting tracks produce integer winding relations, which are composed through a maximum-support forest and repaired by integer subtree shifts. The structural point is that a winding edge states an order relation and nothing else: geometry is never fused to make the order graph connected.
+
+\paragraph{Lane 2: the metric domain (Sections~\ref{sec:percube}--\ref{sec:finishing}).} Here the system decides \emph{where every point lands on the page}. Local geometry is extracted per cube by a moving-least-squares collapse, guarded ball pivoting, topology repair, and CVT remeshing. Before fitting, the oriented mesh soup is sampled on both sides to obtain generalized-winding means and jumps. Robust per-component unaries, same-sheet continuation factors, and radial-order factors are reconciled in a small-label MRF, which can be run on its own to obtain turn labels without any metric solve. The ribbon fit then intersects the soup with planes normal to the scroll axis and solves for a metric coordinate field; robust sparse least squares reconciles cracks and contacts; exact contact response untangles the coil; and layer-aware CT compositing emits the page.
+
+\paragraph{What is not yet connected.} The dotted arrow in Fig.~\ref{fig:dataflow} is deliberate. The sheet book currently supplies radial order for the traced material, and the metric lane runs its own winding registration on the geometry it receives. Feeding the book's same-wrap continuation evidence into the ribbon fit --- without merging components --- is the main open item of Section~\ref{sec:conclusions}, and it is drawn as absent rather than implied.
+
+\subsection{Stage Summary}
+
+Table~\ref{tab:contracts} gives each stage as what it consumes, what it produces, and the mechanism that does the work.
+
+\begin{table*}[t]
+  \caption{Stage summary. The right-hand column names the operator that does the work; the section reference gives the full account, and Appendix~\ref{app:terms} records the constants.}
+  \label{tab:contracts}
+  \centering
+  \small
+    \begin{tabular}{@{}p{0.13\linewidth}p{0.17\linewidth}p{0.17\linewidth}p{0.43\linewidth}@{}}
+    \toprule
+    Stage & Consumes & Produces & Principal mechanism \\
+    \midrule
+    Sheet lifting (\ref{sec:sheets}) &
+      completed prediction, material tracks &
+      single-valued sheets, support masks &
+      along-curve ownership test cuts a path that crosses a fusion onto another wrap; dense single-valued fit over the supported domain, with CT sampled only after the fit \\
+    \addlinespace[2pt]
+    Winding assembly (\ref{sec:winding}) &
+      sheets, local radial contacts &
+      integer order graph &
+      signed radial separation normalized by \emph{local} pitch and snapped within 0.25 turns; maximum-support forest with integer subtree-shift loop closure \\
+    \addlinespace[2pt]
+    Probabilistic winding (\ref{sec:prob-winding}) &
+      oriented mesh, GWN samples, local relations &
+      integer turn labels, confidence &
+      two-sided generalized winding number gives robust component unaries; continuation and order observations give pairwise factors; alpha--beta swap graph cuts over residual labels in $[-2,2]$ \\
+    \addlinespace[2pt]
+    Per-cube extraction (\ref{sec:percube}) &
+      prediction cube + halo &
+      single-sided mesh charts &
+      iterated MLS collapse onto the sheet; ball pivoting guarded by an anti-parallel test and accumulated winding phase; topology repair; CVT remeshing \\
+    \addlinespace[2pt]
+    Weld (\ref{sec:weld}), optional &
+      placed cube meshes &
+      seam-joined mesh &
+      seam-band refinement to ${\sim}3.5$-voxel triangles, BPA bridging within a 0.35-turn phase tolerance, then mutual-best sheet correspondence across each seam \\
+    \addlinespace[2pt]
+    Quad-ribbon fit (\ref{sec:quadribbon}) &
+      pre-weld mesh pile, measured phase &
+      metric $(u,v)$ field, material components &
+      axis-normal slicing into chains; exact chain arclength against one shared reciprocal-integrated metric-rate map; Huber-IRLS sparse least squares over metric, contact, and crack rows \\
+    \addlinespace[2pt]
+    Untangle (\ref{sec:untangle}) &
+      fitted ribbon &
+      intersection-free geometry &
+      exact triangle-contact set carrying phase branch and radial order; screened radial displacement field on an active collar under unilateral inter-turn clearance \\
+    \addlinespace[2pt]
+    CT attachment (\ref{sec:attach}) &
+      ribbon, RAW &
+      moved vertices &
+      winding-aware corridor search for the papyrus band, robust vector quilting, smooth displacement, and per-component accept/reject on measured collision, coverage, darkness, and distortion \\
+    \addlinespace[2pt]
+    Composite (\ref{sec:raster}) &
+      layer bakes &
+      page image &
+      hard layer conflicts split into separate bakes; first-cover ranking prefers direct coverage from any layer over an earlier layer's generated fill \\
+    \bottomrule
+  \end{tabular}
+\end{table*}
+
+Two structural choices in this table are worth isolating, because they are what the winding coordinate buys. First, local geometry (rows 7--8) and large-scale identity (rows 5--6) are computed by different operators on different data, so a remeshing or welding decision cannot quietly change which turn a piece of papyrus belongs to. Second, the metric fit (row 9) \emph{consumes} a turn assignment rather than searching for one, so a low-distortion or low-overlap solution cannot buy itself a different physical identity --- which is exactly how the earlier overlap-minimizing atlas of Section~\ref{sec:deadends} failed.
+
+\subsection{Current Experimental Boundary}
+\label{sec:boundary}
+
+The two lanes have not been carried to the same scale, and this paper does not present them as if they had. The sheet-book ladder runs through $21\times21\times21$. The winding MRF is measured on a fresh $4\times5\times5$ mesh. Fixed-topology metric projection has run on $4\times5\times5$, $10\times10\times10$, and $4\times21\times21$, but those larger inputs come from separately frozen upstream states and do not constitute one controlled end-to-end scaling curve. At $21\times21\times21$ the per-cube fleet and stage-1 concatenation are complete --- 9,110 unique world-frame meshes contributing 195.971 million vertices and 381.764 million faces --- but the global ribbon fit has not been run. Sections~\ref{sec:results}, \ref{app:developments}, and~\ref{app:gallery} keep these distinctions attached to every number.

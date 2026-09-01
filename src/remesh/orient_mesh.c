@@ -139,7 +139,7 @@ int OrientMesh_consistent(Arena_T arena,
          * a world-coordinate property, so neighbouring cubes that share the
          * geometry choose the same sign (needed for the seam weld).
          *
-         * normals == NULL (e.g. post-QEM, no per-vertex normals left): keep
+         * normals == NULL (e.g. post-CVT, no per-vertex normals left): keep
          * the orientation of the MAJORITY of the component's original faces.
          * The BFS made everything agree with face `s`; if that meant flipping
          * more than half the faces, then `s` itself was the minority (the few

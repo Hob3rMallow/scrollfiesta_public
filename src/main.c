@@ -2,10 +2,10 @@
  * main.c -- Vesuvius C Pipeline per-cube driver.
  *
  * Two input modes:
- *   1) TIFF:       ./cube_mesh input.tif output.tif [--dump-obj dir] [--no-qem]
+ *   1) TIFF:       ./cube_mesh input.tif output.tif [--dump-obj dir] [--no-simplify]
  *                                                    [--no-timeout] [--halo N]
  *   2) stdin-raw:  ./cube_mesh --stdin-raw <p_size> <oz> <oy> <ox>
- *                              --dump-obj dir [--halo N] [--no-qem] [--no-timeout]
+ *                              --dump-obj dir [--halo N] [--no-simplify] [--no-timeout]
  *      Reads p_size^3 uint8 bytes (C order z,y,x) from stdin -- a padded cube
  *      whose index (0,0,0) is world voxel (oz-halo, oy-halo, ox-halo), exactly
  *      like HaloLoader_load. Lets a caller stream a cube straight from a remote
@@ -19,7 +19,7 @@
  *
  * --dump-obj dir:  write OBJ meshes under dir/<cube_id>/<cube_id>_<stage>/
  * --halo N:        load N voxels of safety boundary from neighbor cubes
- * --no-qem:        skip per-component decimation (raw MC+LOP only)
+ * --no-simplify:   skip CVT remeshing (dense MC+LOP diagnostic)
  * --no-timeout:    disable the hard wall-clock timeout
  *
  * output.tif (TIFF mode) is a positional placeholder; this binary emits OBJs only.
@@ -73,11 +73,11 @@ static void usage(const char *argv0)
 {
     fprintf(stderr,
         "Usage: %s input.tif output.tif [--dump-obj dir] [--dump-final-only] "
-        "[--no-qem] [--simplify qem|cvt] [--qem-ratio F] [--cull-oracle-tangles] [--no-timeout] [--halo N] [--trim-inset F] "
+        "[--no-simplify] [--cvt-ratio F] [--cull-oracle-tangles] [--no-timeout] [--halo N] [--trim-inset F] "
         "[--grow-umb-y F --grow-umb-x F] [--grow-axis-table FILE]\n"
         "   or: %s --stdin-raw <p_size> <oz> <oy> <ox> --dump-obj dir "
-        "[--dump-final-only] [--halo N] [--trim-inset F] [--no-qem] "
-        "[--simplify qem|cvt] [--qem-ratio F] [--no-timeout]\n",
+        "[--dump-final-only] [--halo N] [--trim-inset F] [--no-simplify] "
+        "[--cvt-ratio F] [--no-timeout]\n",
         argv0, argv0);
 }
 
@@ -88,13 +88,12 @@ int main(int argc, char *argv[])
     const char *input_path  = NULL;
     const char *output_path = NULL;
     const char *dump_dir    = NULL;
-    int skip_qem    = 0;
-    int simplify_engine = 1;    /* 1 = CVT/RVD (default), 0 = QEM (--simplify qem) */
+    int skip_simplify = 0;
     int dump_final_only = 0;
     int cull_oracle_tangles = 0;
     int no_timeout  = 0;
     int halo_voxels = 0;
-    float qem_target_ratio = 0.0f; /* 0 = compiled pipeline default */
+    float cvt_target_ratio = 0.0f; /* 0 = pitch-aware scroll default */
     float trim_inset = -1.0f;   /* < 0 = BPA_OWNED_TRIM_INSET default */
     double grow_umb_y = 0.0, grow_umb_x = 0.0;
     int have_grow_umb_y = 0, have_grow_umb_x = 0;
@@ -120,19 +119,12 @@ int main(int argc, char *argv[])
     for (int i = opt_start; i < argc; i++) {
         if (strcmp(argv[i], "--dump-obj") == 0 && i + 1 < argc) {
             dump_dir = argv[++i];
-        } else if (strcmp(argv[i], "--no-qem") == 0) {
-            skip_qem = 1;
-        } else if (strcmp(argv[i], "--qem") == 0) {
-            skip_qem = 0;
-        } else if (strcmp(argv[i], "--simplify") == 0 && i + 1 < argc) {
-            const char *e = argv[++i];
-            if      (strcmp(e, "cvt") == 0) simplify_engine = 1;
-            else if (strcmp(e, "qem") == 0) simplify_engine = 0;
-            else { fprintf(stderr, "ERROR: --simplify must be qem|cvt\n"); return 1; }
-        } else if (strcmp(argv[i], "--qem-ratio") == 0 && i + 1 < argc) {
-            qem_target_ratio = (float)atof(argv[++i]);
-            if (!(qem_target_ratio > 0.0f && qem_target_ratio <= 1.0f)) {
-                fprintf(stderr, "ERROR: --qem-ratio must be in (0, 1]\n");
+        } else if (strcmp(argv[i], "--no-simplify") == 0) {
+            skip_simplify = 1;
+        } else if (strcmp(argv[i], "--cvt-ratio") == 0 && i + 1 < argc) {
+            cvt_target_ratio = (float)atof(argv[++i]);
+            if (!(cvt_target_ratio > 0.0f && cvt_target_ratio <= 1.0f)) {
+                fprintf(stderr, "ERROR: --cvt-ratio must be in (0, 1]\n");
                 return 1;
             }
         } else if (strcmp(argv[i], "--dump-final-only") == 0) {
@@ -324,11 +316,10 @@ int main(int argc, char *argv[])
                 .cube_H           = 128,
                 .cube_W           = 128,
                 .n_threads        = n_threads,
-                .qem_target_ratio = qem_target_ratio,
+                .cvt_target_ratio = cvt_target_ratio,
                 .trim_inset       = trim_inset,
                 .dump_dir         = dump_dir,
-                .skip_qem         = skip_qem,
-                .simplify_engine  = simplify_engine,
+                .skip_simplify    = skip_simplify,
                 .dump_final_only  = dump_final_only,
                 .cull_oracle_tangles = cull_oracle_tangles,
                 .vol_in           = raw_buf,
@@ -352,9 +343,9 @@ int main(int argc, char *argv[])
 
     double total_time = ves_clock_sec() - t_total;
     fprintf(stderr,
-        "  Timings: extract=%.3f qem=%.3f trim=%.3f dump=%.3f total=%.3fs"
+        "  Timings: extract=%.3f cvt=%.3f trim=%.3f dump=%.3f total=%.3fs"
         "  Status: %s\n",
-        out.t_extract, out.t_qem, out.t_trim, out.t_dump, total_time,
+        out.t_extract, out.t_cvt, out.t_trim, out.t_dump, total_time,
         pipeline_ok ? "OK" : "FAILED");
 
     Arena_dispose(&arena);

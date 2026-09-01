@@ -1164,7 +1164,7 @@ int SeamCut_repair_manifold(Arena_T arena, const float *verts, size_t nv,
     assert(arena && out_verts && out_nv && out_faces && out_nf && out_vmap);
     if (nv < 3 || nf < 1 || !verts || !faces) return -1;
 
-    /* Step 1: drop DEGENERATE faces (a repeated vertex, e.g. QEM collapse
+    /* Step 1: drop DEGENERATE faces (a repeated vertex after a collapse
      * artifacts -- their self-edges corrupt the topology) and faces on
      * NON-MANIFOLD EDGES (>2 incident faces -- the vertex-sector split below
      * can't separate them, and they wall off the dual BFS, breaking genus

@@ -16,7 +16,7 @@
  * triangulated sheets). This routine fixes that directly:
  *
  *   1. Per-vertex normals are recomputed from the faces (area-weighted),
- *      since the final QEM mesh carries none.
+ *      since the final CVT mesh carries none.
  *   2. Axis-aligned cube-boundary planes (integer multiples of cube_size
  *      that have mesh within `band` on BOTH sides) are detected.
  *   3. The open boundary half-edges lying IN a seam plane (both endpoints

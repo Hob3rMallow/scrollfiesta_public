@@ -1,7 +1,7 @@
 /* cvt_remesh_obj — CVT/RVD remesh an OBJ to a target vertex count.
  *   cvt_remesh_obj <in.obj> <out.obj> <target_verts> [--iters N] [--seed S]
  *   cvt_remesh_obj --selftest
- * M1: pure Lloyd. Mirrors qslim_obj's shape. */
+ * M1: pure Lloyd. */
 #include "../remesh/cvt_remesh.h"
 #include "../common/obj_io.h"
 #include "../common/arena.h"

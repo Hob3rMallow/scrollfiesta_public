@@ -2,9 +2,11 @@
  * grid_pipeline.c -- cube-level orchestrator.
  *
  * Spawns cube_mesh.exe subprocesses, N at a time, over every cube in a
- * grid, then invokes grid_weld.exe to stitch the per-cube VMESH containers
- * into one
- * welded mesh. Replaces scripts/run_grid_halo.ps1 with portable C and
+ * grid, then invokes grid_weld.exe to assemble the per-cube VMESH containers
+ * into one mesh. The default assembly preserves the BPA-produced cube
+ * boundaries verbatim and does not synthesize seam geometry; --seam-bridge
+ * explicitly selects the historical BPA seam weld. Replaces
+ * scripts/run_grid_halo.ps1 with portable C and
  * eliminates the serial PowerShell foreach.
  *
  * Usage:
@@ -12,7 +14,7 @@
  *                 [--halo N] [--threads-per-cube N] [--max-concurrent N]
  *                 [--exe path] [--weld path]
  *                 [--max-cubes N] [--skip-weld] [--check-determinism]
- *                 [--simplify qem|cvt] [--qem | --no-qem]
+ *                 [--no-simplify] [--cvt-ratio F]
  *                 [--umb-y F --umb-x F --wrap-pitch F]
  *                 [--grow-wind-tol F]
  *
@@ -20,12 +22,12 @@
  *   <grid_dir>/cubes_PRED/*.tif         <- per-cube input prediction TIFFs
  *   <output_dir>/dump/<cube_id>/...     <- VMESH + companion OBJ dumps
  *   <output_dir>/logs/<cube_id>.log     <- per-cube stderr/stdout
- *   <output_dir>/welded.obj             <- final welded mesh
+ *   <output_dir>/welded.obj             <- final assembled mesh (compat name)
  *   <output_dir>/pipeline_summary.csv   <- per-cube exit code, timing
  *
  * Concurrency: --max-concurrent caps how many cube_mesh.exe subprocesses
  * run at once. Each subprocess uses VESUVIUS_THREADS=--threads-per-cube
- * OpenMP threads. Default total = ves_cpu_count() / threads_per_cube.
+ * OpenMP threads. The default total is capped at half the logical CPUs.
  */
 #include "../common/ves_platform.h"
 
@@ -77,10 +79,11 @@ typedef struct {
     const char *weld_path;
     int         max_cubes;
     int         skip_weld;
+    int         seam_bridge;   /* opt-in historical synthetic seam weld;
+                                * default is faithful concat/assembly only */
     int         check_determinism;
-    int         skip_qem;
-    int         simplify_engine; /* 1 = CVT/RVD (default), 0 = QEM (--simplify qem) */
-    float       qem_target_ratio; /* 0 = cube_mesh/pipeline default */
+    int         skip_simplify;
+    float       cvt_target_ratio; /* 0 = pitch-aware scroll default */
     int         skip_existing;  /* resume: skip cubes whose authoritative VMESH is complete */
     int         dry_run;        /* report skip/run decisions and exit; spawn nothing */
     int         reject_garbage; /* gate garbage (solid-slab) cubes pre-spawn (default 1) */
@@ -97,11 +100,12 @@ typedef struct {
     double      grow_wind_tol;  /* BPA branch growth half-width in turns; 0=off */
     const char *axis_table_path;/* optional z,y,x CSV: per-cube growth axis */
     int         have_umb_y, have_umb_x, have_wrap_pitch;
-                                /* all three geometry arguments arm both the
-                                 * per-cube BPA growth gate and, later, grid_weld's
-                                 * seam winding/phase gates. Dedicated BPA_GROW_*
-                                 * variables avoid exposing SEAM_WRAP_PITCH to
-                                 * pinhole_fill during per-cube meshing. */
+                                /* All three geometry arguments arm the CVT
+                                 * certificate and, later, grid_weld's seam
+                                 * winding/phase gates.  BPA growth is a separate,
+                                 * explicit experiment: grow_wind_tol must be >0.
+                                 * Dedicated BPA_GROW_* variables avoid exposing
+                                 * SEAM_WRAP_PITCH to pinhole_fill during meshing. */
     float       trim_inset;     /* owned-box inset passthrough. Default 0: the
                                  * whole-grid unwrap path is the documented
                                  * chain, and it pairs cross-seam skins, so
@@ -110,9 +114,8 @@ typedef struct {
                                  * PHerc0139-4x5x5 it halves the seam evidence
                                  * (2,713 pairs vs 6,441) and the registration
                                  * audit fails at 15.78% whole-turn error
-                                 * instead of passing at 2.98%. Pass < 0 for
-                                 * cube_mesh's own 1.0 default, which suits a
-                                 * weld-only run where the bridge wants a gap. */
+                                 * instead of passing at 2.98%. --seam-bridge
+                                 * changes this to 1 unless explicitly set. */
 } GpOptions;
 
 typedef struct {
@@ -239,28 +242,27 @@ static void usage(const char *prog)
         "Options:\n"
         "  --halo N                  Halo voxels (default 13 = MLS R+1)\n"
         "  --threads-per-cube N      OpenMP threads per cube (default 1)\n"
-        "  --max-concurrent N        Max concurrent subprocesses (default cores/tpc)\n"
+        "  --max-concurrent N        Max concurrent subprocesses (default half-cores/tpc)\n"
         "  --exe PATH                cube_mesh.exe path (default build/Release/cube_mesh.exe)\n"
         "  --weld PATH               grid_weld.exe path (default build/Release/grid_weld.exe)\n"
         "  --max-cubes N             Stop after N cubes (default all)\n"
-        "  --skip-weld               Do not run grid_weld at end\n"
+        "  --skip-weld               Do not run the final assembler\n"
+        "  --seam-bridge             Historical mode: synthesize cross-cube seam\n"
+        "                            geometry (also defaults trim inset to 1)\n"
         "  --skip-existing           Resume: skip cubes whose step12_final VMESH\n"
         "                            already exists and looks complete\n"
         "  --dry-run                 With --skip-existing: print which cubes would\n"
         "                            be skipped vs run, then exit (spawns nothing)\n"
         "  --check-determinism       Run each cube twice and cmp OBJs\n"
-        "  --simplify qem|cvt        Simplifier (default cvt)\n"
-        "  --qem                     Alias for --simplify qem\n"
-        "  --qem-ratio F             QEM face keep ratio in (0,1] (default .075)\n"
-        "  --no-qem                  Pass --no-qem to cube_mesh\n"
+        "  --cvt-ratio F             override pitch-aware CVT site density\n"
+        "  --no-simplify             Dense diagnostic mode; skip CVT remeshing\n"
         "  --no-reject-garbage       Process all cubes (do not skip solid-slab garbage)\n"
         "  --reject-list FILE        Skip cube_ids listed in FILE (one per line);\n"
         "                            default detects garbage inline from each TIFF\n"
         "  --trim-inset F            Owned-box inset passthrough to cube_mesh\n"
         "                            (default 0: charts reach the cube faces so\n"
         "                            the whole-grid unwrap can pair cross-seam\n"
-        "                            skins; pass 1 for a weld-only run, where\n"
-        "                            the bridge wants a gap)\n"
+        "                            skins; --seam-bridge defaults this to 1)\n"
         "  --full-dumps              Children write ALL intermediate stage OBJs\n"
         "                            (default: step12_final only; the full set is\n"
         "                            ~300 MB/dense cube and IO-bounds the fleet)\n"
@@ -272,8 +274,9 @@ static void usage(const char *prog)
         "  --axis-table FILE         CSV rows z,y,x; linearly interpolate a\n"
         "                            per-vertex curved growth umbilicus; its cube-\n"
         "                            center sample remains the constant fallback.\n"
-        "  --grow-wind-tol F         BPA growth half-width in turns (default .45;\n"
-        "                            0 disables BPA growth only; the CVT candidate\n"
+        "  --grow-wind-tol F         Experimental BPA growth half-width in turns\n"
+        "                            (default 0/off; positive values opt in). The\n"
+        "                            CVT candidate\n"
         "                            certificate remains armed; must be < .5)\n"
         "                            All three required to arm; PHerc0139:\n"
         "                            --umb-y 3405 --umb-x 2878 --wrap-pitch 9.5\n"
@@ -283,18 +286,23 @@ static void usage(const char *prog)
 
 static int parse_args(int argc, char *argv[], GpOptions *o)
 {
+    int trim_inset_explicit = 0;
     memset(o, 0, sizeof(*o));
     o->halo = 13;   /* >= MLS_PROJECT_RADIUS_VOX+1 so boundary LOP is fully
                      * two-sided supported and adjacent cubes agree at the seam */
     o->threads_per_cube = 1;
     o->max_concurrent = 0;  /* derived below */
     o->max_cubes = 0;
-    o->simplify_engine = 1; /* CVT/RVD by default; --simplify qem selects the old QEM path */
     o->exe_path = "build/Release/cube_mesh.exe";
     o->weld_path = "build/Release/grid_weld.exe";
     o->reject_garbage = 1;  /* gate solid-slab garbage cubes by default */
     o->trim_inset = 0.0f;   /* whole-scroll path: charts reach the cube faces */
-    o->grow_wind_tol = 0.45;
+    /* The BPA growth gate fragments ordinary sheets into narrow independent
+     * seed-growth bands on PHerc0139 (the canonical fixture goes 10 -> 68+
+     * charts).  Scroll geometry is still published below so the atomic CVT
+     * certificate and weld gates remain armed.  Growth gating is research-only
+     * and must be requested explicitly with --grow-wind-tol > 0. */
+    o->grow_wind_tol = 0.0;
 
     if (argc < 3) { usage(argv[0]); return -1; }
     o->grid_dir = argv[1];
@@ -332,6 +340,9 @@ static int parse_args(int argc, char *argv[], GpOptions *o)
             o->axis_table_path = argv[++i];
         } else if (!strcmp(argv[i], "--skip-weld")) {
             o->skip_weld = 1;
+        } else if (!strcmp(argv[i], "--seam-bridge") ||
+                   !strcmp(argv[i], "--legacy-seam-bridge")) {
+            o->seam_bridge = 1;
         } else if (!strcmp(argv[i], "--skip-existing") ||
                    !strcmp(argv[i], "--resume")) {
             o->skip_existing = 1;
@@ -339,20 +350,12 @@ static int parse_args(int argc, char *argv[], GpOptions *o)
             o->dry_run = 1;
         } else if (!strcmp(argv[i], "--check-determinism")) {
             o->check_determinism = 1;
-        } else if (!strcmp(argv[i], "--no-qem")) {
-            o->skip_qem = 1;
-        } else if (!strcmp(argv[i], "--qem")) {
-            o->skip_qem = 0;
-            o->simplify_engine = 0;
-        } else if (!strcmp(argv[i], "--simplify") && i + 1 < argc) {
-            const char *e = argv[++i];
-            if      (!strcmp(e, "cvt")) o->simplify_engine = 1;
-            else if (!strcmp(e, "qem")) o->simplify_engine = 0;
-            else { fprintf(stderr, "ERROR: --simplify must be qem|cvt\n"); return -1; }
-        } else if (!strcmp(argv[i], "--qem-ratio") && i + 1 < argc) {
-            o->qem_target_ratio = (float)atof(argv[++i]);
-            if (!(o->qem_target_ratio > 0.0f && o->qem_target_ratio <= 1.0f)) {
-                fprintf(stderr, "ERROR: --qem-ratio must be in (0,1]\n");
+        } else if (!strcmp(argv[i], "--no-simplify")) {
+            o->skip_simplify = 1;
+        } else if (!strcmp(argv[i], "--cvt-ratio") && i + 1 < argc) {
+            o->cvt_target_ratio = (float)atof(argv[++i]);
+            if (!(o->cvt_target_ratio > 0.0f && o->cvt_target_ratio <= 1.0f)) {
+                fprintf(stderr, "ERROR: --cvt-ratio must be in (0,1]\n");
                 return -1;
             }
         } else if (!strcmp(argv[i], "--no-reject-garbage")) {
@@ -361,12 +364,16 @@ static int parse_args(int argc, char *argv[], GpOptions *o)
             o->reject_list = argv[++i];
         } else if (!strcmp(argv[i], "--trim-inset") && i + 1 < argc) {
             o->trim_inset = (float)atof(argv[++i]);
+            trim_inset_explicit = 1;
         } else {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);
             usage(argv[0]);
             return -1;
         }
     }
+
+    if (o->seam_bridge && !trim_inset_explicit)
+        o->trim_inset = 1.0f;
 
     if (o->grow_wind_tol < 0.0 || o->grow_wind_tol >= 0.5) {
         fprintf(stderr, "ERROR: --grow-wind-tol must be in [0, .5)\n");
@@ -392,7 +399,9 @@ static int parse_args(int argc, char *argv[], GpOptions *o)
 
     if (o->max_concurrent == 0) {
         int cores = ves_cpu_count();
-        o->max_concurrent = cores / o->threads_per_cube;
+        int core_budget = cores / 2;
+        if (core_budget < 1) core_budget = 1;
+        o->max_concurrent = core_budget / o->threads_per_cube;
         if (o->max_concurrent < 1) o->max_concurrent = 1;
     }
 
@@ -485,9 +494,9 @@ static int run_one_cube(const char *exe_path,
                         const CubeJob *job,
                         const char *output_dir,
                         const char *dump_dir,
-                        int halo, int threads, int skip_qem,
+                        int halo, int threads, int skip_simplify,
                         float trim_inset, int dump_final_only,
-                        int simplify_engine, float qem_target_ratio,
+                        float cvt_target_ratio,
                         int cull_oracle_tangles,
                         const char *axis_table_path)
 {
@@ -500,8 +509,8 @@ static int run_one_cube(const char *exe_path,
     snprintf(halo_str, sizeof(halo_str), "%d", halo);
     char trim_str[32];
     snprintf(trim_str, sizeof(trim_str), "%.3f", (double)trim_inset);
-    char qem_ratio_str[32];
-    snprintf(qem_ratio_str, sizeof(qem_ratio_str), "%.9g", (double)qem_target_ratio);
+    char cvt_ratio_str[32];
+    snprintf(cvt_ratio_str, sizeof(cvt_ratio_str), "%.9g", (double)cvt_target_ratio);
     char axis_y_str[64], axis_x_str[64];
     snprintf(axis_y_str, sizeof(axis_y_str), "%.12g", job->axis_y);
     snprintf(axis_x_str, sizeof(axis_x_str), "%.12g", job->axis_x);
@@ -517,11 +526,10 @@ static int run_one_cube(const char *exe_path,
     argv[argc++] = dump_dir;
     argv[argc++] = "--no-timeout";
     if (dump_final_only) argv[argc++] = "--dump-final-only";
-    if (skip_qem) argv[argc++] = "--no-qem";
-    if (simplify_engine == 1) { argv[argc++] = "--simplify"; argv[argc++] = "cvt"; }
-    if (qem_target_ratio > 0.0f) {
-        argv[argc++] = "--qem-ratio";
-        argv[argc++] = qem_ratio_str;
+    if (skip_simplify) argv[argc++] = "--no-simplify";
+    if (cvt_target_ratio > 0.0f) {
+        argv[argc++] = "--cvt-ratio";
+        argv[argc++] = cvt_ratio_str;
     }
     if (cull_oracle_tangles) argv[argc++] = "--cull-oracle-tangles";
     if (trim_inset >= 0.0f) {
@@ -824,6 +832,34 @@ static int run_selftest(void)
             "[selftest] %-22s y=%.3f x=%.3f expect=20/40 -> %s\n",
             "axis-table-interpolate", ay, ax, axis_ok ? "ok" : "FAIL");
     if (!axis_ok) fails++;
+
+    {
+        GpOptions defaults, legacy, growth;
+        char *default_argv[] = { "grid_pipeline", "grid", "out" };
+        char *legacy_argv[] = {
+            "grid_pipeline", "grid", "out", "--seam-bridge"
+        };
+        char *growth_argv[] = {
+            "grid_pipeline", "grid", "out", "--grow-wind-tol", "0.45"
+        };
+        int default_ok =
+            parse_args(3, default_argv, &defaults) == 0 &&
+            defaults.trim_inset == 0.0f && !defaults.seam_bridge &&
+            defaults.grow_wind_tol == 0.0;
+        int legacy_ok =
+            parse_args(4, legacy_argv, &legacy) == 0 &&
+            legacy.trim_inset == 1.0f && legacy.seam_bridge;
+        int growth_ok =
+            parse_args(5, growth_argv, &growth) == 0 &&
+            growth.grow_wind_tol == 0.45;
+        fprintf(stderr,
+                "[selftest] %-22s default=%s legacy=%s growth=%s -> %s\n",
+                "pipeline-defaults", default_ok ? "bpa/grow-off" : "BAD",
+                legacy_ok ? "bridge" : "BAD",
+                growth_ok ? "explicit" : "BAD",
+                default_ok && legacy_ok && growth_ok ? "ok" : "FAIL");
+        if (!default_ok || !legacy_ok || !growth_ok) fails++;
+    }
     remove(p_ok); remove(p_trunc); remove(p_tiny); remove(p_axis);
     fprintf(stderr, "=== grid_pipeline selftest %s (%d failure%s) ===\n",
             fails ? "FAILED" : "PASSED", fails, fails == 1 ? "" : "s");
@@ -838,8 +874,11 @@ int main(int argc, char *argv[])
     if (parse_args(argc, argv, &opts) != 0) return 1;
 
     fprintf(stderr,
-        "grid_pipeline: grid=%s output=%s halo=%d tpc=%d max_conc=%d reject_garbage=%d\n",
+        "grid_pipeline: grid=%s output=%s halo=%d trim_inset=%.2f "
+        "assembly=%s tpc=%d max_conc=%d reject_garbage=%d\n",
         opts.grid_dir, opts.output_dir, opts.halo,
+        (double)opts.trim_inset,
+        opts.seam_bridge ? "seam-bridge" : "bpa-boundaries",
         opts.threads_per_cube, opts.max_concurrent, opts.reject_garbage);
 
     /* Mirror the disable to cube_mesh children (which inherit our environment
@@ -895,7 +934,7 @@ int main(int argc, char *argv[])
                 "***   Verify with wind_audit: FULL-TURN must be 0.\n");
     }
 
-    if (opts.simplify_engine == 1) {
+    {
         const char *ratio = getenv("VES_CVT_RATIO");
         fprintf(stderr, "CVT site ratio: %s\n", ratio && ratio[0] ? ratio : "default");
     }
@@ -1121,9 +1160,8 @@ int main(int argc, char *argv[])
         int rc = run_one_cube(opts.exe_path, &jobs[i],
                               opts.output_dir, dump_dir,
                               opts.halo, opts.threads_per_cube,
-                              opts.skip_qem, opts.trim_inset,
-                              !opts.full_dumps, opts.simplify_engine,
-                              opts.qem_target_ratio,
+                              opts.skip_simplify, opts.trim_inset,
+                              !opts.full_dumps, opts.cvt_target_ratio,
                               opts.cull_oracle_tangles,
                               opts.axis_table_path);
         jobs[i].exit_code = rc;
@@ -1173,9 +1211,8 @@ int main(int argc, char *argv[])
             int rc_b = run_one_cube(opts.exe_path, &copy,
                                      opts.output_dir, dump_dir_b,
                                      opts.halo, opts.threads_per_cube,
-                                     opts.skip_qem, opts.trim_inset,
-                                     !opts.full_dumps, opts.simplify_engine,
-                                     opts.qem_target_ratio,
+                                     opts.skip_simplify, opts.trim_inset,
+                                     !opts.full_dumps, opts.cvt_target_ratio,
                                      opts.cull_oracle_tangles,
                                      opts.axis_table_path);
             if (rc_b != 0) { n_diff++; continue; }
@@ -1223,7 +1260,8 @@ int main(int argc, char *argv[])
     if (!opts.skip_weld && n_ok > 0) {
         char weld_out[1024];
         snprintf(weld_out, sizeof(weld_out), "%s/welded.obj", opts.output_dir);
-        /* Arm grid_weld's seam winding + phase gates (it reads them from env:
+        /* Arm grid_weld's seam winding + phase gates only for the explicit
+         * synthetic seam-bridge mode (it reads them from env:
          * SEAM_UMBILICUS_Y/X + SEAM_WRAP_PITCH). Deliberately set HERE — after
          * the cube fleet has finished, immediately before the weld spawn — so
          * per-cube meshing NEVER sees them: pinhole_fill.c also reads
@@ -1231,7 +1269,8 @@ int main(int argc, char *argv[])
          * output. Regression note (2026-07-18): the Jul-12 rebuild harness
          * stopped passing these, the weld ran gates-off, and the 4x5x5 shipped
          * 661 seam-band boundary loops instead of 16. */
-        if (opts.have_umb_y && opts.have_umb_x && opts.have_wrap_pitch) {
+        if (opts.seam_bridge && opts.have_umb_y && opts.have_umb_x &&
+            opts.have_wrap_pitch) {
             char envv[64];
             snprintf(envv, sizeof(envv), "%.6g", opts.umb_y);
 #ifdef _WIN32
@@ -1254,13 +1293,14 @@ int main(int argc, char *argv[])
             fprintf(stderr,
                 "Seam gates armed for weld: umbilicus=(%.1f,%.1f) pitch=%.2f\n",
                 opts.umb_y, opts.umb_x, opts.wrap_pitch);
-        } else {
+        } else if (opts.seam_bridge) {
             fprintf(stderr,
                 "Seam gates NOT armed (pass --umb-y/--umb-x/--wrap-pitch); "
                 "grid_weld's winding/phase gates run OFF\n");
         }
 
-        fprintf(stderr, "Running grid_weld -> %s\n", weld_out);
+        fprintf(stderr, "Running grid_weld (%s) -> %s\n",
+                opts.seam_bridge ? "seam bridge" : "assembly only", weld_out);
 
 #ifdef _WIN32
         /* Run grid_weld with stderr/stdout to a log file and capture the
@@ -1271,15 +1311,15 @@ int main(int argc, char *argv[])
         snprintf(weld_log, sizeof(weld_log),
                  "%s/grid_weld.log", opts.output_dir);
         char weld_cmd[4096];
-        /* The BPA seam-weld is unconditional in grid_weld now (it IS the weld;
-         * the bitwise hash-join it replaced is gone). step0 trims each cube to
-         * its face, so the cubes concatenate with a ~1-vox seam gap that the
-         * BPA bridge closes. No flag needed. */
-        if (opts.axis_table_path)
+        if (opts.axis_table_path && opts.seam_bridge)
             snprintf(weld_cmd, sizeof(weld_cmd),
                      "\"%s\" \"%s\" \"%s\" --axis-table \"%s\"",
                      opts.weld_path, dump_dir, weld_out,
                      opts.axis_table_path);
+        else if (!opts.seam_bridge)
+            snprintf(weld_cmd, sizeof(weld_cmd),
+                     "\"%s\" \"%s\" \"%s\" --no-bridge",
+                     opts.weld_path, dump_dir, weld_out);
         else
             snprintf(weld_cmd, sizeof(weld_cmd), "\"%s\" \"%s\" \"%s\"",
                      opts.weld_path, dump_dir, weld_out);
@@ -1335,16 +1375,19 @@ int main(int argc, char *argv[])
             }
         }
 #else
-        const char *weld_argv[6];
+        const char *weld_argv[7];
         weld_argv[0] = opts.weld_path;
         weld_argv[1] = dump_dir;
         weld_argv[2] = weld_out;
-        if (opts.axis_table_path) {
+        if (opts.axis_table_path && opts.seam_bridge) {
             weld_argv[3] = "--axis-table";
             weld_argv[4] = opts.axis_table_path;
             weld_argv[5] = NULL;
+        } else if (!opts.seam_bridge) {
+            weld_argv[3] = "--no-bridge";
+            weld_argv[4] = NULL;
         } else {
-            weld_argv[3] = NULL;   /* BPA seam-weld is unconditional now */
+            weld_argv[3] = NULL;
         }
         int weld_rc = ves_run_subprocess(opts.weld_path, weld_argv, 0.0);
         /* ves_run_subprocess loses the distinction; treat -1 as crash for

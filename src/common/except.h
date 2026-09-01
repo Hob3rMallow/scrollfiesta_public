@@ -14,6 +14,20 @@ extern const Except_T Arena_Failed;
 extern const Except_T IO_Failed;
 extern const Except_T Timeout;
 
+/* Thread-local storage keyword, for the per-call state the public API keeps
+ * isolated between concurrent callers (src/common/run_ctx.c).  C11 spells it
+ * _Thread_local, MSVC accepts __declspec(thread) in every mode, and GCC/Clang
+ * take __thread; a compiler with none degrades to a plain global. */
+#if defined(_MSC_VER)
+#  define EXCEPT_THREAD_LOCAL __declspec(thread)
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L &&       !defined(__STDC_NO_THREADS__)
+#  define EXCEPT_THREAD_LOCAL _Thread_local
+#elif defined(__GNUC__)
+#  define EXCEPT_THREAD_LOCAL __thread
+#else
+#  define EXCEPT_THREAD_LOCAL
+#endif
+
 /* Exception frame - linked stack */
 typedef struct Except_Frame {
     struct Except_Frame *prev;

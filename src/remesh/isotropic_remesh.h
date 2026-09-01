@@ -8,7 +8,7 @@
 /*
  * Remesh_isotropic — incremental isotropic remeshing (Botsch-Kobbelt /
  * Surazhsky-Gotsman) to IMPROVE triangle quality at a FIXED target face count.
- * Meant to run AFTER QEM decimation: QEM is collapse-only, so a decimated
+ * Meant to run after coarse reduction: a collapse-only mesh
  * pinned-boundary sheet ends up with slivers, a coarse center and a fine rim,
  * and long transition triangles. This pass repairs that by redistributing to a
  * uniform target edge length L.

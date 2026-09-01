@@ -40,6 +40,17 @@ jobs:
         run: cmake --build build
       - name: test
         run: ctest --test-dir build --output-on-failure
+      - name: install smoke test
+        if: matrix.sanitize == 'none'
+        run: |
+          cmake --install build --prefix build/install
+          test -x build/install/bin/cube_mesh
+          test -x build/install/bin/grid_pipeline
+          test -x build/install/bin/grid_weld
+          test -x build/install/bin/scroll_whole
+          test -x build/install/bin/scroll_unroll
+          test -x build/install/bin/atlas_overlap_fix
+          test -x build/install/bin/atlas_ribbon_fit
       - name: no library TU includes <omp.h>
         run: |
           ! grep -rn '#include *<omp\.h>' src/ --include='*.c' --include='*.cpp' --include='*.h'

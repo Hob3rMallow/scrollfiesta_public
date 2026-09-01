@@ -65,8 +65,14 @@ typedef struct {
                             * that will be re-solved.  Claims, winding
                             * registration, and identities are unaffected. */
     int    relax_iters;    /* robust membership reweight rounds (default 5;
-                            * first 3 smoothed-L1, then Gaussian likelihood) */
+                             * first 3 smoothed-L1, then Gaussian likelihood) */
     int    final_iters;    /* frozen-membership tangent-align rounds (default 2) */
+    int    metric_iters;   /* post-alignment continuation rounds which keep the
+                             * final isovalue cross-sections fixed and ramp the
+                             * physical stroke-edge unit-speed term.  Zero by
+                             * default; topology-preserving parameterization
+                             * enables three unless explicitly overridden. */
+    float  metric_weight;  /* terminal unit-speed weight (default 4.0) */
     int    solve_threads;  /* Stage-C parallel workers; 0 = OpenMP runtime max */
     int    solve_amg;      /* geometric semi-coarsening + FMG solve (default 1;
                             * name retained for CLI compatibility) */
@@ -140,7 +146,13 @@ typedef struct {
                              * component_global fusion is requested: without it
                              * the fast path carries phi == u and the junction
                              * phase gate is skipped.
-                              * The array must stay alive for Ribbon_run. */
+                               * The array must stay alive for Ribbon_run. */
+    const float *reference_u_confidence; /* optional [nv] posterior confidence
+                               * for the ORDER carried by reference_u, in [0,1].
+                               * It weights robust per-chain gauge votes; it
+                               * never clips individual samples or changes an
+                               * exact within-chain metric derivative.
+                               * The array must stay alive for Ribbon_run. */
     int solve_reference_u;    /* nonzero: reference_u is correspondence and
                               * initial-gauge evidence for the full Stage-C
                               * StrokeStrip solve, rather than the solved-U fast
@@ -156,8 +168,15 @@ typedef struct {
                               * is a measured median of carried evidence, never
                               * a solved unknown, so the carried frame is the
                               * sole placement authority.  Pairs and the winding
-                              * scaffold are still built for the correspondence
-                              * audit and the transfer gates. */
+                               * scaffold are still built for the correspondence
+                               * audit and the transfer gates. */
+    int preserve_input_rows; /* nonzero (with reference_u + solve_reference_u):
+                              * use the parameterized input's own constant-V
+                              * vertex rows as StrokeStrip observations and
+                              * write solved U straight back to those vertices.
+                              * This preserves topology but still runs the full
+                              * staged global solve; unlike metric_project_only
+                              * it never imposes an independent gauge per row. */
     const double *reference_atlas_shift; /* optional [nv] additive atlas shift
                              * accompanying reference_u.  Subtracting it from
                              * packed U recovers the pre-pack cover coordinate
@@ -331,6 +350,11 @@ typedef struct {
     double  strip_gauge_max_shift;/* largest component-constant U shift */
     size_t  bridge_cuts;     /* chain splits at fusion-bridge radial jumps */
     size_t  mono_repairs;    /* samples moved by the monotone (PAVA) repair */
+    size_t  certificate_samples;/* high-confidence reference-U constraints */
+    size_t  certificate_clamps;/* metric samples clipped to their trust region */
+    double  certificate_drift_p95;/* pre-clip |U-U_certificate_map| p95 */
+    double  certificate_drift_max;/* pre-clip maximum drift */
+    double  certificate_bound_p50;/* median active trust radius (vox) */
     size_t  uv_filled;       /* no direct sample; u copied from mesh neighbours */
     size_t  uv_fallback;     /* verts still unmapped after neighbour fill */
     size_t  uv_phase_rejects;/* geometrically near sample candidates rejected

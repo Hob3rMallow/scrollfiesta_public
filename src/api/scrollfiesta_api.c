@@ -14,10 +14,10 @@
 #include "../common/mls_project.h"
 #include "../common/obj_io.h"
 #include "../common/pipeline_constants.h"
-#include "../common/qem.h"
 #include "../holefill/hole_fill.h"
 #include "../remesh/ball_pivot.h"
 #include "../remesh/component_cull.h"
+#include "../remesh/cvt_remesh.h"
 #include "../remesh/manifold_guard.h"
 #include "../remesh/orient_mesh.h"
 #include "../remesh/orient_weld.h"
@@ -174,7 +174,7 @@ SF_API sf_decimate_config sf_decimate_config_default(void)
 {
     sf_decimate_config c;
     memset(&c, 0, sizeof c);
-    c.target_ratio = QEM_TARGET_RATIO;
+    c.target_ratio = CVT_TARGET_RATIO;
     c.respect_pins = 1;
     return c;
 }
@@ -649,36 +649,46 @@ SF_API sf_status sf_decimate(const sf_mesh *in, const sf_decimate_config *cfg,
         float   *verts = sf_xyz_to_zyx(g.arena, in->vertices, in->n_vertices);
         int32_t *faces = sf_faces_swap(g.arena, in->faces, in->n_faces);
 
-        size_t target_nf = cfg->target_faces;
-        if (target_nf == 0) {
-            float ratio = (cfg->target_ratio > 0.0f && cfg->target_ratio <= 1.0f)
-                              ? cfg->target_ratio : QEM_TARGET_RATIO;
-            target_nf = (size_t)((double)in->n_faces * (double)ratio);
-            if (target_nf < 1)
-                target_nf = 1;
-        }
-
-        const uint8_t *pins = (cfg->respect_pins && in->pin_mask)
-                                  ? in->pin_mask : NULL;
-        float   *ov = NULL;
-        int32_t *of = NULL;
-        uint8_t *op = NULL;
-        size_t   onv = 0, onf = 0;
-
-        if (QEM_simplify_pinned(g.arena, verts, in->n_vertices,
-                                faces, in->n_faces,
-                                pins, NULL, target_nf,
-                                &ov, &onv, &of, &onf,
-                                pins ? &op : NULL) != 0) {
-            rc = SF_ERROR;
+        /* CVT/RVD variational remeshing is the pipeline's only simplifier
+         * (QEM was retired 2026-08).  It resamples the surface into fresh
+         * generators rather than collapsing existing edges, so no input
+         * vertex survives and an arbitrary pin mask cannot be honoured. */
+        if (cfg->respect_pins && in->pin_mask) {
+            rc = SF_ERROR_UNSUPPORTED;
         } else {
-            if (rep) {
-                rep->faces_in  = in->n_faces;
-                rep->faces_out = onf;
-                rep->verts_out = onv;
+            /* CVT is site-count driven; a closed triangle mesh has
+             * nf ~= 2*nv, so a face target maps to half as many sites. */
+            size_t target_sites = cfg->target_faces
+                                ? cfg->target_faces / 2
+                                : (size_t)((double)in->n_vertices *
+                                   (double)((cfg->target_ratio > 0.0f &&
+                                             cfg->target_ratio <= 1.0f)
+                                            ? cfg->target_ratio
+                                            : CVT_TARGET_RATIO));
+            if (target_sites < CVT_MIN_SITES) target_sites = CVT_MIN_SITES;
+
+            float   *ov = NULL;
+            int32_t *of = NULL;
+            size_t   onv = 0, onf = 0;
+            CvtOpts  co;
+            CVT_default_opts(&co);
+
+            if (target_sites >= in->n_vertices) {
+                rc = SF_ERROR_BAD_ARG;    /* would refine, not simplify */
+            } else if (CVT_remesh(g.arena, verts, in->n_vertices,
+                                  faces, in->n_faces, target_sites,
+                                  &co, NULL, &ov, &onv, &of, &onf) != 0 ||
+                       onf == 0) {
+                rc = SF_ERROR;
+            } else {
+                if (rep) {
+                    rep->faces_in  = in->n_faces;
+                    rep->faces_out = onf;
+                    rep->verts_out = onv;
+                }
+                /* Remeshing resamples: no provenance, no output pin mask. */
+                rc = sf_mesh_out(out, ov, onv, of, onf, NULL, NULL, NULL);
             }
-            /* Decimation moves surviving vertices: no provenance (vmap NULL). */
-            rc = sf_mesh_out(out, ov, onv, of, onf, NULL, op, NULL);
         }
     }
     SF_EXCEPT_TAIL(g, rc)

@@ -14,8 +14,8 @@
  * seam; near the seam it leaves thin "sliver" triangles, the occasional
  * zero-area face, and T-junctions (a bridge vertex landing on the interior of a
  * coarse component triangle's edge). These are NOT topological defects -- the
- * weld stays edge-manifold -- but they are geometric blemishes the per-cube QEM
- * never sees, because QEM runs BEFORE the weld and grid_weld is the terminal
+ * weld stays edge-manifold -- but they are geometric blemishes the per-cube CVT
+ * never sees, because CVT runs BEFORE the weld and grid_weld is the terminal
  * step. This is the missing post-weld edge-collapse.
  *
  * Strategy (Surazhsky-Gotsman flip first, guarded collapse for the residue):
