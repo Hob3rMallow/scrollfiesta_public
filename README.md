@@ -63,7 +63,8 @@ The checked-in solution remains available for native MSBuild workflows:
 msbuild scrollfiesta.sln -p:Configuration=Release -p:Platform=x64 -m
 ```
 
-On Linux, install a C/C++ toolchain and libtiff development package, then run:
+On Linux, install a C/C++ toolchain, libtiff and a BLAS/LAPACK
+(`liblapack-dev`), then run:
 
 ```bash
 cmake -S . -B build -G Ninja \
@@ -84,6 +85,13 @@ cmake -S . -B build \
 cmake --build build --parallel 4
 ctest --test-dir build --output-on-failure
 ```
+
+`scroll_whole` needs a BLAS/LAPACK, which backs the TAUCS Cholesky in its
+ribbon and metric solves. The build takes the first it finds: libraries staged
+by `build-deps`, then a system LAPACK, then the vendored CLAPACK source under
+`deps/clapack/` (correct anywhere, but roughly a minute of extra compilation).
+If none is available, `scroll_whole` is skipped and the rest of the toolchain
+still builds. Library-only and embedded builds never look for one.
 
 The low-level [`src/Makefile`](src/Makefile) remains available for the core
 GCC per-cube/grid build. CMake is the build of record for the full supported

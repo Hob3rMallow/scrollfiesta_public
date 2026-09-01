@@ -235,12 +235,17 @@ set(SF_WHOLE_SRC ${SF_SRC}/whole/axis_warp.c)
 
 # ---------------------------------------------------------------------------
 # TAUCS: the supernodal multifrontal Cholesky behind the ribbon/metric solves.
+# scroll_whole is its only consumer, so the whole block — detection included —
+# is skipped for library-only and embedded builds. A FetchContent consumer
+# never pays for a BLAS it cannot reach.
 # The source list mirrors marble_uv_repair.vcxproj, which owned it on the
 # MSBuild side.  Only the double-precision LLT path is built, and
 # taucs_stubs.c supplies the LAPACK entry points it would otherwise need, so
 # no BLAS/CLAPACK dependency is pulled in.  Kept as its own static library and
 # linked only where it is used, rather than folded into scrollfiesta_core.
 # ---------------------------------------------------------------------------
+set(SF_HAVE_LAPACK FALSE)
+if(SCROLLFIESTA_BUILD_TOOLS)
 set(SF_TAUCS_DIR ${SF_DEPS}/taucs)
 set(SF_TAUCS_SRC
     ${SF_TAUCS_DIR}/build/wrap/taucs_complex_GEN.c
@@ -288,12 +293,20 @@ else()
         set(SF_LAPACK_LIBS ${LAPACK_LIBRARIES})
         set(SF_HAVE_LAPACK TRUE)
         message(STATUS "scrollfiesta: TAUCS enabled against system LAPACK")
+    elseif(EXISTS ${SF_DEPS}/clapack/CMakeLists.txt)
+        # Last resort: build the vendored CLAPACK from source. Correct
+        # everywhere and needs nothing installed, but it is ~1,650 translation
+        # units, so it is tried only after a staged or system LAPACK.
+        add_subdirectory(${SF_DEPS}/clapack ${CMAKE_BINARY_DIR}/clapack EXCLUDE_FROM_ALL)
+        set(SF_LAPACK_LIBS clapack_nowrap BLAS_nowrap libf2c)
+        set(SF_HAVE_LAPACK TRUE)
+        message(STATUS "scrollfiesta: TAUCS enabled against the vendored CLAPACK source")
     else()
         set(SF_HAVE_LAPACK FALSE)
         message(STATUS
             "scrollfiesta: no BLAS/LAPACK found -- skipping TAUCS and the "
-            "scroll_whole front end. Build deps/clapack/clapack.sln (or "
-            "install a system LAPACK) to enable them.")
+            "scroll_whole front end. Install a system LAPACK, or run "
+            "build-deps, to enable them.")
     endif()
 endif()
 
@@ -315,6 +328,8 @@ else()
     target_compile_options(sf_taucs PRIVATE -w)
 endif()
 endif()  # SF_HAVE_LAPACK
+endif()  # SCROLLFIESTA_BUILD_TOOLS
+
 set(SF_PIPELINE_SRC ${SF_SRC}/pipeline/pipeline_cube.c)
 set(SF_CXX_WRAP_SRC
     ${SF_SRC}/holefill/clipper2_wrap.cpp

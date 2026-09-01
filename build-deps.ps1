@@ -62,5 +62,22 @@ Build-Dep 'libtiff' (Join-Path $deps 'tiff-4.7.1') (Join-Path $deps 'tiff-4.7.1\
     @('-DBUILD_SHARED_LIBS=OFF', '-Dtiff-tools=OFF', '-Dtiff-tests=OFF', '-Dtiff-contrib=OFF',
       '-Dtiff-docs=OFF', "-DZLIB_INCLUDE_DIR=$zinc", "-DZLIB_LIBRARY=$zlib") 'tiff.lib'
 
+# --- CLAPACK (BLAS + LAPACK + f2c runtime) ----------------------------------
+# TAUCS, which backs the ribbon and metric solves in scroll_whole, needs a
+# BLAS/LAPACK. Upstream ships deps\clapack\clapack.sln, but that is a VS2008
+# .vcproj solution modern MSBuild will not build without an interactive
+# upgrade, so deps\clapack\CMakeLists.txt expresses the same "without wrap"
+# configuration. Staged flat into deps\lib\win64 as well as the per-config
+# directory, because that is where the top-level CMakeLists looks.
+Build-Dep 'CLAPACK' (Join-Path $root 'deps\clapack') (Join-Path $root 'deps\clapack\build') `
+    @() '*.lib'
+
+$flat = Join-Path $root 'deps\lib\win64'
+foreach ($lib in 'BLAS_nowrap.lib', 'clapack_nowrap.lib', 'libf2c.lib') {
+    $src = Join-Path $stage $lib
+    if (Test-Path $src) { Copy-Item $src $flat -Force }
+    else { throw "CLAPACK : expected $lib in $stage" }
+}
+
 Write-Host "`nAll dependencies staged into $stage" -ForegroundColor Green
 Get-ChildItem $stage -Filter *.lib | Select-Object Name, @{n = 'KB'; e = { [int]($_.Length / 1KB) } }

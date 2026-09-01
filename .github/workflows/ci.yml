@@ -23,7 +23,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: deps
-        run: sudo apt-get update && sudo apt-get install -y ninja-build libtiff-dev
+        # liblapack-dev backs the TAUCS Cholesky in scroll_whole. Without it
+        # the build falls back to compiling the vendored CLAPACK (~1,650
+        # translation units), which is correct but slow.
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libtiff-dev liblapack-dev
       - name: configure
         run: |
           SAN_FLAGS=""
