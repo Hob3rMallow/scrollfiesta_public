@@ -1,0 +1,3 @@
+/* generated: taucs_iter, D variant */
+#define TAUCS_CORE_DOUBLE
+#include "../../src/taucs_iter.c"

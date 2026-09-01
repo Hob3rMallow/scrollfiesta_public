@@ -21,7 +21,6 @@
 #define QUAD_TWO_PI 6.283185307179586476925286766559
 
 #ifdef _OPENMP
-#include <omp.h>
 #endif
 
 void QuadStrip_defaults(QuadStripOpts *o) {

@@ -13,7 +13,7 @@
 #include <string.h>
 
 #ifdef _OPENMP
-#include <omp.h>
+#include "ves_omp.h"
 #endif
 
 typedef struct {

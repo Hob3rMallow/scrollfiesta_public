@@ -44,7 +44,7 @@
 #include <string.h>
 
 #ifdef _OPENMP
-#include <omp.h>
+#include "../common/ves_omp.h"
 #endif
 
 #ifdef _MSC_VER

@@ -36,7 +36,7 @@
 #include <string.h>
 #include <math.h>
 
-#include <omp.h>
+#include "../common/ves_omp.h"
 
 #include "../common/arena.h"
 #include "../common/mesh_bin.h"

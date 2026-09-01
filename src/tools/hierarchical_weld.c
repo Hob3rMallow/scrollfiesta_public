@@ -42,7 +42,6 @@
 #include <math.h>
 #include <limits.h>
 
-#include <omp.h>
 
 #ifdef _WIN32
   #include <windows.h>

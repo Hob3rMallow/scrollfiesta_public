@@ -4,6 +4,11 @@
 
 # ------ Build output (MSVC) ------
 build/
+# ...but deps/taucs/build holds vendored source, not output: the wrap/ shims
+# and taucs_stubs.c, which the CMake build compiles directly. Git will not
+# descend into an excluded directory, so the re-include has to happen here;
+# deps/taucs/.gitignore then keeps the genuine build output out.
+!deps/taucs/build/
 /build-*/
 *.obj
 *.exe

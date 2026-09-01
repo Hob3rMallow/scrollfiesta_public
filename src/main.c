@@ -40,7 +40,7 @@
 #include "whole/axis_warp.h"
 
 #ifdef _OPENMP
-#include <omp.h>
+#include "common/ves_omp.h"
 #endif
 
 #define HARD_TIMEOUT_SEC   1e9     /* effectively infinite */

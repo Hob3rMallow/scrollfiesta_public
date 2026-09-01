@@ -26,7 +26,7 @@
 #include <string.h>
 
 #ifdef _OPENMP
-#include <omp.h>
+#include "../common/ves_omp.h"
 #endif
 
 static double edge_len3(const float *V, int32_t a, int32_t b)

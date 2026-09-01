@@ -25,7 +25,7 @@
 #include "../common/ves_platform.h"
 
 #ifdef _OPENMP
-#include <omp.h>
+#include "../common/ves_omp.h"
 #endif
 
 #include <math.h>

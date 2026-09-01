@@ -16,7 +16,7 @@
 #include <string.h>
 
 #ifdef _OPENMP
-#include <omp.h>
+#include "../common/ves_omp.h"
 #endif
 
 #define SR_AREA_EPS 1.0e-12

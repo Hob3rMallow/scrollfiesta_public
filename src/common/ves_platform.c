@@ -332,16 +332,13 @@ void ves_hard_timeout_cancel(void)
  * (sf_common_opts.n_threads).  Compiles to a no-op without OpenMP so
  * the caller does not need a conditional of its own.
  * ---------------------------------------------------------------- */
-#ifdef _OPENMP
-#include <omp.h>
-#endif
+/* ves_omp.h declares the OpenMP entry points instead of including <omp.h>;
+ * see that header for why. Without _OPENMP its omp_set_num_threads is a no-op,
+ * so no conditional is needed here. */
+#include "ves_omp.h"
 
 void ves_omp_set_threads(int n)
 {
     if (n <= 0) return;          /* keep the runtime's own default */
-#ifdef _OPENMP
     omp_set_num_threads(n);
-#else
-    (void)n;
-#endif
 }

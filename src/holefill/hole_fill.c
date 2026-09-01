@@ -116,7 +116,9 @@ static int hf_log_on(void) {
 #define HFFLUSH()    do { if (hf_log_on()) fflush(stderr); } while (0)
 extern int triangle_jmpbuf_set;
 
-#ifndef _MSC_VER
+/* POSIX only. The test is _WIN32, not _MSC_VER: MinGW is not _MSC_VER but has
+ * no sigaction/sigjmp_buf/siglongjmp either, so it must not take this path. */
+#if !defined(_WIN32)
 #include <signal.h>
 /* Linux: sigsetjmp-based SIGSEGV guard for Triangle crashes */
 static sigjmp_buf triangle_segv_jmpbuf;
@@ -860,6 +862,26 @@ static int safe_triangulate(char *flags, struct triangulateio *in,
     }
     CloseHandle((HANDLE)h);
     return job.rc;
+}
+#elif defined(_WIN32)
+/* MinGW: neither path above is available -- SEH (__try/__except) is MSVC-only,
+ * and there is no sigaction/sigsetjmp. Keep the portable setjmp guard, which
+ * still catches Triangle's own triexit(), and forgo the crash/timeout guard.
+ * A Triangle segfault is fatal here rather than one abandoned hole; MSVC and
+ * Linux are the guarded production platforms. */
+static int safe_triangulate(char *flags, struct triangulateio *in,
+                            struct triangulateio *out)
+{
+    triangle_jmpbuf_set = 1;
+    int jrc = setjmp(triangle_jmpbuf);
+    if (jrc != 0) {
+        triangle_jmpbuf_set = 0;
+        HFLOG("      [safe_triangulate] triexit caught (code=%d)\n", jrc);
+        return -1;
+    }
+    triangulate(flags, in, out, NULL);
+    triangle_jmpbuf_set = 0;
+    return 0;
 }
 #else
 /* Linux: SIGSEGV (crash) AND SIGALRM (watchdog timeout) both siglongjmp out of
