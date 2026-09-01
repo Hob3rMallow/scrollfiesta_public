@@ -165,7 +165,10 @@ set(SF_COMMON_SRC
     ${SF_SRC}/common/snap_cg.c
     ${SF_SRC}/common/eig3.c
     ${SF_SRC}/common/dev_metric.c
-    ${SF_SRC}/common/run_ctx.c)
+    ${SF_SRC}/common/run_ctx.c
+    ${SF_SRC}/common/mesh_bin.c
+    ${SF_SRC}/common/mesh_normals.c
+    ${SF_SRC}/common/pitch_table.c)
 if(SCROLLFIESTA_WITH_TIFF)
     list(APPEND SF_COMMON_SRC ${SF_SRC}/common/tiff_io.c)
 else()
@@ -194,7 +197,11 @@ set(SF_REMESH_SRC
     ${SF_SRC}/remesh/normal_orient.c
     ${SF_SRC}/remesh/component_cull.c
     ${SF_SRC}/remesh/manifold_guard.c
-    ${SF_SRC}/remesh/dev_gate.c)
+    ${SF_SRC}/remesh/dev_gate.c
+    ${SF_SRC}/remesh/intersection_cleanup.c
+    ${SF_SRC}/remesh/chart_lineage.c
+    ${SF_SRC}/remesh/chart_zipper.c
+    ${SF_SRC}/remesh/chart_bridge_forest.c)
 set(SF_WELD_SRC
     ${SF_SRC}/remesh/seam_weld.c
     ${SF_SRC}/remesh/seam_planes.c
@@ -204,7 +211,9 @@ set(SF_WELD_SRC
     ${SF_SRC}/remesh/seam_hole_fill.c
     ${SF_SRC}/remesh/fold_cleanup.c
     ${SF_SRC}/remesh/orient_weld.c
-    ${SF_SRC}/remesh/weld_cleanup.c)
+    ${SF_SRC}/remesh/weld_cleanup.c
+    ${SF_SRC}/remesh/boundary_arc_weld.c
+    ${SF_SRC}/remesh/stream_weld_format.c)
 set(SF_HOLEFILL_SRC ${SF_SRC}/holefill/hole_fill.c)
 set(SF_TOPO_SRC
     ${SF_SRC}/topology/mesh_topo.c
@@ -215,7 +224,97 @@ set(SF_FLATTEN_SRC
     ${SF_SRC}/flatten/snap_darkcut.c
     ${SF_SRC}/flatten/snap_quilt.c
     ${SF_SRC}/flatten/snap_solve.c
-    ${SF_SRC}/flatten/recto_refine.c)
+    ${SF_SRC}/flatten/recto_refine.c
+    ${SF_SRC}/flatten/disk_topology_repair.c
+    ${SF_SRC}/flatten/topology_invariants.c
+    ${SF_SRC}/flatten/ribbon_grid_io.c)
+# Whole-scroll modules the per-cube tools also reach for (axis straightening is
+# used by grid_weld and scroll_whole alike), so they belong to the core library
+# rather than to one front end's source list.
+set(SF_WHOLE_SRC ${SF_SRC}/whole/axis_warp.c)
+
+# ---------------------------------------------------------------------------
+# TAUCS: the supernodal multifrontal Cholesky behind the ribbon/metric solves.
+# The source list mirrors marble_uv_repair.vcxproj, which owned it on the
+# MSBuild side.  Only the double-precision LLT path is built, and
+# taucs_stubs.c supplies the LAPACK entry points it would otherwise need, so
+# no BLAS/CLAPACK dependency is pulled in.  Kept as its own static library and
+# linked only where it is used, rather than folded into scrollfiesta_core.
+# ---------------------------------------------------------------------------
+set(SF_TAUCS_DIR ${SF_DEPS}/taucs)
+set(SF_TAUCS_SRC
+    ${SF_TAUCS_DIR}/build/wrap/taucs_complex_GEN.c
+    ${SF_TAUCS_DIR}/build/wrap/taucs_complex_D.c
+    ${SF_TAUCS_DIR}/build/wrap/taucs_logging_GEN.c
+    ${SF_TAUCS_DIR}/build/wrap/taucs_timer_GEN.c
+    ${SF_TAUCS_DIR}/build/wrap/taucs_malloc_GEN.c
+    ${SF_TAUCS_DIR}/build/wrap/taucs_ccs_base_GEN.c
+    ${SF_TAUCS_DIR}/build/wrap/taucs_ccs_base_D.c
+    ${SF_TAUCS_DIR}/build/wrap/taucs_vec_base_GEN.c
+    ${SF_TAUCS_DIR}/build/wrap/taucs_vec_base_D.c
+    ${SF_TAUCS_DIR}/build/wrap/taucs_ccs_ops_GEN.c
+    ${SF_TAUCS_DIR}/build/wrap/taucs_ccs_ops_D.c
+    ${SF_TAUCS_DIR}/build/wrap/taucs_ccs_order_GEN.c
+    ${SF_TAUCS_DIR}/build/wrap/taucs_sn_llt_GEN.c
+    ${SF_TAUCS_DIR}/build/wrap/taucs_sn_llt_D.c
+    ${SF_TAUCS_DIR}/build/wrap/taucs_ccs_factor_llt_GEN.c
+    ${SF_TAUCS_DIR}/build/wrap/taucs_ccs_factor_llt_D.c
+    ${SF_TAUCS_DIR}/build/wrap/taucs_ccs_solve_llt_GEN.c
+    ${SF_TAUCS_DIR}/build/wrap/taucs_ccs_solve_llt_D.c
+    ${SF_TAUCS_DIR}/build/wrap/taucs_iter_D.c
+    ${SF_TAUCS_DIR}/build/wrap/taucs_linsolve_GEN.c
+    ${SF_TAUCS_DIR}/external/src/genmmd.c
+    ${SF_TAUCS_DIR}/build/taucs_stubs.c)
+
+# TAUCS needs a BLAS/LAPACK underneath (dgemm_, dpotrf_, dtrsm_, dsyrk_,
+# dnrm2_).  The MSBuild path links the vendored CLAPACK built out of
+# deps/clapack/clapack.sln, which build-deps does not stage; a system LAPACK
+# serves just as well.  If neither is present we skip TAUCS and the one front
+# end that needs it rather than failing the whole build.
+find_library(SF_CLAPACK_LIB NAMES clapack_nowrap clapack
+             PATHS ${SF_DEPS}/clapack/LIB/x64 ${SF_DEPS}/lib/win64 NO_DEFAULT_PATH)
+find_library(SF_BLAS_LIB    NAMES BLAS_nowrap blas
+             PATHS ${SF_DEPS}/clapack/LIB/x64 ${SF_DEPS}/lib/win64 NO_DEFAULT_PATH)
+find_library(SF_F2C_LIB     NAMES libf2c f2c
+             PATHS ${SF_DEPS}/clapack/LIB/x64 ${SF_DEPS}/lib/win64 NO_DEFAULT_PATH)
+
+if(SF_CLAPACK_LIB AND SF_BLAS_LIB AND SF_F2C_LIB)
+    set(SF_LAPACK_LIBS ${SF_CLAPACK_LIB} ${SF_BLAS_LIB} ${SF_F2C_LIB})
+    set(SF_HAVE_LAPACK TRUE)
+    message(STATUS "scrollfiesta: TAUCS enabled against vendored CLAPACK")
+else()
+    find_package(LAPACK QUIET)
+    if(LAPACK_FOUND)
+        set(SF_LAPACK_LIBS ${LAPACK_LIBRARIES})
+        set(SF_HAVE_LAPACK TRUE)
+        message(STATUS "scrollfiesta: TAUCS enabled against system LAPACK")
+    else()
+        set(SF_HAVE_LAPACK FALSE)
+        message(STATUS
+            "scrollfiesta: no BLAS/LAPACK found -- skipping TAUCS and the "
+            "scroll_whole front end. Build deps/clapack/clapack.sln (or "
+            "install a system LAPACK) to enable them.")
+    endif()
+endif()
+
+if(SF_HAVE_LAPACK)
+add_library(sf_taucs STATIC ${SF_TAUCS_SRC} ${SF_SRC}/flatten/sparse_solve.c)
+target_link_libraries(sf_taucs PUBLIC ${SF_LAPACK_LIBS})
+target_include_directories(sf_taucs PUBLIC
+    ${SF_TAUCS_DIR}/src
+    ${SF_TAUCS_DIR}/build
+    ${SF_TAUCS_DIR}/external/src
+    PRIVATE ${SF_SRC})
+set_target_properties(sf_taucs PROPERTIES C_STANDARD 17 C_EXTENSIONS ON)
+if(MSVC)
+    # Vendored third-party C; do not hold it to the project warning level.
+    target_compile_options(sf_taucs PRIVATE /W1)
+    target_compile_definitions(sf_taucs PRIVATE
+        _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_DEPRECATE)
+else()
+    target_compile_options(sf_taucs PRIVATE -w)
+endif()
+endif()  # SF_HAVE_LAPACK
 set(SF_PIPELINE_SRC ${SF_SRC}/pipeline/pipeline_cube.c)
 set(SF_CXX_WRAP_SRC
     ${SF_SRC}/holefill/clipper2_wrap.cpp
@@ -230,7 +329,7 @@ set(SF_CXX_WRAP_SRC
 add_library(scrollfiesta_core STATIC
     ${SF_COMMON_SRC} ${SF_EXTRACT_SRC} ${SF_SPLIT_SRC} ${SF_REMESH_SRC}
     ${SF_WELD_SRC} ${SF_HOLEFILL_SRC} ${SF_TOPO_SRC} ${SF_FLATTEN_SRC}
-    ${SF_PIPELINE_SRC} ${SF_CXX_WRAP_SRC})
+    ${SF_WHOLE_SRC} ${SF_PIPELINE_SRC} ${SF_CXX_WRAP_SRC})
 target_include_directories(scrollfiesta_core PUBLIC
     ${SF_SRC}
     ${SF_DEPS}/include
@@ -346,6 +445,10 @@ if(SCROLLFIESTA_BUILD_TOOLS)
     # Supported whole-scroll path. These source lists mirror the corresponding
     # MSVC projects and deliberately replace the retired scroll_unwrap /
     # scroll_atlas / scroll_ribbon front ends.
+    #
+    # scroll_whole reaches the TAUCS Cholesky through flatten/ribbon.c, so it
+    # is built only when a BLAS/LAPACK was located above.
+    if(SF_HAVE_LAPACK)
     add_executable(scroll_whole
         ${SF_SRC}/tools/scroll_whole.c
         ${SF_SRC}/whole/cube_schedule.c
@@ -367,6 +470,8 @@ if(SCROLLFIESTA_BUILD_TOOLS)
         ${SF_SRC}/common/csr.c
         ${SF_SRC}/common/union_find.c
         ${SF_SRC}/common/kdtree.c)
+    target_link_libraries(scroll_whole PRIVATE sf_taucs)
+    endif()  # SF_HAVE_LAPACK
 
     add_executable(scroll_unroll
         ${SF_SRC}/tools/scroll_unroll.c
@@ -446,7 +551,19 @@ if(SCROLLFIESTA_BUILD_TOOLS)
         ${SF_SRC}/common/tiff_io.c
         ${SF_SRC}/common/ves_platform.c)
 
-    foreach(tool scroll_whole scroll_unroll atlas_overlap_fix atlas_ribbon_fit)
+    set(SF_BIG_TOOLS scroll_unroll atlas_overlap_fix atlas_ribbon_fit)
+    if(SF_HAVE_LAPACK)
+        list(PREPEND SF_BIG_TOOLS scroll_whole)
+    endif()
+
+    foreach(tool ${SF_BIG_TOOLS})
+        # These four carry standalone source lists mirroring their MSVC
+        # projects, but still reach for shared core modules (axis warping, mesh
+        # bin I/O, normals, intersection cleanup).  Link the core library so a
+        # module added there does not have to be repeated in four places; a
+        # static-library member is only pulled in when the symbol is still
+        # undefined, so this cannot collide with a tool's own sources.
+        target_link_libraries(${tool} PRIVATE scrollfiesta_core)
         target_include_directories(${tool} PRIVATE
             ${SF_SRC}
             ${SF_DEPS}/include
@@ -466,20 +583,24 @@ if(SCROLLFIESTA_BUILD_TOOLS)
     target_link_libraries(atlas_overlap_fix PRIVATE ${SF_TIFF_LIBS})
     target_link_libraries(atlas_ribbon_fit PRIVATE ${SF_TIFF_LIBS})
     if(SCROLLFIESTA_OPENMP)
-        if(MSVC)
-            target_compile_options(scroll_whole PRIVATE /openmp)
-            target_compile_options(scroll_unroll PRIVATE /openmp)
-        else()
-            target_compile_options(scroll_whole PRIVATE -fopenmp)
-            target_link_options(scroll_whole PRIVATE -fopenmp)
-            target_compile_options(scroll_unroll PRIVATE -fopenmp)
-            target_link_options(scroll_unroll PRIVATE -fopenmp)
+        set(SF_OPENMP_TOOLS scroll_unroll)
+        if(SF_HAVE_LAPACK)
+            list(APPEND SF_OPENMP_TOOLS scroll_whole)
         endif()
+        foreach(tool ${SF_OPENMP_TOOLS})
+            if(MSVC)
+                target_compile_options(${tool} PRIVATE /openmp)
+            else()
+                target_compile_options(${tool} PRIVATE -fopenmp)
+                target_link_options(${tool} PRIVATE -fopenmp)
+            endif()
+        endforeach()
     endif()
 
     # Diagnostic tools: single self-contained translation units (only libm).
     foreach(tool obj_components pinhole_verdict seam_audit)
         add_executable(${tool} ${SF_SRC}/tools/${tool}.c)
+        target_link_libraries(${tool} PRIVATE scrollfiesta_core)
         set_target_properties(${tool} PROPERTIES C_STANDARD 17 C_EXTENSIONS ON)
         if(WIN32)
             target_compile_definitions(${tool} PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -578,10 +699,13 @@ if(SCROLLFIESTA_INSTALL)
     endif()
 
     if(SCROLLFIESTA_BUILD_TOOLS)
-        install(TARGETS cube_mesh grid_pipeline grid_weld
-                        scroll_whole scroll_unroll
-                        atlas_overlap_fix atlas_ribbon_fit
-                        obj_components pinhole_verdict seam_audit
+        set(SF_INSTALL_TOOLS cube_mesh grid_pipeline grid_weld scroll_unroll
+                             atlas_overlap_fix atlas_ribbon_fit
+                             obj_components pinhole_verdict seam_audit)
+        if(SF_HAVE_LAPACK)
+            list(APPEND SF_INSTALL_TOOLS scroll_whole)
+        endif()
+        install(TARGETS ${SF_INSTALL_TOOLS}
                 RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     endif()
 endif()

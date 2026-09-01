@@ -326,3 +326,22 @@ void ves_hard_timeout_cancel(void)
 }
 
 #endif /* _WIN32 */
+
+/* ----------------------------------------------------------------
+ * Thread count.  Declared in ves_platform.h; called by the public API
+ * (sf_common_opts.n_threads).  Compiles to a no-op without OpenMP so
+ * the caller does not need a conditional of its own.
+ * ---------------------------------------------------------------- */
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
+void ves_omp_set_threads(int n)
+{
+    if (n <= 0) return;          /* keep the runtime's own default */
+#ifdef _OPENMP
+    omp_set_num_threads(n);
+#else
+    (void)n;
+#endif
+}

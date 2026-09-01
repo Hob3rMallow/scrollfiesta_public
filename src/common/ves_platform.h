@@ -341,4 +341,14 @@ int ves_run_subprocess_logged(const char *exe, const char *const *argv,
 void ves_hard_timeout_start(double seconds, volatile sig_atomic_t *flag);
 void ves_hard_timeout_cancel(void);
 
+/* ================================================================
+ * Thread count
+ *
+ * Set the OpenMP team size for subsequent parallel regions.  n <= 0
+ * means "leave the runtime default alone".  A no-op when the build
+ * has OpenMP disabled, so callers need no #ifdef of their own.
+ * ================================================================ */
+
+void ves_omp_set_threads(int n);
+
 #endif /* VES_PLATFORM_H */
