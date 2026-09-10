@@ -130,6 +130,25 @@ if(SCROLLFIESTA_WITH_TIFF)
         set(SF_TIFF_LIBS sf_tiff_staged sf_zlib_staged)
         message(STATUS "scrollfiesta: using staged vendored libtiff (deps/lib/win64)")
     else()
+        # Linux/macOS: build-deps.sh stages the vendored zlib+libtiff into
+        # deps/prefix when the host has no libtiff development package. That
+        # is the Windows arrangement, one directory later: look there first,
+        # then fall back to whatever the host provides.
+        if(EXISTS ${SF_DEPS}/prefix/include/tiffio.h)
+            list(PREPEND CMAKE_PREFIX_PATH ${SF_DEPS}/prefix)
+            # The static libtiff package config names ZLIB::ZLIB and
+            # CMath::CMath in its link interface without requiring them, so
+            # both imported targets have to exist before it is included.
+            find_package(ZLIB QUIET)
+            if(NOT TARGET CMath::CMath)
+                add_library(CMath::CMath INTERFACE IMPORTED)
+                find_library(SF_LIBM m)
+                if(SF_LIBM)
+                    set_target_properties(CMath::CMath PROPERTIES
+                        INTERFACE_LINK_LIBRARIES ${SF_LIBM})
+                endif()
+            endif()
+        endif()
         find_package(TIFF REQUIRED)
         set(SF_TIFF_LIBS TIFF::TIFF)
         message(STATUS "scrollfiesta: using find_package(TIFF)")
