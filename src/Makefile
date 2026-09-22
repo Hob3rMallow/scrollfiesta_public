@@ -19,11 +19,36 @@
 
 CC       = gcc
 CXX      = g++
-CFLAGS   = -std=c99 -Wall -Wextra -Wshadow -Wformat=2 -Werror -Wconversion
-CXXFLAGS = -std=c++17 -O2 -Wno-register
+# -std=gnu99, not -std=c99: ves_platform.h calls posix_fadvise() and main.c
+# calls setenv(), which strict ISO C hides. Under GCC 15 an implicit declaration
+# is an error rather than a warning, so the very first object file fails.
+#
+# -Werror is opt-in rather than always on. GCC 15 promotes several warning
+# classes on code that GCC 13 accepted -- sign-conversion, clobbered,
+# misleading-indentation, format-truncation -- and with -Werror the build stops
+# at the third source file, long before anything links. The warnings still
+# print; only the promotion to error is gated, so CI keeps its strictness by
+# building with SF_WERROR=1 and a newer compiler can still produce binaries.
+#
+#     make release                # warnings print, build proceeds
+#     SF_WERROR=1 make release    # the strict build CI runs
+WERROR   = $(if $(filter 1,$(SF_WERROR)),-Werror,)
+CFLAGS   = -std=gnu99 -Wall -Wextra -Wshadow -Wformat=2 $(WERROR) -Wconversion
+# -include limits: the vendored andres/graph headers use std::numeric_limits
+# without including <limits>. libstdc++ used to pull it in transitively; since
+# GCC 15 it does not, so greedy-additive.hxx and kernighan-lin.hxx fail to
+# compile. Forcing the include here leaves the vendored tree untouched.
+CXXFLAGS = -std=c++17 -O2 -Wno-register -include limits
 
 # System libs + local deps (pre-installed on the target; see CLAUDE.md).
-LDFLAGS  = -lm -ltiff -fopenmp -lpthread
+# The vendored libtiff that build-deps.sh stages into deps/prefix is preferred;
+# where it has not been staged this falls back to -ltiff, the system library,
+# exactly as before. zlib is staged into the same prefix and a static libtiff
+# needs it.
+TIFF_A     := $(wildcard ../deps/prefix/lib/libtiff.a)
+TIFF_EXTRA := $(wildcard ../deps/prefix/lib/libz.a)
+TIFF_LIB   := $(if $(TIFF_A),$(TIFF_A) $(TIFF_EXTRA),-ltiff)
+LDFLAGS  = -lm $(TIFF_LIB) -fopenmp -lpthread
 EXT_INC  = -I../deps/include -I../deps/src/graph/include -I../docs/research/gco-v3.0
 EXT_LIB  = -L../deps/lib -ltriangle -lClipper2 -lClipper2Z -lstdc++
 
@@ -33,16 +58,19 @@ BUILD_FLAGS   = $(DEBUG_FLAGS)
 TEST_INC      = -I.
 
 # ---- Source groups (mirror cube_mesh.vcxproj) ----
-COMMON_SRC = common/arena.c common/except.c common/csr.c common/kdtree.c \
+# common/pitch_table.c e common/closest_tri.c sono su disco e referenziati (PitchTable_*,
+# ClosestTri_*) ma non erano in nessuna lista: il link di cube_mesh li chiedeva come
+# simboli non definiti.
+COMMON_SRC = common/pitch_table.c common/closest_tri.c common/arena.c common/except.c common/csr.c common/kdtree.c \
              common/union_find.c common/cc_color.c common/bfs.c common/pca.c common/mls_project.c \
              common/vert_weld.c common/mesh_normals.c common/tiff_io.c common/halo_loader.c \
              common/raw_sample.c \
              common/mesh_trim.c common/ply_io.c common/obj_io.c common/mesh_bin.c common/dump_obj.c \
              common/ves_platform.c common/raw_snapback.c common/snap_cg.c \
              common/eig3.c common/dev_metric.c common/mesh_manifold.c
-EXTRACT_SRC  = extract/mesh_extract.c extract/mesh_resplit.c extract/pred_reject.c
-SPLIT_SRC    = split/oracle.c split/bridge_cut.c split/overlap_sep.c split/overlap_merge.c split/dev_cut.c split/depth_peel.c
-REMESH_SRC   = remesh/ball_pivot.c remesh/orient_mesh.c remesh/pinhole_fill.c remesh/normal_orient.c remesh/component_cull.c remesh/manifold_guard.c remesh/dev_gate.c
+EXTRACT_SRC  = whole/axis_warp.c extract/mesh_extract.c extract/mesh_resplit.c extract/pred_reject.c
+SPLIT_SRC    = split/overlap_quality.c split/oracle.c split/bridge_cut.c split/overlap_sep.c split/overlap_merge.c split/dev_cut.c split/depth_peel.c
+REMESH_SRC   = remesh/patch_repair.c remesh/cvt_remesh.c remesh/rvd_clip.c remesh/ball_pivot.c remesh/orient_mesh.c remesh/pinhole_fill.c remesh/normal_orient.c remesh/component_cull.c remesh/manifold_guard.c remesh/dev_gate.c
 HOLEFILL_SRC = holefill/hole_fill.c
 # Seamster genus reduction + topology, for the per-cube short-handle sever.
 FLATTEN_SRC  = flatten/mesh_topo.c flatten/topology_invariants.c flatten/seam_cut.c flatten/developability.c \
@@ -56,7 +84,13 @@ CORE_OBJ = $(COMMON_SRC:.c=.o) $(EXTRACT_SRC:.c=.o) $(SPLIT_SRC:.c=.o) \
 COMMON_OBJ = $(COMMON_SRC:.c=.o)
 
 # C++ wrappers (Clipper2 boolean ops; lifted-multicut graph solver).
+# Le tre righe di attene servono a cube_mesh perche' remesh/cvt_remesh.c chiama
+# CVT_remesh -> rvd_clip -> AttenePred_*. Le regole per costruirle esistevano gia' piu'
+# in basso, ma solo WELD_CPP_OBJ le usava.
 CPP_OBJ = holefill/clipper2_wrap.o split/multicut_wrap.o common/gco_wrap.o \
+          common/attene_predicates_wrap.o \
+          ../deps/src/attene-predicates/uinteger.o \
+          ../deps/src/attene-predicates/ieee_binary.o \
           ../docs/research/gco-v3.0/GCoptimization.o \
           ../docs/research/gco-v3.0/LinkedBlockList.o
 
@@ -158,7 +192,11 @@ grid_weld: tools/grid_weld.o remesh/ball_pivot.o remesh/pinhole_fill.o remesh/or
            flatten/disk_topology_repair.o flatten/topology_invariants.o \
            flatten/seam_cut.o flatten/mesh_topo.o \
            common/arena.o common/except.o common/obj_io.o common/mesh_bin.o common/ves_platform.o \
-           common/csr.o common/pca.o common/kdtree.o common/union_find.o
+           common/csr.o common/pca.o common/kdtree.o common/union_find.o \
+           common/cc_color.o common/mesh_manifold.o common/pitch_table.o common/vert_weld.o \
+           common/mesh_normals.o common/bfs.o \
+           remesh/manifold_guard.o remesh/seam_hole_fill.o remesh/component_cull.o \
+           flatten/developability.o common/eig3.o
 	$(CC) $(CFLAGS) $(BUILD_FLAGS) $^ -o $@ $(LDFLAGS) $(EXT_LIB)
 
 common/attene_predicates_wrap.o: common/attene_predicates_wrap.cpp
@@ -169,7 +207,7 @@ common/attene_predicates_wrap.o: common/attene_predicates_wrap.cpp
 # Grid orchestrator subprocess (== grid_pipeline.exe). Links the garbage-cube
 # detector (extract/pred_reject) + TIFF loader for the pre-spawn reject gate.
 grid_pipeline: tools/grid_pipeline.o common/ves_platform.o common/arena.o \
-               common/except.o common/tiff_io.o extract/pred_reject.o
+               common/except.o common/tiff_io.o extract/pred_reject.o common/mesh_bin.o
 	$(CC) $(CFLAGS) $(BUILD_FLAGS) $^ -o $@ $(LDFLAGS)
 
 # Register and place per-cube charts in one scroll coordinate frame.

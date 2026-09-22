@@ -39,6 +39,7 @@ build/
 
 # ------ Linux build binaries (src/, from the Makefile) ------
 /src/cube_mesh
+/src/obj_bake_raw
 /src/grid_weld
 /src/grid_pipeline
 /src/test_common
