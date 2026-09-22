@@ -17,6 +17,14 @@ KDTree_T KDTree_new(Arena_T arena, const float *points, size_t n);
 size_t KDTree_nearest(const KDTree_T tree, const float query[3],
                       float *out_dist_sq);
 
+/* 1-NN query that gives up early. Identical to KDTree_nearest except that the search starts
+ * with max_dist_sq as its best instead of FLT_MAX, so a subtree that cannot hold anything
+ * nearer than that bound is never walked. When nothing in the tree beats the bound the answer
+ * is SIZE_MAX and *out_dist_sq is FLT_MAX, never the bound itself: handing the bound back would
+ * push a value through sqrtf that the caller could mistake for a real distance. */
+size_t KDTree_nearest_bounded(const KDTree_T tree, const float query[3],
+                              float max_dist_sq, float *out_dist_sq);
+
 /* Ball query. Returns count of points within squared radius.
  * Writes up to max_results indices into out_indices. */
 size_t KDTree_ball_query(const KDTree_T tree, const float center[3],

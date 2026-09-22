@@ -374,8 +374,17 @@ int MeshResplit_remesh_pieces(Arena_T arena,
         float best = FLT_MAX, second = FLT_MAX;
         int32_t bp = -1;
         for (size_t p = 0; p < n_pieces; p++) {
+            /* A piece can only matter if it beats the second best distance found so far, so
+             * that is the bound. The bound is squared for the tree and then widened by one
+             * float step, because the squaring rounds and a bound that rounded down could
+             * prune a point this loop would have kept. Widening only ever adds visits. */
             float d2 = FLT_MAX;
-            (void)KDTree_nearest(ptree[p], &cloud->lop_pts[j*3], &d2);
+            if (second < FLT_MAX) {
+                float bound = nextafterf(second * second, INFINITY);
+                (void)KDTree_nearest_bounded(ptree[p], &cloud->lop_pts[j*3], bound, &d2);
+            } else {
+                (void)KDTree_nearest(ptree[p], &cloud->lop_pts[j*3], &d2);
+            }
             float d = sqrtf(d2);
             if (d < best)        { second = best; best = d; bp = (int32_t)p; }
             else if (d < second) { second = d; }
