@@ -117,7 +117,7 @@ int main(int argc,char**argv){
         "       --solve writes pass-1 <id>_repaired.obj, then recto <id>_snapped.obj\n"
         "       %s --selftest\n",argv[0],argv[0]);return 1;}
     const char*in=argv[1],*raw=argv[2],*outdir=argv[3],*id="snap";
-    int do_solve=0,do_recto=1,recto_iters=4; double recto_range=3.0;
+    int do_solve=0,do_recto=1,recto_iters=4; double recto_range=3.0; int do_midline=0;
     SnapOpts o;SnapOpts_default(&o);o.raw_dir=raw;o.verbose=1;
     for(int i=4;i<argc;i++){
         if(!strcmp(argv[i],"--id")&&i+1<argc)id=argv[++i];
@@ -137,6 +137,7 @@ int main(int argc,char**argv){
         else if(!strcmp(argv[i],"--dark-thresh")&&i+1<argc)o.dark_thresh=atoi(argv[++i]);
         else if(!strcmp(argv[i],"--solve"))do_solve=1;
         else if(!strcmp(argv[i],"--no-recto"))do_recto=0;
+        else if(!strcmp(argv[i],"--midline"))do_midline=1;
         else if(!strcmp(argv[i],"--recto-iters")&&i+1<argc)recto_iters=atoi(argv[++i]);
         else if(!strcmp(argv[i],"--recto-range")&&i+1<argc)recto_range=atof(argv[++i]);
         else{fprintf(stderr,"unknown %s\n",argv[i]);return 1;}
@@ -213,7 +214,7 @@ int main(int argc,char**argv){
 
         RectoRefineStats rr; memset(&rr,0,sizeof rr);
         if(do_recto){
-            RectoRefineOpts ro; RectoRefineOpts_default(&ro);
+            RectoRefineOpts ro; RectoRefineOpts_default(&ro); ro.midline=do_midline;
             memcpy(ro.axis_point,o.axis_point,sizeof ro.axis_point);
             memcpy(ro.axis_dir,o.axis_dir,sizeof ro.axis_dir);
             ro.window_lo=R.win_lo; ro.window_hi=R.win_hi;

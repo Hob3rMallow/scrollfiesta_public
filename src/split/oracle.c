@@ -68,7 +68,7 @@ int Oracle_count_sheets(Arena_T              arena,
         if (verts[i * 3 + 2] < vmin[2]) vmin[2] = verts[i * 3 + 2];
     }
 
-    float *sv = (float *)ARENA_ALLOC(arena, (long)(nv * 3 * sizeof(float)));
+    float *sv = (float *)ARENA_ALLOC(arena, (size_t)(nv * 3 * sizeof(float)));
     float vmax[3] = { 0.0f, 0.0f, 0.0f };
     for (size_t i = 0; i < nv; i++) {
         float z = verts[i * 3 + 0] - vmin[0];
@@ -93,7 +93,7 @@ int Oracle_count_sheets(Arena_T              arena,
         return 1;
     }
 
-    uint8_t *rast = (uint8_t *)ARENA_CALLOC(arena, (long)total_vox, 1L);
+    uint8_t *rast = (uint8_t *)ARENA_CALLOC(arena, (size_t)total_vox, 1L);
 
     /* ---- Phase 2: rasterize triangles ---- */
 
@@ -178,9 +178,9 @@ int Oracle_count_sheets(Arena_T              arena,
     }
 
     /* Allocate projection + cell-index arrays */
-    float   *proj_u = (float *)  ARENA_ALLOC(arena, (long)(n_occ * sizeof(float)));
-    float   *proj_v = (float *)  ARENA_ALLOC(arena, (long)(n_occ * sizeof(float)));
-    float   *proj_w = (float *)  ARENA_ALLOC(arena, (long)(n_occ * sizeof(float)));
+    float   *proj_u = (float *)  ARENA_ALLOC(arena, (size_t)(n_occ * sizeof(float)));
+    float   *proj_v = (float *)  ARENA_ALLOC(arena, (size_t)(n_occ * sizeof(float)));
+    float   *proj_w = (float *)  ARENA_ALLOC(arena, (size_t)(n_occ * sizeof(float)));
 
     /* Scan volume, project occupied voxels */
     size_t pi = 0;
@@ -213,7 +213,7 @@ int Oracle_count_sheets(Arena_T              arena,
     if (v_range < 1e-6f) v_range = 1.0f;
 
     /* Compute cell indices: cu = floor((u - u_min) / u_range * gs), clamped */
-    int32_t *cell_idx = (int32_t *)ARENA_ALLOC(arena, (long)(n_occ * sizeof(int32_t)));
+    int32_t *cell_idx = (int32_t *)ARENA_ALLOC(arena, (size_t)(n_occ * sizeof(int32_t)));
     float u_inv = (float)gs / u_range;
     float v_inv = (float)gs / v_range;
 
@@ -228,8 +228,8 @@ int Oracle_count_sheets(Arena_T              arena,
     }
 
     /* CSR construction: two-pass bin w-values by cell */
-    int32_t *offsets = (int32_t *)ARENA_CALLOC(arena, (long)(n_cells + 1),
-                                               (long)sizeof(int32_t));
+    int32_t *offsets = (int32_t *)ARENA_CALLOC(arena, (size_t)(n_cells + 1),
+                                               sizeof(int32_t));
     for (size_t i = 0; i < n_occ; i++) {
         offsets[(size_t)cell_idx[i] + 1]++;
     }
@@ -237,9 +237,9 @@ int Oracle_count_sheets(Arena_T              arena,
         offsets[i] += offsets[i - 1];
     }
 
-    float   *cell_w  = (float *)  ARENA_ALLOC(arena, (long)(n_occ * sizeof(float)));
-    int32_t *cursor   = (int32_t *)ARENA_CALLOC(arena, (long)n_cells,
-                                                 (long)sizeof(int32_t));
+    float   *cell_w  = (float *)  ARENA_ALLOC(arena, (size_t)(n_occ * sizeof(float)));
+    int32_t *cursor   = (int32_t *)ARENA_CALLOC(arena, (size_t)n_cells,
+                                                 sizeof(int32_t));
 
     for (size_t i = 0; i < n_occ; i++) {
         size_t ci  = (size_t)cell_idx[i];

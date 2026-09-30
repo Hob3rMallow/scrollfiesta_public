@@ -1,4 +1,6 @@
 #include "pinhole_fill.h"
+#include "../common/intrinsic_angle.h"
+#include "../holefill/hole_fill.h"
 
 #include <string.h>
 #include <stdint.h>
@@ -1150,6 +1152,21 @@ static void fill_small_loops(Arena_T arena, ComponentMesh *cm,
     memcpy(vcur, voff, nv * sizeof(size_t));
     for (size_t i = 0; i < nb; i++) { vhe[vcur[(size_t)he_src[i]]++] = (int)i; }
 
+    /* Closing even a single triangle can turn a boundary tip into an
+     * intrinsically sharp cone. Accumulate the original boundary fans once,
+     * independently of the missing face's size or the tessellation density. */
+    double *angle_lo=ARENA_CALLOC(arena,nv,sizeof(double));
+    double *angle_hi=ARENA_CALLOC(arena,nv,sizeof(double));
+    for(size_t f=0;f<nf;f++)for(int k=0;k<3;k++){
+        const int32_t *t=&faces[f*3];int32_t v=t[k];double lo,hi;
+        if(voff[v+1]==voff[v])continue;
+        if(!IntrinsicAngle_corner_bounds(&cm->verts[(size_t)v*3],
+               &cm->verts[(size_t)t[(k+1)%3]*3],&cm->verts[(size_t)t[(k+2)%3]*3],
+               HOLEFILL_CHART_MAX_CONDITION,&lo,&hi)){
+            angle_lo[v]=angle_hi[v]=NAN;
+        }else{angle_lo[v]+=lo;angle_hi[v]+=hi;}
+    }
+
     uint8_t *used = (uint8_t *)ARENA_CALLOC(arena, nb, 1);
     int loop[PINHOLE_MAX_LOOP + 2];
 
@@ -1301,11 +1318,26 @@ static void fill_small_loops(Arena_T arena, ComponentMesh *cm,
 #endif
                 continue;
             }
+            int possible=1;
+            const int32_t ids[3]={A,C,B};
+            double lo[3],hi[3];
+            for(int k=0;k<3;k++){
+                int32_t v=ids[k];
+                if(voff[v+1]-voff[v]!=1||
+                   !IntrinsicAngle_corner_bounds(&vp[(size_t)v*3],
+                       &vp[(size_t)ids[(k+1)%3]*3],&vp[(size_t)ids[(k+2)%3]*3],
+                       HOLEFILL_CHART_MAX_CONDITION,&lo[k],&hi[k])||
+                   !IntrinsicAngle_closed_fan_possible(angle_lo[v]+lo[k],angle_hi[v]+hi[k])){
+                    possible=0;break;
+                }
+            }
+            if(!possible){skipped++;continue;}
             fill[nfill * 3 + 0] = A;
             fill[nfill * 3 + 1] = C;
             fill[nfill * 3 + 2] = B;
             nfill++;
             tri_add(tset, tmask, A, B, C);
+            for(int k=0;k<3;k++){angle_lo[ids[k]]+=lo[k];angle_hi[ids[k]]+=hi[k];}
             filled++;
         }
     }

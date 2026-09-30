@@ -97,6 +97,7 @@
   <ItemGroup>
     <ClCompile Include="src\tools\obj_bake_raw.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\flatten\rawtex_bake.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\textured_obj.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\flatten\marble_diag.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\ves_png.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\tif_strip.c"><CompileAs>CompileAsC</CompileAs></ClCompile>

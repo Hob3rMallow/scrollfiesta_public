@@ -126,22 +126,19 @@ registration ledgers, and `ribbon_fit_stats.json`.
 `--mode` selects intermediate ablation stages (`f0` observations through `f6`
 collision). `--raw DIR` additionally audits adjacent-row RAW texture phase.
 
-## Canonical-run contract
+## Reviewing a run
 
-[`scripts/run_canonical_grid.ps1`](../scripts/run_canonical_grid.ps1) runs the
-five-stage unroll review alongside the atlas/ribbon branch. A canonical run is
-incomplete unless its `snap_relax/` directory includes the step 4 snapped and
-step 5 final-relaxed:
+Run the stages above directly. A complete unroll review includes the step 4
+snapped and step 5 final-relaxed artifacts in `output/run_unroll/`:
 
 - full-resolution TIFF;
 - readable TIFF/PNG strip;
 - preview PNG;
 - metrics JSON.
 
-The script creates a `CANONICAL_OUTPUTS.md` inside that generated run, records
-the artifact paths in `logs/SUMMARY.txt`, and fails when a required artifact is
-missing or empty. `CANONICAL_OUTPUTS.md` is a generated per-run index, not a
-repository-root document.
+Check that each artifact is present and nonempty, and retain the command lines
+and stage logs alongside the metrics. Historical result bundles may also have
+a generated `CANONICAL_OUTPUTS.md` or `logs/SUMMARY.txt` index.
 
 When promoting a run into the tracked result bundle, preserve that evidence
 and update the checksums described in

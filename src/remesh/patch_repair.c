@@ -365,7 +365,7 @@ int PatchRepair_repair(Arena_T arena,
 
     /* trivial inputs: hand back a copy (contract: out is arena-owned) */
     if (nf == 0 || nv < 3 || !verts || !faces) {
-        int32_t *cp = (int32_t *)ARENA_ALLOC(arena, (long)((nf ? nf : 1) * 3 * sizeof(int32_t)));
+        int32_t *cp = (int32_t *)ARENA_ALLOC(arena, (size_t)((nf ? nf : 1) * 3 * sizeof(int32_t)));
         if (nf) memcpy(cp, faces, nf * 3 * sizeof(int32_t));
         *out_faces = cp;
         *out_nf = nf;
@@ -376,7 +376,7 @@ int PatchRepair_repair(Arena_T arena,
     int32_t NV = (int32_t)nv, NF = (int32_t)nf;
 
     /* ---- 1. unique-edge table ---- */
-    ERec *er = (ERec *)ARENA_ALLOC(arena, (long)NF * 3L * (long)sizeof(ERec));
+    ERec *er = (ERec *)ARENA_ALLOC(arena, (size_t)NF * 3L * sizeof(ERec));
     for (int32_t f = 0; f < NF; f++) {
         for (int k = 0; k < 3; k++) {
             int32_t u = faces[(size_t)f*3 + (size_t)k];
@@ -386,7 +386,7 @@ int PatchRepair_repair(Arena_T arena,
         }
     }
     qsort(er, (size_t)NF*3, sizeof(ERec), cmp_erec);
-    UEdge *ue = (UEdge *)ARENA_ALLOC(arena, (long)NF * 3L * (long)sizeof(UEdge));
+    UEdge *ue = (UEdge *)ARENA_ALLOC(arena, (size_t)NF * 3L * sizeof(UEdge));
     int32_t n_ue = 0;
     for (int32_t i = 0; i < NF*3; ) {
         int32_t j = i;
@@ -400,12 +400,12 @@ int PatchRepair_repair(Arena_T arena,
     }
 
     /* ---- 2. face-connectivity components (over shared edges) ---- */
-    int32_t *vcomp = (int32_t *)ARENA_ALLOC(arena, (long)NV * (long)sizeof(int32_t));
+    int32_t *vcomp = (int32_t *)ARENA_ALLOC(arena, (size_t)NV * sizeof(int32_t));
     for (int32_t i = 0; i < NV; i++) vcomp[i] = i;
     for (int32_t e = 0; e < n_ue; e++) uf_union(vcomp, ue[e].u, ue[e].v);
     for (int32_t i = 0; i < NV; i++) vcomp[i] = uf_find(vcomp, i);
     {
-        uint8_t *seen = (uint8_t *)ARENA_CALLOC(arena, (long)NV, 1L);
+        uint8_t *seen = (uint8_t *)ARENA_CALLOC(arena, (size_t)NV, 1L);
         for (int32_t f = 0; f < NF; f++) {
             int32_t r = vcomp[faces[(size_t)f*3]];
             if (!seen[r]) { seen[r] = 1; st.n_components++; }
@@ -413,17 +413,17 @@ int PatchRepair_repair(Arena_T arena,
     }
 
     /* ---- 3. boundary clusters (UF over boundary-edge endpoints) ---- */
-    int32_t *bcl = (int32_t *)ARENA_ALLOC(arena, (long)NV * (long)sizeof(int32_t));
+    int32_t *bcl = (int32_t *)ARENA_ALLOC(arena, (size_t)NV * sizeof(int32_t));
     for (int32_t i = 0; i < NV; i++) bcl[i] = i;
     for (int32_t e = 0; e < n_ue; e++)
         if (ue[e].mult == 1) uf_union(bcl, ue[e].u, ue[e].v);
-    int32_t *cl_edges = (int32_t *)ARENA_CALLOC(arena, (long)NV, (long)sizeof(int32_t));
+    int32_t *cl_edges = (int32_t *)ARENA_CALLOC(arena, (size_t)NV, sizeof(int32_t));
     for (int32_t e = 0; e < n_ue; e++)
         if (ue[e].mult == 1) cl_edges[uf_find(bcl, ue[e].u)]++;
     /* per component: perimeter cluster = the one with the most edges
      * (ties: smallest root, for determinism) */
-    int32_t *comp_perim = (int32_t *)ARENA_ALLOC(arena, (long)NV * (long)sizeof(int32_t));
-    int32_t *comp_perim_n = (int32_t *)ARENA_CALLOC(arena, (long)NV, (long)sizeof(int32_t));
+    int32_t *comp_perim = (int32_t *)ARENA_ALLOC(arena, (size_t)NV * sizeof(int32_t));
+    int32_t *comp_perim_n = (int32_t *)ARENA_CALLOC(arena, (size_t)NV, sizeof(int32_t));
     for (int32_t i = 0; i < NV; i++) comp_perim[i] = -1;
     for (int32_t e = 0; e < n_ue; e++) {
         if (ue[e].mult != 1) continue;
@@ -437,7 +437,7 @@ int PatchRepair_repair(Arena_T arena,
     }
 
     /* ---- 4. tear clusters ---- */
-    int32_t *tear_root = (int32_t *)ARENA_ALLOC(arena, (long)PR_MAX_PATCHES * (long)sizeof(int32_t));
+    int32_t *tear_root = (int32_t *)ARENA_ALLOC(arena, (size_t)PR_MAX_PATCHES * sizeof(int32_t));
     int32_t n_tear = 0;
     for (int32_t r = 0; r < NV && n_tear < PR_MAX_PATCHES; r++) {
         if (cl_edges[r] == 0) continue;
@@ -449,7 +449,7 @@ int PatchRepair_repair(Arena_T arena,
     st.n_tear_clusters = (size_t)n_tear;
 
     if (n_tear == 0) {
-        int32_t *cp = (int32_t *)ARENA_ALLOC(arena, (long)NF * 3L * (long)sizeof(int32_t));
+        int32_t *cp = (int32_t *)ARENA_ALLOC(arena, (size_t)NF * 3L * sizeof(int32_t));
         memcpy(cp, faces, (size_t)NF * 3 * sizeof(int32_t));
         *out_faces = cp;
         *out_nf = (size_t)NF;
@@ -458,32 +458,32 @@ int PatchRepair_repair(Arena_T arena,
     }
 
     /* tear-cluster membership: is boundary-cluster root r a tear root?     */
-    uint8_t *is_tear_root = (uint8_t *)ARENA_CALLOC(arena, (long)NV, 1L);
+    uint8_t *is_tear_root = (uint8_t *)ARENA_CALLOC(arena, (size_t)NV, 1L);
     for (int32_t t = 0; t < n_tear; t++) is_tear_root[tear_root[t]] = 1;
 
     /* ---- 5. vert -> face incidence (CSR) ---- */
-    int32_t *vf_cnt = (int32_t *)ARENA_CALLOC(arena, (long)(NV + 1), (long)sizeof(int32_t));
+    int32_t *vf_cnt = (int32_t *)ARENA_CALLOC(arena, (size_t)(NV + 1), sizeof(int32_t));
     for (int32_t f = 0; f < NF; f++)
         for (int k = 0; k < 3; k++) vf_cnt[faces[(size_t)f*3+(size_t)k] + 1]++;
     for (int32_t i = 0; i < NV; i++) vf_cnt[i+1] += vf_cnt[i];
-    int32_t *vf = (int32_t *)ARENA_ALLOC(arena, (long)NF * 3L * (long)sizeof(int32_t));
+    int32_t *vf = (int32_t *)ARENA_ALLOC(arena, (size_t)NF * 3L * sizeof(int32_t));
     {
-        int32_t *cur = (int32_t *)ARENA_ALLOC(arena, (long)NV * (long)sizeof(int32_t));
+        int32_t *cur = (int32_t *)ARENA_ALLOC(arena, (size_t)NV * sizeof(int32_t));
         memcpy(cur, vf_cnt, (size_t)NV * sizeof(int32_t));
         for (int32_t f = 0; f < NF; f++)
             for (int k = 0; k < 3; k++) vf[cur[faces[(size_t)f*3+(size_t)k]]++] = f;
     }
 
     /* ---- 6. grow K-ring patches per tear; merge overlaps ---- */
-    int32_t *fpatch = (int32_t *)ARENA_ALLOC(arena, (long)NF * (long)sizeof(int32_t));
+    int32_t *fpatch = (int32_t *)ARENA_ALLOC(arena, (size_t)NF * sizeof(int32_t));
     for (int32_t f = 0; f < NF; f++) fpatch[f] = -1;
-    int32_t *puf = (int32_t *)ARENA_ALLOC(arena, (long)n_tear * (long)sizeof(int32_t));
+    int32_t *puf = (int32_t *)ARENA_ALLOC(arena, (size_t)n_tear * sizeof(int32_t));
     for (int32_t t = 0; t < n_tear; t++) puf[t] = t;
-    uint8_t *vmark = (uint8_t *)ARENA_CALLOC(arena, (long)NV, 1L);
-    int32_t *vlist = (int32_t *)ARENA_ALLOC(arena, (long)NV * (long)sizeof(int32_t));
-    int32_t *pf_all = (int32_t *)ARENA_ALLOC(arena, (long)NF * (long)sizeof(int32_t));
+    uint8_t *vmark = (uint8_t *)ARENA_CALLOC(arena, (size_t)NV, 1L);
+    int32_t *vlist = (int32_t *)ARENA_ALLOC(arena, (size_t)NV * sizeof(int32_t));
+    int32_t *pf_all = (int32_t *)ARENA_ALLOC(arena, (size_t)NF * sizeof(int32_t));
     int32_t pf_used = 0;
-    int32_t *pf_beg = (int32_t *)ARENA_ALLOC(arena, (long)(n_tear + 1) * (long)sizeof(int32_t));
+    int32_t *pf_beg = (int32_t *)ARENA_ALLOC(arena, (size_t)(n_tear + 1) * sizeof(int32_t));
 
     for (int32_t t = 0; t < n_tear; t++) {
         pf_beg[t] = pf_used;
@@ -527,28 +527,28 @@ int PatchRepair_repair(Arena_T arena,
 
     /* ---- 7. per-patch scratch (arena, allocated once) ---- */
     enum { MAXPE = PR_PATCH_MAX_FACES * 3 + 8 };
-    int32_t *P_faces  = (int32_t *)ARENA_ALLOC(arena, (long)(PR_PATCH_MAX_FACES * 4) * (long)sizeof(int32_t));
-    int32_t *P_verts  = (int32_t *)ARENA_ALLOC(arena, (long)PR_PATCH_MAX_VERTS * (long)sizeof(int32_t));
-    int32_t *l_of_g   = (int32_t *)ARENA_ALLOC(arena, (long)NV * (long)sizeof(int32_t));
-    int32_t *pe_u     = (int32_t *)ARENA_ALLOC(arena, (long)MAXPE * (long)sizeof(int32_t));
-    int32_t *pe_v     = (int32_t *)ARENA_ALLOC(arena, (long)MAXPE * (long)sizeof(int32_t));
-    int32_t *pe_n     = (int32_t *)ARENA_ALLOC(arena, (long)MAXPE * (long)sizeof(int32_t));
-    int32_t *pe_ue    = (int32_t *)ARENA_ALLOC(arena, (long)MAXPE * (long)sizeof(int32_t));
-    int32_t *ring_eu  = (int32_t *)ARENA_ALLOC(arena, (long)MAXPE * (long)sizeof(int32_t));
-    int32_t *ring_ev  = (int32_t *)ARENA_ALLOC(arena, (long)MAXPE * (long)sizeof(int32_t));
-    uint8_t *on_ring  = (uint8_t *)ARENA_ALLOC(arena, (long)PR_PATCH_MAX_VERTS);
-    int32_t *ring_deg = (int32_t *)ARENA_ALLOC(arena, (long)PR_PATCH_MAX_VERTS * (long)sizeof(int32_t));
-    int32_t *ring_nb  = (int32_t *)ARENA_ALLOC(arena, (long)PR_PATCH_MAX_VERTS * 2L * (long)sizeof(int32_t));
-    int32_t *ring_ord = (int32_t *)ARENA_ALLOC(arena, (long)PR_PATCH_MAX_VERTS * (long)sizeof(int32_t));
-    int32_t *ec_work  = (int32_t *)ARENA_ALLOC(arena, (long)PR_PATCH_MAX_VERTS * (long)sizeof(int32_t));
-    int32_t *interior = (int32_t *)ARENA_ALLOC(arena, (long)PR_PATCH_MAX_VERTS * (long)sizeof(int32_t));
-    double  *P2       = (double  *)ARENA_ALLOC(arena, (long)PR_PATCH_MAX_VERTS * 2L * (long)sizeof(double));
-    LTri    *T        = (LTri    *)ARENA_ALLOC(arena, (long)(2 * PR_PATCH_MAX_VERTS + 8) * (long)sizeof(LTri));
+    int32_t *P_faces  = (int32_t *)ARENA_ALLOC(arena, (size_t)(PR_PATCH_MAX_FACES * 4) * sizeof(int32_t));
+    int32_t *P_verts  = (int32_t *)ARENA_ALLOC(arena, (size_t)PR_PATCH_MAX_VERTS * sizeof(int32_t));
+    int32_t *l_of_g   = (int32_t *)ARENA_ALLOC(arena, (size_t)NV * sizeof(int32_t));
+    int32_t *pe_u     = (int32_t *)ARENA_ALLOC(arena, (size_t)MAXPE * sizeof(int32_t));
+    int32_t *pe_v     = (int32_t *)ARENA_ALLOC(arena, (size_t)MAXPE * sizeof(int32_t));
+    int32_t *pe_n     = (int32_t *)ARENA_ALLOC(arena, (size_t)MAXPE * sizeof(int32_t));
+    int32_t *pe_ue    = (int32_t *)ARENA_ALLOC(arena, (size_t)MAXPE * sizeof(int32_t));
+    int32_t *ring_eu  = (int32_t *)ARENA_ALLOC(arena, (size_t)MAXPE * sizeof(int32_t));
+    int32_t *ring_ev  = (int32_t *)ARENA_ALLOC(arena, (size_t)MAXPE * sizeof(int32_t));
+    uint8_t *on_ring  = (uint8_t *)ARENA_ALLOC(arena, (size_t)PR_PATCH_MAX_VERTS);
+    int32_t *ring_deg = (int32_t *)ARENA_ALLOC(arena, (size_t)PR_PATCH_MAX_VERTS * sizeof(int32_t));
+    int32_t *ring_nb  = (int32_t *)ARENA_ALLOC(arena, (size_t)PR_PATCH_MAX_VERTS * 2L * sizeof(int32_t));
+    int32_t *ring_ord = (int32_t *)ARENA_ALLOC(arena, (size_t)PR_PATCH_MAX_VERTS * sizeof(int32_t));
+    int32_t *ec_work  = (int32_t *)ARENA_ALLOC(arena, (size_t)PR_PATCH_MAX_VERTS * sizeof(int32_t));
+    int32_t *interior = (int32_t *)ARENA_ALLOC(arena, (size_t)PR_PATCH_MAX_VERTS * sizeof(int32_t));
+    double  *P2       = (double  *)ARENA_ALLOC(arena, (size_t)PR_PATCH_MAX_VERTS * 2L * sizeof(double));
+    LTri    *T        = (LTri    *)ARENA_ALLOC(arena, (size_t)(2 * PR_PATCH_MAX_VERTS + 8) * sizeof(LTri));
     for (int32_t i = 0; i < NV; i++) l_of_g[i] = -1;
 
-    uint8_t *fdel = (uint8_t *)ARENA_CALLOC(arena, (long)NF, 1L);
+    uint8_t *fdel = (uint8_t *)ARENA_CALLOC(arena, (size_t)NF, 1L);
     int32_t new_cap = 4096;
-    int32_t *new_tris = (int32_t *)ARENA_ALLOC(arena, (long)new_cap * 3L * (long)sizeof(int32_t));
+    int32_t *new_tris = (int32_t *)ARENA_ALLOC(arena, (size_t)new_cap * 3L * sizeof(int32_t));
     int32_t n_new = 0;
 
     /* ---- 8. repair each merged patch group ---- */
@@ -838,7 +838,7 @@ int PatchRepair_repair(Arena_T arena,
         st.faces_deleted += (size_t)npf;
         if (n_new + n_tri > new_cap) {
             int32_t cap2 = new_cap * 2 + n_tri;
-            int32_t *nt2 = (int32_t *)ARENA_ALLOC(arena, (long)cap2 * 3L * (long)sizeof(int32_t));
+            int32_t *nt2 = (int32_t *)ARENA_ALLOC(arena, (size_t)cap2 * 3L * sizeof(int32_t));
             memcpy(nt2, new_tris, (size_t)n_new * 3 * sizeof(int32_t));
             new_tris = nt2;
             new_cap = cap2;
@@ -862,7 +862,7 @@ int PatchRepair_repair(Arena_T arena,
     size_t kept = 0;
     for (int32_t f = 0; f < NF; f++) if (!fdel[f]) kept++;
     size_t total = kept + (size_t)n_new;
-    int32_t *out = (int32_t *)ARENA_ALLOC(arena, (long)((total ? total : 1) * 3 * sizeof(int32_t)));
+    int32_t *out = (int32_t *)ARENA_ALLOC(arena, (size_t)((total ? total : 1) * 3 * sizeof(int32_t)));
     size_t w = 0;
     for (int32_t f = 0; f < NF; f++) {
         if (fdel[f]) continue;

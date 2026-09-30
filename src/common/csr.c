@@ -22,6 +22,20 @@ static int cmp_int32(const void *a, const void *b)
     return 0;
 }
 
+/* Mesh rows hold about a dozen entries (two per incident face). qsort's
+ * per-call and per-comparison cost dominated building a field's adjacency
+ * (2026-09-26 audit profile); an insertion sort gives the same ascending
+ * order for such rows. */
+#define CSR_SMALL_ROW 32
+static void csr_sort_small(int32_t *x, int32_t n)
+{
+    for (int32_t i = 1; i < n; i++) {
+        int32_t key = x[i], j = i - 1;
+        while (j >= 0 && x[j] > key) { x[j + 1] = x[j]; j--; }
+        x[j + 1] = key;
+    }
+}
+
 CSR_T CSR_from_faces(Arena_T arena, const int32_t *faces, size_t nf,
                      size_t nv)
 {
@@ -98,8 +112,9 @@ CSR_T CSR_from_faces(Arena_T arena, const int32_t *faces, size_t nf,
         int32_t row_len = end - start;
 
         if (row_len > 1) {
-            qsort(raw_target + start, (size_t)row_len, sizeof(int32_t),
-                  cmp_int32);
+            if (row_len <= CSR_SMALL_ROW) csr_sort_small(raw_target + start, row_len);
+            else qsort(raw_target + start, (size_t)row_len, sizeof(int32_t),
+                       cmp_int32);
         }
 
         int32_t new_start = write_pos;

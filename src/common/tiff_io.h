@@ -12,7 +12,8 @@
 int TiffIO_load(Arena_T arena, const char *path,
                 uint8_t **out_vol, int *out_D, int *out_H, int *out_W);
 
-/* Save flat uint8 volume as multi-page TIFF.
+/* Save flat uint8 volume as multi-page TIFF; automatically uses BigTIFF when
+ * classic 32-bit offsets cannot safely hold the raster and directory tables.
  * Returns 0 on success, -1 on failure. */
 int TiffIO_save(const char *path,
                 const uint8_t *vol, int D, int H, int W);
@@ -57,5 +58,8 @@ int  TiffIO_rows_open(Arena_T arena, const char *path, TiffRowReader *rd);
 int  TiffIO_rows_read(TiffRowReader *rd, int y, int x0, int w, uint8_t *dst);
 
 void TiffIO_rows_close(TiffRowReader *rd);
+
+/* Native I/O regression fixtures, written beneath an existing directory. */
+int TiffIO_selftest(const char *dir);
 
 #endif

@@ -44,11 +44,11 @@ static void conn_build(Arena_T arena, const float *verts, size_t nv,
 {
     c->nv = nv; c->nf = nf; c->nc = 3*nf; c->verts = verts; c->faces = faces;
     c->nonmanifold = 0;
-    c->twin = (int32_t *)ARENA_ALLOC(arena, (long)(c->nc * sizeof(int32_t)));
+    c->twin = (int32_t *)ARENA_ALLOC(arena, (size_t)(c->nc * sizeof(int32_t)));
     for (size_t i = 0; i < c->nc; i++) c->twin[i] = -1;
 
     /* twins via sorted undirected-edge keys */
-    EKey *ek = (EKey *)ARENA_ALLOC(arena, (long)(c->nc * sizeof(EKey)));
+    EKey *ek = (EKey *)ARENA_ALLOC(arena, (size_t)(c->nc * sizeof(EKey)));
     for (size_t cc = 0; cc < c->nc; cc++) {
         int32_t a = faces[cc], b = faces[NEXT(cc)];
         uint64_t lo = (uint64_t)(a < b ? a : b), hi = (uint64_t)(a < b ? b : a);
@@ -69,11 +69,11 @@ static void conn_build(Arena_T arena, const float *verts, size_t nv,
     }
 
     /* vertex -> incident corners (CSR) */
-    c->voff = (int32_t *)ARENA_CALLOC(arena, (long)(nv + 1), (long)sizeof(int32_t));
+    c->voff = (int32_t *)ARENA_CALLOC(arena, (size_t)(nv + 1), sizeof(int32_t));
     for (size_t cc = 0; cc < c->nc; cc++) c->voff[faces[cc] + 1]++;
     for (size_t v = 0; v < nv; v++) c->voff[v+1] += c->voff[v];
-    c->vcor = (int32_t *)ARENA_ALLOC(arena, (long)(c->nc * sizeof(int32_t)));
-    int32_t *cur = (int32_t *)ARENA_ALLOC(arena, (long)(nv * sizeof(int32_t)));
+    c->vcor = (int32_t *)ARENA_ALLOC(arena, (size_t)(c->nc * sizeof(int32_t)));
+    int32_t *cur = (int32_t *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(int32_t)));
     for (size_t v = 0; v < nv; v++) cur[v] = c->voff[v];
     for (size_t cc = 0; cc < c->nc; cc++) { int32_t v = faces[cc]; c->vcor[cur[v]++] = (int32_t)cc; }
 }
@@ -102,7 +102,7 @@ typedef struct { uint64_t *slot; size_t cap, n; size_t nv; } SeamSet;
 static void seam_init(Arena_T arena, SeamSet *s, size_t nv, size_t hint)
 {
     size_t cap = 16; while (cap < hint*2) cap <<= 1;
-    s->slot = (uint64_t *)ARENA_ALLOC(arena, (long)(cap*sizeof(uint64_t)));
+    s->slot = (uint64_t *)ARENA_ALLOC(arena, (size_t)(cap*sizeof(uint64_t)));
     for (size_t i=0;i<cap;i++) s->slot[i] = UINT64_MAX;
     s->cap = cap; s->n = 0; s->nv = nv;
 }
@@ -192,7 +192,7 @@ static double distortion_ri(Arena_T arena, const Conn *c, int32_t n, double R,
     double sum=0.0; long nbe=0;
     /* small union-find over boundary endpoints to count loops */
     Arena_Mark m2 = Arena_save(arena);
-    int32_t *bp = (int32_t *)ARENA_ALLOC(arena, (long)(tail*3*2*sizeof(int32_t)));
+    int32_t *bp = (int32_t *)ARENA_ALLOC(arena, (size_t)(tail*3*2*sizeof(int32_t)));
     long bpn=0;
     for (size_t qi=0; qi<tail; qi++){
         int32_t f=queue[qi];
@@ -212,7 +212,7 @@ static double distortion_ri(Arena_T arena, const Conn *c, int32_t n, double R,
     if (nbe >= 1) {
         int ncomp2 = 0;
         for (long i=0;i<bpn;i++){ int32_t v=bp[i]; if(vstamp[v]!=mark){vstamp[v]=mark; vid[v]=ncomp2++;} }
-        int32_t *par = (int32_t *)ARENA_ALLOC(arena, (long)((size_t)ncomp2*sizeof(int32_t)));
+        int32_t *par = (int32_t *)ARENA_ALLOC(arena, (size_t)((size_t)ncomp2*sizeof(int32_t)));
         for (int k=0;k<ncomp2;k++) par[k]=k;
         for (long i=0;i<bpn;i+=2){
             int32_t x=vid[bp[i]], y=vid[bp[i+1]];
@@ -232,10 +232,10 @@ static void compute_distortion(Arena_T arena, const Conn *c, int r_max,
                                double *Dr, int32_t *best_r)
 {
     size_t nv=c->nv, nf=c->nf;
-    int32_t *facemark = (int32_t *)ARENA_CALLOC(arena, (long)nf, (long)sizeof(int32_t));
-    int32_t *queue = (int32_t *)ARENA_ALLOC(arena, (long)(nf*sizeof(int32_t)));
-    int32_t *vstamp = (int32_t *)ARENA_CALLOC(arena, (long)nv, (long)sizeof(int32_t));
-    int32_t *vid = (int32_t *)ARENA_ALLOC(arena, (long)(nv*sizeof(int32_t)));
+    int32_t *facemark = (int32_t *)ARENA_CALLOC(arena, (size_t)nf, sizeof(int32_t));
+    int32_t *queue = (int32_t *)ARENA_ALLOC(arena, (size_t)(nf*sizeof(int32_t)));
+    int32_t *vstamp = (int32_t *)ARENA_CALLOC(arena, (size_t)nv, sizeof(int32_t));
+    int32_t *vid = (int32_t *)ARENA_ALLOC(arena, (size_t)(nv*sizeof(int32_t)));
     int32_t markctr = 0;
 
     for (size_t v=0; v<nv; v++) {
@@ -305,9 +305,9 @@ static long boundary_loop_terminals(Arena_T arena, const Conn *c,
 {
     Arena_Mark mark = Arena_save(arena);
     int32_t *parent = (int32_t *)ARENA_ALLOC(
-        arena, (long)(c->nv*sizeof(int32_t)));
+        arena, (size_t)(c->nv*sizeof(int32_t)));
     int32_t *representative = (int32_t *)ARENA_ALLOC(
-        arena, (long)(c->nv*sizeof(int32_t)));
+        arena, (size_t)(c->nv*sizeof(int32_t)));
     long nloops = 0;
 
     for (size_t v = 0; v < c->nv; v++) {
@@ -355,13 +355,13 @@ static void steiner_tree(Arena_T arena, const Conn *c,
 {
     size_t nv=c->nv, nc=c->nc;
     const double EPS_BND = 1e-4;
-    double  *dist = (double *)ARENA_ALLOC(arena,(long)(nv*sizeof(double)));
-    int32_t *nrst = (int32_t *)ARENA_ALLOC(arena,(long)(nv*sizeof(int32_t)));
-    int32_t *parent = (int32_t *)ARENA_ALLOC(arena,(long)(nv*sizeof(int32_t)));
+    double  *dist = (double *)ARENA_ALLOC(arena,(size_t)(nv*sizeof(double)));
+    int32_t *nrst = (int32_t *)ARENA_ALLOC(arena,(size_t)(nv*sizeof(int32_t)));
+    int32_t *parent = (int32_t *)ARENA_ALLOC(arena,(size_t)(nv*sizeof(int32_t)));
     for (size_t v=0;v<nv;v++){ dist[v]=1e300; nrst[v]=-1; parent[v]=-1; }
 
     Heap h; h.cap=nc*4+1024; h.n=0;
-    h.a=(HItem*)ARENA_ALLOC(arena,(long)(h.cap*sizeof(HItem)));
+    h.a=(HItem*)ARENA_ALLOC(arena,(size_t)(h.cap*sizeof(HItem)));
     for (size_t v=0;v<nv;v++) if(is_terminal[v]){ dist[v]=0; nrst[v]=(int32_t)v; heap_push(&h,0.0,(int32_t)v); }
 
     while (h.n>0){
@@ -383,7 +383,7 @@ static void steiner_tree(Arena_T arena, const Conn *c,
 
     /* collect candidates (each undirected edge once) */
     Arena_Mark m = Arena_save(arena);
-    SCand *cand = (SCand *)ARENA_ALLOC(arena,(long)(nc*sizeof(SCand)));
+    SCand *cand = (SCand *)ARENA_ALLOC(arena,(size_t)(nc*sizeof(SCand)));
     long ncand=0;
     for (size_t cc=0; cc<nc; cc++){
         int32_t tw=c->twin[cc];
@@ -399,7 +399,7 @@ static void steiner_tree(Arena_T arena, const Conn *c,
     }
     qsort(cand,(size_t)ncand,sizeof(SCand),cmp_scand);
 
-    int32_t *uf = (int32_t *)ARENA_ALLOC(arena,(long)(nv*sizeof(int32_t)));
+    int32_t *uf = (int32_t *)ARENA_ALLOC(arena,(size_t)(nv*sizeof(int32_t)));
     for (size_t v=0;v<nv;v++) uf[v]=(int32_t)v;
     for (long i=0;i<ncand;i++){
         int32_t ru=uf_find2(uf,cand[i].tu), rw=uf_find2(uf,cand[i].tw);
@@ -421,7 +421,7 @@ static int cut_surgery(Arena_T arena, const Conn *c, const SeamSet *seam,
                        SeamCutResult *out)
 {
     size_t nc=c->nc, nv=c->nv, nf=c->nf;
-    int32_t *sp = (int32_t *)ARENA_ALLOC(arena,(long)(nc*sizeof(int32_t)));
+    int32_t *sp = (int32_t *)ARENA_ALLOC(arena,(size_t)(nc*sizeof(int32_t)));
     for (size_t i=0;i<nc;i++) sp[i]=(int32_t)i;
     /* Union corners sharing a non-cut edge at BOTH endpoints.  Process each
      * undirected interior edge once and look up both endpoint corners in both
@@ -449,15 +449,15 @@ static int cut_surgery(Arena_T arena, const Conn *c, const SeamSet *seam,
         }
     }
     /* assign new vertex ids per sector root */
-    int32_t *newid = (int32_t *)ARENA_ALLOC(arena,(long)(nc*sizeof(int32_t)));
+    int32_t *newid = (int32_t *)ARENA_ALLOC(arena,(size_t)(nc*sizeof(int32_t)));
     for (size_t i=0;i<nc;i++) newid[i]=-1;
     int32_t nvnew=0;
     for (size_t cc=0; cc<nc; cc++){ int32_t r=cc; while(sp[r]!=r)r=sp[r];
         if(newid[r]<0) newid[r]=nvnew++; }
     /* build outputs */
-    float *V = (float *)ARENA_ALLOC(arena,(long)((size_t)nvnew*3*sizeof(float)));
-    int32_t *vmap = (int32_t *)ARENA_ALLOC(arena,(long)((size_t)nvnew*sizeof(int32_t)));
-    int32_t *F = (int32_t *)ARENA_ALLOC(arena,(long)(nf*3*sizeof(int32_t)));
+    float *V = (float *)ARENA_ALLOC(arena,(size_t)((size_t)nvnew*3*sizeof(float)));
+    int32_t *vmap = (int32_t *)ARENA_ALLOC(arena,(size_t)((size_t)nvnew*sizeof(int32_t)));
+    int32_t *F = (int32_t *)ARENA_ALLOC(arena,(size_t)(nf*3*sizeof(int32_t)));
     for (size_t cc=0; cc<nc; cc++){
         int32_t r=cc; while(sp[r]!=r)r=sp[r];
         int32_t id=newid[r];
@@ -488,14 +488,14 @@ static int shortest_boundary_join(Arena_T arena, const Conn *c, SeamSet *seam,
     int32_t best_u = -1, best_v = -1;
 
     boundary_parent=(int32_t*)ARENA_ALLOC(
-        arena,(long)(c->nv*sizeof(int32_t)));
-    owner=(int32_t*)ARENA_ALLOC(arena,(long)(c->nv*sizeof(int32_t)));
+        arena,(size_t)(c->nv*sizeof(int32_t)));
+    owner=(int32_t*)ARENA_ALLOC(arena,(size_t)(c->nv*sizeof(int32_t)));
     path_parent=(int32_t*)ARENA_ALLOC(
-        arena,(long)(c->nv*sizeof(int32_t)));
-    dist=(double*)ARENA_ALLOC(arena,(long)(c->nv*sizeof(double)));
-    is_boundary=(char*)ARENA_CALLOC(arena,(long)c->nv,1L);
-    settled=(char*)ARENA_CALLOC(arena,(long)c->nv,1L);
-    root_seen=(char*)ARENA_CALLOC(arena,(long)c->nv,1L);
+        arena,(size_t)(c->nv*sizeof(int32_t)));
+    dist=(double*)ARENA_ALLOC(arena,(size_t)(c->nv*sizeof(double)));
+    is_boundary=(char*)ARENA_CALLOC(arena,(size_t)c->nv,1L);
+    settled=(char*)ARENA_CALLOC(arena,(size_t)c->nv,1L);
+    root_seen=(char*)ARENA_CALLOC(arena,(size_t)c->nv,1L);
     for (size_t v=0;v<c->nv;v++) {
         boundary_parent[v]=(int32_t)v;
         owner[v]=-1; path_parent[v]=-1; dist[v]=1e300;
@@ -521,7 +521,7 @@ static int shortest_boundary_join(Arena_T arena, const Conn *c, SeamSet *seam,
 
     heap.n=0;
     heap.cap=c->nc*4+c->nv+1024;
-    heap.a=(HItem*)ARENA_ALLOC(arena,(long)(heap.cap*sizeof(HItem)));
+    heap.a=(HItem*)ARENA_ALLOC(arena,(size_t)(heap.cap*sizeof(HItem)));
     for (size_t v=0;v<c->nv;v++)
         if (is_boundary[v]) heap_push(&heap,0.0,(int32_t)v);
 
@@ -603,11 +603,11 @@ static int boundary_reduce_topology(Arena_T arena,
             int32_t *final_f, *final_map;
             Arena_restore(arena,iteration);
             final_v=(float*)ARENA_ALLOC(
-                arena,(long)(cnv*3*sizeof(float)));
+                arena,(size_t)(cnv*3*sizeof(float)));
             final_f=(int32_t*)ARENA_ALLOC(
-                arena,(long)(cnf*3*sizeof(int32_t)));
+                arena,(size_t)(cnf*3*sizeof(int32_t)));
             final_map=(int32_t*)ARENA_ALLOC(
-                arena,(long)(cnv*sizeof(int32_t)));
+                arena,(size_t)(cnv*sizeof(int32_t)));
             memcpy(final_v,cv,cnv*3*sizeof(float));
             memcpy(final_f,cf,cnf*3*sizeof(int32_t));
             if (accum) memcpy(final_map,accum,cnv*sizeof(int32_t));
@@ -669,7 +669,7 @@ static int boundary_reduce_topology(Arena_T arena,
             }
 
             next_map=(int32_t*)ARENA_ALLOC(
-                arena,(long)(cut.nv*sizeof(int32_t)));
+                arena,(size_t)(cut.nv*sizeof(int32_t)));
             for (size_t v=0;v<cut.nv;v++)
                 next_map[v]=accum ? accum[cut.vmap[v]] : cut.vmap[v];
             next_v=(float*)malloc(cut.nv*3*sizeof(float));
@@ -775,7 +775,7 @@ static int is_nonseparating(Arena_T arena, const Conn *c, const SeamSet *eg)
 {
     if (c->nf == 0) return 0;
     Arena_Mark m=Arena_save(arena);
-    int32_t *uf=(int32_t*)ARENA_ALLOC(arena,(long)(c->nf*sizeof(int32_t)));
+    int32_t *uf=(int32_t*)ARENA_ALLOC(arena,(size_t)(c->nf*sizeof(int32_t)));
     for (size_t f=0; f<c->nf; f++) uf[f]=(int32_t)f;
     for (size_t cc=0; cc<c->nc; cc++){
         int32_t tw=c->twin[cc];
@@ -818,28 +818,28 @@ static void keep_largest_edge(Arena_T arena, const float *v, size_t nv,
                               int32_t **ovmap)
 {
     size_t nc = 3*nf;
-    EKey *ek = (EKey *)ARENA_ALLOC(arena, (long)(nc*sizeof(EKey)));
+    EKey *ek = (EKey *)ARENA_ALLOC(arena, (size_t)(nc*sizeof(EKey)));
     for (size_t cc=0; cc<nc; cc++){
         int32_t a=f[cc], b=f[NEXT(cc)];
         uint64_t lo=(uint64_t)(a<b?a:b), hi=(uint64_t)(a<b?b:a);
         ek[cc].key=lo*(uint64_t)nv+hi; ek[cc].corner=(int32_t)cc;
     }
     qsort(ek, nc, sizeof(EKey), cmp_ekey);
-    int32_t *uf=(int32_t*)ARENA_ALLOC(arena,(long)(nf*sizeof(int32_t)));
+    int32_t *uf=(int32_t*)ARENA_ALLOC(arena,(size_t)(nf*sizeof(int32_t)));
     for (size_t i=0;i<nf;i++) uf[i]=(int32_t)i;
     size_t i=0;
     while (i<nc){ size_t j=i; while(j<nc && ek[j].key==ek[i].key) j++;
         for (size_t p=i+1;p<j;p++){ int32_t ra=uf_find2(uf,ek[i].corner/3), rb=uf_find2(uf,ek[p].corner/3); if(ra!=rb) uf[ra]=rb; }
         i=j; }
-    long *cnt=(long*)ARENA_CALLOC(arena,(long)nf,(long)sizeof(long));
+    long *cnt=(long*)ARENA_CALLOC(arena,(size_t)nf,sizeof(long));
     for (size_t t=0;t<nf;t++) cnt[uf_find2(uf,(int32_t)t)]++;
     int32_t best=-1; long bestn=-1;
     for (size_t r=0;r<nf;r++) if(cnt[r]>bestn){bestn=cnt[r];best=(int32_t)r;}
 
-    int32_t *vm=(int32_t*)ARENA_ALLOC(arena,(long)(nv*sizeof(int32_t)));
-    int32_t *rm=(int32_t*)ARENA_ALLOC(arena,(long)(nv*sizeof(int32_t)));
+    int32_t *vm=(int32_t*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(int32_t)));
+    int32_t *rm=(int32_t*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(int32_t)));
     for (size_t k=0;k<nv;k++) vm[k]=-1;
-    int32_t *F=(int32_t*)ARENA_ALLOC(arena,bestn*3*(long)sizeof(int32_t));
+    int32_t *F=(int32_t*)ARENA_ALLOC(arena,bestn*3*sizeof(int32_t));
     long onv2=0, fi=0;
     for (size_t t=0;t<nf;t++){
         if (uf_find2(uf,(int32_t)t)!=best) continue;
@@ -848,8 +848,8 @@ static void keep_largest_edge(Arena_T arena, const float *v, size_t nv,
             F[fi*3+k]=vm[vg]; }
         fi++;
     }
-    float *V=(float*)ARENA_ALLOC(arena,onv2*3*(long)sizeof(float));
-    int32_t *vmap=(int32_t*)ARENA_ALLOC(arena,onv2*(long)sizeof(int32_t));
+    float *V=(float*)ARENA_ALLOC(arena,onv2*3*sizeof(float));
+    int32_t *vmap=(int32_t*)ARENA_ALLOC(arena,onv2*sizeof(int32_t));
     for (long k=0;k<onv2;k++){ V[k*3+0]=v[rm[k]*3+0]; V[k*3+1]=v[rm[k]*3+1]; V[k*3+2]=v[rm[k]*3+2]; vmap[k]=rm[k]; }
     *ov=V; *onv=(size_t)onv2; *of=F; *onf=(size_t)fi; *ovmap=vmap;
 }
@@ -900,11 +900,11 @@ static void genus_reduce(Arena_T arena, const float **pv, size_t *pnv,
          * the only non-contractible fundamental cycles. (Building the primal
          * tree first and excluding it from the dual disconnects the dual on a
          * bounded surface -- that was the dualF=292/3851, gens=3236 bug.) */
-        char *cotree=(char*)ARENA_CALLOC(arena,(long)c.nc,1L);
+        char *cotree=(char*)ARENA_CALLOC(arena,(size_t)c.nc,1L);
         size_t dual_faces=0;
         {
-            char    *fseen=(char*)ARENA_CALLOC(arena,(long)c.nf,1L);
-            int32_t *fq=(int32_t*)ARENA_ALLOC(arena,(long)(c.nf*sizeof(int32_t)));
+            char    *fseen=(char*)ARENA_CALLOC(arena,(size_t)c.nf,1L);
+            int32_t *fq=(int32_t*)ARENA_ALLOC(arena,(size_t)(c.nf*sizeof(int32_t)));
             size_t qh=0,qt=0; fseen[0]=1; fq[qt++]=0;
             while (qh<qt){
                 int32_t f=fq[qh++];
@@ -923,9 +923,9 @@ static void genus_reduce(Arena_T arena, const float **pv, size_t *pnv,
          * non-cotree edges first, then promotes cotree edges to reconnect any
          * remaining components (those move out of the cotree). Tree and cotree
          * stay disjoint; generators are the edges in neither. */
-        char *tree=(char*)ARENA_CALLOC(arena,(long)c.nc,1L);
+        char *tree=(char*)ARENA_CALLOC(arena,(size_t)c.nc,1L);
         {
-            int32_t *uf=(int32_t*)ARENA_ALLOC(arena,(long)(cnv*sizeof(int32_t)));
+            int32_t *uf=(int32_t*)ARENA_ALLOC(arena,(size_t)(cnv*sizeof(int32_t)));
             for (size_t v=0;v<cnv;v++) uf[v]=(int32_t)v;
             /* pass A1: BOUNDARY edges first -- absorb the boundary into the
              * spanning tree (Seamster's eps-weight boundary trick) so the
@@ -954,13 +954,13 @@ static void genus_reduce(Arena_T arena, const float **pv, size_t *pnv,
                 if (ra!=rb){ uf[ra]=rb; tree[cc]=1; tree[tw]=1; cotree[cc]=0; cotree[tw]=0; }
             }
         }
-        double  *dist=(double *)ARENA_ALLOC(arena,(long)(cnv*sizeof(double)));
-        int32_t *par =(int32_t*)ARENA_ALLOC(arena,(long)(cnv*sizeof(int32_t)));
-        int32_t *dep =(int32_t*)ARENA_ALLOC(arena,(long)(cnv*sizeof(int32_t)));
-        int32_t *bq =(int32_t*)ARENA_ALLOC(arena,(long)(cnv*sizeof(int32_t)));
+        double  *dist=(double *)ARENA_ALLOC(arena,(size_t)(cnv*sizeof(double)));
+        int32_t *par =(int32_t*)ARENA_ALLOC(arena,(size_t)(cnv*sizeof(int32_t)));
+        int32_t *dep =(int32_t*)ARENA_ALLOC(arena,(size_t)(cnv*sizeof(int32_t)));
+        int32_t *bq =(int32_t*)ARENA_ALLOC(arena,(size_t)(cnv*sizeof(int32_t)));
         tree_bfs(&c, tree, 0, dist, par, dep, bq);
         /* rank the generators (non-tree, non-cotree) by fundamental-loop length */
-        LCand *cand=(LCand*)ARENA_ALLOC(arena,(long)(c.nc*sizeof(LCand)));
+        LCand *cand=(LCand*)ARENA_ALLOC(arena,(size_t)(c.nc*sizeof(LCand)));
         long ncd=0;
         for (size_t cc=0; cc<c.nc; cc++){
             int32_t tw=c.twin[cc];
@@ -995,7 +995,7 @@ static void genus_reduce(Arena_T arena, const float **pv, size_t *pnv,
                 if (collect){
                     size_t ne=0;
                     for (size_t si=0; si<eg.cap; si++) if (eg.slot[si]!=UINT64_MAX) ne++;
-                    int32_t *lv=(int32_t*)ARENA_ALLOC(arena,(long)(2*ne*sizeof(int32_t)));
+                    int32_t *lv=(int32_t*)ARENA_ALLOC(arena,(size_t)(2*ne*sizeof(int32_t)));
                     size_t kk=0; double len=0.0;
                     for (size_t si=0; si<eg.cap; si++){
                         uint64_t key=eg.slot[si]; if (key==UINT64_MAX) continue;
@@ -1009,7 +1009,7 @@ static void genus_reduce(Arena_T arena, const float **pv, size_t *pnv,
                 }
                 SeamCutResult tmp; memset(&tmp,0,sizeof tmp);
                 cut_surgery(arena,&c,&eg,&tmp);
-                int32_t *na=(int32_t*)ARENA_ALLOC(arena,(long)(tmp.nv*sizeof(int32_t)));
+                int32_t *na=(int32_t*)ARENA_ALLOC(arena,(size_t)(tmp.nv*sizeof(int32_t)));
                 for (size_t k=0;k<tmp.nv;k++) na[k]=accum?accum[tmp.vmap[k]]:tmp.vmap[k];
                 cv=tmp.verts; cnv=tmp.nv; cf=tmp.faces; cnf=tmp.nf; accum=na;
                 /* strip any vertex-only island the cut created, so the next
@@ -1018,7 +1018,7 @@ static void genus_reduce(Arena_T arena, const float **pv, size_t *pnv,
                     float *lv=NULL; int32_t *lf=NULL; size_t lnv=0,lnf=0; int32_t *lvm=NULL;
                     keep_largest_edge(arena, cv,cnv,cf,cnf, &lv,&lnv,&lf,&lnf,&lvm);
                     if (lnv>0 && lnv<cnv){
-                        int32_t *na2=(int32_t*)ARENA_ALLOC(arena,(long)(lnv*sizeof(int32_t)));
+                        int32_t *na2=(int32_t*)ARENA_ALLOC(arena,(size_t)(lnv*sizeof(int32_t)));
                         for (size_t k=0;k<lnv;k++) na2[k]=accum[lvm[k]];
                         cv=lv; cnv=lnv; cf=lf; cnf=lnf; accum=na2;
                     }
@@ -1075,9 +1075,9 @@ static void genus_reduce(Arena_T arena, const float **pv, size_t *pnv,
      * release the malloc carry buffers. If no cut was made mcv stays NULL and
      * cv/cf still alias the input (accum NULL). */
     if (mcv){
-        float   *ov=(float  *)ARENA_ALLOC(arena,(long)(cnv*3*sizeof(float)));
-        int32_t *of=(int32_t*)ARENA_ALLOC(arena,(long)(cnf*3*sizeof(int32_t)));
-        int32_t *oa=(int32_t*)ARENA_ALLOC(arena,(long)(cnv*sizeof(int32_t)));
+        float   *ov=(float  *)ARENA_ALLOC(arena,(size_t)(cnv*3*sizeof(float)));
+        int32_t *of=(int32_t*)ARENA_ALLOC(arena,(size_t)(cnf*3*sizeof(int32_t)));
+        int32_t *oa=(int32_t*)ARENA_ALLOC(arena,(size_t)(cnv*sizeof(int32_t)));
         memcpy(ov, mcv,  cnv*3*sizeof(float));
         memcpy(of, mcf,  cnf*3*sizeof(int32_t));
         memcpy(oa, macc, cnv*sizeof(int32_t));
@@ -1100,8 +1100,8 @@ int SeamCut_handle_loops(Arena_T arena, const float *verts, size_t nv,
     long g0 = lround(ti.genus);
     if (g0 <= 0) return 0;                       /* no handles -> no loops */
 
-    HandleLoop *loops = (HandleLoop *)ARENA_CALLOC(arena, (long)g0,
-                                                   (long)sizeof(HandleLoop));
+    HandleLoop *loops = (HandleLoop *)ARENA_CALLOC(arena, (size_t)g0,
+                                                   sizeof(HandleLoop));
     size_t ncol = 0;
     const float   *cv = verts; size_t cnv = nv;
     const int32_t *cf = faces; size_t cnf = nf;
@@ -1138,8 +1138,8 @@ int SeamCut_sever_short_handles(Arena_T arena, const float *verts, size_t nv,
                      max_loop_len);
 
     /* Copy out (cv/cf may alias the inputs if nothing was cut). */
-    float   *ov = (float *)  ARENA_ALLOC(arena, (long)(cnv * 3 * sizeof(float)));
-    int32_t *of = (int32_t *)ARENA_ALLOC(arena, (long)(cnf * 3 * sizeof(int32_t)));
+    float   *ov = (float *)  ARENA_ALLOC(arena, (size_t)(cnv * 3 * sizeof(float)));
+    int32_t *of = (int32_t *)ARENA_ALLOC(arena, (size_t)(cnf * 3 * sizeof(int32_t)));
     memcpy(ov, cv, cnv * 3 * sizeof(float));
     memcpy(of, cf, cnf * 3 * sizeof(int32_t));
     *out_verts = ov; *out_nv = cnv;
@@ -1170,7 +1170,7 @@ int SeamCut_repair_manifold(Arena_T arena, const float *verts, size_t nv,
      * can't separate them, and they wall off the dual BFS, breaking genus
      * reduction). The small holes left behind are rejoined by the Steiner step.*/
     size_t nc = 3*nf;
-    char *drop = (char *)ARENA_CALLOC(arena, (long)nf, 1L);
+    char *drop = (char *)ARENA_CALLOC(arena, (size_t)nf, 1L);
     long ndrop = 0, ndegen = 0;
     for (size_t t = 0; t < nf; t++) {
         int32_t a = faces[t*3+0], b = faces[t*3+1], c = faces[t*3+2];
@@ -1178,7 +1178,7 @@ int SeamCut_repair_manifold(Arena_T arena, const float *verts, size_t nv,
     }
     {
         Arena_Mark m = Arena_save(arena);
-        EKey *ek = (EKey *)ARENA_ALLOC(arena, (long)(nc * sizeof(EKey)));
+        EKey *ek = (EKey *)ARENA_ALLOC(arena, (size_t)(nc * sizeof(EKey)));
         size_t nek = 0;
         for (size_t cc = 0; cc < nc; cc++) {
             if (drop[cc/3]) continue;                    /* skip degenerate faces */
@@ -1201,7 +1201,7 @@ int SeamCut_repair_manifold(Arena_T arena, const float *verts, size_t nv,
     if (ndrop > 0) {
         fprintf(stderr, "  [seamcut] manifold repair: dropped %ld face(s) (%ld degenerate, %ld on non-manifold edges)\n",
                 ndrop, ndegen, ndrop - ndegen);
-        int32_t *ff = (int32_t *)ARENA_ALLOC(arena, (long)((nf - (size_t)ndrop) * 3 * sizeof(int32_t)));
+        int32_t *ff = (int32_t *)ARENA_ALLOC(arena, (size_t)((nf - (size_t)ndrop) * 3 * sizeof(int32_t)));
         size_t fnf = 0;
         for (size_t t = 0; t < nf; t++) if (!drop[t]) {
             ff[fnf*3+0]=faces[t*3+0]; ff[fnf*3+1]=faces[t*3+1]; ff[fnf*3+2]=faces[t*3+2]; fnf++;
@@ -1301,8 +1301,8 @@ int SeamCut_run(Arena_T arena, const float *verts, size_t nv,
      * callers that merely need a disk cut do not need curvature terminals.
      * Skipping the radius-r neighborhood sweep matters on whole-scroll
      * components with hundreds of boundary loops. */
-    double  *Dr = (double *)ARENA_ALLOC(arena,(long)(cnv*sizeof(double)));
-    int32_t *br = (int32_t *)ARENA_ALLOC(arena,(long)(cnv*sizeof(int32_t)));
+    double  *Dr = (double *)ARENA_ALLOC(arena,(size_t)(cnv*sizeof(double)));
+    int32_t *br = (int32_t *)ARENA_ALLOC(arena,(size_t)(cnv*sizeof(int32_t)));
     if (accept >= 1.0) {
         memset(Dr, 0, cnv*sizeof(double));
         for (size_t v=0; v<cnv; v++) br[v] = -1;
@@ -1312,14 +1312,14 @@ int SeamCut_run(Arena_T arena, const float *verts, size_t nv,
     if (dbg){ fprintf(stderr,"  [seamcut] phase distortion %.2fs\n", ves_clock_sec()-tph); tph=ves_clock_sec(); }
 
     /* boundary vertices (incident to a boundary edge) */
-    char *is_bnd = (char *)ARENA_CALLOC(arena,(long)cnv,1L);
+    char *is_bnd = (char *)ARENA_CALLOC(arena,(size_t)cnv,1L);
     for (size_t cc=0; cc<c.nc; cc++) if (c.twin[cc]<0){ is_bnd[c.faces[cc]]=1; is_bnd[c.faces[NEXT(cc)]]=1; }
 
     /* Section 6.1: terminal selection.  The geometry-aware Seamster path uses
      * Algorithm 1 plus every boundary vertex.  The topology-only path uses one
      * representative per boundary loop, so its expanded MST is exactly the
      * minimal loop-joining cut tree instead of a rim-vertex spanning tree. */
-    char *is_term=(char*)ARENA_CALLOC(arena,(long)cnv,1L);
+    char *is_term=(char*)ARENA_CALLOC(arena,(size_t)cnv,1L);
     long nterm=0;
     if (accept >= 1.0) {
         nterm = boundary_loop_terminals(arena, &c, is_bnd, is_term);
@@ -1329,9 +1329,9 @@ int SeamCut_run(Arena_T arena, const float *verts, size_t nv,
         int32_t *order;
         for (size_t v=0;v<cnv;v++) if(Dr[v]>0.0) Dtot+=Dr[v];
         Dacc = accept*Dtot;          /* leave this much distortion uncut */
-        order=(int32_t*)ARENA_ALLOC(arena,(long)(cnv*sizeof(int32_t)));
+        order=(int32_t*)ARENA_ALLOC(arena,(size_t)(cnv*sizeof(int32_t)));
         {
-            SeamDI *di=(SeamDI*)ARENA_ALLOC(arena,(long)(cnv*sizeof(SeamDI)));
+            SeamDI *di=(SeamDI*)ARENA_ALLOC(arena,(size_t)(cnv*sizeof(SeamDI)));
             for(size_t v=0;v<cnv;v++){di[v].d=Dr[v];di[v].i=(int32_t)v;}
             qsort(di, cnv, sizeof(SeamDI), cmp_di_desc);
             for(size_t v=0;v<cnv;v++) order[v]=di[v].i;
@@ -1389,8 +1389,8 @@ static void build_grid(Arena_T arena, int nu, int nh, int wrap, double R,
 {
     size_t nvv=(size_t)nu*(size_t)nh; int uc=wrap?nu:nu-1;
     size_t nff=(size_t)uc*(size_t)(nh-1)*2;
-    float *v=(float*)ARENA_ALLOC(arena,(long)(nvv*3*sizeof(float)));
-    int32_t *f=(int32_t*)ARENA_ALLOC(arena,(long)(nff*3*sizeof(int32_t)));
+    float *v=(float*)ARENA_ALLOC(arena,(size_t)(nvv*3*sizeof(float)));
+    int32_t *f=(int32_t*)ARENA_ALLOC(arena,(size_t)(nff*3*sizeof(int32_t)));
     for(int j=0;j<nh;j++)for(int i=0;i<nu;i++){
         double th=2.0*M_PI*(double)i/(double)nu, z=2.0*(double)j;
         size_t idx=(size_t)j*(size_t)nu+(size_t)i;
@@ -1416,8 +1416,8 @@ static void build_many_hole_grid(Arena_T arena,
     const int nu = 20, nh = 16;
     size_t nvv = (size_t)nu*(size_t)nh;
     size_t cap = (size_t)(nu-1)*(size_t)(nh-1)*2;
-    float *v=(float*)ARENA_ALLOC(arena,(long)(nvv*3*sizeof(float)));
-    int32_t *f=(int32_t*)ARENA_ALLOC(arena,(long)(cap*3*sizeof(int32_t)));
+    float *v=(float*)ARENA_ALLOC(arena,(size_t)(nvv*3*sizeof(float)));
+    int32_t *f=(int32_t*)ARENA_ALLOC(arena,(size_t)(cap*3*sizeof(int32_t)));
     size_t fi=0;
     for (int j=0;j<nh;j++) for (int i=0;i<nu;i++) {
         size_t p=(size_t)j*(size_t)nu+(size_t)i;
@@ -1446,8 +1446,8 @@ static void build_torus(Arena_T arena, int nu, int nr, double Rb, double rt,
                         int32_t **out_f, size_t *out_nf)
 {
     size_t NV=(size_t)nu*(size_t)nr;
-    float *v=(float*)ARENA_ALLOC(arena,(long)(NV*3*sizeof(float)));
-    int32_t *f=(int32_t*)ARENA_ALLOC(arena,(long)((size_t)nu*(size_t)nr*2*3*sizeof(int32_t)));
+    float *v=(float*)ARENA_ALLOC(arena,(size_t)(NV*3*sizeof(float)));
+    int32_t *f=(int32_t*)ARENA_ALLOC(arena,(size_t)((size_t)nu*(size_t)nr*2*3*sizeof(int32_t)));
     for(int j=0;j<nr;j++)for(int i=0;i<nu;i++){
         double phi=2.0*M_PI*(double)i/(double)nu, th=2.0*M_PI*(double)j/(double)nr;
         size_t idx=(size_t)j*(size_t)nu+(size_t)i;

@@ -42,6 +42,8 @@ int  Sparse_factor_solve(SparseFactor_T f, const double *b, double *x);
 int  Sparse_factor_solve_multi(SparseFactor_T f, const double *B, double *X,
                                int nrhs);
 void Sparse_factor_free(SparseFactor_T *f);
+/* Symbolic-factor pattern cache counters (see sparse_solve.c). */
+void Sparse_factor_cache_stats(unsigned long long *hits, unsigned long long *misses);
 
 /* Unit test: factor reuse across multiple RHS agrees with the one-shot
  * solver; exercises the n==1 scalar path.  Returns 0 on pass. */

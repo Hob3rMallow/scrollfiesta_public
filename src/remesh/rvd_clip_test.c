@@ -14,8 +14,8 @@ static void build_grid(Arena_T a, int M,
     int side = M + 1;
     size_t nv = (size_t)side * (size_t)side;
     size_t nf = (size_t)M * (size_t)M * 2;
-    double  *V = (double *)ARENA_ALLOC(a, (long)(nv * 3 * sizeof(double)));
-    int32_t *F = (int32_t *)ARENA_ALLOC(a, (long)(nf * 3 * sizeof(int32_t)));
+    double  *V = (double *)ARENA_ALLOC(a, (size_t)(nv * 3 * sizeof(double)));
+    int32_t *F = (int32_t *)ARENA_ALLOC(a, (size_t)(nf * 3 * sizeof(int32_t)));
     for (int i = 0; i < side; i++)
         for (int j = 0; j < side; j++) {
             size_t idx = (size_t)i * side + j;

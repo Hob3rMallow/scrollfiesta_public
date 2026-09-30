@@ -43,8 +43,9 @@ int main(int argc, char **argv)
     ComponentMesh *meshes = NULL;
     size_t n_meshes = 0;
     int rc = MeshExtract_run(arena, tiff_path, NULL, 0,
-                             0, 0, 0, 1, NULL, NULL, 0,
-                             &meshes, &n_meshes);
+                             0, 0, 0, 1, NULL, NULL, -1.0f,
+                             NULL, 0, NULL,
+                             &meshes, &n_meshes, NULL);
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
 

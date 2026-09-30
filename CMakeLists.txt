@@ -229,9 +229,12 @@ set(SF_FLATTEN_SRC
     ${SF_SRC}/flatten/topology_invariants.c
     ${SF_SRC}/flatten/ribbon_grid_io.c)
 # Whole-scroll modules the per-cube tools also reach for (axis straightening is
-# used by grid_weld and scroll_whole alike), so they belong to the core library
-# rather than to one front end's source list.
-set(SF_WHOLE_SRC ${SF_SRC}/whole/axis_warp.c)
+# used by grid_weld and scroll_whole alike, and it warps along the fitted
+# physical shaft of shaft_warp.c), so they belong to the core library rather
+# than to one front end's source list.
+set(SF_WHOLE_SRC
+    ${SF_SRC}/whole/axis_warp.c
+    ${SF_SRC}/whole/shaft_warp.c)
 
 # ---------------------------------------------------------------------------
 # TAUCS: the supernodal multifrontal Cholesky behind the ribbon/metric solves.
@@ -326,6 +329,17 @@ if(MSVC)
         _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_DEPRECATE)
 else()
     target_compile_options(sf_taucs PRIVATE -w)
+endif()
+# sparse_solve.c serializes TAUCS under an OpenMP critical section, and its
+# callers run in parallel regions; compiled without the OpenMP flag (as the
+# MSVC projects never are) that lock would vanish.
+if(SCROLLFIESTA_OPENMP)
+    if(MSVC)
+        target_compile_options(sf_taucs PRIVATE /openmp)
+    else()
+        target_compile_options(sf_taucs PRIVATE -fopenmp)
+        target_link_options(sf_taucs INTERFACE -fopenmp)
+    endif()
 endif()
 endif()  # SF_HAVE_LAPACK
 endif()  # SCROLLFIESTA_BUILD_TOOLS
@@ -475,6 +489,8 @@ if(SCROLLFIESTA_BUILD_TOOLS)
         ${SF_SRC}/whole/arc_reg.c
         ${SF_SRC}/common/maxflow.c
         ${SF_SRC}/flatten/ribbon.c
+        ${SF_SRC}/flatten/winding_mrf.c
+        ${SF_SRC}/flatten/lane_turn_mrf.c
         ${SF_SRC}/flatten/seam_cut.c
         ${SF_SRC}/flatten/mesh_topo.c
         ${SF_SRC}/common/arena.c
@@ -624,6 +640,218 @@ if(SCROLLFIESTA_BUILD_TOOLS)
             target_link_libraries(${tool} PRIVATE m)
         endif()
     endforeach()
+
+    # -----------------------------------------------------------------------
+    # The native sheet assembler (September 2026) and the tools that check,
+    # texture and lay out its sheets. Source lists mirror the MSVC projects of
+    # the same names; modules that are already in scrollfiesta_core come from
+    # the library.
+    # -----------------------------------------------------------------------
+    function(sf_sheet_tool tool)
+        target_link_libraries(${tool} PRIVATE scrollfiesta_core ${SF_TIFF_LIBS})
+        target_include_directories(${tool} PRIVATE ${SF_SRC} ${SF_DEPS}/include)
+        set_target_properties(${tool} PROPERTIES C_STANDARD 17 C_EXTENSIONS ON)
+        if(WIN32)
+            target_compile_definitions(${tool} PRIVATE
+                _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_DEPRECATE NOMINMAX)
+        else()
+            target_compile_definitions(${tool} PRIVATE _GNU_SOURCE)
+            target_link_libraries(${tool} PRIVATE m)
+        endif()
+        if(SCROLLFIESTA_OPENMP)
+            if(MSVC)
+                target_compile_options(${tool} PRIVATE /openmp)
+            else()
+                target_compile_options(${tool} PRIVATE -fopenmp)
+                target_link_options(${tool} PRIVATE -fopenmp)
+            endif()
+        endif()
+        # The MSVC projects reserve 512 MB of stack: TAUCS recursion and the
+        # SLIM/repair solves overflow the 1 MB default on large sheets. (On
+        # Linux the main thread's stack is set by `ulimit -s`.)
+        if(MSVC)
+            target_link_options(${tool} PRIVATE /STACK:536870912)
+        endif()
+    endfunction()
+
+    add_executable(ribbon_verdict ${SF_SRC}/tools/ribbon_verdict.c)
+    add_executable(swirl_slim
+        ${SF_SRC}/tools/swirl_slim.c
+        ${SF_SRC}/flatten/slim_refine.c)
+    add_executable(obj_bake_raw
+        ${SF_SRC}/tools/obj_bake_raw.c
+        ${SF_SRC}/flatten/rawtex_bake.c
+        ${SF_SRC}/flatten/textured_obj.c
+        ${SF_SRC}/flatten/marble_diag.c
+        ${SF_SRC}/common/ves_png.c
+        ${SF_SRC}/common/tif_strip.c)
+    add_executable(sheet_strip
+        ${SF_SRC}/tools/sheet_strip.c
+        ${SF_SRC}/common/strip_layout.c
+        ${SF_SRC}/common/json_read.c
+        ${SF_SRC}/common/ves_png.c)
+    add_executable(sheet_reading
+        ${SF_SRC}/tools/sheet_reading.c
+        ${SF_SRC}/common/strip_layout.c
+        ${SF_SRC}/common/json_read.c
+        ${SF_SRC}/common/ves_png.c)
+    add_executable(sheet_layers
+        ${SF_SRC}/tools/sheet_layers.c
+        ${SF_SRC}/flatten/rawtex_layers.c
+        ${SF_SRC}/flatten/rawtex_bake.c
+        ${SF_SRC}/assemble/asm_axis.c
+        ${SF_SRC}/common/ves_png.c
+        ${SF_SRC}/common/tif_strip.c)
+    add_executable(vmesh_tifxyz
+        ${SF_SRC}/tools/vmesh_tifxyz.c
+        ${SF_SRC}/flatten/tifxyz_write.c)
+    add_executable(scroll_axis_track
+        ${SF_SRC}/tools/scroll_axis_track.c
+        ${SF_SRC}/whole/axis_track.c
+        ${SF_SRC}/common/mesh_pile.c
+        ${SF_SRC}/common/png_write.c)
+    set(SF_SHEET_TOOLS ribbon_verdict swirl_slim obj_bake_raw sheet_strip
+                       sheet_reading sheet_layers vmesh_tifxyz scroll_axis_track)
+
+    # sheet_assemble solves its constrained QPs with the vendored OSQP 1.0
+    # (built-in QDLDL + AMD; configuration in deps/osqp/osqp_configure.h) and
+    # its linear systems with TAUCS, so it needs the BLAS/LAPACK found above.
+    if(SF_HAVE_LAPACK)
+        set(SF_OSQP_DIR ${SF_DEPS}/osqp)
+        add_library(sf_osqp STATIC
+            ${SF_OSQP_DIR}/src/algebra_libs.c
+            ${SF_OSQP_DIR}/src/auxil.c
+            ${SF_OSQP_DIR}/src/csc_math.c
+            ${SF_OSQP_DIR}/src/csc_utils.c
+            ${SF_OSQP_DIR}/src/error.c
+            ${SF_OSQP_DIR}/src/kkt.c
+            ${SF_OSQP_DIR}/src/matrix.c
+            ${SF_OSQP_DIR}/src/osqp_api.c
+            ${SF_OSQP_DIR}/src/polish.c
+            ${SF_OSQP_DIR}/src/qdldl.c
+            ${SF_OSQP_DIR}/src/qdldl_interface.c
+            ${SF_OSQP_DIR}/src/scaling.c
+            ${SF_OSQP_DIR}/src/util.c
+            ${SF_OSQP_DIR}/src/vector.c
+            ${SF_OSQP_DIR}/amd/src/SuiteSparse_config.c
+            ${SF_OSQP_DIR}/amd/src/amd_1.c
+            ${SF_OSQP_DIR}/amd/src/amd_2.c
+            ${SF_OSQP_DIR}/amd/src/amd_aat.c
+            ${SF_OSQP_DIR}/amd/src/amd_control.c
+            ${SF_OSQP_DIR}/amd/src/amd_defaults.c
+            ${SF_OSQP_DIR}/amd/src/amd_info.c
+            ${SF_OSQP_DIR}/amd/src/amd_order.c
+            ${SF_OSQP_DIR}/amd/src/amd_postorder.c
+            ${SF_OSQP_DIR}/amd/src/amd_post_tree.c
+            ${SF_OSQP_DIR}/amd/src/amd_preprocess.c
+            ${SF_OSQP_DIR}/amd/src/amd_valid.c)
+        target_include_directories(sf_osqp
+            PUBLIC ${SF_OSQP_DIR} ${SF_OSQP_DIR}/inc/public
+            PRIVATE ${SF_OSQP_DIR}/inc/private ${SF_OSQP_DIR}/amd/include)
+        set_target_properties(sf_osqp PROPERTIES C_STANDARD 17 C_EXTENSIONS ON)
+        if(MSVC)
+            target_compile_options(sf_osqp PRIVATE /W1)
+            target_compile_definitions(sf_osqp PRIVATE _CRT_SECURE_NO_WARNINGS)
+        else()
+            target_compile_options(sf_osqp PRIVATE -w)
+            target_link_libraries(sf_osqp PUBLIC m)
+        endif()
+
+        # The assembler factors many systems at once. With MSVC the BLAS/LAPACK
+        # underneath TAUCS is f2c output whose locals are static, so, as in
+        # sheet_assemble.vcxproj, it links deps/clapack/TS (the routines TAUCS
+        # reaches, with automatic locals) ahead of that library and calls TAUCS
+        # without sparse_solve's lock. f2c's `integer` is `long`, which matches
+        # the `int` TAUCS passes only on LLP64, so other toolchains keep the
+        # ordinary sf_taucs, whose TAUCS calls stay serialized.
+        if(MSVC)
+            add_library(sf_taucs_mt STATIC ${SF_TAUCS_SRC} ${SF_SRC}/flatten/sparse_solve.c)
+            target_compile_definitions(sf_taucs_mt PUBLIC SPARSE_TAUCS_THREAD_SAFE
+                PRIVATE _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_DEPRECATE)
+            target_link_libraries(sf_taucs_mt PUBLIC ${SF_LAPACK_LIBS})
+            target_include_directories(sf_taucs_mt PUBLIC
+                ${SF_TAUCS_DIR}/src
+                ${SF_TAUCS_DIR}/build
+                ${SF_TAUCS_DIR}/external/src
+                PRIVATE ${SF_SRC})
+            set_target_properties(sf_taucs_mt PROPERTIES C_STANDARD 17 C_EXTENSIONS ON)
+            target_compile_options(sf_taucs_mt PRIVATE /W1)
+            if(SCROLLFIESTA_OPENMP)
+                target_compile_options(sf_taucs_mt PRIVATE /openmp)
+            endif()
+            set(SF_ASM_TAUCS sf_taucs_mt)
+            set(SF_CLAPACK_TS_SRC
+                ${SF_DEPS}/clapack/TS/dgemm.c
+                ${SF_DEPS}/clapack/TS/dsyrk.c
+                ${SF_DEPS}/clapack/TS/dtrsm.c
+                ${SF_DEPS}/clapack/TS/ddot.c
+                ${SF_DEPS}/clapack/TS/dgemv.c
+                ${SF_DEPS}/clapack/TS/dscal.c
+                ${SF_DEPS}/clapack/TS/lsame.c
+                ${SF_DEPS}/clapack/TS/dpotrf.c
+                ${SF_DEPS}/clapack/TS/dpotf2.c
+                ${SF_DEPS}/clapack/TS/ilaenv.c
+                ${SF_DEPS}/clapack/TS/ieeeck.c
+                ${SF_DEPS}/clapack/TS/iparmq.c)
+            set_source_files_properties(${SF_CLAPACK_TS_SRC} PROPERTIES
+                INCLUDE_DIRECTORIES ${SF_DEPS}/clapack/INCLUDE
+                COMPILE_DEFINITIONS NO_BLAS_WRAP
+                COMPILE_OPTIONS /W0)
+        else()
+            set(SF_ASM_TAUCS sf_taucs)
+            set(SF_CLAPACK_TS_SRC "")
+        endif()
+
+        add_executable(sheet_assemble
+            ${SF_SRC}/tools/sheet_assemble.c
+            ${SF_SRC}/assemble/asm_run.c
+            ${SF_SRC}/assemble/asm_flatten.c
+            ${SF_SRC}/assemble/asm_clean.c
+            ${SF_SRC}/assemble/asm_store.c
+            ${SF_SRC}/assemble/asm_report.c
+            ${SF_SRC}/assemble/asm_relate.c
+            ${SF_SRC}/assemble/asm_pose.c
+            ${SF_SRC}/assemble/asm_conflict.c
+            ${SF_SRC}/assemble/asm_layer_cut.c
+            ${SF_SRC}/assemble/asm_emit.c
+            ${SF_SRC}/assemble/asm_verdict.c
+            ${SF_SRC}/assemble/asm_place.c
+            ${SF_SRC}/assemble/asm_continuity.c
+            ${SF_SRC}/assemble/asm_boundary.c
+            ${SF_SRC}/assemble/asm_metric.c
+            ${SF_SRC}/assemble/asm_contacts.c
+            ${SF_SRC}/assemble/asm_field.c
+            ${SF_SRC}/assemble/asm_repair.c
+            ${SF_SRC}/assemble/asm_discover.c
+            ${SF_SRC}/assemble/asm_audit.c
+            ${SF_SRC}/assemble/asm_axis.c
+            ${SF_SRC}/assemble/asm_axis_derive.c
+            ${SF_SRC}/assemble/asm_reading_order.c
+            ${SF_SRC}/whole/atlas_winding_sync.c
+            ${SF_SRC}/common/mesh_pile.c
+            ${SF_SRC}/common/maxflow.c
+            ${SF_SRC}/common/ves_png.c
+            ${SF_SRC}/common/json_read.c
+            ${SF_SRC}/flatten/convex_qp.c
+            ${SF_SRC}/flatten/active_set_qp.c
+            ${SF_SRC}/flatten/slim_refine.c
+            ${SF_CLAPACK_TS_SRC})
+        target_link_libraries(sheet_assemble PRIVATE sf_osqp ${SF_ASM_TAUCS})
+        list(APPEND SF_SHEET_TOOLS sheet_assemble)
+    endif()  # SF_HAVE_LAPACK
+
+    foreach(tool ${SF_SHEET_TOOLS})
+        sf_sheet_tool(${tool})
+    endforeach()
+
+    # Test programs of the maintained per-cube modules (each has its own main).
+    add_executable(holefill_interior_test ${CMAKE_CURRENT_SOURCE_DIR}/scripts/holefill/holefill_interior_test.c)
+    add_executable(pinhole_fill_test      ${CMAKE_CURRENT_SOURCE_DIR}/scripts/extract/pinhole_fill_test.c)
+    add_executable(mesh_resplit_test      ${CMAKE_CURRENT_SOURCE_DIR}/scripts/extract/mesh_resplit_test.c)
+    set(SF_MODULE_TESTS holefill_interior_test pinhole_fill_test mesh_resplit_test)
+    foreach(tool ${SF_MODULE_TESTS})
+        sf_sheet_tool(${tool})
+    endforeach()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -672,6 +900,42 @@ if(SCROLLFIESTA_BUILD_TESTS)
         add_test(NAME sf_api_dlopen
                  COMMAND sf_api_dlopen $<TARGET_FILE:scrollfiesta>)
     endif()
+
+    # Every sheet tool carries its module selftests (--selftest). They write
+    # scratch files into the working directory, so each gets its own. Leak
+    # checking stays with the library tests above: under the sanitizer CI job
+    # these whole-tool suites should fail on memory errors, not on process-
+    # lifetime allocations still held at exit.
+    if(SCROLLFIESTA_BUILD_TOOLS)
+        foreach(tool ${SF_SHEET_TOOLS})
+            set(_sf_wd ${CMAKE_CURRENT_BINARY_DIR}/selftest/${tool})
+            file(MAKE_DIRECTORY ${_sf_wd})
+            add_test(NAME ${tool}_selftest COMMAND ${tool} --selftest
+                     WORKING_DIRECTORY ${_sf_wd})
+            set_tests_properties(${tool}_selftest PROPERTIES
+                ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
+        endforeach()
+        foreach(tool ${SF_MODULE_TESTS})
+            set(_sf_wd ${CMAKE_CURRENT_BINARY_DIR}/selftest/${tool})
+            file(MAKE_DIRECTORY ${_sf_wd})
+            add_test(NAME ${tool} COMMAND ${tool} WORKING_DIRECTORY ${_sf_wd})
+            set_tests_properties(${tool} PROPERTIES
+                ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
+        endforeach()
+        if(TARGET sheet_assemble)
+            add_test(NAME sheet_assemble_cli
+                     COMMAND ${CMAKE_COMMAND}
+                         -DSHEET_ASSEMBLE=$<TARGET_FILE:sheet_assemble>
+                         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                         -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/selftest/sheet_cli
+                         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/sheet_cli.cmake)
+            set_tests_properties(sheet_assemble_cli PROPERTIES
+                ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
+            # The assembler's suite runs whole miniature assemblies (about 100 s
+            # on 8 threads).
+            set_tests_properties(sheet_assemble_selftest PROPERTIES TIMEOUT 3600)
+        endif()
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -714,9 +978,12 @@ if(SCROLLFIESTA_INSTALL)
     endif()
 
     if(SCROLLFIESTA_BUILD_TOOLS)
+        install(FILES configs/default.json configs/axis.csv
+                DESTINATION ${CMAKE_INSTALL_DATADIR}/scrollfiesta/configs)
         set(SF_INSTALL_TOOLS cube_mesh grid_pipeline grid_weld scroll_unroll
                              atlas_overlap_fix atlas_ribbon_fit
-                             obj_components pinhole_verdict seam_audit)
+                             obj_components pinhole_verdict seam_audit
+                             ${SF_SHEET_TOOLS})
         if(SF_HAVE_LAPACK)
             list(APPEND SF_INSTALL_TOOLS scroll_whole)
         endif()

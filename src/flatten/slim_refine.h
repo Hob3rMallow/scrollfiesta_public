@@ -15,7 +15,7 @@ typedef struct SlimRefineOpts {
     int homotopy_stages;     /* rest-metric continuation stages (default 1) */
     int final_iterations;    /* extra iterations at the final metric */
     int pcg_iterations;      /* global proxy PCG cap (default 120) */
-    double pcg_tolerance;    /* relative residual (default 1e-5) */
+    double pcg_tolerance;    /* residual relative to initial correction (1e-5) */
     double energy_tolerance; /* relative accepted-energy stop (default 1e-6) */
     double sigma_min;        /* local-step singular-value floor (default 1e-8) */
     double weight_max;       /* local-step weight ceiling (default 1e8) */
@@ -33,6 +33,15 @@ typedef struct SlimRefineOpts {
     double padding;          /* component bounding-box gutter (default 20) */
     int threads;             /* OpenMP threads; <=0 uses runtime default */
     int verbose;
+    /* Optional solver-only scaffold. Faces before scaffold_first_face keep
+     * their original 3-D rest metric. Remaining faces use scaffold_uv [nv*2]
+     * as their rest shape, with equal energy weight scaffold_weight per face
+     * (SCAF Eq. 3 cancels scaffold area). No source face may be
+     * relabelled as scaffold. NULL disables this extension. */
+    const double *scaffold_uv;
+    size_t scaffold_first_face;
+    double scaffold_weight;
+    const uint8_t *fixed_vertices; /* [nv], hard pin to the input UV */
 } SlimRefineOpts;
 
 void SlimRefine_defaults(SlimRefineOpts *opts);

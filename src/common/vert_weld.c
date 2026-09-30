@@ -97,7 +97,7 @@ void Weld_verts_filtered(Arena_T arena,
 
     /* -------- Build sorted cell entries -------- */
     CellEntry *entries = (CellEntry *)ARENA_ALLOC(arena,
-                            (long)nv * (long)sizeof(CellEntry));
+                            (size_t)nv * sizeof(CellEntry));
     for (size_t i = 0; i < nv; i++) {
         float z = verts[i*3+0];
         float y = verts[i*3+1];
@@ -110,14 +110,14 @@ void Weld_verts_filtered(Arena_T arena,
     qsort(entries, nv, sizeof(CellEntry), cmp_cell_entry);
 
     uint64_t *keys = (uint64_t *)ARENA_ALLOC(arena,
-                        (long)nv * (long)sizeof(uint64_t));
+                        (size_t)nv * sizeof(uint64_t));
     for (size_t i = 0; i < nv; i++) {
         keys[i] = cell_key(entries[i].cell_z, entries[i].cell_y, entries[i].cell_x);
     }
 
     /* -------- Union-find merging -------- */
     int32_t *parent = (int32_t *)ARENA_ALLOC(arena,
-                         (long)nv * (long)sizeof(int32_t));
+                         (size_t)nv * sizeof(int32_t));
     for (size_t i = 0; i < nv; i++) parent[i] = (int32_t)i;
 
     /* Orientation guard (guard_orient && nf>0): a coincident pair is fused
@@ -131,7 +131,7 @@ void Weld_verts_filtered(Arena_T arena,
     int do_guard = (guard_orient && nf > 0) ? 1 : 0;
     double *vn = NULL;
     if (do_guard) {
-        vn = (double *)ARENA_CALLOC(arena, (long)nv * 3L, (long)sizeof(double));
+        vn = (double *)ARENA_CALLOC(arena, (size_t)nv * 3L, sizeof(double));
         for (size_t f = 0; f < nf; f++) {
             int32_t i0 = faces[f*3+0], i1 = faces[f*3+1], i2 = faces[f*3+2];
             const float *p0 = &verts[(size_t)i0*3];
@@ -218,7 +218,7 @@ void Weld_verts_filtered(Arena_T arena,
      * the smallest index in their component, so this is identical to
      * "assign new indices in root-index order." */
     int32_t *new_idx = (int32_t *)ARENA_ALLOC(arena,
-                         (long)nv * (long)sizeof(int32_t));
+                         (size_t)nv * sizeof(int32_t));
     for (size_t i = 0; i < nv; i++) new_idx[i] = -1;
 
     size_t n_new = 0;
@@ -236,17 +236,17 @@ void Weld_verts_filtered(Arena_T arena,
 
     /* -------- Accumulate centroid (and optional normals) per group -------- */
     /* Final output arrays live on the caller's arena; allocate now. */
-    float *welded = (float *)ARENA_ALLOC(arena, (long)(n_new * 3 * sizeof(float)));
+    float *welded = (float *)ARENA_ALLOC(arena, (size_t)(n_new * 3 * sizeof(float)));
     float *welded_n = NULL;
     if (out_normals && in_normals) {
-        welded_n = (float *)ARENA_ALLOC(arena, (long)(n_new * 3 * sizeof(float)));
+        welded_n = (float *)ARENA_ALLOC(arena, (size_t)(n_new * 3 * sizeof(float)));
     }
-    double *acc = (double *)ARENA_CALLOC(arena, (long)n_new * 3L, (long)sizeof(double));
+    double *acc = (double *)ARENA_CALLOC(arena, (size_t)n_new * 3L, sizeof(double));
     double *acc_n = NULL;
     if (welded_n) {
-        acc_n = (double *)ARENA_CALLOC(arena, (long)n_new * 3L, (long)sizeof(double));
+        acc_n = (double *)ARENA_CALLOC(arena, (size_t)n_new * 3L, sizeof(double));
     }
-    int32_t *count = (int32_t *)ARENA_CALLOC(arena, (long)n_new, (long)sizeof(int32_t));
+    int32_t *count = (int32_t *)ARENA_CALLOC(arena, (size_t)n_new, sizeof(int32_t));
 
     for (size_t i = 0; i < nv; i++) {
         int32_t k = new_idx[i];

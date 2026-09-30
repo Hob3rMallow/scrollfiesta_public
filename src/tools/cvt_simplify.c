@@ -84,7 +84,7 @@ int main(int argc, char **argv)
         }
 
         /* connected components over shared verts */
-        int32_t *par = (int32_t *)ARENA_ALLOC(arena, (long)(nv * sizeof(int32_t)));
+        int32_t *par = (int32_t *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(int32_t)));
         for (size_t v = 0; v < nv; v++) par[v] = (int32_t)v;
         for (size_t f = 0; f < nf; f++) {
             int32_t a = F[f*3+0], b = F[f*3+1], c = F[f*3+2];
@@ -95,7 +95,7 @@ int main(int argc, char **argv)
             if (rc != ra) par[rc] = ra;
         }
         /* face -> component root, sorted so each component is a contiguous run */
-        FR *fr = (FR *)ARENA_ALLOC(arena, (long)(nf * sizeof(FR)));
+        FR *fr = (FR *)ARENA_ALLOC(arena, (size_t)(nf * sizeof(FR)));
         for (size_t f = 0; f < nf; f++) { fr[f].root = uf_find(par, F[f*3+0]); fr[f].face = (int32_t)f; }
         qsort(fr, nf, sizeof(FR), fr_cmp);
         size_t nroot = 0;
@@ -103,9 +103,9 @@ int main(int argc, char **argv)
 
         /* per component: gather local mesh, CVT-decimate (fail-closed). Store
          * results as a ComponentMesh array for the guard, then concatenate. */
-        ComponentMesh *cms = (ComponentMesh *)ARENA_CALLOC(arena, (long)nroot, (long)sizeof(ComponentMesh));
+        ComponentMesh *cms = (ComponentMesh *)ARENA_CALLOC(arena, (size_t)nroot, sizeof(ComponentMesh));
         size_t ncm = 0;
-        int32_t *g2l = (int32_t *)ARENA_ALLOC(arena, (long)(nv * sizeof(int32_t)));
+        int32_t *g2l = (int32_t *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(int32_t)));
         for (size_t v = 0; v < nv; v++) g2l[v] = -1;
 
         size_t n_cvt = 0, n_kept = 0;
@@ -114,8 +114,8 @@ int main(int argc, char **argv)
             size_t pj = pi + 1;
             while (pj < nf && fr[pj].root == fr[pi].root) pj++;
             size_t cf = pj - pi;
-            int32_t *lf = (int32_t *)ARENA_ALLOC(arena, (long)(cf * 3 * sizeof(int32_t)));
-            int32_t *l2g = (int32_t *)ARENA_ALLOC(arena, (long)(cf * 3 * sizeof(int32_t)));
+            int32_t *lf = (int32_t *)ARENA_ALLOC(arena, (size_t)(cf * 3 * sizeof(int32_t)));
+            int32_t *l2g = (int32_t *)ARENA_ALLOC(arena, (size_t)(cf * 3 * sizeof(int32_t)));
             size_t lnv = 0;
             for (size_t k = 0; k < cf; k++) {
                 for (int e = 0; e < 3; e++) {
@@ -124,7 +124,7 @@ int main(int argc, char **argv)
                     lf[k*3+(size_t)e] = g2l[gv];
                 }
             }
-            float *lv = (float *)ARENA_ALLOC(arena, (long)(lnv * 3 * sizeof(float)));
+            float *lv = (float *)ARENA_ALLOC(arena, (size_t)(lnv * 3 * sizeof(float)));
             for (size_t v = 0; v < lnv; v++) {
                 lv[v*3+0] = V[(size_t)l2g[v]*3+0];
                 lv[v*3+1] = V[(size_t)l2g[v]*3+1];
@@ -164,8 +164,8 @@ int main(int argc, char **argv)
         /* concatenate components into one mesh */
         size_t out_nv = 0, out_nf = 0;
         for (size_t i = 0; i < ncm; i++) { out_nv += cms[i].nv; out_nf += cms[i].nf; }
-        float *OV = (float *)ARENA_ALLOC(arena, (long)(out_nv * 3 * sizeof(float)));
-        int32_t *OF = (int32_t *)ARENA_ALLOC(arena, (long)(out_nf * 3 * sizeof(int32_t)));
+        float *OV = (float *)ARENA_ALLOC(arena, (size_t)(out_nv * 3 * sizeof(float)));
+        int32_t *OF = (int32_t *)ARENA_ALLOC(arena, (size_t)(out_nf * 3 * sizeof(int32_t)));
         size_t voff = 0, foff = 0;
         for (size_t i = 0; i < ncm; i++) {
             for (size_t v = 0; v < cms[i].nv; v++) {

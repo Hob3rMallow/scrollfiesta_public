@@ -80,7 +80,7 @@ static void detect_boundary(Arena_T arena, const int32_t *faces, size_t nf,
 {
     Arena_Mark mark = Arena_save(arena);
     size_t n_he = nf*3, i = 0;
-    HE *he = (HE *)ARENA_ALLOC(arena, (long)((n_he?n_he:1)*sizeof(HE)));
+    HE *he = (HE *)ARENA_ALLOC(arena, (size_t)((n_he?n_he:1)*sizeof(HE)));
     for (i=0;i<nf;i++){
         int32_t f0=faces[i*3+0], f1=faces[i*3+1], f2=faces[i*3+2];
         int32_t tri[3]={f0,f1,f2};
@@ -177,7 +177,7 @@ static size_t flip_pass(Arena_T arena, const float *V, int32_t *faces,
 {
     Arena_Mark mark = Arena_save(arena);
     size_t n_he=nf*3, f=0, i=0, n_flipped=0;
-    MHE *mhe = (MHE *)ARENA_ALLOC(arena, (long)((n_he?n_he:1)*sizeof(MHE)));
+    MHE *mhe = (MHE *)ARENA_ALLOC(arena, (size_t)((n_he?n_he:1)*sizeof(MHE)));
     uint8_t *vused, *fused;
     for (f=0;f<nf;f++){
         int32_t v[3]={faces[f*3+0],faces[f*3+1],faces[f*3+2]};
@@ -190,8 +190,8 @@ static size_t flip_pass(Arena_T arena, const float *V, int32_t *faces,
         }
     }
     qsort(mhe, n_he, sizeof(MHE), mhe_cmp);
-    vused=(uint8_t*)ARENA_ALLOC(arena,(long)(nv*sizeof(uint8_t)));
-    fused=(uint8_t*)ARENA_ALLOC(arena,(long)(nf*sizeof(uint8_t)));
+    vused=(uint8_t*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(uint8_t)));
+    fused=(uint8_t*)ARENA_ALLOC(arena,(size_t)(nf*sizeof(uint8_t)));
     memset(vused,0,nv*sizeof(uint8_t));
     memset(fused,0,nf*sizeof(uint8_t));
     i=0;
@@ -233,7 +233,7 @@ static size_t flip_rounds(Arena_T arena, const float *V, int32_t *faces,
                           size_t nf, size_t nv, const uint8_t *pin, int max_rounds)
 {
     Arena_Mark mark = Arena_save(arena);
-    uint8_t *frozen=(uint8_t*)ARENA_ALLOC(arena,(long)(nv*sizeof(uint8_t)));
+    uint8_t *frozen=(uint8_t*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(uint8_t)));
     size_t total=0; int r;
     compute_frozen(arena, faces, nf, nv, pin, frozen);  /* stable across flips */
     for (r=0;r<max_rounds;r++){
@@ -251,14 +251,14 @@ static size_t flip_rounds(Arena_T arena, const float *V, int32_t *faces,
 static void build_vf(Arena_T arena, const int32_t *faces, size_t nf, size_t nv,
                      int32_t **out_off, int32_t **out_idx)
 {
-    int32_t *off=(int32_t*)ARENA_ALLOC(arena,(long)((nv+1)*sizeof(int32_t)));
-    int32_t *idx=(int32_t*)ARENA_ALLOC(arena,(long)((nf?nf*3:1)*sizeof(int32_t)));
+    int32_t *off=(int32_t*)ARENA_ALLOC(arena,(size_t)((nv+1)*sizeof(int32_t)));
+    int32_t *idx=(int32_t*)ARENA_ALLOC(arena,(size_t)((nf?nf*3:1)*sizeof(int32_t)));
     size_t i;
     memset(off, 0, (nv+1)*sizeof(int32_t));
     for (i=0;i<nf*3;i++) off[(size_t)faces[i]+1]++;
     for (i=0;i<nv;i++) off[i+1]+=off[i];
     {
-        int32_t *cur=(int32_t*)ARENA_ALLOC(arena,(long)((nv)*sizeof(int32_t)));
+        int32_t *cur=(int32_t*)ARENA_ALLOC(arena,(size_t)((nv)*sizeof(int32_t)));
         size_t f;
         memcpy(cur, off, nv*sizeof(int32_t));
         for (f=0;f<nf;f++)
@@ -377,9 +377,9 @@ static size_t collapse_round(Arena_T arena, const float *V,
 {
     Arena_Mark mark = Arena_save(arena);
     int32_t *off=NULL, *idx=NULL;
-    uint8_t *frozen=(uint8_t*)ARENA_ALLOC(arena,(long)(nv*sizeof(uint8_t)));
-    uint8_t *locked=(uint8_t*)ARENA_ALLOC(arena,(long)(nv*sizeof(uint8_t)));
-    int32_t *remap=(int32_t*)ARENA_ALLOC(arena,(long)(nv*sizeof(int32_t)));
+    uint8_t *frozen=(uint8_t*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(uint8_t)));
+    uint8_t *locked=(uint8_t*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(uint8_t)));
+    int32_t *remap=(int32_t*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(int32_t)));
     size_t f, ncoll=0, w=0, i;
     build_vf(arena, faces, *nf, nv, &off, &idx);
     compute_frozen(arena, faces, *nf, nv, pin, frozen);
@@ -460,10 +460,10 @@ static size_t split_round(Arena_T arena,
     if (nf==0){ Arena_restore(arena, mark); return 0; }
 
     /* frozen skeleton (do not subdivide an edge between two frozen verts) */
-    floc=(uint8_t*)ARENA_ALLOC(arena,(long)(nv*sizeof(uint8_t)));
+    floc=(uint8_t*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(uint8_t)));
     compute_frozen(arena, F, nf, nv, pin, floc);
 
-    mhe=(MHE*)ARENA_ALLOC(arena,(long)(n_he*sizeof(MHE)));
+    mhe=(MHE*)ARENA_ALLOC(arena,(size_t)(n_he*sizeof(MHE)));
     for (f=0;f<nf;f++){
         int32_t v[3]={F[f*3+0],F[f*3+1],F[f*3+2]};
         int e;
@@ -476,9 +476,9 @@ static size_t split_round(Arena_T arena,
     }
     qsort(mhe, n_he, sizeof(MHE), mhe_cmp);
 
-    fdone=(uint8_t*)ARENA_ALLOC(arena,(long)(nf*sizeof(uint8_t)));
+    fdone=(uint8_t*)ARENA_ALLOC(arena,(size_t)(nf*sizeof(uint8_t)));
     memset(fdone,0,nf*sizeof(uint8_t));
-    req=(SplitReq*)ARENA_ALLOC(arena,(long)((n_he/2+1)*sizeof(SplitReq)));
+    req=(SplitReq*)ARENA_ALLOC(arena,(size_t)((n_he/2+1)*sizeof(SplitReq)));
 
     i=0;
     while (i+1 < n_he){
@@ -502,9 +502,9 @@ static size_t split_round(Arena_T arena,
     /* grow */
     {
         size_t new_nv=nv+nreq, new_nf=nf+2*nreq, r;
-        nV  =(float*)  ARENA_ALLOC(arena,(long)(new_nv*3*sizeof(float)));
-        nF  =(int32_t*)ARENA_ALLOC(arena,(long)(new_nf*3*sizeof(int32_t)));
-        npin=(uint8_t*)ARENA_ALLOC(arena,(long)(new_nv*sizeof(uint8_t)));
+        nV  =(float*)  ARENA_ALLOC(arena,(size_t)(new_nv*3*sizeof(float)));
+        nF  =(int32_t*)ARENA_ALLOC(arena,(size_t)(new_nf*3*sizeof(int32_t)));
+        npin=(uint8_t*)ARENA_ALLOC(arena,(size_t)(new_nv*sizeof(uint8_t)));
         memcpy(nV, V, nv*3*sizeof(float));
         memcpy(nF, F, nf*3*sizeof(int32_t));
         if (pin) memcpy(npin, pin, nv*sizeof(uint8_t)); else memset(npin,0,nv*sizeof(uint8_t));
@@ -570,9 +570,9 @@ static void relax_pass(Arena_T arena, float *V, size_t nv,
                        const uint8_t *pin, float lambda, float max_disp)
 {
     Arena_Mark mark = Arena_save(arena);
-    uint8_t *frozen=(uint8_t*)ARENA_ALLOC(arena,(long)(nv*sizeof(uint8_t)));
-    float   *N =(float*)ARENA_ALLOC(arena,(long)(nv*3*sizeof(float)));
-    float   *disp=(float*)ARENA_ALLOC(arena,(long)(nv*3*sizeof(float)));
+    uint8_t *frozen=(uint8_t*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(uint8_t)));
+    float   *N =(float*)ARENA_ALLOC(arena,(size_t)(nv*3*sizeof(float)));
+    float   *disp=(float*)ARENA_ALLOC(arena,(size_t)(nv*3*sizeof(float)));
     CSR_T adj; const int32_t *off; const int32_t *tgt;
     size_t i;
     compute_frozen(arena, F, nf, nv, pin, frozen);
@@ -617,9 +617,9 @@ static void mls_reproject(Arena_T arena, float *V, size_t nv,
                           float radius)
 {
     Arena_Mark mark = Arena_save(arena);
-    uint8_t *frozen=(uint8_t*)ARENA_ALLOC(arena,(long)(nv*sizeof(uint8_t)));
-    float *save=(float*)ARENA_ALLOC(arena,(long)(nv*3*sizeof(float)));
-    float *outn=(float*)ARENA_ALLOC(arena,(long)(nv*3*sizeof(float)));
+    uint8_t *frozen=(uint8_t*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(uint8_t)));
+    float *save=(float*)ARENA_ALLOC(arena,(size_t)(nv*3*sizeof(float)));
+    float *outn=(float*)ARENA_ALLOC(arena,(size_t)(nv*3*sizeof(float)));
     float cell[3]={0.0f,0.0f,0.0f};
     size_t i;
     compute_frozen(arena, F, nf, nv, pin, frozen);
@@ -636,14 +636,14 @@ static void compact_verts(Arena_T arena, float **pV, size_t *pnv,
                           int32_t *F, size_t nf, uint8_t **ppin)
 {
     float *V=*pV; uint8_t *pin=*ppin; size_t nv=*pnv, i;
-    int32_t *remap=(int32_t*)ARENA_ALLOC(arena,(long)(nv*sizeof(int32_t)));
-    uint8_t *used=(uint8_t*)ARENA_ALLOC(arena,(long)(nv*sizeof(uint8_t)));
+    int32_t *remap=(int32_t*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(int32_t)));
+    uint8_t *used=(uint8_t*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(uint8_t)));
     float *nV; uint8_t *npin; size_t nn=0;
     memset(used,0,nv*sizeof(uint8_t));
     for (i=0;i<nf*3;i++) used[(size_t)F[i]]=1;
     for (i=0;i<nv;i++) remap[i]=-1;
-    nV  =(float*)  ARENA_ALLOC(arena,(long)((nv?nv:1)*3*sizeof(float)));
-    npin=(uint8_t*)ARENA_ALLOC(arena,(long)((nv?nv:1)*sizeof(uint8_t)));
+    nV  =(float*)  ARENA_ALLOC(arena,(size_t)((nv?nv:1)*3*sizeof(float)));
+    npin=(uint8_t*)ARENA_ALLOC(arena,(size_t)((nv?nv:1)*sizeof(uint8_t)));
     for (i=0;i<nv;i++){
         if (!used[i]) continue;
         remap[i]=(int32_t)nn;
@@ -685,8 +685,8 @@ static int emit_copy(Arena_T arena,
                      float **out_verts, size_t *out_nv,
                      int32_t **out_faces, size_t *out_nf)
 {
-    float *ov=(float*)ARENA_ALLOC(arena,(long)((in_nv?in_nv:1)*3*sizeof(float)));
-    int32_t *of=(int32_t*)ARENA_ALLOC(arena,(long)((in_nf?in_nf:1)*3*sizeof(int32_t)));
+    float *ov=(float*)ARENA_ALLOC(arena,(size_t)((in_nv?in_nv:1)*3*sizeof(float)));
+    int32_t *of=(int32_t*)ARENA_ALLOC(arena,(size_t)((in_nf?in_nf:1)*3*sizeof(int32_t)));
     if (in_nv) memcpy(ov, in_verts, in_nv*3*sizeof(float));
     if (in_nf) memcpy(of, in_faces, in_nf*3*sizeof(int32_t));
     *out_verts=ov; *out_nv=in_nv; *out_faces=of; *out_nf=in_nf;
@@ -744,9 +744,9 @@ int Remesh_isotropic(Arena_T arena,
 
     /* Working copies (mutable, growable). */
     wnv=in_nv; wnf=in_nf;
-    wv =(float*)  ARENA_ALLOC(arena,(long)(wnv*3*sizeof(float)));
-    wf =(int32_t*)ARENA_ALLOC(arena,(long)(wnf*3*sizeof(int32_t)));
-    wpin=(uint8_t*)ARENA_ALLOC(arena,(long)(wnv*sizeof(uint8_t)));
+    wv =(float*)  ARENA_ALLOC(arena,(size_t)(wnv*3*sizeof(float)));
+    wf =(int32_t*)ARENA_ALLOC(arena,(size_t)(wnf*3*sizeof(int32_t)));
+    wpin=(uint8_t*)ARENA_ALLOC(arena,(size_t)(wnv*sizeof(uint8_t)));
     memcpy(wv, in_verts, wnv*3*sizeof(float));
     memcpy(wf, in_faces, wnf*3*sizeof(int32_t));
     if (pin_mask) memcpy(wpin, pin_mask, wnv*sizeof(uint8_t));

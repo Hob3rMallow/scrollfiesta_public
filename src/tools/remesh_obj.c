@@ -38,7 +38,7 @@ static void selftest_boundary(Arena_T a, const int32_t *F, size_t nf, size_t nv,
                               uint8_t *bnd)
 {
     size_t n=nf*3, i, j;
-    TE *e=(TE*)ARENA_ALLOC(a,(long)((n?n:1)*sizeof(TE)));
+    TE *e=(TE*)ARENA_ALLOC(a,(size_t)((n?n:1)*sizeof(TE)));
     for (i=0;i<nf;i++){
         int32_t t[3]={F[i*3+0],F[i*3+1],F[i*3+2]};
         int k;
@@ -108,8 +108,8 @@ static void make_grid(Arena_T a, int nx, int ny, int cluster, float zoff,
                       float **pv, size_t *pnv, int32_t **pf, size_t *pnf)
 {
     size_t nv=(size_t)(nx*ny), nf=(size_t)((nx-1)*(ny-1)*2), vi=0, fi=0;
-    float *v=(float*)ARENA_ALLOC(a,(long)(nv*3*sizeof(float)));
-    int32_t *f=(int32_t*)ARENA_ALLOC(a,(long)(nf*3*sizeof(int32_t)));
+    float *v=(float*)ARENA_ALLOC(a,(size_t)(nv*3*sizeof(float)));
+    int32_t *f=(int32_t*)ARENA_ALLOC(a,(size_t)(nf*3*sizeof(int32_t)));
     int ix,iy;
     for (iy=0;iy<ny;iy++) for (ix=0;ix<nx;ix++){
         float fx=(float)ix/(float)(nx-1);
@@ -144,7 +144,7 @@ static int run_selftest(void)
         RemeshOpts o; Remesh_default_opts(&o);
         make_grid(a, 41, 41, 1 /*cluster*/, 0.0f, &v,&nv,&f,&nf);
         cv_in=edge_cv(v,f,nf);
-        bnd=(uint8_t*)ARENA_ALLOC(a,(long)(nv*sizeof(uint8_t)));
+        bnd=(uint8_t*)ARENA_ALLOC(a,(size_t)(nv*sizeof(uint8_t)));
         selftest_boundary(a,f,nf,nv,bnd);
         if (Remesh_isotropic(a, v,nv, f,nf, NULL, &o, &ov,&onv,&of,&onf)!=0)
             c=0; /* fallback still valid, just note */
@@ -182,8 +182,8 @@ static int run_selftest(void)
             make_grid(b, 24, 24, 0, 0.0f, &va,&nva,&fa,&nfa);
             make_grid(b, 24, 24, 0, 2.0f, &vb,&nvb,&fb,&nfb);
             tnv=nva+nvb; tnf=nfa+nfb;
-            V =(float*)ARENA_ALLOC(b,(long)(tnv*3*sizeof(float)));
-            Fm=(int32_t*)ARENA_ALLOC(b,(long)(tnf*3*sizeof(int32_t)));
+            V =(float*)ARENA_ALLOC(b,(size_t)(tnv*3*sizeof(float)));
+            Fm=(int32_t*)ARENA_ALLOC(b,(size_t)(tnf*3*sizeof(int32_t)));
             memcpy(V, va, nva*3*sizeof(float));
             memcpy(V+nva*3, vb, nvb*3*sizeof(float));
             memcpy(Fm, fa, nfa*3*sizeof(int32_t));

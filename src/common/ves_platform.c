@@ -143,7 +143,7 @@ int ves_run_subprocess_logged(const char *exe, const char *const *argv,
         cmdline,   /* lpCommandLine */
         NULL, NULL,
         (hNull != INVALID_HANDLE_VALUE) ? TRUE : FALSE, /* bInheritHandles */
-        0,         /* dwCreationFlags */
+        CREATE_NO_WINDOW, /* logged batch helpers do not need a console window */
         NULL, NULL,
         &si, &pi);
 
@@ -184,6 +184,9 @@ int ves_run_subprocess_logged(const char *exe, const char *const *argv,
 /* ---- Linux: fork + execv + waitpid ---- */
 
 #include <sys/wait.h>
+#include <spawn.h>
+#include <fcntl.h>
+extern char **environ;
 
 int ves_run_subprocess(const char *exe, const char *const *argv,
                        double timeout_sec)
@@ -196,24 +199,20 @@ int ves_run_subprocess_logged(const char *exe, const char *const *argv,
 {
     if (!exe || !argv) return -1;
 
-    pid_t pid = fork();
-    if (pid < 0) {
-        fprintf(stderr, "  [ves_platform] fork() failed\n");
+    /* Workers may launch from OpenMP threads. posix_spawn avoids calling
+     * stdio/allocation routines in a forked, formerly multithreaded child. */
+    pid_t pid = 0;
+    posix_spawn_file_actions_t actions;
+    if (posix_spawn_file_actions_init(&actions) != 0) return -1;
+    const char *sink = log_path != NULL ? log_path : "/dev/null";
+    int error = posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO,
+                                                sink, O_WRONLY | O_CREAT | O_APPEND, 0666);
+    if (!error) error = posix_spawn_file_actions_adddup2(&actions, STDOUT_FILENO, STDERR_FILENO);
+    if (!error) error = posix_spawn(&pid, exe, &actions, NULL, (char *const *)argv, environ);
+    posix_spawn_file_actions_destroy(&actions);
+    if (error) {
+        fprintf(stderr, "  [ves_platform] posix_spawn failed: %d\n", error);
         return -1;
-    }
-
-    if (pid == 0) {
-        /* Child: stdout/stderr append to the stage log, else /dev/null */
-        FILE *sink = log_path != NULL ? fopen(log_path, "a") : NULL;
-        if (sink == NULL) sink = fopen("/dev/null", "w");
-        if (sink) {
-            dup2(fileno(sink), STDOUT_FILENO);
-            dup2(fileno(sink), STDERR_FILENO);
-            fclose(sink);
-        }
-        /* execv expects char *const *, cast away the outer const */
-        execv(exe, (char *const *)argv);
-        _exit(127); /* exec failed */
     }
 
     /* Parent: poll with timeout */
@@ -222,6 +221,7 @@ int ves_run_subprocess_logged(const char *exe, const char *const *argv,
     for (;;) {
         pid_t w = waitpid(pid, &status, WNOHANG);
         if (w > 0) break;
+        if (w < 0 && errno != EINTR) return -1;
 
         double elapsed = ves_clock_sec() - start;
         if (timeout_sec > 0 && elapsed > timeout_sec) {

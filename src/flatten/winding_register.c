@@ -86,7 +86,7 @@
  * but it cannot drag those good UVs into a global cascade.  Moves stay within
  * the same +/-8-turn trust region as the original recentered MRF. */
 #define WR_CONFLICT_MAX_ROUNDS              16
-#define WR_CONFLICT_MIN_BINS                 1
+#define WR_CONFLICT_MIN_BINS                 4
 #define WR_CONFLICT_MIN_CLAIMANTS            4
 #define WR_CONFLICT_RADIUS_FRACTION          0.55
 #define WR_CONFLICT_REMOTE_PITCHES           8.0
@@ -108,6 +108,86 @@
  * weak false continuation to be cut by two independent seam-order factors. */
 #define WR_MRF_CONTINUATION_SCALE              16.0
 
+/* --- rho fusion gate (R1 companion, 2026-09-01) ---------------------------
+ * After radial-layer site splitting (unwrap.c), the two halves of a FUSED
+ * component sit within the continuation match radius along the whole cut, so
+ * the neck manufactures thousands of target-0 continuation observations that
+ * would simply glue the layers back together (measured on the 4x5x5 weld:
+ * continuation observations 90k -> 1.2M after the split, wrap-step zeros
+ * unchanged at ~20%).  The wrap invariant rho = r - pitch*q adjudicates:
+ * two sites whose median rho differ by over half a pitch are DIFFERENT
+ * WRAPS, so a target-0 continuation between them is fusion evidence and is
+ * suppressed -- but only when both sites are themselves rho-coherent
+ * (small MAD), so a genuinely drifting site never loses real evidence.
+ * Nonzero-target continuations (co-location a whole turn apart) survive:
+ * they are the evidence that SEPARATES wraps. */
+/* --- overlap family (round 2 of the overlap-pile campaign) ---------------
+ * Cross-cube vertex pairs closer than WR_OVERLAP_EPS are two copies of the
+ * SAME halo-converged surface point, so their lifted phases differ by an
+ * exact whole number of turns.  This is the only evidence family whose
+ * per-observation error is ~0 by construction; it therefore carries its own
+ * hierarchy sentinel ABOVE continuations, and the forest prefers it
+ * absolutely.  Count-based weighting cannot substitute (measured 2026-09-01:
+ * vote count tracks contact area, and fusion necks have the largest areas).
+ */
+#define WR_OVERLAP_EPS        2.5   /* vox: same-SURFACE pair radius.  CVT
+                                     * resamples each cube independently
+                                     * (~4-6 vox spacing), so two copies of
+                                     * one surface never share vertex
+                                     * positions -- 0.75 found ZERO pairs.
+                                     * 2.5 is half the CVT edge, far under
+                                     * the 7-vox inter-wrap clearance, and
+                                     * 2.5 vox tangentially is ~0.002 turn
+                                     * of phase, inside the residual gate. */
+#define WR_OVERLAP_RES_TOL    0.10  /* turns: per-observation residual gate */
+#define WR_OVERLAP_MIN_COUNT  8     /* observations before a relation forms */
+#define WR_OVERLAP_MIN_AGREE  0.90
+#define WR_OVERLAP_SENTINEL   2000.0
+
+#define WR_RHO_FUSE_GATE   0.55   /* x pitch: |median rho| gap => fused */
+#define WR_RHO_MAD_MAX     0.30   /* x pitch: both sites must be coherent */
+/* Order veto: a pair whose continuation says "same turn" (target 0) while the
+ * ray-order family sees the same two pieces stacked radially with a nonzero
+ * turn difference is a FUSION CONTACT -- two wraps touching, where the local
+ * helix gate cannot tell them apart -- not a continuation.  Measured on the
+ * 21x3x3 tube (2026-09-02): 52% of fused wrap-steps were cross-piece pairs in
+ * one cube, 69% of them physically touching, all carrying a zero-target
+ * continuation that outranked their order relation. */
+/* Tangency gate on continuation pairs: a continuation is a surface
+ * continuing across a seam, so the displacement between the two vertices lies
+ * IN the surface.  Two wraps touching (fusion contact) or a wrap folded onto
+ * itself meet face-to-face: the displacement runs along the NORMAL.  Reject a
+ * pair whose displacement has more than WR_CONT_TANGENT_MAX of its length
+ * along either vertex normal (0.6 ~ 37 deg off the tangent plane).  Pairs
+ * closer than 1 vox keep going (direction meaningless; those are overlaps). */
+#define WR_CONT_TANGENT_MAX     0.6   /* the DROP variant: A/B only (VES_WR_TANGENT_GATE=1);
+                                       * measured 2026-09-02: core coverage 99.2 but
+                                       * coherence 71 -> 58 -- it also rejects pile-seam
+                                       * continuations (charts 1-2 vox apart radially
+                                       * across a 2-vox gap, ~37 deg) */
+/* CONTACT evidence (default policy): a pair at a real gap (>= WR_CONTACT_MIN_DIST
+ * vox) whose displacement runs more than WR_CONTACT_NORMAL_FRAC of its length
+ * along a vertex normal is face-to-face.  It is recorded as a WR_OBS_CONTACT
+ * observation for the piece pair instead of a continuation, and a pair whose
+ * contacts outnumber its tangential continuation observations has its
+ * zero-target continuation vetoed: two wraps glued along a region touch
+ * face-to-face almost everywhere, a same-wrap seam is tangential almost
+ * everywhere.  No dependence on the order family (whose "radial stacking"
+ * is meaningless in crumple zones and over-wound the 5x3x3 core). */
+#define WR_CONTACT_NORMAL_FRAC  0.8
+#define WR_CONTACT_MIN_DIST     2.0
+#define WR_CONTACT_VETO_MIN_OBS 6
+#define WR_CONTACT_VETO_RATIO   1.0
+#define WR_ORDER_VETO_MIN_OBS   6      /* order votes needed to veto */
+#define WR_ORDER_VETO_MIN_AGREE 0.75   /* and their agreement */
+/* A fusion CONTACT is small (few continuation votes) while the stacking it
+ * contradicts extends over the whole overlap (many order votes); a fold of
+ * one wrap onto itself is the opposite.  Measured 2026-09-02 on the tube:
+ * the unconditional veto regressed two crumple-zone slabs (95->79, 90->81)
+ * while fixing three fused ones (+20..+41); the ratio keeps the latter. */
+#define WR_ORDER_VETO_SUPPORT_RATIO 0.0   /* measured: 1.0 kept 77/336 vetoes and lost the gain */
+
+
 typedef struct {
     int32_t axial_bin, base_axial_bin, phase_bin, component, raw_turn;
     uint32_t count;
@@ -117,12 +197,16 @@ typedef struct {
 enum {
     WR_OBS_CONTINUATION = 0,
     WR_OBS_ORDER = 1,
-    WR_OBS_SEAM_ORDER = 2
+    WR_OBS_SEAM_ORDER = 2,
+    WR_OBS_OVERLAP = 3,
+    WR_OBS_CONTACT = 4      /* face-to-face pair; never a relation, only a veto */
 };
 
 static const char *wr_observation_kind_name(int kind)
 {
     return kind == WR_OBS_CONTINUATION ? "continuation" :
+           kind == WR_OBS_OVERLAP ? "overlap" :
+           kind == WR_OBS_CONTACT ? "contact" :
            kind == WR_OBS_SEAM_ORDER ? "order_seam" : "order";
 }
 
@@ -173,6 +257,83 @@ typedef struct {
     int32_t correction;
 } WrForbiddenWinding;
 
+typedef struct {
+    int32_t lineage;
+    int32_t root;
+} WrLineageRoot;
+
+static int wr_lineage_root_compare(const void *pa, const void *pb)
+{
+    const WrLineageRoot *a = (const WrLineageRoot *)pa;
+    const WrLineageRoot *b = (const WrLineageRoot *)pb;
+    if (a->lineage != b->lineage)
+        return a->lineage < b->lineage ? -1 : 1;
+    return a->root == b->root ? 0 : (a->root < b->root ? -1 : 1);
+}
+
+/* Union/find with an integer potential.  delta[x] is correction[x] minus
+ * correction[parent[x]].  A root may carry an absolute correction inherited
+ * from the immutable parent overlap.  Unlike an ordinary Kruskal forest this
+ * can decide, before accepting an edge, whether its requested gauge difference
+ * is compatible with every fixed component already in both trees. */
+typedef struct {
+    int32_t *parent;
+    uint8_t *rank;
+    int64_t *delta;
+    int64_t *fixed;
+    uint8_t *has_fixed;
+} WrGaugeUF;
+
+static int32_t wr_gauge_find(WrGaugeUF *uf, int32_t x, int64_t *out_delta)
+{
+    int32_t p = uf->parent[x];
+    if (p == x) {
+        *out_delta = 0;
+        return x;
+    }
+    int64_t above = 0;
+    int32_t root = wr_gauge_find(uf, p, &above);
+    uf->delta[x] += above;
+    uf->parent[x] = root;
+    *out_delta = uf->delta[x];
+    return root;
+}
+
+/* Enforce correction[b] - correction[a] == target.  Returns 1 when two trees
+ * were joined, 0 when they were already joined consistently, -1 when the edge
+ * contradicts an inherited absolute correction. */
+static int wr_gauge_union(WrGaugeUF *uf, int32_t a, int32_t b,
+                          int32_t target)
+{
+    int64_t da = 0, db = 0;
+    int32_t ra = wr_gauge_find(uf, a, &da);
+    int32_t rb = wr_gauge_find(uf, b, &db);
+    int64_t rb_minus_ra = (int64_t)target + da - db;
+    if (ra == rb)
+        return db - da == (int64_t)target ? 0 : -1;
+    if (uf->has_fixed[ra] && uf->has_fixed[rb] &&
+        uf->fixed[rb] - uf->fixed[ra] != rb_minus_ra)
+        return -1;
+
+    if (uf->rank[ra] >= uf->rank[rb]) {
+        uf->parent[rb] = ra;
+        uf->delta[rb] = rb_minus_ra;
+        if (!uf->has_fixed[ra] && uf->has_fixed[rb]) {
+            uf->has_fixed[ra] = 1;
+            uf->fixed[ra] = uf->fixed[rb] - rb_minus_ra;
+        }
+        if (uf->rank[ra] == uf->rank[rb]) uf->rank[ra]++;
+    } else {
+        uf->parent[ra] = rb;
+        uf->delta[ra] = -rb_minus_ra;
+        if (!uf->has_fixed[rb] && uf->has_fixed[ra]) {
+            uf->has_fixed[rb] = 1;
+            uf->fixed[rb] = uf->fixed[ra] + rb_minus_ra;
+        }
+    }
+    return 1;
+}
+
 /* Forensic trace for real-data conflict-resolution audits.  This is kept
  * behind an environment switch because a fragmented full-scroll solve can
  * legitimately contain thousands of components; the ordinary production log
@@ -195,6 +356,22 @@ static const char *wr_dump_terms_dir(void)
     const char *value = getenv("VES_WINDING_DUMP_TERMS");
     return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0
          ? value : NULL;
+}
+
+static FILE *wr_open_term_dump(
+    const char *stem, int solve_index, int round_index);
+
+static void wr_dump_correction_stage(
+    const char *name, const int32_t *correction, int32_t ncomponents)
+{
+    FILE *file;
+    if (name == NULL || correction == NULL || ncomponents <= 0 ||
+        wr_dump_terms_dir() == NULL)
+        return;
+    file = wr_open_term_dump(name, -1, -1);
+    if (file == NULL) return;
+    fwrite(correction, sizeof(*correction), (size_t)ncomponents, file);
+    fclose(file);
 }
 
 static FILE *wr_open_term_dump(
@@ -667,12 +844,25 @@ static WrCandidate wr_observation_mode(
         ? (double)best_count / (double)candidate.observations : 0.0;
     candidate.residual = best_count
         ? (double)observation[best_first + best_count / 2].residual : DBL_MAX;
-    if (kind == WR_OBS_CONTINUATION) {
+    if (kind == WR_OBS_OVERLAP) {
+        candidate.eligible = best_count >= WR_OVERLAP_MIN_COUNT &&
+            candidate.agreement >= WR_OVERLAP_MIN_AGREE &&
+            candidate.residual <= 0.05;
+        candidate.weight = WR_OVERLAP_SENTINEL +
+            log1p((double)best_count) * candidate.agreement /
+            (1.0 + 4.0 * candidate.residual);
+    } else if (kind == WR_OBS_CONTINUATION) {
         candidate.eligible = best_count >= 3 &&
             candidate.agreement >= 0.75 && candidate.residual <= 0.20;
         candidate.weight = 1000.0 +
             log1p((double)best_count) * candidate.agreement /
             (1.0 + 4.0 * candidate.residual);
+        /* NOTE (2026-09-01 overlap rehearsal): replacing log1p with linear
+         * count was MEASURED BAD (zero-steps 8.1% -> 32.0% on the overlap
+         * pile): vote count tracks CONTACT AREA, and fusion necks have the
+         * largest areas, so linear weighting hands the forest to the
+         * fusions.  Distinguishing exact overlap evidence needs PROVENANCE
+         * (cross-cube pairs at ~zero distance), not raw count. */
     } else {
         candidate.eligible = best_count >= 4 &&
             candidate.agreement >= 0.60 && candidate.residual <= 0.20;
@@ -750,11 +940,11 @@ static int wr_build_samples(
         capacity > (size_t)LONG_MAX / sizeof(int32_t))
         return -1;
     WrStrand *strand = (WrStrand *)ARENA_ALLOC(
-        arena, (long)(capacity * sizeof(WrStrand)));
+        arena, (size_t)(capacity * sizeof(WrStrand)));
     int32_t *sample_vertex = (int32_t *)ARENA_ALLOC(
-        arena, (long)(capacity * sizeof(int32_t)));
+        arena, (size_t)(capacity * sizeof(int32_t)));
     uint8_t *sampled = (uint8_t *)ARENA_CALLOC(
-        arena, (long)ncomponents, (long)sizeof(uint8_t));
+        arena, (size_t)ncomponents, sizeof(uint8_t));
     size_t count = 0;
     for (size_t i = 0; i < nvertices; i++) {
         int32_t c = component[i];
@@ -782,9 +972,9 @@ static int wr_component_axial_extents(
     double **out_minimum, double **out_maximum)
 {
     double *minimum = (double *)ARENA_ALLOC(
-        arena, (long)((size_t)ncomponents * sizeof(double)));
+        arena, (size_t)((size_t)ncomponents * sizeof(double)));
     double *maximum = (double *)ARENA_ALLOC(
-        arena, (long)((size_t)ncomponents * sizeof(double)));
+        arena, (size_t)((size_t)ncomponents * sizeof(double)));
     for (int32_t c = 0; c < ncomponents; c++) {
         minimum[c] = DBL_MAX;
         maximum[c] = -DBL_MAX;
@@ -802,39 +992,59 @@ static int wr_component_axial_extents(
     return 0;
 }
 
-static void wr_collect_continuations(
-    const float *vertices, const double *radius, const double *theta,
+static int wr_collect_continuations(
+    const float *vertices, const float *normal,
+    const double *radius, const double *theta,
     const double *q, const int32_t *component,
     const int32_t *sample_vertex, size_t nsample,
     double pitch, int winding_sense,
     WrObservation *observation, size_t capacity,
-    size_t continuation_limit, size_t *count, size_t *dropped)
+    size_t continuation_limit, size_t *count, size_t *dropped,
+    int drop_tangent, size_t *tangent_rejected, size_t *contacts,
+    int exhaustive, const float *boundary_direction,
+    size_t *front_vertices, size_t *front_rejected)
 {
     if (!(pitch > 1e-6) || !isfinite(pitch) ||
         (winding_sense != -1 && winding_sense != 1))
-        return;
+        return -1;
     double gap = 0.75 * pitch;
     if (gap < 3.0) gap = 3.0;
     if (gap > 8.0) gap = 8.0;
     double gap2 = gap * gap, inverse = 1.0 / gap;
-    if (nsample > SIZE_MAX / 2) return;
-    size_t required = 2 * nsample, slots = 1;
+    if (nsample > SIZE_MAX / 2) return -1;
+    size_t active=nsample;
+    if (boundary_direction!=NULL) {
+        active=0;
+        for (size_t i=0;i<nsample;i++) {
+            const float *c=boundary_direction+3*(size_t)sample_vertex[i];
+            double length2=(double)c[0]*c[0]+(double)c[1]*c[1]+(double)c[2]*c[2];
+            if (!isfinite(length2) || (length2>0 && fabs(length2-1)>1e-5)) return -1;
+            active+=(size_t)(length2>0);
+        }
+    }
+    if (front_vertices!=NULL) *front_vertices=active;
+    if (!active) return 0;
+    size_t required = 2 * active, slots = 1;
     while (slots < required) {
-        if (slots > SIZE_MAX / 2) return;
+        if (slots > SIZE_MAX / 2) return -1;
         slots <<= 1;
     }
     if (slots > SIZE_MAX / sizeof(WrCell) ||
         nsample > SIZE_MAX / sizeof(int32_t))
-        return;
+        return -1;
     WrCell *cell = (WrCell *)calloc(slots, sizeof(WrCell));
     int32_t *next = (int32_t *)malloc(nsample * sizeof(int32_t));
     if (cell == NULL || next == NULL) {
         free(next); free(cell);
-        return; /* fail-soft: ray-order evidence remains available */
+        return -1; /* Legacy caller may still use ray-order evidence. */
     }
     for (size_t si = 0; si < nsample; si++) {
         int32_t vertex = sample_vertex[si], ix, iy, iz;
         next[si] = -1;
+        if (boundary_direction!=NULL) {
+            const float *c=boundary_direction+3*(size_t)vertex;
+            if (c[0]==0 && c[1]==0 && c[2]==0) continue;
+        }
         if (wr_cell_coordinate(vertices[(size_t)vertex*3+0],
                                inverse, &iz) != 0 ||
             wr_cell_coordinate(vertices[(size_t)vertex*3+1],
@@ -847,8 +1057,18 @@ static void wr_collect_continuations(
         next[si] = slot->head;
         slot->head = (int32_t)si;
     }
-    for (size_t si = 0; si < nsample && *count < continuation_limit; si++) {
+    for (size_t si = 0; si < nsample; si++) {
+        if (*count >= continuation_limit) {
+            /* The previous loop condition silently published a prefix. */
+            (*dropped)++;
+            free(next); free(cell);
+            return -1;
+        }
         int32_t vi = sample_vertex[si], ix, iy, iz;
+        if (boundary_direction!=NULL) {
+            const float *c=boundary_direction+3*(size_t)vi;
+            if (c[0]==0 && c[1]==0 && c[2]==0) continue;
+        }
         if (wr_cell_coordinate(vertices[(size_t)vi*3+0],
                                inverse, &iz) != 0 ||
             wr_cell_coordinate(vertices[(size_t)vi*3+1],
@@ -864,7 +1084,7 @@ static void wr_collect_continuations(
             if (slot == NULL) continue;
             int scanned = 0;
             for (int32_t sj = slot->head;
-                 sj >= 0 && scanned < WR_CELL_SCAN_LIMIT;
+                 sj >= 0 && (exhaustive || scanned < WR_CELL_SCAN_LIMIT);
                  sj = next[sj], scanned++) {
                 if ((size_t)sj <= si) continue;
                 int32_t vj = sample_vertex[(size_t)sj];
@@ -877,6 +1097,47 @@ static void wr_collect_continuations(
                 double d2 = (double)vertices[(size_t)vi*3+2] -
                             (double)vertices[(size_t)vj*3+2];
                 if (d0*d0 + d1*d1 + d2*d2 > gap2) continue;
+                if (boundary_direction!=NULL) {
+                    const float *a=boundary_direction+3*(size_t)vi;
+                    const float *b=boundary_direction+3*(size_t)vj;
+                    double toward_i=-(d0*a[0]+d1*a[1]+d2*a[2]);
+                    double toward_j=d0*b[0]+d1*b[1]+d2*b[2];
+                    double opposing=(double)a[0]*b[0]+(double)a[1]*b[1]+(double)a[2]*b[2];
+                    int faces_gap=d0*d0+d1*d1+d2*d2>0
+                                  ? toward_i>0 && toward_j>0 : opposing<0;
+                    if (!faces_gap) {
+                        /* Keep unsupported front proximity as diagnostic
+                         * contact, never promote it to sheet identity. */
+                        wr_append_observation(observation,capacity,count,dropped,ci,cj,0,0,WR_OBS_CONTACT);
+                        if (contacts!=NULL) (*contacts)++;
+                        if (front_rejected!=NULL) (*front_rejected)++;
+                        continue;
+                    }
+                }
+                if (normal != NULL) {
+                    double dist2 = d0*d0 + d1*d1 + d2*d2;
+                    const float *ni = normal + (size_t)vi * 3;
+                    const float *nj = normal + (size_t)vj * 3;
+                    double ai = d0 * ni[0] + d1 * ni[1] + d2 * ni[2];
+                    double aj = d0 * nj[0] + d1 * nj[1] + d2 * nj[2];
+                    double an = fabs(ai) > fabs(aj) ? ai : aj;
+                    if (dist2 >= WR_CONTACT_MIN_DIST * WR_CONTACT_MIN_DIST &&
+                        an * an > WR_CONTACT_NORMAL_FRAC *
+                                  WR_CONTACT_NORMAL_FRAC * dist2) {
+                        /* face-to-face at a real gap: contact evidence */
+                        wr_append_observation(
+                            observation, capacity, count, dropped, ci, cj,
+                            0, 0.0, WR_OBS_CONTACT);
+                        if (contacts != NULL) (*contacts)++;
+                        continue;
+                    }
+                    if (drop_tangent && dist2 > 1.0 &&
+                        an * an > WR_CONT_TANGENT_MAX * WR_CONT_TANGENT_MAX *
+                                  dist2) {
+                        if (tangent_rejected != NULL) (*tangent_rejected)++;
+                        continue;
+                    }
+                }
                 double dtheta = wr_wrap_to_pi(theta[vj] - theta[vi]);
                 double helix = (radius[vj] - radius[vi]) / pitch -
                     (double)winding_sense * dtheta / WR_TWO_PI;
@@ -895,6 +1156,97 @@ static void wr_collect_continuations(
     }
     free(next);
     free(cell);
+    return 0;
+}
+
+/* Overlap observations: cross-cube pairs at near-identical positions.
+ * Same uniform cell hash as the continuation collector, tighter radius, no
+ * helix gate (the pair IS one physical point; nothing to test but phase). */
+static void wr_collect_overlap(
+    const float *vertices, const double *q,
+    const int32_t *component, const int32_t *vertex_cube,
+    const int32_t *sample_vertex, size_t nsample,
+    WrObservation *observation, size_t capacity,
+    size_t *count, size_t *dropped, size_t *out_pairs)
+{
+    double cell = 2.0 * WR_OVERLAP_EPS;
+    double inverse = 1.0 / cell;
+    size_t slots = 1;
+    int32_t *next = NULL;
+    WrCell *cellv = NULL;
+    size_t emitted = 0;
+    if (out_pairs != NULL) *out_pairs = 0;
+    if (vertex_cube == NULL || nsample < 2) return;
+    while (slots < 2 * nsample) slots <<= 1;
+    next = (int32_t *)malloc(nsample * sizeof *next);
+    cellv = (WrCell *)malloc(slots * sizeof *cellv);
+    if (next == NULL || cellv == NULL) {
+        free(next);
+        free(cellv);
+        return;
+    }
+    for (size_t i = 0; i < slots; i++) cellv[i].head = -1;
+    for (size_t si = 0; si < nsample; si++) {
+        int32_t vi = sample_vertex[si];
+        int32_t iz = 0, iy = 0, ix = 0;
+        if (wr_cell_coordinate(vertices[(size_t)vi*3+0], inverse, &iz) != 0 ||
+            wr_cell_coordinate(vertices[(size_t)vi*3+1], inverse, &iy) != 0 ||
+            wr_cell_coordinate(vertices[(size_t)vi*3+2], inverse, &ix) != 0) {
+            next[si] = -1;
+            continue;
+        }
+        WrCell *slot = wr_cell_find(cellv, slots - 1, ix, iy, iz, 1);
+        if (slot == NULL) { next[si] = -1; continue; }
+        next[si] = slot->head;
+        slot->head = (int32_t)si;
+    }
+    for (size_t si = 0; si < nsample; si++) {
+        int32_t vi = sample_vertex[si];
+        int32_t iz = 0, iy = 0, ix = 0;
+        if (wr_cell_coordinate(vertices[(size_t)vi*3+0], inverse, &iz) != 0 ||
+            wr_cell_coordinate(vertices[(size_t)vi*3+1], inverse, &iy) != 0 ||
+            wr_cell_coordinate(vertices[(size_t)vi*3+2], inverse, &ix) != 0)
+            continue;
+        for (int dz = -1; dz <= 1; dz++)
+        for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++) {
+            WrCell *slot = wr_cell_find(
+                cellv, slots - 1, ix + dx, iy + dy, iz + dz, 0);
+            if (slot == NULL) continue;
+            int scanned = 0;
+            for (int32_t sj = slot->head;
+                 sj >= 0 && scanned < WR_CELL_SCAN_LIMIT;
+                 sj = next[sj], scanned++) {
+                if ((size_t)sj <= si) continue;
+                int32_t vj = sample_vertex[(size_t)sj];
+                int32_t ci = component[vi], cj = component[vj];
+                if (ci == cj) continue;
+                if (vertex_cube[vi] == vertex_cube[vj]) continue;
+                double d0 = (double)vertices[(size_t)vi*3+0] -
+                            (double)vertices[(size_t)vj*3+0];
+                double d1 = (double)vertices[(size_t)vi*3+1] -
+                            (double)vertices[(size_t)vj*3+1];
+                double d2 = (double)vertices[(size_t)vi*3+2] -
+                            (double)vertices[(size_t)vj*3+2];
+                if (d0*d0 + d1*d1 + d2*d2 >
+                    WR_OVERLAP_EPS * WR_OVERLAP_EPS)
+                    continue;
+                long target_long = lround(q[vi] - q[vj]);
+                if (target_long < INT32_MIN || target_long > INT32_MAX)
+                    continue;
+                double residual =
+                    fabs(q[vj] + (double)target_long - q[vi]);
+                if (residual > WR_OVERLAP_RES_TOL) continue;
+                wr_append_observation(
+                    observation, capacity, count, dropped, ci, cj,
+                    (int32_t)target_long, residual, WR_OBS_OVERLAP);
+                emitted++;
+            }
+        }
+    }
+    free(next);
+    free(cellv);
+    if (out_pairs != NULL) *out_pairs = emitted;
 }
 
 static size_t wr_collapse_strands(WrStrand *strand, size_t nsample)
@@ -1231,14 +1583,27 @@ static int wr_collect_order(
 
 static int wr_build_relations(
     Arena_T arena, WrObservation *observation, size_t nobservation,
+    const double *comp_rho, const double *comp_rho_mad,
+    int32_t ncomponents, double pitch,
+    const WindingSiblingPair *sibling, size_t nsibling,
+    size_t *rho_suppressed, size_t *order_vetoed, size_t *contact_vetoed,
     WrRelation **out_relation, size_t *out_count)
 {
     qsort(observation, nobservation, sizeof(WrObservation),
           wr_compare_observation);
-    if (nobservation > ((size_t)LONG_MAX / sizeof(WrRelation)) - 1)
+    /* one relation per distinct (a,b) pair -- sizing by raw observations
+     * overflows the 32-bit arena request long once the radial-layer split
+     * multiplies co-location evidence (measured 10x: tens of millions of
+     * observations for ~100k pairs) */
+    size_t npair_cap = 0;
+    for (size_t oi = 0; oi < nobservation; oi++)
+        if (oi == 0 || observation[oi].a != observation[oi - 1].a ||
+            observation[oi].b != observation[oi - 1].b)
+            npair_cap++;
+    if (npair_cap > ((size_t)LONG_MAX / sizeof(WrRelation)) - 1)
         return -1;
     WrRelation *relation = (WrRelation *)ARENA_ALLOC(
-        arena, (long)((nobservation + 1) * sizeof(WrRelation)));
+        arena, (size_t)((npair_cap + 1) * sizeof(WrRelation)));
     size_t nrelation = 0;
     for (size_t first = 0; first < nobservation;) {
         size_t last = first + 1;
@@ -1246,10 +1611,12 @@ static int wr_build_relations(
                observation[last].a == observation[first].a &&
                observation[last].b == observation[first].b)
             last++;
-        WrCandidate continuation, order, seam_order;
+        WrCandidate continuation, order, seam_order, overlap, contact;
         memset(&continuation, 0, sizeof(continuation));
         memset(&order, 0, sizeof(order));
         memset(&seam_order, 0, sizeof(seam_order));
+        memset(&overlap, 0, sizeof(overlap));
+        memset(&contact, 0, sizeof(contact));
         for (size_t kind_first = first; kind_first < last;) {
             size_t kind_last = kind_first + 1;
             while (kind_last < last &&
@@ -1259,7 +1626,11 @@ static int wr_build_relations(
             WrCandidate candidate = wr_observation_mode(
                 observation, kind_first, kind_last,
                 observation[kind_first].kind);
-            if (candidate.kind == WR_OBS_CONTINUATION)
+            if (candidate.kind == WR_OBS_OVERLAP)
+                overlap = candidate;
+            else if (candidate.kind == WR_OBS_CONTACT)
+                contact = candidate;
+            else if (candidate.kind == WR_OBS_CONTINUATION)
                 continuation = candidate;
             else if (candidate.kind == WR_OBS_SEAM_ORDER)
                 seam_order = candidate;
@@ -1278,8 +1649,59 @@ static int wr_build_relations(
             chosen_order = seam_order;
         else
             chosen_order = order;
+        int rho_fused = 0;
+        if (comp_rho != NULL && comp_rho_mad != NULL && pitch > 1e-6) {
+            int32_t ra = observation[first].a;
+            int32_t rb = observation[first].b;
+            if (ra >= 0 && ra < ncomponents && rb >= 0 && rb < ncomponents &&
+                comp_rho_mad[ra] < WR_RHO_MAD_MAX * pitch &&
+                comp_rho_mad[rb] < WR_RHO_MAD_MAX * pitch &&
+                fabs(comp_rho[ra] - comp_rho[rb]) > WR_RHO_FUSE_GATE * pitch)
+                rho_fused = 1;
+        }
+        if (!rho_fused && sibling != NULL) {
+            size_t si3 = 0;
+            int32_t pa = observation[first].a, pb = observation[first].b;
+            for (si3 = 0; si3 < nsibling; si3++) {
+                int32_t x = sibling[si3].inner, y2 = sibling[si3].outer;
+                if (x > y2) { int32_t t2 = x; x = y2; y2 = t2; }
+                if (x == pa && y2 == pb) { rho_fused = 1; break; }
+            }
+        }
+        if (rho_fused && continuation.valid && continuation.target == 0) {
+            /* the neck of a split fusion: see WR_RHO_FUSE_GATE above */
+            continuation.valid = 0;
+            continuation.eligible = 0;
+            if (rho_suppressed != NULL) (*rho_suppressed)++;
+        }
+        if (contact_vetoed != NULL &&
+            continuation.valid && continuation.target == 0 &&
+            contact.valid &&
+            contact.observations >= WR_CONTACT_VETO_MIN_OBS &&
+            (double)contact.observations >=
+                WR_CONTACT_VETO_RATIO * (double)continuation.observations) {
+            /* fusion contact: see WR_CONTACT_NORMAL_FRAC above */
+            continuation.valid = 0;
+            continuation.eligible = 0;
+            (*contact_vetoed)++;
+        }
+        if (order_vetoed != NULL &&
+            continuation.valid && continuation.target == 0 &&
+            chosen_order.valid && chosen_order.target != 0 &&
+            chosen_order.mode_observations >= WR_ORDER_VETO_MIN_OBS &&
+            chosen_order.agreement >= WR_ORDER_VETO_MIN_AGREE &&
+            (double)chosen_order.mode_observations >=
+                WR_ORDER_VETO_SUPPORT_RATIO *
+                (double)continuation.mode_observations) {
+            /* fusion contact: see WR_ORDER_VETO_MIN_OBS above */
+            continuation.valid = 0;
+            continuation.eligible = 0;
+            if (order_vetoed != NULL) (*order_vetoed)++;
+        }
         WrCandidate chosen;
-        if (continuation.valid && continuation.eligible)
+        if (overlap.valid && overlap.eligible)
+            chosen = overlap;
+        else if (continuation.valid && continuation.eligible)
             chosen = continuation;
         else if (chosen_order.valid && chosen_order.eligible)
             chosen = chosen_order;
@@ -1313,6 +1735,72 @@ static int wr_build_relations(
     return 0;
 }
 
+/* Fixed-scroll collector: retain the sufficient statistics of EVERY family
+ * and integer target, before the legacy winner/veto/forest decisions.
+ * Geometry supplied at arbitrary chart gauges q+c must produce targets
+ * t+c_a-c_b with the same weights and eligibility. In particular, 'target
+ * zero' has no physical meaning before the chart gauges have been solved. */
+static int wr_collect_all_relations(
+    Arena_T arena, WrObservation *observation, size_t count,
+    WindingRegisterRelation **out, size_t *nout, WindingRegisterStats *stats)
+{
+    size_t groups=0, at=0;
+    WindingRegisterRelation *result=NULL;
+    qsort(observation,count,sizeof *observation,wr_compare_observation);
+    for (size_t i=0; i<count; i++)
+        if (i==0 || observation[i].a!=observation[i-1].a ||
+            observation[i].b!=observation[i-1].b || observation[i].kind!=observation[i-1].kind ||
+            observation[i].target!=observation[i-1].target) groups++;
+    result=(WindingRegisterRelation *)ARENA_CALLOC(arena,groups,sizeof *result);
+    for (size_t pair=0; pair<count; ) {
+        size_t end=pair+1, contacts=0, tangents=0;
+        while (end<count && observation[end].a==observation[pair].a &&
+               observation[end].b==observation[pair].b) end++;
+        for (size_t i=pair; i<end; i++) {
+            contacts+=observation[i].kind==WR_OBS_CONTACT;
+            tangents+=observation[i].kind==WR_OBS_CONTINUATION;
+        }
+        for (size_t family=pair; family<end; ) {
+            size_t family_end=family+1;
+            int kind=observation[family].kind;
+            while (family_end<end && observation[family_end].kind==kind) family_end++;
+            for (size_t first=family; first<family_end; ) {
+                size_t last=first+1;
+                WrCandidate candidate;
+                WindingRegisterRelation *r=result+at++;
+                while (last<family_end && observation[last].target==observation[first].target) last++;
+                candidate=wr_observation_mode(observation,first,last,kind);
+                r->a=observation[first].a; r->b=observation[first].b;
+                r->target=candidate.target; r->kind=kind;
+                r->observations=family_end-family; r->mode_observations=last-first;
+                r->agreement=(double)r->mode_observations/(double)r->observations;
+                r->residual=candidate.residual;
+                r->eligible=candidate.eligible;
+                if (kind==WR_OBS_CONTINUATION) {
+                    double support=(double)tangents/(double)(tangents+contacts);
+                    r->weight=1000+(candidate.weight-1000)*r->agreement*support;
+                    r->eligible=r->eligible && r->agreement>=.75;
+                } else if (kind==WR_OBS_OVERLAP) {
+                    r->weight=WR_OVERLAP_SENTINEL+(candidate.weight-WR_OVERLAP_SENTINEL)*r->agreement;
+                    r->eligible=r->eligible && r->agreement>=WR_OVERLAP_MIN_AGREE;
+                } else if (kind==WR_OBS_CONTACT) {
+                    r->weight=log1p((double)r->mode_observations); r->eligible=0;
+                } else {
+                    r->weight=candidate.weight*r->agreement;
+                    r->eligible=r->eligible && r->agreement>=.60;
+                }
+                stats->eligible_relations+=(size_t)(r->eligible!=0);
+                first=last;
+            }
+            family=family_end;
+        }
+        pair=end;
+    }
+    stats->relations=at;
+    *out=result; *nout=at;
+    return at==groups ? 0 : -1;
+}
+
 /* Integer loop closure (see the WR_REPAIR_* constants above).  Operates on
  * the BFS-chained corrections BEFORE anchoring/packing, per forest tree.
  * Hierarchy (relation weight) chose the forest; measured support
@@ -1326,17 +1814,17 @@ static int wr_repair_subtree_shifts(
     int32_t *correction, WindingRegisterStats *stats)
 {
     int32_t *order = (int32_t *)ARENA_ALLOC(
-        arena, (long)((size_t)ncomponents * sizeof(int32_t)));
+        arena, (size_t)((size_t)ncomponents * sizeof(int32_t)));
     int32_t *pre = (int32_t *)ARENA_ALLOC(
-        arena, (long)((size_t)ncomponents * sizeof(int32_t)));
+        arena, (size_t)((size_t)ncomponents * sizeof(int32_t)));
     int32_t *sub = (int32_t *)ARENA_ALLOC(
-        arena, (long)((size_t)ncomponents * sizeof(int32_t)));
+        arena, (size_t)((size_t)ncomponents * sizeof(int32_t)));
     int32_t *parent = (int32_t *)ARENA_ALLOC(
-        arena, (long)((size_t)ncomponents * sizeof(int32_t)));
+        arena, (size_t)((size_t)ncomponents * sizeof(int32_t)));
     int32_t *tree_of = (int32_t *)ARENA_ALLOC(
-        arena, (long)((size_t)ncomponents * sizeof(int32_t)));
+        arena, (size_t)((size_t)ncomponents * sizeof(int32_t)));
     int32_t *stack = (int32_t *)ARENA_ALLOC(
-        arena, (long)((size_t)ncomponents * sizeof(int32_t)));
+        arena, (size_t)((size_t)ncomponents * sizeof(int32_t)));
     int32_t ntree = 0, npre = 0;
     uint64_t work = 0;
     size_t neligible = 0;
@@ -1349,7 +1837,7 @@ static int wr_repair_subtree_shifts(
     /* preorder tour over the forest adjacency; trees are contiguous spans */
     for (int32_t c = 0; c < ncomponents; c++) { pre[c] = -1; parent[c] = -1; }
     int32_t *tree_first_pre = (int32_t *)ARENA_ALLOC(
-        arena, (long)(((size_t)ncomponents + 1) * sizeof(int32_t)));
+        arena, (size_t)(((size_t)ncomponents + 1) * sizeof(int32_t)));
     for (int32_t seed = 0; seed < ncomponents; seed++) {
         size_t top = 0;
         if (pre[seed] >= 0) continue;
@@ -1384,21 +1872,21 @@ static int wr_repair_subtree_shifts(
     /* eligible edges, grouped per tree (counting sort keeps the
      * weight-sorted relation order inside each group -- deterministic) */
     int32_t *e_a = (int32_t *)ARENA_ALLOC(
-        arena, (long)(neligible * sizeof(int32_t)));
+        arena, (size_t)(neligible * sizeof(int32_t)));
     int32_t *e_b = (int32_t *)ARENA_ALLOC(
-        arena, (long)(neligible * sizeof(int32_t)));
+        arena, (size_t)(neligible * sizeof(int32_t)));
     int32_t *e_target = (int32_t *)ARENA_ALLOC(
-        arena, (long)(neligible * sizeof(int32_t)));
+        arena, (size_t)(neligible * sizeof(int32_t)));
     int64_t *e_w = (int64_t *)ARENA_ALLOC(
-        arena, (long)(neligible * sizeof(int64_t)));
+        arena, (size_t)(neligible * sizeof(int64_t)));
     int64_t *e_implied = (int64_t *)ARENA_ALLOC(
-        arena, (long)(neligible * sizeof(int64_t)));
+        arena, (size_t)(neligible * sizeof(int64_t)));
     uint8_t *e_conflict = (uint8_t *)ARENA_ALLOC(
-        arena, (long)(neligible * sizeof(uint8_t)));
+        arena, (size_t)(neligible * sizeof(uint8_t)));
     size_t *tree_edge_first = (size_t *)ARENA_CALLOC(
-        arena, (long)ntree + 1, (long)sizeof(size_t));
+        arena, (size_t)ntree + 1, sizeof(size_t));
     size_t *edge_of_tree = (size_t *)ARENA_ALLOC(
-        arena, (long)(neligible * sizeof(size_t)));
+        arena, (size_t)(neligible * sizeof(size_t)));
     {
         size_t e = 0;
         for (size_t i = 0; i < nrelation; i++) {
@@ -1421,7 +1909,7 @@ static int wr_repair_subtree_shifts(
         for (int32_t t = 0; t < ntree; t++)
             tree_edge_first[t + 1] += tree_edge_first[t];
         size_t *cursor = (size_t *)ARENA_ALLOC(
-            arena, (long)((size_t)ntree * sizeof(size_t)));
+            arena, (size_t)((size_t)ntree * sizeof(size_t)));
         for (int32_t t = 0; t < ntree; t++) cursor[t] = tree_edge_first[t];
         for (size_t k = 0; k < e; k++)
             edge_of_tree[cursor[tree_of[e_a[k]]]++] = k;
@@ -1429,13 +1917,13 @@ static int wr_repair_subtree_shifts(
     if (stats->repair_closers == 0) return 0;
 
     WrCut *cut = (WrCut *)ARENA_ALLOC(
-        arena, (long)((size_t)ncomponents * sizeof(WrCut)));
+        arena, (size_t)((size_t)ncomponents * sizeof(WrCut)));
     size_t *conflicted = (size_t *)ARENA_ALLOC(
-        arena, (long)(neligible * sizeof(size_t)));
+        arena, (size_t)(neligible * sizeof(size_t)));
     size_t *crossing = (size_t *)ARENA_ALLOC(
-        arena, (long)(neligible * sizeof(size_t)));
+        arena, (size_t)(neligible * sizeof(size_t)));
     uint8_t *crossing_inb = (uint8_t *)ARENA_ALLOC(
-        arena, (long)(neligible * sizeof(uint8_t)));
+        arena, (size_t)(neligible * sizeof(uint8_t)));
 
     for (int32_t t = 0; t < ntree; t++) {
         size_t efirst = tree_edge_first[t], elast = tree_edge_first[t + 1];
@@ -1585,6 +2073,8 @@ static int wr_mrf_refine(
         arena, (size_t)ncomponents * sizeof *lock_correction);
     uint8_t *is_locked = (uint8_t *)ARENA_CALLOC(
         arena, (size_t)ncomponents, sizeof *is_locked);
+    uint8_t *root_has_lock = (uint8_t *)ARENA_CALLOC(
+        arena, (size_t)ncomponents, sizeof *root_has_lock);
     for (size_t i = 0; i < nlocked; i++) {
         int32_t c = locked[i].component;
         if (c < 0 || c >= ncomponents ||
@@ -1594,6 +2084,7 @@ static int wr_mrf_refine(
         }
         is_locked[c] = 1;
         lock_correction[c] = locked[i].correction;
+        root_has_lock[uf_find(graph,c)] = 1;
     }
     WindingRegisterFieldUnary calibrated;
     memset(&calibrated, 0, sizeof calibrated);
@@ -1740,12 +2231,23 @@ static int wr_mrf_refine(
              * abstains; a valid field unary gets its measurement. */
             site[c].weight = have_field ? field_unary->weight[c] : 0.02;
             site[c].initial_label = 0;
-            site[c].fixed = uf_find(graph, c) == c;
+            /* A UF representative is an arbitrary gauge pin, not measured
+             * material. Once any explicit boundary/context lock fixes this
+             * island's gauge, retaining a second implicit root pin can block
+             * supported corrections solely because of union enumeration. */
+            int32_t root = uf_find(graph,c);
+            site[c].fixed = root == c && !root_has_lock[root];
             if (is_locked[c]) {
                 int64_t lock_delta = (int64_t)lock_correction[c] -
                                      (int64_t)correction[c];
                 if (lock_delta < options.label_min ||
                     lock_delta > options.label_max) {
+                    fprintf(stderr, "  wr_mrf_refine: lock on c%d is %lld "
+                            "labels from the current correction "
+                            "(window %d..%d)", (int)c,
+                            (long long)lock_delta,
+                            options.label_min, options.label_max);
+                    fputc(10, stderr);
                     Arena_restore(arena, mark);
                     return -1;
                 }
@@ -1818,6 +2320,10 @@ static int wr_mrf_refine(
         if (WindingMRF_solve_with_penalties(
                 arena, site, (size_t)ncomponents, edge, at,
                 penalty, np, &options, &delta, &confidence, &mrf) != 0) {
+            fprintf(stderr, "  wr_mrf_refine: WindingMRF solve failed "
+                    "(%d sites, %zu edges, %zu penalties)",
+                    (int)ncomponents, at, np);
+            fputc(10, stderr);
             Arena_restore(arena, mark);
             return -1;
         }
@@ -1874,6 +2380,7 @@ static int wr_collect_conflict_exclusions(
     int32_t ncomponents, const int32_t *component_size,
     int32_t anchor_component, double pitch, UnionFind *graph,
     const int32_t *correction, const uint8_t *movable,
+    const int32_t *parent_correction,
     WrForbiddenWinding *forbidden, size_t forbidden_capacity,
     size_t *nforbidden,
     WrForbiddenWinding *locked, size_t locked_capacity,
@@ -1904,6 +2411,14 @@ static int wr_collect_conflict_exclusions(
         arena, (size_t)ncomponents, sizeof *losing_bins);
     uint32_t *winning_bins = (uint32_t *)ARENA_CALLOC(
         arena, (size_t)ncomponents, sizeof *winning_bins);
+    size_t *last_losing_bin = (size_t *)ARENA_ALLOC(
+        arena, (size_t)ncomponents * sizeof *last_losing_bin);
+    size_t *last_winning_bin = (size_t *)ARENA_ALLOC(
+        arena, (size_t)ncomponents * sizeof *last_winning_bin);
+    for (int32_t c = 0; c < ncomponents; c++) {
+        last_losing_bin[c] = SIZE_MAX;
+        last_winning_bin[c] = SIZE_MAX;
+    }
     for (int32_t c = 0; c < ncomponents; c++)
         score[c] = log1p((double)(component_size[c] > 0
                                ? component_size[c] : 0));
@@ -1927,6 +2442,11 @@ static int wr_collect_conflict_exclusions(
     for (int32_t c = 0; c < ncomponents; c++)
         if (uf_find(graph, c) == c) score[c] += 1.0e12;
     score[anchor_component] += 1.0e13;
+    /* Exact inherited material is context, including non-root sites. Its
+     * presence must not disable correction of unrelated, newly added sites. */
+    if (parent_correction != NULL)
+        for (int32_t c = 0; c < ncomponents; c++)
+            if (parent_correction[c] != INT32_MIN) score[c] += 1.0e14;
 
     for (size_t i = 0; i < nstrand; i++) {
         int32_t c = strand[i].component;
@@ -1976,8 +2496,11 @@ static int wr_collect_conflict_exclusions(
             int cluster_trusted = 0;
             for (size_t i = cluster_first; i < cluster_last; i++) {
                 cluster_score += score[claim[i].component];
-                if (movable != NULL && !movable[claim[i].component])
+                if (movable != NULL && !movable[claim[i].component] && cluster_trusted < 1)
                     cluster_trusted = 1;
+                if (parent_correction != NULL &&
+                    parent_correction[claim[i].component] != INT32_MIN)
+                    cluster_trusted = 2;
             }
             /* Once an outer episode has identified its losing batch, that
              * provenance is immutable.  A displaced loser may never become
@@ -2016,8 +2539,11 @@ static int wr_collect_conflict_exclusions(
                         for (size_t i = cluster_first;
                              i < cluster_last; i++) {
                             int32_t c = claim[i].component;
-                            if (losing_bins[c] < UINT32_MAX)
+                            /* Repeated fragments in one cell are not
+                             * independent evidence for moving a component. */
+                            if (last_losing_bin[c] != first && losing_bins[c] < UINT32_MAX)
                                 losing_bins[c]++;
+                            last_losing_bin[c] = first;
                             (*out_losing_claims)++;
                         }
                     }
@@ -2028,7 +2554,9 @@ static int wr_collect_conflict_exclusions(
                 (*out_conflict_bins)++;
                 for (size_t i = winner_first; i < winner_last; i++) {
                     int32_t c = claim[i].component;
-                    if (winning_bins[c] < UINT32_MAX) winning_bins[c]++;
+                    if (last_winning_bin[c] != first && winning_bins[c] < UINT32_MAX)
+                        winning_bins[c]++;
+                    last_winning_bin[c] = first;
                 }
             }
         }
@@ -2037,6 +2565,8 @@ static int wr_collect_conflict_exclusions(
 
     if (forbidden != NULL) {
         for (int32_t c = 0; c < ncomponents; c++) {
+            if (parent_correction != NULL && parent_correction[c] != INT32_MIN)
+                continue;
             if (movable != NULL && !movable[c]) continue;
             if (losing_bins[c] < WR_CONFLICT_MIN_BINS ||
                 winning_bins[c] != 0)
@@ -2124,6 +2654,7 @@ static int wr_forest_corrections(
     const double *q, size_t nvertices,
     const WrStrand *strand, size_t nstrand, double pitch,
     const WindingRegisterFieldUnary *field_unary,
+    const WindingRegisterBoundary *boundary,
     int enable_conflict_exclusion,
     int32_t **out_correction, int32_t **out_relation_island,
     float **out_component_confidence,
@@ -2131,6 +2662,30 @@ static int wr_forest_corrections(
     WindingRegisterStats *stats)
 {
     UnionFind graph = UF_new(arena, ncomponents);
+    const int boundary_active = boundary != NULL &&
+                                boundary->correction != NULL;
+    WrGaugeUF gauge;
+    memset(&gauge, 0, sizeof gauge);
+    if (boundary_active) {
+        gauge.parent = (int32_t *)ARENA_ALLOC(
+            arena, (size_t)((size_t)ncomponents * sizeof *gauge.parent));
+        gauge.rank = (uint8_t *)ARENA_CALLOC(
+            arena, (size_t)ncomponents, sizeof *gauge.rank);
+        gauge.delta = (int64_t *)ARENA_CALLOC(
+            arena, (size_t)ncomponents, sizeof *gauge.delta);
+        gauge.fixed = (int64_t *)ARENA_CALLOC(
+            arena, (size_t)ncomponents, sizeof *gauge.fixed);
+        gauge.has_fixed = (uint8_t *)ARENA_CALLOC(
+            arena, (size_t)ncomponents, sizeof *gauge.has_fixed);
+        for (int32_t c = 0; c < ncomponents; c++) {
+            gauge.parent[c] = c;
+            if (boundary->correction[c] != INT32_MIN) {
+                gauge.has_fixed[c] = 1;
+                gauge.fixed[c] = boundary->correction[c];
+                stats->boundary_components++;
+            }
+        }
+    }
     size_t nforest = 0;
     /* Stage 1 is deliberately conservative.  Build the maximum-weight forest
      * from continuation and ordinary within-bin order first.  The shifted
@@ -2147,6 +2702,18 @@ static int wr_forest_corrections(
             int32_t a = uf_find(&graph, current->a);
             int32_t b = uf_find(&graph, current->b);
             if (a == b) continue;
+            if (boundary_active) {
+                int joined = wr_gauge_union(
+                    &gauge, current->a, current->b, current->target);
+                if (joined < 0) {
+                    /* Exact parent evidence has priority over a crop-local
+                     * continuation/order hypothesis.  Removing the relation
+                     * is the deterministic cut; averaging is forbidden. */
+                    current->eligible = 0;
+                    stats->boundary_relation_cuts++;
+                    continue;
+                }
+            }
             uf_union(&graph, a, b);
             current->selected = 1;
             nforest++;
@@ -2159,10 +2726,10 @@ static int wr_forest_corrections(
     stats->forest_relations = nforest;
 
     int32_t *head = (int32_t *)ARENA_ALLOC(
-        arena, (long)((size_t)ncomponents * sizeof(int32_t)));
+        arena, (size_t)((size_t)ncomponents * sizeof(int32_t)));
     for (int32_t c = 0; c < ncomponents; c++) head[c] = -1;
     WrAdjacency *adjacency = (WrAdjacency *)ARENA_ALLOC(
-        arena, (long)((2 * nforest + 1) * sizeof(WrAdjacency)));
+        arena, (size_t)((2 * nforest + 1) * sizeof(WrAdjacency)));
     size_t nadjacency = 0;
     for (size_t i = 0; i < nrelation; i++) {
         WrRelation *current = &relation[i];
@@ -2178,36 +2745,49 @@ static int wr_forest_corrections(
     }
 
     int32_t *correction = (int32_t *)ARENA_ALLOC(
-        arena, (long)((size_t)ncomponents * sizeof(int32_t)));
+        arena, (size_t)((size_t)ncomponents * sizeof(int32_t)));
     float *component_confidence = out_component_confidence != NULL
         ? (float *)ARENA_CALLOC(arena, (size_t)ncomponents, sizeof(float))
         : NULL;
     int32_t *queue = (int32_t *)ARENA_ALLOC(
-        arena, (long)((size_t)ncomponents * sizeof(int32_t)));
-    uint8_t *known = (uint8_t *)ARENA_CALLOC(
-        arena, (long)ncomponents, (long)sizeof(uint8_t));
-    for (int32_t root = 0; root < ncomponents; root++) {
-        if (known[root]) continue;
-        size_t head_index = 0, tail_index = 0;
-        known[root] = 1;
-        correction[root] = 0;
-        queue[tail_index++] = root;
-        while (head_index < tail_index) {
-            int32_t a = queue[head_index++];
-            for (int32_t edge = head[a]; edge >= 0;
-                 edge = adjacency[edge].next) {
-                int32_t b = adjacency[edge].other;
-                int64_t value = (int64_t)correction[a] +
-                                adjacency[edge].target;
-                if (value < INT32_MIN || value > INT32_MAX) return -1;
-                if (!known[b]) {
-                    known[b] = 1;
-                    correction[b] = (int32_t)value;
-                    queue[tail_index++] = b;
+        arena, (size_t)((size_t)ncomponents * sizeof(int32_t)));
+    if (boundary_active) {
+        for (int32_t c = 0; c < ncomponents; c++) {
+            int64_t d = 0;
+            int32_t root = wr_gauge_find(&gauge, c, &d);
+            int64_t value = d + (gauge.has_fixed[root]
+                                 ? gauge.fixed[root] : 0);
+            if (value < INT32_MIN || value > INT32_MAX) return -1;
+            correction[c] = (int32_t)value;
+        }
+    } else {
+        uint8_t *known = (uint8_t *)ARENA_CALLOC(
+            arena, (size_t)ncomponents, sizeof(uint8_t));
+        for (int32_t root = 0; root < ncomponents; root++) {
+            if (known[root]) continue;
+            size_t head_index = 0, tail_index = 0;
+            known[root] = 1;
+            correction[root] = 0;
+            queue[tail_index++] = root;
+            while (head_index < tail_index) {
+                int32_t a = queue[head_index++];
+                for (int32_t edge = head[a]; edge >= 0;
+                     edge = adjacency[edge].next) {
+                    int32_t b = adjacency[edge].other;
+                    int64_t value = (int64_t)correction[a] +
+                                    adjacency[edge].target;
+                    if (value < INT32_MIN || value > INT32_MAX) return -1;
+                    if (!known[b]) {
+                        known[b] = 1;
+                        correction[b] = (int32_t)value;
+                        queue[tail_index++] = b;
+                    }
                 }
             }
         }
     }
+    wr_dump_correction_stage(
+        "correction_forest.i32", correction, ncomponents);
 
     int32_t anchor_root = uf_find(&graph, anchor_component);
     {
@@ -2226,12 +2806,15 @@ static int wr_forest_corrections(
         stats->anchor_span_pre_turns =
             span_max >= span_min ? span_max - span_min : 0.0;
     }
-    if (WR_REPAIR_MAX_ROUNDS > 0 && nrelation > 0 && nforest > 0) {
+    if (!boundary_active && WR_REPAIR_MAX_ROUNDS > 0 && nrelation > 0 &&
+        nforest > 0) {
         if (wr_repair_subtree_shifts(arena, relation, nrelation, ncomponents,
                                      head, adjacency, correction,
                                      stats) != 0)
             return -1;
     }
+    wr_dump_correction_stage(
+        "correction_repaired.i32", correction, ncomponents);
     /* Keep the conservative forest/loop-closure certificate as an absolute
      * Gaussian trust centre during every recentered MRF round.  Without an
      * absolute centre, the nominal fallback unary is centred at zero anew on
@@ -2242,12 +2825,26 @@ static int wr_forest_corrections(
      * growing cost for moving an ever larger part of the scroll or repeatedly
      * walking the same sites away from the first-stage certificate. */
     int32_t *mrf_trust_center = (int32_t *)ARENA_ALLOC(
-        arena, (long)((size_t)ncomponents * sizeof *mrf_trust_center));
+        arena, (size_t)((size_t)ncomponents * sizeof *mrf_trust_center));
     memcpy(mrf_trust_center, correction,
            (size_t)ncomponents * sizeof *mrf_trust_center);
+    WrForbiddenWinding *boundary_locks = NULL;
+    size_t nboundary_locks = 0;
+    if (boundary_active && stats->boundary_components > 0) {
+        boundary_locks = (WrForbiddenWinding *)ARENA_ALLOC(
+            arena, (size_t)stats->boundary_components *
+                   sizeof *boundary_locks);
+        for (int32_t c = 0; c < ncomponents; c++) {
+            if (boundary->correction[c] == INT32_MIN) continue;
+            boundary_locks[nboundary_locks].component = c;
+            boundary_locks[nboundary_locks].correction =
+                boundary->correction[c];
+            nboundary_locks++;
+        }
+    }
     if (wr_mrf_refine(arena, relation, nrelation, ncomponents, &graph,
                       correction, field_unary, NULL, 0,
-                      NULL, 0,
+                      boundary_locks, nboundary_locks,
                       mrf_trust_center, WR_CONFLICT_TRUST_RADIUS,
                       WR_MRF_BASE_PRIOR_WEIGHT,
                       component_confidence, stats) != 0)
@@ -2302,6 +2899,7 @@ static int wr_forest_corrections(
                     arena, strand, nstrand, relation, nrelation,
                     ncomponents, component_size, anchor_component, pitch,
                     &graph, correction, round == 0 ? NULL : movable,
+                    boundary_active ? boundary->correction : NULL,
                     forbidden, forbidden_capacity,
                     &nforbidden, round_winner, (size_t)ncomponents, &nwinner,
                     &bins, &losing, &added, &added_locks) != 0)
@@ -2327,6 +2925,8 @@ static int wr_forest_corrections(
              * exclusion happens to mention its current gauge. */
             for (size_t i = 0; i < nwinner; i++)
                 active[round_winner[i].component] = 0;
+            for (size_t i = 0; i < nboundary_locks; i++)
+                active[boundary_locks[i].component] = 0;
             size_t nround_locked = 0;
             for (int32_t c = 0; c < ncomponents; c++) {
                 if (active[c]) continue;
@@ -2455,7 +3055,9 @@ static int wr_forest_corrections(
             if (wr_collect_conflict_exclusions(
                     arena, strand, nstrand, relation, nrelation,
                     ncomponents, component_size, anchor_component, pitch,
-                    &graph, correction, movable, NULL, 0, &audit_count,
+                    &graph, correction, movable,
+                    boundary_active ? boundary->correction : NULL,
+                    NULL, 0, &audit_count,
                     NULL, 0, &audit_locked,
                     &after_bins, &after_losing, &audit_added,
                     &audit_locks) != 0)
@@ -2545,7 +3147,9 @@ static int wr_forest_corrections(
             if (wr_collect_conflict_exclusions(
                     arena, strand, nstrand, relation, nrelation,
                     ncomponents, component_size, anchor_component, pitch,
-                    &graph, correction, movable, NULL, 0, &audit_count,
+                    &graph, correction, movable,
+                    boundary_active ? boundary->correction : NULL,
+                    NULL, 0, &audit_count,
                     NULL, 0, &audit_locked, &bins, &losing, &added,
                     &added_locks) != 0)
                 return -1;
@@ -2577,27 +3181,34 @@ static int wr_forest_corrections(
                         best_bins, terminal_bins,
                         best_forbidden, best_locked);
         }
-    } else {
-        stats->mrf_conflict_converged = 1;
     }
-    int64_t anchor_shift = -(int64_t)correction[anchor_component];
-    for (int32_t c = 0; c < ncomponents; c++) {
-        if (uf_find(&graph, c) != anchor_root) continue;
-        int64_t value = (int64_t)correction[c] + anchor_shift;
-        if (value < INT32_MIN || value > INT32_MAX) return -1;
-        correction[c] = (int32_t)value;
+    /* A disabled detector is not a convergence certificate. Also verify the
+     * locks here instead of silently overwriting a moved parent afterward. */
+    for (size_t i = 0; i < nboundary_locks; i++)
+        if (correction[boundary_locks[i].component] != boundary_locks[i].correction)
+            return -1;
+    if (!boundary_active) {
+        int64_t anchor_shift = -(int64_t)correction[anchor_component];
+        for (int32_t c = 0; c < ncomponents; c++) {
+            if (uf_find(&graph, c) != anchor_root) continue;
+            int64_t value = (int64_t)correction[c] + anchor_shift;
+            if (value < INT32_MIN || value > INT32_MAX) return -1;
+            correction[c] = (int32_t)value;
+        }
     }
 
     double *root_min = (double *)ARENA_ALLOC(
-        arena, (long)((size_t)ncomponents * sizeof(double)));
+        arena, (size_t)((size_t)ncomponents * sizeof(double)));
     double *root_max = (double *)ARENA_ALLOC(
-        arena, (long)((size_t)ncomponents * sizeof(double)));
+        arena, (size_t)((size_t)ncomponents * sizeof(double)));
     int64_t *root_vertices = (int64_t *)ARENA_CALLOC(
-        arena, (long)ncomponents, (long)sizeof(int64_t));
+        arena, (size_t)ncomponents, sizeof(int64_t));
     int32_t *root_head = (int32_t *)ARENA_ALLOC(
-        arena, (long)((size_t)ncomponents * sizeof(int32_t)));
+        arena, (size_t)((size_t)ncomponents * sizeof(int32_t)));
     int32_t *root_next = (int32_t *)ARENA_ALLOC(
-        arena, (long)((size_t)ncomponents * sizeof(int32_t)));
+        arena, (size_t)((size_t)ncomponents * sizeof(int32_t)));
+    uint8_t *root_supported = (uint8_t *)ARENA_CALLOC(
+        arena, (size_t)ncomponents, sizeof *root_supported);
     for (int32_t c = 0; c < ncomponents; c++) {
         root_min[c] = DBL_MAX;
         root_max[c] = -DBL_MAX;
@@ -2617,15 +3228,27 @@ static int wr_forest_corrections(
         root_vertices[root] += component_size[c];
         root_next[c] = root_head[root];
         root_head[root] = c;
+        if (boundary_active && boundary->correction[c] != INT32_MIN)
+            root_supported[root] = 1;
     }
+    /* In an unconstrained solve the configured anchor is the one supported
+     * relation component.  With a parent boundary, every tree containing an
+     * exact overlap sample shares the parent's absolute gauge and is therefore
+     * authoritative even if crop-local evidence does not connect those trees. */
+    if (!boundary_active) root_supported[anchor_root] = 1;
+    else if (!root_supported[anchor_root]) root_supported[anchor_root] = 1;
 
     WrPackGroup *pack = (WrPackGroup *)ARENA_ALLOC(
-        arena, (long)((size_t)ncomponents * sizeof(WrPackGroup)));
+        arena, (size_t)((size_t)ncomponents * sizeof(WrPackGroup)));
     size_t npack = 0;
     for (int32_t c = 0; c < ncomponents; c++) {
         if (uf_find(&graph, c) != c || root_vertices[c] <= 0) continue;
         stats->relation_components++;
-        if (c == anchor_root) continue;
+        if (root_supported[c]) {
+            if (boundary_active)
+                stats->boundary_supported_relation_components++;
+            continue;
+        }
         pack[npack].root = c;
         pack[npack].vertices = root_vertices[c];
         pack[npack].qmin = root_min[c];
@@ -2642,11 +3265,17 @@ static int wr_forest_corrections(
     int32_t *relation_island = NULL;
     if (out_relation_island != NULL) {
         relation_island = (int32_t *)ARENA_ALLOC(
-            arena, (long)((size_t)ncomponents * sizeof(int32_t)));
+            arena, (size_t)((size_t)ncomponents * sizeof(int32_t)));
         for (int32_t c = 0; c < ncomponents; c++)
-            relation_island[c] = uf_find(&graph, c) == anchor_root ? 0 : -1;
+            relation_island[c] = root_supported[uf_find(&graph, c)] ? 0 : -1;
     }
-    double cursor = root_max[anchor_root];
+    double cursor = -DBL_MAX;
+    for (int32_t c = 0; c < ncomponents; c++) {
+        if (uf_find(&graph, c) == c && root_supported[c] &&
+            root_max[c] > cursor)
+            cursor = root_max[c];
+    }
+    if (cursor == -DBL_MAX) cursor = root_max[anchor_root];
     for (size_t p = 0; p < npack; p++) {
         double needed = cursor + WR_PACK_GUTTER_TURNS - pack[p].qmin;
         int64_t shift = needed > 0.0
@@ -2694,12 +3323,21 @@ int WindingRegister_run(
     return WindingRegister_run_with_field(
         arena, vertices, nvertices, axial, radius, theta, q,
         component, ncomponents, component_size, anchor_component,
-        axial_min, pitch, winding_sense, NULL, 1,
+        axial_min, pitch, winding_sense, NULL, NULL, 1,
+        NULL, 0, NULL, NULL,
         out_correction, out_relation_island, out_continuation_island,
         NULL, stats);
 }
 
-int WindingRegister_run_with_field(
+static int wr_comp_rho_cmp(const void *pa, const void *pb)
+{
+    const struct { int32_t c; float v; } *a = pa, *b = pb;
+    if (a->c != b->c) return a->c < b->c ? -1 : 1;
+    if (a->v != b->v) return a->v < b->v ? -1 : 1;
+    return 0;
+}
+
+static int wr_process_with_field(
     Arena_T arena,
     const float *vertices, size_t nvertices,
     const double *axial, const double *radius, const double *theta,
@@ -2708,11 +3346,17 @@ int WindingRegister_run_with_field(
     const int32_t *component_size, int32_t anchor_component,
     double axial_min, double pitch, int winding_sense,
     const WindingRegisterFieldUnary *field_unary,
+    const WindingRegisterBoundary *boundary,
     int enable_conflict_exclusion,
+    const WindingSiblingPair *sibling, size_t nsibling,
+    const int32_t *vertex_cube,
+    const float *vertex_normal,
     int32_t **out_correction, int32_t **out_relation_island,
     int32_t **out_continuation_island,
     float **out_component_confidence,
-    WindingRegisterStats *stats)
+    WindingRegisterStats *stats,
+    WindingRegisterRelation **out_relations, size_t *out_nrelations,
+    const float *boundary_direction)
 {
     if (arena == NULL || vertices == NULL || nvertices == 0 ||
         axial == NULL || radius == NULL || theta == NULL || q == NULL ||
@@ -2720,26 +3364,60 @@ int WindingRegister_run_with_field(
         anchor_component < 0 || anchor_component >= ncomponents ||
         (winding_sense != -1 && winding_sense != 1) ||
         out_correction == NULL || stats == NULL ||
-        (field_unary != NULL &&
-         (field_unary->center == NULL || field_unary->sigma == NULL ||
-          field_unary->weight == NULL)))
-        return -1;
+         (field_unary != NULL &&
+          (field_unary->center == NULL || field_unary->sigma == NULL ||
+           field_unary->weight == NULL)) ||
+        (boundary != NULL && boundary->correction == NULL))
+        { fprintf(stderr, "  register fail at line %d", 2792); fputc(10, stderr); return -1; }
     memset(stats, 0, sizeof(*stats));
+    /* experiment overrides (A/B only; defaults are the shipped policy:
+     * contact veto ON, tangency DROP off, order veto off -- see the
+     * WR_CONTACT_* / WR_CONT_TANGENT_MAX / WR_ORDER_VETO_* notes) */
+    /* ALL THREE default OFF (2026-09-02 evening): every relation-level
+     * gate measured as a TRADE on the 21x3x3 tube -- fewer fused wrap-steps
+     * and higher 3D coverage, but distortion goes red (contact veto 0.07 ->
+     * 1.85%) because pieces stripped of their fusing evidence chain onto
+     * weaker evidence and land at the wrong turn in EMPTY cells, which 3D
+     * coverage cannot see.  The shipped certificate stays byte-identical to
+     * the champion; the gates remain opt-in for A/B (VES_WR_CONTACT_VETO=1,
+     * VES_WR_TANGENT_GATE=1, VES_WR_ORDER_VETO=1). */
+    int tangent_drop_enabled = 0, order_veto_enabled = 0;
+    int contact_veto_enabled = 0;
+    {
+        const char *e = getenv("VES_WR_TANGENT_GATE");
+        if (e != NULL && e[0] == '1') tangent_drop_enabled = 1;
+        e = getenv("VES_WR_ORDER_VETO");
+        if (e != NULL && e[0] == '1') order_veto_enabled = 1;
+        e = getenv("VES_WR_CONTACT_VETO");
+        if (e != NULL && e[0] == '1') contact_veto_enabled = 1;
+    }
+    if (out_relations!=NULL) {
+        /* A fixed model must not change under legacy A/B environment flags. */
+        tangent_drop_enabled=order_veto_enabled=contact_veto_enabled=0;
+    }
 
     if ((size_t)ncomponents > (size_t)LONG_MAX / sizeof(int32_t))
-        return -1;
+        { fprintf(stderr, "  register fail at line %d", 2796); fputc(10, stderr); return -1; }
     if (ncomponents == 1) {
-        int32_t *correction = (int32_t *)ARENA_CALLOC(
-            arena, 1, (long)sizeof(int32_t));
+        if (out_relations != NULL) {
+            *out_relations = NULL;
+            *out_nrelations = 0;
+            return 0;
+        }
+        int32_t *correction = (int32_t *)ARENA_ALLOC(
+            arena, sizeof(int32_t));
+        correction[0] = boundary != NULL &&
+                        boundary->correction[0] != INT32_MIN
+                      ? boundary->correction[0] : 0;
         *out_correction = correction;
         if (out_relation_island != NULL) {
             int32_t *relation_island = (int32_t *)ARENA_CALLOC(
-                arena, 1, (long)sizeof(int32_t));
+                arena, 1, sizeof(int32_t));
             *out_relation_island = relation_island;
         }
         if (out_continuation_island != NULL) {
             int32_t *continuation_island = (int32_t *)ARENA_CALLOC(
-                arena, 1, (long)sizeof(int32_t));
+                arena, 1, sizeof(int32_t));
             *out_continuation_island = continuation_island;
         }
         if (out_component_confidence != NULL) {
@@ -2749,6 +3427,10 @@ int WindingRegister_run_with_field(
         }
         stats->continuation_components = 1;
         stats->relation_components = 1;
+        stats->boundary_components = boundary != NULL &&
+                                     boundary->correction[0] != INT32_MIN;
+        stats->boundary_supported_relation_components =
+            stats->boundary_components;
         stats->continuation_satisfaction = 1.0;
         stats->order_satisfaction = 1.0;
         return 0;
@@ -2761,35 +3443,57 @@ int WindingRegister_run_with_field(
     if (wr_component_axial_extents(
             arena, axial, component, nvertices, ncomponents,
             &component_axial_min, &component_axial_max) != 0)
-        return -1;
+        { fprintf(stderr, "  register fail at line %d", 2830); fputc(10, stderr); return -1; }
     if (wr_build_samples(
             arena, nvertices, axial, radius, q, component, ncomponents,
             axial_min, &strand, &sample_vertex, &nsample) != 0)
+        { fprintf(stderr, "  register fail at line %d", 2834); fputc(10, stderr); return -1; }
+    if (out_relations!=NULL && nsample!=nvertices) {
+        fprintf(stderr,"  [wr] source sampling cap reached; fixed model refused\n");
         return -1;
+    }
     if (nsample > (SIZE_MAX - 1024) / 4) return -1;
     size_t observation_capacity = 4 * nsample + 1024;
     if (observation_capacity >
         (size_t)LONG_MAX / sizeof(WrObservation))
-        return -1;
+        { fprintf(stderr, "  register fail at line %d", 2839); fputc(10, stderr); return -1; }
     WrObservation *observation = (WrObservation *)ARENA_ALLOC(
-        arena, (long)(observation_capacity * sizeof(WrObservation)));
+        arena, (size_t)(observation_capacity * sizeof(WrObservation)));
     size_t nobservation = 0, dropped = 0;
     size_t order_reserve = 2 * nsample;
     size_t continuation_limit = observation_capacity > order_reserve
                               ? observation_capacity - order_reserve : 0;
-    wr_collect_continuations(
-        vertices, radius, theta, q, component, sample_vertex, nsample,
+    fprintf(stderr, "  [wr] stage cont-collect"); fputc(10, stderr);
+    int continuation_status=wr_collect_continuations(
+        vertices, vertex_normal, radius, theta, q, component,
+        sample_vertex, nsample,
         pitch, winding_sense, observation, observation_capacity,
-        continuation_limit, &nobservation, &dropped);
+        continuation_limit, &nobservation, &dropped,
+        tangent_drop_enabled, &stats->continuation_tangent_rejected,
+        &stats->continuation_contacts,out_relations!=NULL,boundary_direction,
+        &stats->continuation_front_vertices,&stats->continuation_front_rejected);
+    if (out_relations!=NULL && continuation_status!=0) {
+        fprintf(stderr,"  [wr] incomplete continuation evidence; fixed model refused\n");
+        return -1;
+    }
+    {
+        size_t overlap_obs = 0;
+        wr_collect_overlap(
+            vertices, q, component, vertex_cube, sample_vertex, nsample,
+            observation, observation_capacity, &nobservation, &dropped,
+            &overlap_obs);
+        stats->overlap_observations = overlap_obs;
+    }
 
     size_t nstrand = 0;
+    fprintf(stderr, "  [wr] stage order-collect"); fputc(10, stderr);
     if (wr_collect_order(
             strand, nsample, sample_vertex, nvertices,
             axial, radius, q, component, ncomponents,
             component_axial_min, component_axial_max,
             axial_min, pitch, observation, observation_capacity,
             &nobservation, &dropped, &nstrand, &stats->bins) != 0)
-        return -1;
+        { fprintf(stderr, "  register fail at line %d", 2858); fputc(10, stderr); return -1; }
     stats->strands = nstrand;
     stats->observations_dropped = dropped;
     for (size_t i = 0; i < nobservation; i++) {
@@ -2799,34 +3503,186 @@ int WindingRegister_run_with_field(
             stats->order_observations++;
     }
 
+    if (out_relations!=NULL)
+        return wr_collect_all_relations(arena,observation,nobservation,
+                                        out_relations,out_nrelations,stats);
+
+    /* per-site wrap invariant for the rho fusion gate (see constants) */
+    double *comp_rho = NULL, *comp_rho_mad = NULL;
+    {
+        typedef struct { int32_t c; float v; } WrCompRho;
+        WrCompRho *cr = (WrCompRho *)malloc(nvertices * sizeof *cr);
+        if (cr != NULL) {
+            size_t ci = 0;
+            comp_rho = (double *)ARENA_ALLOC(
+                arena, (size_t)((size_t)ncomponents * sizeof(double)));
+            comp_rho_mad = (double *)ARENA_ALLOC(
+                arena, (size_t)((size_t)ncomponents * sizeof(double)));
+            for (ci = 0; ci < nvertices; ci++) {
+                cr[ci].c = component[ci];
+                cr[ci].v = (float)(radius[ci] - pitch * q[ci]);
+            }
+            qsort(cr, nvertices, sizeof *cr, wr_comp_rho_cmp);
+            for (ci = 0; ci < (size_t)ncomponents; ci++) {
+                comp_rho[ci] = 0.0;
+                comp_rho_mad[ci] = 1e30;
+            }
+            for (ci = 0; ci < nvertices;) {
+                size_t cj = ci;
+                while (cj < nvertices && cr[cj].c == cr[ci].c) cj++;
+                {
+                    size_t mid = ci + (cj - ci) / 2;
+                    double med = (double)cr[mid].v;
+                    size_t k = 0;
+                    double mad = 0.0;
+                    /* MAD via second pass into the tail of the same buffer
+                     * is overkill; a 90th-percentile absolute deviation from
+                     * a strided scan is plenty for a 0.3-pitch gate. */
+                    size_t stride = (cj - ci) / 64 + 1;
+                    for (k = ci; k < cj; k += stride) {
+                        double d = fabs((double)cr[k].v - med);
+                        mad += d;
+                    }
+                    mad /= (double)((cj - ci + stride - 1) / stride);
+                    if (cr[ci].c >= 0 && cr[ci].c < ncomponents) {
+                        comp_rho[cr[ci].c] = med;
+                        comp_rho_mad[cr[ci].c] = mad;
+                    }
+                }
+                ci = cj;
+            }
+            free(cr);
+        }
+    }
+    /* sibling evidence from the radial-layer split: exact per-key order
+     * votes between layers a fused neck joins (see WindingSiblingPair). */
+    if (sibling != NULL && nsibling > 0) {
+        size_t si2 = 0;
+        for (si2 = 0; si2 < nsibling; si2++) {
+            const WindingSiblingPair *sp = &sibling[si2];
+            int32_t reps = sp->mode_keys < 256 ? sp->mode_keys : 256;
+            int32_t k2 = 0;
+            if (sp->inner < 0 || sp->inner >= ncomponents ||
+                sp->outer < 0 || sp->outer >= ncomponents ||
+                sp->inner == sp->outer)
+                continue;
+            for (k2 = 0; k2 < reps; k2++)
+                wr_append_observation(
+                    observation, observation_capacity, &nobservation,
+                    &dropped, sp->inner, sp->outer, sp->target,
+                    0.0, WR_OBS_ORDER);
+            stats->order_observations += (size_t)(reps > 0 ? reps : 0);
+        }
+    }
+
     WrRelation *relation = NULL;
     size_t nrelation = 0;
+    fprintf(stderr, "  [wr] stage build-relations"); fputc(10, stderr);
     if (wr_build_relations(
-            arena, observation, nobservation, &relation, &nrelation) != 0)
-        return -1;
+            arena, observation, nobservation,
+            comp_rho, comp_rho_mad, ncomponents, pitch,
+            sibling, nsibling,
+            &stats->continuation_rho_suppressed,
+            order_veto_enabled ? &stats->continuation_order_vetoed : NULL,
+            contact_veto_enabled ? &stats->continuation_contact_vetoed : NULL,
+            &relation, &nrelation) != 0)
+        { fprintf(stderr, "  register fail at line %d", 2944); fputc(10, stderr); return -1; }
     stats->relations = nrelation;
+
+    if (out_relations != NULL) {
+        WindingRegisterRelation *result = (WindingRegisterRelation *)ARENA_ALLOC(
+            arena, nrelation * sizeof *result);
+        for (size_t i = 0; i < nrelation; i++) {
+            result[i].a = relation[i].a;
+            result[i].b = relation[i].b;
+            result[i].target = relation[i].target;
+            result[i].observations = relation[i].observations;
+            result[i].mode_observations = relation[i].mode_observations;
+            result[i].agreement = relation[i].agreement;
+            result[i].residual = relation[i].residual;
+            result[i].weight = relation[i].weight;
+            result[i].kind = relation[i].kind;
+            result[i].eligible = relation[i].eligible;
+            if (relation[i].eligible) stats->eligible_relations++;
+        }
+        *out_relations = result;
+        *out_nrelations = nrelation;
+        return 0;
+    }
 
     /* Same-sheet continuation is an equivalence relation.  Once its closure
      * says two components share q, their radial adjacency cannot also mean
      * "one turn apart"; that is a coarse-bin duplicate, not a contradiction. */
     UnionFind continuation_graph = UF_new(arena, ncomponents);
+    int32_t *continuation_lineage = (int32_t *)ARENA_ALLOC(
+        arena, (size_t)((size_t)ncomponents * sizeof *continuation_lineage));
+    for (int32_t c = 0; c < ncomponents; c++)
+        continuation_lineage[c] = boundary != NULL && boundary->lineage != NULL
+                                ? boundary->lineage[c] : -1;
     for (size_t i = 0; i < nrelation; i++) {
         WrRelation *current = &relation[i];
-        if (current->eligible &&
-            current->kind == WR_OBS_CONTINUATION)
-            uf_union(&continuation_graph, current->a, current->b);
+        if (current->eligible && current->kind == WR_OBS_CONTINUATION) {
+            int32_t ra = uf_find(&continuation_graph, current->a);
+            int32_t rb = uf_find(&continuation_graph, current->b);
+            int32_t la = continuation_lineage[ra];
+            int32_t lb = continuation_lineage[rb];
+            if (ra == rb) continue;
+            if (la >= 0 && lb >= 0 && la != lb) {
+                /* Two exact parent material identities are mutually
+                 * exclusive.  The crop-local continuation is a fusion edge. */
+                current->eligible = 0;
+                stats->boundary_lineage_cuts++;
+                continue;
+            }
+            uf_union(&continuation_graph, ra, rb);
+            {
+                int32_t root = uf_find(&continuation_graph, ra);
+                continuation_lineage[root] = la >= 0 ? la : lb;
+            }
+        }
     }
     {
         int32_t *root_label = (int32_t *)ARENA_ALLOC(
-            arena, (long)((size_t)ncomponents * sizeof(int32_t)));
+            arena, (size_t)((size_t)ncomponents * sizeof(int32_t)));
         int32_t *labels = out_continuation_island != NULL
                         ? (int32_t *)ARENA_ALLOC(
-                            arena, (long)((size_t)ncomponents * sizeof(int32_t)))
+                            arena, (size_t)((size_t)ncomponents * sizeof(int32_t)))
                         : NULL;
+        WrLineageRoot *lineage_root = (WrLineageRoot *)ARENA_ALLOC(
+            arena, (size_t)((size_t)ncomponents * sizeof *lineage_root));
+        size_t nlineage_root = 0;
         for (int32_t c = 0; c < ncomponents; c++) root_label[c] = -1;
         int32_t anchor_root = uf_find(&continuation_graph, anchor_component);
         root_label[anchor_root] = 0;
         int32_t next_label = 1;
+        for (int32_t c = 0; c < ncomponents; c++) {
+            int32_t root = uf_find(&continuation_graph, c);
+            if (root != c || continuation_lineage[root] < 0) continue;
+            lineage_root[nlineage_root].lineage = continuation_lineage[root];
+            lineage_root[nlineage_root].root = root;
+            nlineage_root++;
+        }
+        qsort(lineage_root, nlineage_root, sizeof *lineage_root,
+              wr_lineage_root_compare);
+        for (size_t i = 0; i < nlineage_root; ) {
+            size_t j = i + 1;
+            int32_t label = root_label[lineage_root[i].root];
+            while (j < nlineage_root &&
+                   lineage_root[j].lineage == lineage_root[i].lineage)
+                j++;
+            if (label < 0) {
+                for (size_t k = i; k < j; k++) {
+                    if (root_label[lineage_root[k].root] >= 0) {
+                        label = root_label[lineage_root[k].root];
+                        break;
+                    }
+                }
+            }
+            if (label < 0) label = next_label++;
+            for (size_t k = i; k < j; k++)
+                root_label[lineage_root[k].root] = label;
+            i = j;
+        }
         for (int32_t c = 0; c < ncomponents; c++) {
             int32_t root = uf_find(&continuation_graph, c);
             if (root_label[root] < 0) root_label[root] = next_label++;
@@ -2836,26 +3692,51 @@ int WindingRegister_run_with_field(
         if (out_continuation_island != NULL)
             *out_continuation_island = labels;
     }
+    /* An ORDER relation inside one continuation island used to be deleted
+     * outright: the closure had said the two components share q, so their
+     * radial adjacency could not also mean "one turn apart".
+     *
+     * That is right only when the two agree.  A relation whose target is
+     * NONZERO is a direct contradiction -- the radial lattice says these
+     * components must move apart by that many turns while the continuation
+     * closure says they are one sheet -- and deleting it removes the only
+     * evidence that could expose a FALSE continuation (a helix-gate false
+     * positive across a crack, or a mesh bridge between plies).  Measured
+     * 2026-09-01: 33,933 such observations discarded on the 4x5x5 and
+     * 379,702 on the 10x, while the MRF converged in one round with zero
+     * label changes because nothing left in its input disagreed with the
+     * spanning forest it was handed.
+     *
+     * A zero-target relation agrees with the closure and is redundant, so it
+     * still goes.  A nonzero one now survives and the MRF arbitrates it, with
+     * continuation still priced at WR_MRF_CONTINUATION_SCALE (16x): the
+     * Artifact C fixture pins that it takes two independent order factors to
+     * cut one weak continuation. */
     for (size_t i = 0; i < nrelation; i++) {
         WrRelation *current = &relation[i];
         if (!current->eligible || current->kind != WR_OBS_ORDER) continue;
         if (uf_find(&continuation_graph, current->a) !=
             uf_find(&continuation_graph, current->b))
             continue;
+        if (current->target != 0) {
+            stats->order_relations_contested++;
+            continue;
+        }
         current->eligible = 0;
         stats->order_relations_suppressed++;
     }
 
     int32_t *correction = NULL;
     UnionFind graph;
+    fprintf(stderr, "  [wr] stage forest"); fputc(10, stderr);
     if (wr_forest_corrections(
             arena, relation, nrelation, ncomponents, anchor_component,
              component_size, component, q, nvertices,
-             strand, nstrand, pitch,
-             field_unary, enable_conflict_exclusion,
+              strand, nstrand, pitch,
+              field_unary, boundary, enable_conflict_exclusion,
              &correction, out_relation_island,
              out_component_confidence, &graph, stats) != 0)
-        return -1;
+        { fprintf(stderr, "  register fail at line %d", 3020); fputc(10, stderr); return -1; }
 
     stats->correction_min = INT_MAX;
     stats->correction_max = INT_MIN;
@@ -2876,7 +3757,7 @@ int WindingRegister_run_with_field(
             continuation_total++;
             if (satisfied) continuation_ok++;
         } else {
-            if (current->kind == WR_OBS_ORDER &&
+            if (current->kind == WR_OBS_ORDER && current->target == 0 &&
                 uf_find(&continuation_graph, current->a) ==
                 uf_find(&continuation_graph, current->b)) {
                 stats->order_observations_suppressed++;
@@ -2915,13 +3796,13 @@ int WindingRegister_run_with_field(
 
     if (ncomponents <= 64) {
         double *component_min = (double *)ARENA_ALLOC(
-            arena, (long)((size_t)ncomponents * sizeof(double)));
+            arena, (size_t)((size_t)ncomponents * sizeof(double)));
         double *component_max = (double *)ARENA_ALLOC(
-            arena, (long)((size_t)ncomponents * sizeof(double)));
+            arena, (size_t)((size_t)ncomponents * sizeof(double)));
         uint16_t *continuation_degree = (uint16_t *)ARENA_CALLOC(
-            arena, (long)ncomponents, (long)sizeof(uint16_t));
+            arena, (size_t)ncomponents, sizeof(uint16_t));
         uint16_t *order_degree = (uint16_t *)ARENA_CALLOC(
-            arena, (long)ncomponents, (long)sizeof(uint16_t));
+            arena, (size_t)ncomponents, sizeof(uint16_t));
         for (int32_t c = 0; c < ncomponents; c++) {
             component_min[c] = DBL_MAX;
             component_max[c] = -DBL_MAX;
@@ -2964,8 +3845,8 @@ int WindingRegister_run_with_field(
     *out_correction = correction;
     fprintf(stderr,
             "  winding gauge: sense=%+d samples=%zu bins=%zu strands=%zu "
-            "obs(cont=%zu order=%zu suppressed=%zu) "
-            "relations=%zu/%zu suppressed=%zu forest=%zu\n"
+            "obs(cont=%zu order=%zu ovl=%zu suppressed=%zu) "
+            "relations=%zu/%zu suppressed=%zu rho_cut=%zu order_veto=%zu tangent_cut=%zu contacts=%zu contact_veto=%zu contested=%zu forest=%zu\n"
             "                 graph_islands=%zu packed=%zu comps=%zu "
             "corr=[%d,%d] sat(cont=%.3f order=%.3f) conflicts=%zu drop=%zu "
             "repair(closers=%zu pre=%zu shifts=%zu capped=%zu post=%zu) "
@@ -2976,9 +3857,16 @@ int WindingRegister_run_with_field(
             "span=%.1f->%.1ft\n",
             winding_sense, nsample, stats->bins, stats->strands,
             stats->continuation_observations, stats->order_observations,
+            stats->overlap_observations,
             stats->order_observations_suppressed,
             stats->eligible_relations, stats->relations,
             stats->order_relations_suppressed,
+            stats->continuation_rho_suppressed,
+            stats->continuation_order_vetoed,
+            stats->continuation_tangent_rejected,
+            stats->continuation_contacts,
+            stats->continuation_contact_vetoed,
+            stats->order_relations_contested,
             stats->forest_relations, stats->relation_components,
             stats->packed_relation_components, stats->packed_mesh_components,
             stats->correction_min, stats->correction_max,
@@ -3005,6 +3893,52 @@ int WindingRegister_run_with_field(
     return 0;
 }
 
+int WindingRegister_run_with_field(
+    Arena_T arena, const float *vertices, size_t nvertices,
+    const double *axial, const double *radius, const double *theta,
+    const double *q, const int32_t *component, int32_t ncomponents,
+    const int32_t *component_size, int32_t anchor_component,
+    double axial_min, double pitch, int winding_sense,
+    const WindingRegisterFieldUnary *field_unary,
+    const WindingRegisterBoundary *boundary, int enable_conflict_exclusion,
+    const WindingSiblingPair *sibling, size_t nsibling,
+    const int32_t *vertex_cube, const float *vertex_normal,
+    int32_t **out_correction, int32_t **out_relation_island,
+    int32_t **out_continuation_island, float **out_component_confidence,
+    WindingRegisterStats *stats)
+{
+    return wr_process_with_field(
+        arena, vertices, nvertices, axial, radius, theta, q, component,
+        ncomponents, component_size, anchor_component, axial_min, pitch,
+        winding_sense, field_unary, boundary, enable_conflict_exclusion,
+        sibling, nsibling, vertex_cube, vertex_normal, out_correction,
+        out_relation_island, out_continuation_island, out_component_confidence,
+        stats, NULL, NULL, NULL);
+}
+
+int WindingRegister_collect(
+    Arena_T arena, const float *vertices, size_t nvertices,
+    const double *axial, const double *radius, const double *theta,
+    const double *q, const int32_t *component, int32_t ncomponents,
+    const int32_t *component_size, double axial_origin,
+    double pitch, int winding_sense, const int32_t *vertex_cube,
+    const float *vertex_normal, const float *boundary_direction,
+    WindingRegisterRelation **out_relations,
+    size_t *out_nrelations, WindingRegisterStats *stats)
+{
+    int32_t *unused_correction = NULL;
+    if (out_relations == NULL || out_nrelations == NULL ||
+        nvertices > WR_MAX_SAMPLES) return -1;
+    *out_relations = NULL;
+    *out_nrelations = 0;
+    return wr_process_with_field(
+        arena, vertices, nvertices, axial, radius, theta, q, component,
+        ncomponents, component_size, 0, axial_origin, pitch, winding_sense,
+        NULL, NULL, 0, NULL, 0, vertex_cube, vertex_normal,
+        &unused_correction, NULL, NULL, NULL, stats,
+        out_relations, out_nrelations, boundary_direction);
+}
+
 static void wr_selftest_check(int condition, const char *message, int *fails)
 {
     if (condition) return;
@@ -3016,6 +3950,89 @@ int WindingRegister_selftest(void)
 {
     int fails = 0;
     Arena_T arena = Arena_new();
+
+    {
+        enum { N=130 };
+        float vertices[N*3]={0};
+        double radius[N]={0},theta[N]={0},q[N]={0};
+        int32_t component[N]={0},sample[N]={0};
+        WrObservation observations[512]={{0}};
+        size_t legacy=0,full=0,dropped=0;
+        for (int i=0;i<N;i++) { sample[i]=i; radius[i]=200; vertices[3*i+2]=200; }
+        component[1]=1;
+        wr_selftest_check(wr_collect_continuations(vertices,NULL,radius,theta,q,component,sample,N,
+                          9.5,1,observations,512,512,&legacy,&dropped,0,NULL,NULL,0,NULL,NULL,NULL)==0,
+                          "legacy continuation collector remains available",&fails);
+        wr_selftest_check(wr_collect_continuations(vertices,NULL,radius,theta,q,component,sample,N,
+                          9.5,1,observations,512,512,&full,&dropped,0,NULL,NULL,1,NULL,NULL,NULL)==0 && full==N-1 && full>legacy,
+                          "fixed collector scans beyond the 96-vertex cell prefix",&fails);
+        full=dropped=0;
+        wr_selftest_check(wr_collect_continuations(vertices,NULL,radius,theta,q,component,sample,N,
+                          9.5,1,observations,512,1,&full,&dropped,0,NULL,NULL,1,NULL,NULL,NULL)!=0 && dropped>0,
+                          "exhausted continuation budget is an explicit failure",&fails);
+    }
+
+    {
+        float vertices[]={0,0,200, 1,0,200, .25f,0,200};
+        float fronts[]={1,0,0, -1,0,0, 0,0,0};
+        double radius[]={200,200,200},theta[]={0,0,0},q[]={0,0,0};
+        int32_t component[]={0,1,2},sample[]={0,1,2};
+        WrObservation observations[16]={{0}};
+        size_t count=0,dropped=0,active=0,rejected=0,contacts=0;
+        int rc=wr_collect_continuations(vertices,NULL,radius,theta,q,component,sample,3,
+                         9.5,1,observations,16,16,&count,&dropped,0,NULL,&contacts,1,
+                         fronts,&active,&rejected);
+        wr_selftest_check(rc==0 && active==2 && count==1 && !dropped && !rejected &&
+                          observations[0].kind==WR_OBS_CONTINUATION,
+                          "only original open fronts propose a continuation",&fails);
+        fronts[3]=1; count=0;
+        rc=wr_collect_continuations(vertices,NULL,radius,theta,q,component,sample,3,
+                         9.5,1,observations,16,16,&count,&dropped,0,NULL,&contacts,1,
+                         fronts,&active,&rejected);
+        wr_selftest_check(rc==0 && count==1 && rejected==1 && contacts==1 &&
+                          observations[0].kind==WR_OBS_CONTACT,
+                          "non-facing fronts remain contact evidence, not equality",&fails);
+        memset(fronts,0,sizeof fronts); count=0;
+        rc=wr_collect_continuations(vertices,NULL,radius,theta,q,component,sample,3,
+                         9.5,1,observations,16,16,&count,&dropped,0,NULL,&contacts,1,
+                         fronts,&active,&rejected);
+        wr_selftest_check(rc==0 && count==0 && active==0,
+                          "nearby interiors alone cannot establish sheet identity",&fails);
+    }
+
+    /* The new collector does not let a continuation erase an independently
+     * observed radial-order contradiction, or erase a minority target.
+     * Re-gauging either chart changes only equality targets, never physics. */
+    {
+        WrObservation observations[26]={{0}}, shifted[26]={{0}};
+        WindingRegisterRelation *a=NULL,*b=NULL;
+        WindingRegisterStats sa={0},sb={0};
+        size_t na=0,nb=0;
+        int saw_cont=0,saw_order=0,saw_contact=0,saw_minority=0;
+        for (int i=0; i<26; i++) {
+            observations[i].a=0; observations[i].b=1;
+            observations[i].kind=(uint8_t)(i<12 ? WR_OBS_CONTINUATION : i<20 ? WR_OBS_ORDER : WR_OBS_CONTACT);
+            observations[i].target=i<10 ? 2 : i<12 ? 1 : i<20 ? 3 : 0;
+            shifted[i]=observations[i];
+            if (shifted[i].kind!=WR_OBS_CONTACT) shifted[i].target+=7;
+        }
+        wr_selftest_check(wr_collect_all_relations(arena,observations,26,&a,&na,&sa)==0 && na==4,
+                          "collector retains every family and minority target",&fails);
+        wr_selftest_check(wr_collect_all_relations(arena,shifted,26,&b,&nb,&sb)==0 && nb==na,
+                          "collector supports independent chart regauging",&fails);
+        for (size_t i=0; i<na && i<nb; i++) {
+            wr_selftest_check(a[i].kind==b[i].kind && a[i].eligible==b[i].eligible &&
+                              a[i].weight==b[i].weight && a[i].agreement==b[i].agreement &&
+                              b[i].target-a[i].target==(a[i].kind==WR_OBS_CONTACT ? 0 : 7),
+                              "regauging does not alter evidence strength or eligibility",&fails);
+            saw_cont+=a[i].kind==WR_OBS_CONTINUATION && a[i].target==2 && a[i].eligible;
+            saw_minority+=a[i].kind==WR_OBS_CONTINUATION && a[i].target==1 && !a[i].eligible;
+            saw_order+=a[i].kind==WR_OBS_ORDER && a[i].eligible;
+            saw_contact+=a[i].kind==WR_OBS_CONTACT && !a[i].eligible;
+        }
+        wr_selftest_check(saw_cont && saw_order && saw_contact && saw_minority,
+                          "contact is not misrepresented as a winding equality",&fails);
+    }
 
     /* Same-sheet duplicates have different local integer gauges.  Proximity
      * continuation must align them without consulting absolute radius. */
@@ -3050,6 +4067,26 @@ int WindingRegister_selftest(void)
             size, 0, 0.0, pitch, 1, &correction, NULL,
             &continuation_island, &stats);
         wr_selftest_check(rc == 0, "continuation solve returns success", &fails);
+        {
+            WindingRegisterRelation *evidence = NULL;
+            WindingRegisterStats collected;
+            size_t count = 0;
+            int collect_rc = WindingRegister_collect(
+                arena, vertex, NV, axial, radius, theta, q, component, 2,
+                size, 0.0, pitch, 1, NULL, NULL, NULL, &evidence, &count, &collected);
+            int found=0;
+            for (size_t i=0; i<count; i++)
+                found+=evidence[i].a==0 && evidence[i].b==1 && evidence[i].target==3 &&
+                       evidence[i].eligible && evidence[i].kind==WINDING_REL_CONTINUATION;
+            wr_selftest_check(collect_rc == 0 && found,
+                              "dense collector exports the unsolved +3 factor",
+                              &fails);
+            wr_selftest_check(collected.forest_relations == 0 &&
+                              collected.mrf_rounds == 0 &&
+                              collected.packed_mesh_components == 0,
+                              "evidence collection does not solve or pack",
+                              &fails);
+        }
         if (rc == 0) {
             wr_selftest_check(correction[0] == 0 && correction[1] == 3,
                               "continuation recovers integer gauge +3", &fails);
@@ -3160,7 +4197,9 @@ int WindingRegister_selftest(void)
             WrRelation *relation = NULL;
             size_t nrelation = 0;
             rc = wr_build_relations(
-                arena, observation, nobservation, &relation, &nrelation);
+                arena, observation, nobservation,
+                NULL, NULL, 0, 0.0, NULL, 0, NULL, NULL, NULL,
+                &relation, &nrelation);
             wr_selftest_check(
                 rc == 0 && nrelation == 1 && relation[0].a == 0 &&
                 relation[0].b == 1 && relation[0].target == 1 &&
@@ -3291,11 +4330,11 @@ int WindingRegister_selftest(void)
         enum { NC = 8192 };
         Arena_Mark mark = Arena_save(arena);
         int32_t *component = (int32_t *)ARENA_ALLOC(
-            arena, (long)(NC * sizeof(int32_t)));
+            arena, (size_t)(NC * sizeof(int32_t)));
         int32_t *size = (int32_t *)ARENA_ALLOC(
-            arena, (long)(NC * sizeof(int32_t)));
+            arena, (size_t)(NC * sizeof(int32_t)));
         double *q = (double *)ARENA_CALLOC(
-            arena, NC, (long)sizeof(double));
+            arena, NC, sizeof(double));
         for (int32_t c = 0; c < NC; c++) {
             component[c] = c;
             size[c] = 1;
@@ -3307,7 +4346,7 @@ int WindingRegister_selftest(void)
         int rc = wr_forest_corrections(
             arena, NULL, 0, NC, 0, size, component, q, NC,
             NULL, 0, 9.5,
-            NULL, 1, &correction, &island, NULL, &graph, &stats);
+            NULL, NULL, 1, &correction, &island, NULL, &graph, &stats);
         wr_selftest_check(rc == 0,
                           "many-island packing returns success", &fails);
         if (rc == 0) {
@@ -3356,7 +4395,7 @@ int WindingRegister_selftest(void)
         rc = wr_forest_corrections(
             arena, relation, 6, 5, 0, size, component, q, 5,
             NULL, 0, 9.5,
-            NULL, 1, &correction, &island, NULL, &graph, &stats);
+            NULL, NULL, 1, &correction, &island, NULL, &graph, &stats);
         wr_selftest_check(rc == 0, "(R1) closure returns success", &fails);
         if (rc == 0) {
             wr_selftest_check(
@@ -3411,7 +4450,7 @@ int WindingRegister_selftest(void)
         rc = wr_forest_corrections(
             arena, relation, 4, 4, 0, size, component, q, 4,
             NULL, 0, 9.5,
-            NULL, 1, &correction, &island, NULL, &graph, &stats);
+            NULL, NULL, 1, &correction, &island, NULL, &graph, &stats);
         wr_selftest_check(rc == 0, "(R2) closure returns success", &fails);
         if (rc == 0) {
             wr_selftest_check(
@@ -3460,7 +4499,8 @@ int WindingRegister_selftest(void)
             if (wr_forest_corrections(
                     arena, relation, 6, 5, 0, size, component, q, 5,
                     NULL, 0, 9.5,
-                    NULL, 1, &correction, &island, NULL, &graph, &stats) != 0) {
+                    NULL, NULL, 1, &correction, &island, NULL, &graph,
+                    &stats) != 0) {
                 ok = 0;
                 break;
             }
@@ -3523,7 +4563,8 @@ int WindingRegister_selftest(void)
             memset(&initial_stats, 0, sizeof initial_stats);
             int initial_rc = wr_forest_corrections(
                 arena, relation, 3, 4, 0, size, component, q, 4,
-                strand, 16, 9.5, NULL, 0, &initial, &initial_island, NULL,
+                strand, 16, 9.5, NULL, NULL, 0,
+                &initial, &initial_island, NULL,
                 &initial_graph, &initial_stats);
             wr_selftest_check(
                 initial_rc == 0 && initial[0] == 0 && initial[1] == -1 &&
@@ -3536,7 +4577,8 @@ int WindingRegister_selftest(void)
         }
         int rc = wr_forest_corrections(
             arena, relation, 3, 4, 0, size, component, q, 4,
-            strand, 16, 9.5, NULL, 1, &correction, &island, NULL,
+            strand, 16, 9.5, NULL, NULL, 1,
+            &correction, &island, NULL,
             &graph, &stats);
         wr_selftest_check(rc == 0,
                           "(R4) conflict exclusion returns success", &fails);
@@ -3554,6 +4596,132 @@ int WindingRegister_selftest(void)
                 "(R4) exclusion converges and reports occupancy closure",
                 &fails);
         }
+        Arena_restore(arena, mark);
+    }
+
+    /* (P1) Projective extension: two parent-supported components already have
+     * absolute corrections 10 and 12.  A tempting direct continuation claims
+     * they are equal; it must be cut.  The consistent two-edge path through a
+     * new component then places that component at 11 without moving either
+     * parent value. */
+    {
+        Arena_Mark mark = Arena_save(arena);
+        int32_t component[3] = { 0, 1, 2 };
+        int32_t size[3] = { 100, 100, 20 };
+        double q[3] = { 0.1, 0.1, 0.1 };
+        int32_t fixed[3] = { 10, 12, INT32_MIN };
+        int32_t lineage[3] = { 7, 8, -1 };
+        WindingRegisterBoundary boundary = { fixed, lineage };
+        WrRelation relation[3];
+        int32_t *correction = NULL, *island = NULL;
+        UnionFind graph;
+        WindingRegisterStats stats;
+        memset(relation, 0, sizeof relation);
+        relation[0].a = 0; relation[0].b = 1; relation[0].target = 0;
+        relation[1].a = 0; relation[1].b = 2; relation[1].target = 1;
+        relation[2].a = 2; relation[2].b = 1; relation[2].target = 1;
+        for (int i = 0; i < 3; i++) {
+            relation[i].eligible = 1;
+            relation[i].kind = WR_OBS_CONTINUATION;
+            relation[i].weight = 1003.0 - (double)i;
+            relation[i].observations = 8;
+            relation[i].mode_observations = 8;
+            relation[i].agreement = 1.0;
+        }
+        memset(&stats, 0, sizeof stats);
+        int rc = wr_forest_corrections(
+            arena, relation, 3, 3, 0, size, component, q, 3,
+            NULL, 0, 9.5, NULL, &boundary, 0,
+            &correction, &island, NULL, &graph, &stats);
+        wr_selftest_check(
+            rc == 0 && correction[0] == 10 && correction[1] == 12 &&
+            correction[2] == 11,
+            "(P1) parent corrections stay fixed and place new component",
+            &fails);
+        wr_selftest_check(
+            rc == 0 && !relation[0].eligible &&
+            stats.boundary_components == 2 &&
+            stats.boundary_relation_cuts == 1 &&
+            stats.packed_relation_components == 0,
+            "(P1) contradictory relation is cut, never averaged", &fails);
+        Arena_restore(arena, mark);
+    }
+
+    /* The same measured factor and parent lock must not give different
+     * answers depending on which site the disjoint-set implementation chose
+     * as its representative. No explicit parent is allowed to move. */
+    for (int representative=0;representative<2;representative++) {
+        Arena_Mark mark=Arena_save(arena);
+        UnionFind graph=UF_new(arena,2);
+        uf_union(&graph,representative,1-representative);
+        WrRelation relation={0};
+        relation.a=0; relation.b=1; relation.target=1;
+        relation.eligible=1; relation.kind=WR_OBS_CONTINUATION;
+        relation.weight=1100; relation.observations=100;
+        relation.mode_observations=100; relation.agreement=1;
+        WrForbiddenWinding lock={1,0};
+        int32_t correction[2]={0,0};
+        WindingRegisterStats stats={0};
+        int rc=wr_mrf_refine(arena,&relation,1,2,&graph,correction,NULL,NULL,0,
+                            &lock,1,NULL,0,0,NULL,&stats);
+        wr_selftest_check(rc==0 && correction[0]==-1 && correction[1]==0,
+            "parent gauge replaces arbitrary UF pin, invariant to representative",&fails);
+        Arena_restore(arena,mark);
+    }
+
+    /* (P2) A parent boundary must protect its exact sites, not turn off
+     * conflict detection everywhere. One repeated bin is insufficient; four
+     * distinct bins can correct free sites; all-fixed conflicts are reported
+     * unresolved without moving the established frame. */
+    for (int mode = 0; mode < 3; mode++) {
+        Arena_Mark mark = Arena_save(arena);
+        int32_t component[4] = { 0, 1, 2, 3 };
+        int32_t size[4] = { 100, 20, 20, 20 };
+        double q[4] = { .1, 1.1, 2.1, 3.1 };
+        int32_t fixed[4] = { 10, INT32_MIN, INT32_MIN, INT32_MIN };
+        int32_t lineage[4] = { 7, -1, -1, -1 };
+        WindingRegisterBoundary boundary = { fixed, lineage };
+        WrRelation relation[3];
+        WrStrand strand[16];
+        int32_t *correction = NULL, *island = NULL;
+        UnionFind graph;
+        WindingRegisterStats stats;
+        memset(relation, 0, sizeof relation);
+        memset(strand, 0, sizeof strand);
+        memset(&stats, 0, sizeof stats);
+        for (int c = 1; c < 4; c++) {
+            relation[c-1].a = 0; relation[c-1].b = c;
+            relation[c-1].target = -c;
+            relation[c-1].weight = 1002.0-c;
+            relation[c-1].observations = relation[c-1].mode_observations = 8;
+            relation[c-1].agreement = 1.0;
+            relation[c-1].eligible = 1;
+            relation[c-1].kind = WR_OBS_CONTINUATION;
+            if (mode == 2) { fixed[c] = 10-c; lineage[c] = 7+c; }
+        }
+        for (int z = 0; z < 4; z++)
+            for (int c = 0; c < 4; c++) {
+                WrStrand *s = &strand[4*z+c];
+                s->axial_bin = mode == 0 ? 0 : z;
+                s->phase_bin = 25; s->component = c; s->raw_turn = c;
+                s->count = 1; s->radius = 10.+90.*c; s->q = q[c];
+            }
+        int rc = wr_forest_corrections(arena, relation, 3, 4, 0,
+            size, component, q, 4, strand, 16, 9.5, NULL, &boundary, 1,
+            &correction, &island, NULL, &graph, &stats);
+        wr_selftest_check(rc == 0 && correction[0] == 10,
+            "(P2) inherited winding is immutable during exclusion", &fails);
+        if (rc == 0 && mode == 1)
+            wr_selftest_check(correction[1] != 9 && correction[2] != 8 && correction[3] != 7 &&
+                stats.mrf_conflict_bins_before == 4 && stats.mrf_conflict_bins_after == 0 &&
+                stats.mrf_conflict_converged,
+                "(P2) distributed evidence repairs free sites beside parent boundary", &fails);
+        if (rc == 0 && mode != 1)
+            wr_selftest_check(correction[1] == 9 && correction[2] == 8 && correction[3] == 7 &&
+                stats.mrf_conflict_bins_before == (mode == 0 ? 1 : 4) &&
+                stats.mrf_conflict_exclusions == 0 && !stats.mrf_conflict_converged,
+                mode == 0 ? "(P2) repeated one-bin evidence abstains" :
+                            "(P2) all-parent collision remains explicitly unresolved", &fails);
         Arena_restore(arena, mark);
     }
 
@@ -3600,7 +4768,8 @@ int WindingRegister_selftest(void)
         memset(&stats, 0, sizeof stats);
         int rc = wr_forest_corrections(
             arena, relation, 6, 7, 0, size, component, q, 7,
-            strand, 28, 9.5, NULL, 1, &correction, &island, NULL,
+            strand, 28, 9.5, NULL, NULL, 1,
+            &correction, &island, NULL,
             &graph, &stats);
         wr_selftest_check(rc == 0,
                           "(R5) guarded retry returns success", &fails);

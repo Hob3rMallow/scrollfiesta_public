@@ -467,8 +467,8 @@ static int pipeline_cdt_fill(Arena_T arena, ComponentMesh *cm, void *user)
     if(ctx&&ctx->wind_armed){
         size_t vb=cm->nv*3*sizeof(float);
         size_t fb=cm->nf*3*sizeof(int32_t);
-        float *saved_v=(float *)ARENA_ALLOC(arena,(long)(vb?vb:1));
-        int32_t *saved_f=(int32_t *)ARENA_ALLOC(arena,(long)(fb?fb:1));
+        float *saved_v=(float *)ARENA_ALLOC(arena,(size_t)(vb?vb:1));
+        int32_t *saved_f=(int32_t *)ARENA_ALLOC(arena,(size_t)(fb?fb:1));
         memcpy(saved_v,cm->verts,vb);
         memcpy(saved_f,cm->faces,fb);
         before.verts=saved_v;
@@ -728,19 +728,19 @@ int pipeline_process_cube(Arena_T arena,
         size_t n_in = out->n_meshes;
         size_t cap  = n_in * 4 + 16, cnt = 0;
         ComponentMesh    *acc  = (ComponentMesh *)ARENA_ALLOC(
-            arena, (long)(cap * sizeof(ComponentMesh)));
+            arena, (size_t)(cap * sizeof(ComponentMesh)));
         MeshResplitCloud *accc = (MeshResplitCloud *)ARENA_ALLOC(
-            arena, (long)(cap * sizeof(MeshResplitCloud)));
+            arena, (size_t)(cap * sizeof(MeshResplitCloud)));
         MeshResplitCloud zerocl; memset(&zerocl, 0, sizeof zerocl);
         size_t n_peeled = 0, n_layers = 0;
 
         #define DP_ENSURE() do { if (cnt >= cap) { size_t nc = cap * 2;          \
             ComponentMesh *na = (ComponentMesh *)ARENA_ALLOC(arena,              \
-                (long)(nc * sizeof(ComponentMesh)));                            \
+                (size_t)(nc * sizeof(ComponentMesh)));                            \
             memcpy(na, acc, cnt * sizeof(ComponentMesh));                        \
             for (size_t _i = 0; _i < cnt; _i++) na[_i].self = &na[_i]; acc = na; \
             MeshResplitCloud *nq = (MeshResplitCloud *)ARENA_ALLOC(arena,        \
-                (long)(nc * sizeof(MeshResplitCloud)));                         \
+                (size_t)(nc * sizeof(MeshResplitCloud)));                         \
             memcpy(nq, accc, cnt * sizeof(MeshResplitCloud)); accc = nq;         \
             cap = nc; } } while (0)
         #define DP_EMIT(MSH, CLD) do { DP_ENSURE();                             \
@@ -810,9 +810,9 @@ int pipeline_process_cube(Arena_T arena,
         size_t n_in = out->n_meshes;
         size_t cap  = n_in * 4 + 16, cnt = 0;
         ComponentMesh    *acc  = (ComponentMesh *)ARENA_ALLOC(
-            arena, (long)(cap * sizeof(ComponentMesh)));
+            arena, (size_t)(cap * sizeof(ComponentMesh)));
         MeshResplitCloud *accc = (MeshResplitCloud *)ARENA_ALLOC(
-            arena, (long)(cap * sizeof(MeshResplitCloud)));
+            arena, (size_t)(cap * sizeof(MeshResplitCloud)));
         MeshResplitCloud zerocl; memset(&zerocl, 0, sizeof zerocl);
         size_t n_cut = 0, n_gate_rej = 0;
 
@@ -837,11 +837,11 @@ int pipeline_process_cube(Arena_T arena,
 
         #define DC_ENSURE() do { if (cnt >= cap) { size_t nc = cap * 2;          \
             ComponentMesh *na = (ComponentMesh *)ARENA_ALLOC(arena,              \
-                (long)(nc * sizeof(ComponentMesh)));                            \
+                (size_t)(nc * sizeof(ComponentMesh)));                            \
             memcpy(na, acc, cnt * sizeof(ComponentMesh));                        \
             for (size_t _i = 0; _i < cnt; _i++) na[_i].self = &na[_i]; acc = na; \
             MeshResplitCloud *nq = (MeshResplitCloud *)ARENA_ALLOC(arena,        \
-                (long)(nc * sizeof(MeshResplitCloud)));                         \
+                (size_t)(nc * sizeof(MeshResplitCloud)));                         \
             memcpy(nq, accc, cnt * sizeof(MeshResplitCloud)); accc = nq;         \
             cap = nc; } } while (0)
         #define DC_EMIT(MSH, CLD) do { DC_ENSURE();                             \
@@ -936,9 +936,9 @@ int pipeline_process_cube(Arena_T arena,
         size_t total_in = out->n_meshes;
         size_t cap = total_in * 8 + 16;
         ComponentMesh *split_meshes = (ComponentMesh *)ARENA_ALLOC(
-            arena, (long)(cap * sizeof(ComponentMesh)));
+            arena, (size_t)(cap * sizeof(ComponentMesh)));
         size_t *range = (size_t *)ARENA_ALLOC(
-            arena, (long)((total_in + 1) * sizeof(size_t)));
+            arena, (size_t)((total_in + 1) * sizeof(size_t)));
         size_t total_out = 0;
         size_t n_bridge = 0, n_ovl = 0, n_resurf = 0;
         size_t n_ovl_owned_micro = 0, f_ovl_owned_micro = 0;
@@ -1040,7 +1040,7 @@ int pipeline_process_cube(Arena_T arena,
                     if (total_out >= cap) {
                         size_t new_cap = cap * 2;
                         ComponentMesh *grown = (ComponentMesh *)ARENA_ALLOC(
-                            arena, (long)(new_cap * sizeof(ComponentMesh)));
+                            arena, (size_t)(new_cap * sizeof(ComponentMesh)));
                         memcpy(grown, split_meshes,
                                total_out * sizeof(ComponentMesh));
                         split_meshes = grown;
@@ -1314,7 +1314,7 @@ int pipeline_process_cube(Arena_T arena,
                 CvtField fld; const CvtField *fldp = NULL;
                 { const char *ge = getenv("VES_CVT_GRADED");
                   if (ge && *ge == '1' && in->halo_voxels > 0) {
-                    float ins = in->trim_inset >= 0.0f ? in->trim_inset
+                    float ins = in->trim_inset > -999.0f ? in->trim_inset
                                                        : (float)BPA_OWNED_TRIM_INSET;
                     fld.lo = (double)ins;
                     fld.hi = (double)in->cube_D - (double)ins;
@@ -1514,7 +1514,7 @@ int pipeline_process_cube(Arena_T arena,
          * trim_inset 0 (whole-grid unwrap path) lets charts reach the faces:
          * the mutual-nearest weld merges the boundary rows instead, and the
          * grazing doubles become SeamOwn's seam double-paint (handled). */
-        float ins = in->trim_inset >= 0.0f ? in->trim_inset
+        float ins = in->trim_inset > -999.0f ? in->trim_inset
                                            : (float)BPA_OWNED_TRIM_INSET;
         float owned_lo = ins;
         float owned_hi = (float)in->cube_D - ins;  /* cubic cubes */
@@ -1532,7 +1532,7 @@ int pipeline_process_cube(Arena_T arena,
           if (e && *e == '0') use_cut = 0; }
         size_t total_cut_faces = 0;
         ComponentMesh *trimmed = (ComponentMesh *)ARENA_CALLOC(
-            arena, (long)out->n_meshes, (long)sizeof(ComponentMesh));
+            arena, (size_t)out->n_meshes, sizeof(ComponentMesh));
         size_t n_trim_kept = 0;
         size_t total_in_nv = 0, total_in_nf = 0;
         size_t total_out_nv = 0, total_out_nf = 0;

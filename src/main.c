@@ -94,7 +94,15 @@ int main(int argc, char *argv[])
     int no_timeout  = 0;
     int halo_voxels = 0;
     float cvt_target_ratio = 0.0f; /* 0 = pitch-aware scroll default */
-    float trim_inset = -1.0f;   /* < 0 = BPA_OWNED_TRIM_INSET default */
+    float trim_inset = -1000.0f; /* <= -999 = BPA_OWNED_TRIM_INSET default.
+                                  * NEGATIVE values are the OVERLAP PILE
+                                  * (2026-09-01): the owned box EXPANDS into
+                                  * the halo by |inset| vox, so adjacent
+                                  * cubes' meshes share a ring of
+                                  * halo-converged geometry -- the exact
+                                  * co-location evidence the winding
+                                  * register needs to chain the pile
+                                  * without any weld. */
     double grow_umb_y = 0.0, grow_umb_x = 0.0;
     int have_grow_umb_y = 0, have_grow_umb_x = 0;
     const char *grow_axis_table_path = NULL;
@@ -146,8 +154,9 @@ int main(int argc, char *argv[])
             }
         } else if (strcmp(argv[i], "--trim-inset") == 0 && i + 1 < argc) {
             trim_inset = (float)atof(argv[++i]);
-            if (trim_inset < 0.0f || trim_inset > 8.0f) {
-                fprintf(stderr, "ERROR: --trim-inset must be in [0, 8]\n");
+            if (trim_inset < -12.0f || trim_inset > 8.0f) {
+                fprintf(stderr, "ERROR: --trim-inset must be in [-12, 8] "
+                                "(negative = overlap ring)\n");
                 return 1;
             }
         } else if (strcmp(argv[i], "--grow-umb-y") == 0 && i + 1 < argc) {
@@ -296,7 +305,7 @@ int main(int argc, char *argv[])
         int input_ok = 1;
         if (stdin_raw) {
             size_t n = (size_t)p_size * (size_t)p_size * (size_t)p_size;
-            raw_buf = (uint8_t *)ARENA_CALLOC(arena, (long)n, 1L);
+            raw_buf = (uint8_t *)ARENA_CALLOC(arena, (size_t)n, 1L);
             size_t got = 0, r = 0;
             while (got < n && (r = fread(raw_buf + got, 1, n - got, stdin)) > 0)
                 got += r;

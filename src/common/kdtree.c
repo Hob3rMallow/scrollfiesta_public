@@ -157,14 +157,14 @@ KDTree_T KDTree_new(Arena_T arena, const float *points, size_t n)
 
     assert(points);
 
-    tree->nodes = (KDNode *)ARENA_ALLOC(arena, (long)(n * sizeof(KDNode)));
+    tree->nodes = (KDNode *)ARENA_ALLOC(arena, (size_t)(n * sizeof(KDNode)));
 
     /* Initialize all nodes */
     memset(tree->nodes, 0, n * sizeof(KDNode));
 
     /* Build index array */
     int32_t *indices = (int32_t *)ARENA_ALLOC(arena,
-                                               (long)(n * sizeof(int32_t)));
+                                               (size_t)(n * sizeof(int32_t)));
     for (size_t i = 0; i < n; i++) {
         indices[i] = (int32_t)i;
     }

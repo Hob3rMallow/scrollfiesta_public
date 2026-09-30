@@ -49,6 +49,20 @@ typedef struct QuadStripOpts {
                                     with the fitted rim fixed, so the fill unfolds
                                     developably instead of cutting through wraps. */
     int           relax_cg_iters;/* CG iterations per global ARAP solve (default 96) */
+    int           trend_per_row; /* cylindrical fill trend: 0 = one affine fit in
+                                    (row, col) over the whole component (legacy);
+                                    1 = per-row offsets from each row's own
+                                    observations with column slopes taken as the
+                                    median of adjacent observed pairs, empty rows
+                                    interpolated -- immune to fragments placed
+                                    out of angular order, which flip the affine
+                                    slope and send one-sided fills backwards
+                                    (default 0) */
+    int           harmonic_solver;/* harmonic fill solver: 1 = TAUCS supernodal
+                                    Cholesky, factored once per component and
+                                    solved for every channel (default unless the
+                                    executable defines QUAD_STRIP_NO_TAUCS);
+                                    0 = legacy Jacobi-PCG (pde_max_iter/pde_tol) */
 } QuadStripOpts;
 
 /* Full-ribbon metric ARAP.  This is deliberately separate from the historical
@@ -213,6 +227,21 @@ int QuadStrip_build_topology_with_phase(Arena_T arena,
                     float **out_verts, size_t *out_nv,
                     int32_t **out_faces, size_t *out_nf,
                     float **out_uv, uint8_t **out_filled);
+
+/* Same build, additionally exporting the lifted phase the cylindrical fill
+ * solved for EVERY emitted cell (*out_phase[nv]; observed cells carry their
+ * branch-lifted atan2, fills the harmonic continuation).  NAN for Cartesian
+ * builds.  Any out_* may be NULL. */
+int QuadStrip_build_topology_with_phase_ex(Arena_T arena,
+                    const uint8_t *topology,
+                    const uint8_t *domain, const float *field,
+                    const float *lifted_phase,
+                    int H, int W, int gr0, int c0, double grid_du,
+                    const QuadStripOpts *opts,
+                    float **out_verts, size_t *out_nv,
+                    int32_t **out_faces, size_t *out_nf,
+                    float **out_uv, uint8_t **out_filled,
+                    float **out_phase);
 
 /* Relax one complete HxW RECT ribbon in place.  verts are z/y/x, uv are u/v,
  * and filled is 0 for measured/fitted cells and 1 for introduced cells.  The

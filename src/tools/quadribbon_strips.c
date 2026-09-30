@@ -35,6 +35,64 @@
 #include "../common/obj_io.h"
 #include "../common/ves_platform.h"
 
+
+/* ---- arc length along the umbilicus (for the sheet's v) ------------------
+ * s(z) = integral of sqrt(1 + |d(centre)/dz|^2) dz, tabulated on the axis
+ * table's own rows and interpolated linearly.  Empty table = v stays world z. */
+#define QR_ARC_MAX 4096
+static double g_arc_z[QR_ARC_MAX];
+static double g_arc_s[QR_ARC_MAX];
+static int    g_arc_n = 0;
+
+static double qr_arclen(double z)
+{
+    int lo = 0, hi = 0;
+    double t = 0.0;
+    if (g_arc_n < 2) return z;
+    if (z <= g_arc_z[0]) return g_arc_s[0] + (z - g_arc_z[0]);
+    if (z >= g_arc_z[g_arc_n - 1])
+        return g_arc_s[g_arc_n - 1] + (z - g_arc_z[g_arc_n - 1]);
+    hi = 1;
+    while (hi < g_arc_n && g_arc_z[hi] < z) hi++;
+    lo = hi - 1;
+    t = (g_arc_z[hi] - g_arc_z[lo]) > 1e-9
+      ? (z - g_arc_z[lo]) / (g_arc_z[hi] - g_arc_z[lo]) : 0.0;
+    return g_arc_s[lo] + t * (g_arc_s[hi] - g_arc_s[lo]);
+}
+
+/* Load z,y,x rows and integrate the arc length.  Returns the row count. */
+static int qr_arclen_load(const char *path)
+{
+    char line[512];
+    double zz[QR_ARC_MAX], yy[QR_ARC_MAX], xx[QR_ARC_MAX];
+    int n = 0, i = 0;
+    FILE *f = fopen(path, "rb");
+    if (f == NULL) return 0;
+    while (fgets(line, sizeof line, f) != NULL && n < QR_ARC_MAX) {
+        double a = 0.0, b = 0.0, c = 0.0;
+        if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
+        if (sscanf(line, "%lf,%lf,%lf", &a, &b, &c) != 3) continue;
+        zz[n] = a; yy[n] = b; xx[n] = c;
+        n++;
+    }
+    fclose(f);
+    if (n < 2) return 0;
+    g_arc_n = n;
+    g_arc_z[0] = zz[0];
+    g_arc_s[0] = zz[0];
+    for (i = 1; i < n; i++) {
+        double dz = zz[i] - zz[i - 1];
+        double dy = yy[i] - yy[i - 1];
+        double dx = xx[i] - xx[i - 1];
+        g_arc_z[i] = zz[i];
+        g_arc_s[i] = g_arc_s[i - 1] + sqrt(dz * dz + dy * dy + dx * dx) * (dz < 0 ? -1.0 : 1.0);
+    }
+    fprintf(stderr, "quadribbon_strips: arc-length v from %s (%d rows, z %.0f..%.0f -> s %.0f..%.0f, "
+            "total stretch %.4f)\n", path, n, g_arc_z[0], g_arc_z[n - 1], g_arc_s[0], g_arc_s[n - 1],
+            (g_arc_s[n - 1] - g_arc_s[0]) / (g_arc_z[n - 1] - g_arc_z[0]));
+    return n;
+}
+
 enum { QR_MAX_SHEETS = 3, QR_PIXEL_SLOTS = 4 };
 
 /* A conflict edge separates two charts into different sheets only when the
@@ -607,6 +665,19 @@ static int qr_write_sheet(const MeshBinData *mesh, const int32_t *face_chart,
         if (j < 0) continue;
         memcpy(&verts[(size_t)j * 3], &mesh->verts[i * 3], 3 * sizeof(*verts));
         memcpy(&uv[(size_t)j * 2], &mesh->uv[i * 2], 2 * sizeof(*uv));
+        /* ARC-LENGTH v.  The lattice sets v = world z, but the sheet's rows are
+         * perpendicular to the local umbilicus, so a v-edge spans
+         * sqrt(1 + slope^2) voxels of surface per voxel of z.  MEASURED
+         * 2026-09-03: the ribbon's v-edge stretch tracks that prediction band
+         * for band (1.0123 at slope < 0.15 up to 1.0674 at 0.35-0.45), so the
+         * sheet is stretched 1-7% depending on height -- a 5.5 point
+         * DIFFERENTIAL across one sheet, which no gate measures because none
+         * looks at v scale.  Arc length is a function of z alone, so correcting
+         * it is a 1-D monotone remap of the row coordinate, applied here where
+         * the sheet is composited and nowhere else: the lattice, the verdict and
+         * every sidecar keep v = z. */
+        if (g_arc_n > 1)
+            uv[(size_t)j * 2 + 1] = (float)qr_arclen(mesh->verts[i * 3]);
     }
     for (f = 0; f < mesh->nf; f++) {
         if (sheet[face_chart[f]] != which) continue;
@@ -924,7 +995,7 @@ int main(int argc, char **argv)
         return qr_selftest() ? 3 : 0;
     if (argc < 3) {
         fprintf(stderr,
-                "usage: %s <in.vmesh|obj> <out_prefix> "
+                "usage: %s <in.vmesh|obj> <out_prefix> [--axis-table <csv>] "
                 "[--labels file.i32] [--du F] [--dv F] "
                 "[--max-strips 1..3] [--write-obj]\n"
                 "       %s --selftest\n",
@@ -940,6 +1011,8 @@ int main(int argc, char **argv)
             dv = atof(argv[++i]);
         else if (strcmp(argv[i], "--max-strips") == 0 && i + 1 < argc)
             max_sheets = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--axis-table") == 0 && i + 1 < argc)
+            qr_arclen_load(argv[++i]);
         else if (strcmp(argv[i], "--write-obj") == 0)
             write_obj = 1;
         else {

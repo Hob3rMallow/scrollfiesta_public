@@ -54,10 +54,10 @@ int cc_label_3d(Arena_T arena, const uint8_t *vol,
     int32_t HW = H * W;
 
     int32_t *queue = (int32_t *)ARENA_ALLOC(arena,
-                                            (long)(vol_size * sizeof(int32_t)));
+                                            (size_t)(vol_size * sizeof(int32_t)));
     int32_t max_comps = 4096;
     CompInfo *comps = (CompInfo *)ARENA_ALLOC(arena,
-                                              (long)((size_t)max_comps * sizeof(CompInfo)));
+                                              (size_t)((size_t)max_comps * sizeof(CompInfo)));
     int32_t n_comps = 0;
 
     for (int32_t idx = 0; (size_t)idx < vol_size; idx++) {
@@ -95,7 +95,7 @@ int cc_label_3d(Arena_T arena, const uint8_t *vol,
         if (n_comps >= max_comps) {
             int32_t new_max = max_comps * 2;
             CompInfo *nc = (CompInfo *)ARENA_ALLOC(arena,
-                                                    (long)((size_t)new_max * sizeof(CompInfo)));
+                                                    (size_t)((size_t)new_max * sizeof(CompInfo)));
             memcpy(nc, comps, (size_t)n_comps * sizeof(CompInfo));
             comps = nc;
             max_comps = new_max;
@@ -144,9 +144,9 @@ static size_t propagate_normal_signs(Arena_T arena,
     const int32_t *off = CSR_offset(adj);
     const int32_t *tgt = CSR_target(adj);
 
-    uint8_t *visited = (uint8_t *)ARENA_CALLOC(arena, (long)nv, 1L);
+    uint8_t *visited = (uint8_t *)ARENA_CALLOC(arena, (size_t)nv, 1L);
     int32_t *queue = (int32_t *)ARENA_ALLOC(arena,
-                        (long)nv * (long)sizeof(int32_t));
+                        (size_t)nv * sizeof(int32_t));
 
     size_t n_flips = 0;
 
@@ -309,12 +309,12 @@ static size_t spatial_pairing_cull(Arena_T arena,
      * for tiebreak + radius check; also keep a flat normals[] for fast
      * dot-product lookup by face index. */
     float *centroids = (float *)ARENA_ALLOC(arena,
-                          (long)nf * 3L * (long)sizeof(float));
+                          (size_t)nf * 3L * sizeof(float));
     float *normals = (float *)ARENA_ALLOC(arena,
-                        (long)nf * 3L * (long)sizeof(float));
+                        (size_t)nf * 3L * sizeof(float));
     PairHashEntry *entries = (PairHashEntry *)ARENA_ALLOC(arena,
-                              (long)nf * (long)sizeof(PairHashEntry));
-    uint8_t *keep = (uint8_t *)ARENA_ALLOC(arena, (long)nf);
+                              (size_t)nf * sizeof(PairHashEntry));
+    uint8_t *keep = (uint8_t *)ARENA_ALLOC(arena, (size_t)nf);
 
     size_t n_degenerate = 0;
     for (size_t f = 0; f < nf; f++) {
@@ -366,7 +366,7 @@ static size_t spatial_pairing_cull(Arena_T arena,
 
     /* Build parallel key array for binary-search lookup. */
     uint64_t *keys = (uint64_t *)ARENA_ALLOC(arena,
-                        (long)nf * (long)sizeof(uint64_t));
+                        (size_t)nf * sizeof(uint64_t));
     for (size_t i = 0; i < nf; i++) keys[i] = entries[i].key;
 
     /* For each face, search 27 neighbour cells for a co-located opposite-
@@ -470,8 +470,8 @@ static void clean_unreferenced(Arena_T arena,
                                int32_t *faces, size_t nf,
                                float **new_verts, size_t *new_nv)
 {
-    int32_t *remap = (int32_t *)ARENA_CALLOC(arena, (long)old_nv,
-                                              (long)sizeof(int32_t));
+    int32_t *remap = (int32_t *)ARENA_CALLOC(arena, (size_t)old_nv,
+                                              sizeof(int32_t));
     /* Mark used vertices */
     for (size_t i = 0; i < nf * 3; i++) {
         assert(faces[i] >= 0 && (size_t)faces[i] < old_nv);
@@ -490,7 +490,7 @@ static void clean_unreferenced(Arena_T arena,
 
     /* Allocate compact vertex array */
     float *verts = (float *)ARENA_ALLOC(arena,
-                                         (long)((size_t)count * 3 * sizeof(float)));
+                                         (size_t)((size_t)count * 3 * sizeof(float)));
     for (size_t i = 0; i < old_nv; i++) {
         if (remap[i] >= 0) {
             verts[remap[i] * 3 + 0] = old_verts[i * 3 + 0];
@@ -528,8 +528,8 @@ static size_t mesh_split_remove_small(Arena_T arena,
     }
 
     /* Count faces per UF root */
-    int32_t *face_count = (int32_t *)ARENA_CALLOC(arena, (long)nv,
-                                                    (long)sizeof(int32_t));
+    int32_t *face_count = (int32_t *)ARENA_CALLOC(arena, (size_t)nv,
+                                                    sizeof(int32_t));
     for (size_t i = 0; i < nf; i++) {
         int32_t root = uf_find(&uf, faces[i * 3]);
         face_count[root]++;
@@ -616,7 +616,7 @@ int MeshExtract_run(Arena_T          arena,
         {
             size_t pn = (size_t)p_size_in * (size_t)p_size_in
                       * (size_t)p_size_in;
-            vol = (uint8_t *)ARENA_ALLOC(arena, (long)pn);
+            vol = (uint8_t *)ARENA_ALLOC(arena, (size_t)pn);
             memcpy(vol, vol_in, pn);
         }
         D = H = W = p_size_in;
@@ -668,13 +668,55 @@ int MeshExtract_run(Arena_T          arena,
      * halo mode `vol` is the padded p_size^3 with the owned cube at offset
      * halo_voxels. Overridable via VESUVIUS_NO_REJECT_GARBAGE. Returns cleanly
      * with zero meshes (same path as an all-background cube). */
+    /* CT-weighted LOP (experiment): load the raw-CT halo volume matching the
+     * padded prediction volume.  Armed by VES_CT_WEIGHTED_LOP=1; the raw dir
+     * is VES_RAW_DIR or the cubes_RAW sibling of pred_dir. */
+    uint8_t *ct_raw = NULL;
+    {
+        const char *arm = getenv("VES_CT_WEIGHTED_LOP");
+        if (arm != NULL && arm[0] == '1' && halo_voxels > 0 &&
+            pred_dir != NULL && cube_id != NULL) {
+            char raw_dir[1024] = {0};
+            const char *ovr = getenv("VES_RAW_DIR");
+            if (ovr != NULL && ovr[0] != '\0') {
+                snprintf(raw_dir, sizeof raw_dir, "%s", ovr);
+            } else {
+                size_t n = strlen(pred_dir);
+                snprintf(raw_dir, sizeof raw_dir, "%s", pred_dir);
+                while (n > 0 && (raw_dir[n - 1] == '/' || raw_dir[n - 1] == '\\'))
+                    raw_dir[--n] = '\0';
+                if (n >= 10 && strcmp(raw_dir + n - 10, "cubes_PRED") == 0)
+                    memcpy(raw_dir + n - 10, "cubes_RAW", 10);
+                else
+                    raw_dir[0] = '\0';
+            }
+            if (raw_dir[0] != '\0') {
+                int p2 = 0;
+                int64_t org2[3] = {0, 0, 0};
+                if (HaloLoader_load(arena, raw_dir, cube_id, (int)cube_D,
+                                    halo_voxels, &ct_raw, &p2, org2) != 0 ||
+                    (size_t)p2 != D) {
+                    fprintf(stderr, "MeshExtract: CT-weighted LOP armed but the "
+                            "raw halo volume is unavailable (%s, p=%d vs %zu); "
+                            "unweighted\n", raw_dir, p2, D);
+                    ct_raw = NULL;
+                } else {
+                    fprintf(stderr, "MeshExtract: CT-weighted LOP armed (%s)\n",
+                            raw_dir);
+                }
+            } else {
+                fprintf(stderr, "MeshExtract: CT-weighted LOP armed but pred_dir "
+                        "is not a cubes_PRED dir; unweighted\n");
+            }
+        }
+    }
     if (!getenv("VESUVIUS_NO_REJECT_GARBAGE")) {
         int off = (halo_voxels > 0) ? halo_voxels : 0;
         int od = (int)cube_D, oh = (int)cube_H, ow = (int)cube_W;
         if (off + od <= D && off + oh <= H && off + ow <= W) {
             Arena_Mark gmark = Arena_save(arena);
             size_t on = (size_t)od * (size_t)oh * (size_t)ow;
-            uint8_t *owned = (uint8_t *)ARENA_ALLOC(arena, (long)on);
+            uint8_t *owned = (uint8_t *)ARENA_ALLOC(arena, (size_t)on);
             size_t vol_HW = (size_t)H * (size_t)W;
             for (int oz = 0; oz < od; oz++)
                 for (int oy = 0; oy < oh; oy++)
@@ -703,8 +745,8 @@ int MeshExtract_run(Arena_T          arena,
 #endif
 
     /* Phase 2: 3D connected components */
-    int32_t *labels = (int32_t *)ARENA_CALLOC(arena, (long)vol_size,
-                                               (long)sizeof(int32_t));
+    int32_t *labels = (int32_t *)ARENA_CALLOC(arena, (size_t)vol_size,
+                                               sizeof(int32_t));
     CompInfo *comps = NULL;
     int32_t n_raw_comps = 0;
     cc_label_3d(arena, vol, D, H, W, labels, &comps, &n_raw_comps);
@@ -732,7 +774,7 @@ int MeshExtract_run(Arena_T          arena,
 
     /* Allocate output array */
     ComponentMesh *meshes = (ComponentMesh *)ARENA_ALLOC(arena,
-                                                          (long)((size_t)n_valid * sizeof(ComponentMesh)));
+                                                          (size_t)((size_t)n_valid * sizeof(ComponentMesh)));
     memset(meshes, 0, (size_t)n_valid * sizeof(ComponentMesh));
 
     /* Optional per-component raw+LOP cloud snapshot for the connectivity
@@ -740,7 +782,7 @@ int MeshExtract_run(Arena_T          arena,
     MeshResplitCloud *clouds = NULL;
     if (out_clouds) {
         clouds = (MeshResplitCloud *)ARENA_ALLOC(arena,
-                     (long)((size_t)n_valid * sizeof(MeshResplitCloud)));
+                     (size_t)((size_t)n_valid * sizeof(MeshResplitCloud)));
         memset(clouds, 0, (size_t)n_valid * sizeof(MeshResplitCloud));
     }
 
@@ -838,7 +880,7 @@ int MeshExtract_run(Arena_T          arena,
 
         /* Allocate zero-filled padded subvolume (scratch) */
         size_t pad_size = (size_t)pD * (size_t)pH * (size_t)pW;
-        uint8_t *padded = (uint8_t *)ARENA_CALLOC(scratch, (long)pad_size, 1L);
+        uint8_t *padded = (uint8_t *)ARENA_CALLOC(scratch, (size_t)pad_size, 1L);
 
         /* Fill the padded volume covering [zmin-1, zmax+1] x ... so that
          * MC at the bbox border sees the right value:
@@ -894,6 +936,7 @@ int MeshExtract_run(Arena_T          arena,
         float *surf_verts = NULL;
         int32_t *surf_faces = NULL;
         size_t surf_nv = 0, surf_nf = 0;
+        float *surf_w = NULL;   /* CT weights per point, or NULL */
         {
             /* Count FG voxels in padded, then allocate and fill. */
             size_t fg = 0;
@@ -902,7 +945,10 @@ int MeshExtract_run(Arena_T          arena,
             surf_nf = 0;
             if (fg > 0) {
                 surf_verts = (float *)ARENA_ALLOC(scratch,
-                                (long)(fg * 3 * sizeof(float)));
+                                (size_t)(fg * 3 * sizeof(float)));
+                if (ct_raw != NULL)
+                    surf_w = (float *)ARENA_ALLOC(scratch,
+                                (size_t)(fg * sizeof(float)));
                 size_t out_idx = 0;
                 for (int pz = 0; pz < pD; pz++) {
                     for (int py = 0; py < pH; py++) {
@@ -916,6 +962,28 @@ int MeshExtract_run(Arena_T          arena,
                             surf_verts[out_idx * 3 + 0] = (float)pz + 0.5f;
                             surf_verts[out_idx * 3 + 1] = (float)py + 0.5f;
                             surf_verts[out_idx * 3 + 2] = (float)px + 0.5f;
+                            if (surf_w != NULL) {
+                                /* crop -> padded-volume voxel */
+                                long vz = (long)pz + (long)zmin - 1;
+                                long vy = (long)py + (long)ymin - 1;
+                                long vx = (long)px + (long)xmin - 1;
+                                float wgt = EXTRACT_CT_LOP_FLOOR;
+                                if (vz >= 0 && vy >= 0 && vx >= 0 &&
+                                    (size_t)vz < D && (size_t)vy < H &&
+                                    (size_t)vx < W) {
+                                    float raw = (float)ct_raw[
+                                        (size_t)vz * H * W + (size_t)vy * W +
+                                        (size_t)vx];
+                                    float t = (raw - EXTRACT_CT_LOP_LO) /
+                                              (EXTRACT_CT_LOP_HI - EXTRACT_CT_LOP_LO);
+                                    if (t < 0.0f) t = 0.0f;
+                                    if (t > 1.0f) t = 1.0f;
+                                    wgt = EXTRACT_CT_LOP_FLOOR +
+                                          (1.0f - EXTRACT_CT_LOP_FLOOR) *
+                                          powf(t, EXTRACT_CT_LOP_GAMMA);
+                                }
+                                surf_w[out_idx] = wgt;
+                            }
                             out_idx++;
                         }
                     }
@@ -965,7 +1033,7 @@ int MeshExtract_run(Arena_T          arena,
             float hi_y = (float)cube_H + (float)halo_voxels;
             float hi_x = (float)cube_W + (float)halo_voxels;
             int32_t *remap = (int32_t *)ARENA_ALLOC(scratch,
-                                (long)surf_nv * (long)sizeof(int32_t));
+                                (size_t)surf_nv * sizeof(int32_t));
             size_t nv_kept = 0, nv_dropped = 0;
             for (size_t v = 0; v < surf_nv; v++) {
                 float zc = surf_verts[v * 3 + 0];
@@ -982,6 +1050,7 @@ int MeshExtract_run(Arena_T          arena,
                         surf_verts[nv_kept * 3 + 0] = zc;
                         surf_verts[nv_kept * 3 + 1] = yc;
                         surf_verts[nv_kept * 3 + 2] = xc;
+                        if (surf_w != NULL) surf_w[nv_kept] = surf_w[v];
                     }
                     nv_kept++;
                 }
@@ -1033,9 +1102,9 @@ int MeshExtract_run(Arena_T          arena,
          *
          * See plan: the-main-problem-with-composed-badger.md */
         float *mls_verts = (float *)ARENA_ALLOC(scratch,
-                              (long)(surf_nv * 3 * sizeof(float)));
+                              (size_t)(surf_nv * 3 * sizeof(float)));
         float *mls_normals = (float *)ARENA_ALLOC(scratch,
-                                (long)(surf_nv * 3 * sizeof(float)));
+                                (size_t)(surf_nv * 3 * sizeof(float)));
         /* Ping-pong buffer for multi-iter LOP. MLS_project_verts reads from
          * `src` and writes to `dst`; if they were the same buffer, the
          * Gauss-Seidel-style read-after-write would make the centroid for
@@ -1052,10 +1121,10 @@ int MeshExtract_run(Arena_T          arena,
          * counts). The covariance pass roughly doubles per-iter cost
          * vs centroid-only but is essential for non-shrinking iteration. */
         float *mls_scratch_normals = (float *)ARENA_ALLOC(scratch,
-                                        (long)(surf_nv * 3 * sizeof(float)));
+                                        (size_t)(surf_nv * 3 * sizeof(float)));
         float *mls_scratch = (MLS_PROJECT_ITERS >= 2)
             ? (float *)ARENA_ALLOC(scratch,
-                                   (long)(surf_nv * 3 * sizeof(float)))
+                                   (size_t)(surf_nv * 3 * sizeof(float)))
             : NULL;
         const float *src = surf_verts;
         float *dst = mls_verts;
@@ -1074,6 +1143,45 @@ int MeshExtract_run(Arena_T          arena,
             src = dst;
             dst = (dst == mls_verts) ? mls_scratch : mls_verts;
         }
+        /* CT-weighted step, NORMAL component only: one more projection with
+         * the brightness-weighted kernel, but each point keeps its tangential
+         * position (the plain LOP's uniform spacing, which BPA needs) and moves
+         * along its plain normal to the weighted centroid.  Weighting the whole
+         * kernel clumps points onto bright fibre lines and shatters the mesh
+         * (measured 2026-09-03: 945 comps, 203 gauge islands). */
+        if (surf_w != NULL && surf_nv > 0) {
+            float *ct_dst = dst;   /* the free ping-pong buffer (src is the last output) */
+            float *ct_n = mls_scratch_normals != NULL ? mls_scratch_normals
+                                                      : mls_normals;
+            if (ct_dst != NULL && ct_dst != src) {
+                MLS_set_point_weights(surf_w);
+                MLS_project_verts(scratch, src, surf_nv, MLS_PROJECT_RADIUS_VOX,
+                                  cube_world_origin, ct_dst, ct_n);
+                MLS_set_point_weights(NULL);
+                if (MLS_cubecl_last_call_ok()) {
+                    size_t moved = 0;
+                    double sum_abs = 0.0;
+                    for (size_t v = 0; v < surf_nv; v++) {
+                        const float *n = mls_normals + v * 3;
+                        float dz = ct_dst[v * 3 + 0] - src[v * 3 + 0];
+                        float dy = ct_dst[v * 3 + 1] - src[v * 3 + 1];
+                        float dx = ct_dst[v * 3 + 2] - src[v * 3 + 2];
+                        float t = dz * n[0] + dy * n[1] + dx * n[2];
+                        if (t > 4.0f) t = 4.0f;
+                        if (t < -4.0f) t = -4.0f;
+                        ct_dst[v * 3 + 0] = src[v * 3 + 0] + t * n[0];
+                        ct_dst[v * 3 + 1] = src[v * 3 + 1] + t * n[1];
+                        ct_dst[v * 3 + 2] = src[v * 3 + 2] + t * n[2];
+                        sum_abs += fabs((double)t);
+                        if (fabs((double)t) > 0.25) moved++;
+                    }
+                    fprintf(stderr, "MeshExtract: CT-weighted normal step: "
+                            "%zu of %zu points moved > 0.25 vox, mean |t| %.2f\n",
+                            moved, surf_nv, sum_abs / (double)surf_nv);
+                    src = ct_dst;
+                }
+            }
+        }
         /* Final result lives in `src` (the last write target). If that
          * isn't mls_verts (even ITERS >= 2), copy it back. */
         if (src != mls_verts) {
@@ -1086,8 +1194,8 @@ int MeshExtract_run(Arena_T          arena,
          * outlives this component's scratch. */
         if (clouds) {
             snap_n = surf_nv;
-            snap_orig = (float *)ARENA_ALLOC(arena, (long)(surf_nv * 3 * sizeof(float)));
-            snap_lop  = (float *)ARENA_ALLOC(arena, (long)(surf_nv * 3 * sizeof(float)));
+            snap_orig = (float *)ARENA_ALLOC(arena, (size_t)(surf_nv * 3 * sizeof(float)));
+            snap_lop  = (float *)ARENA_ALLOC(arena, (size_t)(surf_nv * 3 * sizeof(float)));
             memcpy(snap_orig, surf_verts, surf_nv * 3 * sizeof(float));
             memcpy(snap_lop,  mls_verts,  surf_nv * 3 * sizeof(float));
         }
@@ -1214,7 +1322,7 @@ int MeshExtract_run(Arena_T          arena,
              * wrap grazes the seam; the 2*INSET gap is spanned by the seam bridge.
              * No faces yet -> compact verts + normals in place. */
             if (halo_voxels > 0 && surf_nv > 0) {
-                float ins  = trim_inset >= 0.0f ? trim_inset
+                float ins  = trim_inset > -999.0f ? trim_inset
                                                 : (float)BPA_OWNED_TRIM_INSET;
                 float lo   = ins;
                 float hi_z = (float)cube_D - ins;
@@ -1444,7 +1552,7 @@ int MeshExtract_run(Arena_T          arena,
             float export_hi_y = (float)cube_H + (float)EXPORT_HALO_VOX;
             float export_hi_x = (float)cube_W + (float)EXPORT_HALO_VOX;
             int32_t *remap_e = (int32_t *)ARENA_ALLOC(scratch,
-                                (long)surf_nv * (long)sizeof(int32_t));
+                                (size_t)surf_nv * sizeof(int32_t));
             size_t nv_kept_e = 0;
             for (size_t v = 0; v < surf_nv; v++) {
                 float zc = surf_verts[v * 3 + 0];
@@ -1503,11 +1611,11 @@ int MeshExtract_run(Arena_T          arena,
 
         /* Copy final results to main arena */
         float *final_verts = (float *)ARENA_ALLOC(arena,
-                                                    (long)(surf_nv * 3 * sizeof(float)));
+                                                    (size_t)(surf_nv * 3 * sizeof(float)));
         memcpy(final_verts, surf_verts, surf_nv * 3 * sizeof(float));
 
         int32_t *final_faces = (int32_t *)ARENA_ALLOC(arena,
-                                                        (long)(surf_nf * 3 * sizeof(int32_t)));
+                                                        (size_t)(surf_nf * 3 * sizeof(int32_t)));
         memcpy(final_faces, surf_faces, surf_nf * 3 * sizeof(int32_t));
 
         /* TEMP (matches the weld-skipping diagnostic above): we skip the

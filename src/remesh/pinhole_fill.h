@@ -35,7 +35,10 @@
  *     and (iii) its triangle is not a degenerate collinear sliver (min altitude
  *     >= HOLEFILL_MIN_ALT_VOX) — the "chewed" boundary near a cube face is a row
  *     of collinear verts whose fill would be zero-area. Loops failing any gate,
- *     or larger than 3 verts, are left for HoleFill_process.
+ *     or larger than 3 verts, are left for HoleFill_process. The resulting
+ *     closed corner fans must also admit the chart stretch bound: a tiny
+ *     triangle is not permission to cap a sharp cone. The CDT chart path
+ *     applies the same necessary metric certificate.
  *
  * If `respect_pins` is non-zero and a component has a pin_mask, any loop that
  * touches a pinned (halo seam) vertex is left unfilled — the cross-cube seam

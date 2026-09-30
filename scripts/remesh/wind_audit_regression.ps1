@@ -4,13 +4,13 @@
 
   Analysis is done by the C tool build/Release/wind_audit.exe (winding-coordinate
   auditor); this script is only a RUNNER: it invokes wind_audit --json on a target
-  mesh (and, by default, on the known-good QEM reference), then prints a
+  mesh (and, by default, on the known-good reference), then prints a
   side-by-side and gates PASS/FAIL on the reliable metrics so any pipeline change
   can be scored against the clean baseline.
 
   Reliable gate metrics (see src/tools/wind_audit.c):
     merge_ft_per_outer_edge  full-turn (|dw| in [0.7,1.3]) fusions / outer edge.
-                             Clean QEM ref ~= 3e-6; coarse CVT weld ~= 1.5e-2.
+                             Clean reference ~= 3e-6; coarse CVT weld ~= 1.5e-2.
     split_comp_pairs         # distinct component-pairs that are same-turn but
                              disconnected across a small gap (intra-sheet splits).
     split_pairs_seam_frac    fraction of split pairs sitting on a 128-vox cube
@@ -56,7 +56,7 @@ else { Write-Host "WARN: baseline mesh not found ($Baseline) -- gating on absolu
 Write-Host ""
 Write-Host "===================== SUMMARY ====================="
 $fmt = "{0,-28} {1,16} {2,16}"
-Write-Host ($fmt -f "metric", "target", "baseline(QEM)")
+Write-Host ($fmt -f "metric", "target", "baseline")
 Write-Host ($fmt -f "components", $T.components, ($(if($B){$B.components}else{"-"})))
 Write-Host ($fmt -f "full-turn fusions", $T.merge_ft, ($(if($B){$B.merge_ft}else{"-"})))
 Write-Host ($fmt -f "  per outer edge", ("{0:e2}" -f $T.merge_ft_per_outer_edge), ($(if($B){"{0:e2}" -f $B.merge_ft_per_outer_edge}else{"-"})))

@@ -43,8 +43,12 @@ static int test_pipeline_cube_synthetic_slab(void)
         }
     }
 
-    const char *tiff_path =
-        "C:/Users/mordr/AppData/Local/Temp/pipeline_cube_smoke_in.tif";
+    const char *tmpdir = getenv("TMP");
+    char tiff_path[1024];
+    if (!tmpdir || !tmpdir[0]) tmpdir = getenv("TEMP");
+    if (!tmpdir || !tmpdir[0]) tmpdir = ".";
+    snprintf(tiff_path, sizeof(tiff_path),
+             "%s/pipeline_cube_smoke_in.tif", tmpdir);
     if (TiffIO_save(tiff_path, vol, D, H, W) != 0) {
         printf("(TiffIO_save failed) ");
         free(vol);
@@ -62,9 +66,9 @@ static int test_pipeline_cube_synthetic_slab(void)
         .cube_H           = H,
         .cube_W           = W,
         .n_threads        = 1,
-        .qem_target_ratio = 0.0f,
+        .cvt_target_ratio = 0.0f,
         .dump_dir         = NULL,
-        .skip_qem         = 1,           /* keep test fast */
+        .skip_simplify    = 1,           /* keep test fast */
     };
     PipelineOutput out = {0};
 
@@ -87,6 +91,7 @@ static int test_pipeline_cube_synthetic_slab(void)
         if (!ok) printf("(trimmed != meshes for halo=0) ");
     }
     Arena_dispose(&arena);
+    remove(tiff_path);
     return ok;
 }
 

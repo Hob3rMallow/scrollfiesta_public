@@ -1944,7 +1944,7 @@ static int run_reregister(WholeCfg *cfg_in)
                             cal.spiral_a, cal.spiral_b, cfg.pitch, &wbo, &wt) == 0
             && wt.n_corr > 0) {
             int32_t *wt2local = (int32_t *)ARENA_ALLOC(arena,
-                                    (long)(wt.n_cubes * sizeof(int32_t)));
+                                    (size_t)(wt.n_cubes * sizeof(int32_t)));
             for (size_t i = 0; i < wt.n_cubes; i++)
                 wt2local[i] = (i < n) ? (int32_t)i : -1;   /* identity order */
             ArcRegOpts ao; ArcRegOpts_default(&ao);
@@ -1952,7 +1952,7 @@ static int run_reregister(WholeCfg *cfg_in)
             if (cfg.uwarp_max > 0.0) ao.max_warp = cfg.uwarp_max;
             size_t max_w = wt.n_corr + 1, nw = max_w;
             ArcRegWarp *warps = (ArcRegWarp *)ARENA_ALLOC(arena,
-                                    (long)(max_w * sizeof(ArcRegWarp)));
+                                    (size_t)(max_w * sizeof(ArcRegWarp)));
             ArcRegStats ast;
             ArcReg_solve(arena, &wt, wt2local, skins, nskin, regs, n,
                          cal.spiral_a, cal.spiral_b, &ao, warps, &nw, &ast);
@@ -1966,7 +1966,7 @@ static int run_reregister(WholeCfg *cfg_in)
                 regs[c].g_warp_phi0  = (double *)ARENA_CALLOC(arena, ng, sizeof(double));
                 regs[c].g_warp_dphi  = (double *)ARENA_CALLOC(arena, ng, sizeof(double));
                 regs[c].g_warp_delta = (double *)ARENA_CALLOC(arena,
-                                        (long)ng * ARC_REG_MAX_KNOTS, sizeof(double));
+                                        (size_t)ng * ARC_REG_MAX_KNOTS, sizeof(double));
                 regs[c].g_warp_stride = ARC_REG_MAX_KNOTS;
             }
             for (size_t w = 0; w < nw; w++) {

@@ -85,8 +85,7 @@ int WeldCleanup_process(Arena_T arena, ComponentMesh *cm,
  *
  * Boundary loops (grid edges, unbridged holes, a hierarchical level's outer
  * faces) exit with their vertex set, positions, and cyclic order BIT-IDENTICAL
- * -- simultaneously the no-reopened-seam guarantee and the requirement that
- * level L+1 of hierarchical_weld sees exactly the boundaries level L was given.
+ * -- preserving seams when a welded block is subsequently welded again.
  *
  * Vertices are never created or moved (collapsed verts orphaned, caller
  * per-vertex arrays stay index-valid). cm->faces/nf updated as in

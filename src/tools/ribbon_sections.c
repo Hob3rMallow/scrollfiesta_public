@@ -56,7 +56,7 @@ static void *rs_load_raw(Arena_T arena, const char *path, size_t elem,
         fprintf(stderr, "ribbon_sections: cannot open %s (%s)\n", path, what);
         return NULL;
     }
-    data = ARENA_ALLOC(arena, (long)(count * elem));
+    data = ARENA_ALLOC(arena, (size_t)(count * elem));
     got = fread(data, elem, count, f);
     fclose(f);
     if (got != count) {
@@ -86,7 +86,7 @@ static int rs_slice_sidecar(Arena_T arena, const char *dir, const char *name,
 {
     Arena_Mark mark = Arena_save(arena);
     uint32_t *out = (uint32_t *)ARENA_ALLOC(
-        arena, (long)(snv * sizeof(uint32_t)));
+        arena, (size_t)(snv * sizeof(uint32_t)));
     const uint32_t *in = (const uint32_t *)src;
     char path[2048];
     int rc = 0;
@@ -124,9 +124,9 @@ static int rs_extract_coarse(Arena_T arena, const MeshBinData *m,
     for (size_t i = 0; i < m->nv; i++)
         if (labels[i] == label) nkeep++;
     while (cap < 2 * nkeep + 16) cap <<= 1;
-    hkey = (int64_t *)ARENA_ALLOC(arena, (long)(cap * sizeof(int64_t)));
-    hsrc = (int32_t *)ARENA_ALLOC(arena, (long)(cap * sizeof(int32_t)));
-    hidx = (int32_t *)ARENA_ALLOC(arena, (long)(cap * sizeof(int32_t)));
+    hkey = (int64_t *)ARENA_ALLOC(arena, (size_t)(cap * sizeof(int64_t)));
+    hsrc = (int32_t *)ARENA_ALLOC(arena, (size_t)(cap * sizeof(int32_t)));
+    hidx = (int32_t *)ARENA_ALLOC(arena, (size_t)(cap * sizeof(int32_t)));
     for (size_t h = 0; h < cap; h++) hkey[h] = -1;
     nkeep = 0;
     for (size_t i = 0; i < m->nv; i++) {
@@ -159,11 +159,11 @@ static int rs_extract_coarse(Arena_T arena, const MeshBinData *m,
     }
     {
         float *sverts = (float *)ARENA_ALLOC(
-            arena, (long)(nkeep * 3 * sizeof(float)));
+            arena, (size_t)(nkeep * 3 * sizeof(float)));
         float *suv = (float *)ARENA_ALLOC(
-            arena, (long)(nkeep * 2 * sizeof(float)));
+            arena, (size_t)(nkeep * 2 * sizeof(float)));
         int32_t *ssrc = (int32_t *)ARENA_ALLOC(
-            arena, (long)(nkeep * sizeof(int32_t)));
+            arena, (size_t)(nkeep * sizeof(int32_t)));
         int32_t *sfaces = NULL;
         size_t fcap = 0;
         double u_lo = 1e300, u_hi = -1e300;
@@ -181,7 +181,7 @@ static int rs_extract_coarse(Arena_T arena, const MeshBinData *m,
         /* coarse quads: (r,c)-(r,c+1)-(r+1,c+1)-(r+1,c) where all exist */
         fcap = nkeep * 2 + 16;
         sfaces = (int32_t *)ARENA_ALLOC(
-            arena, (long)(fcap * 3 * sizeof(int32_t)));
+            arena, (size_t)(fcap * 3 * sizeof(int32_t)));
         for (size_t h = 0; h < cap; h++) {
             int64_t key = hkey[h], k01, k10, k11;
             int32_t i00 = -1, i01 = -1, i10 = -1, i11 = -1;
@@ -224,7 +224,7 @@ static int rs_extract_coarse(Arena_T arena, const MeshBinData *m,
             /* sidecars: gather through ssrc (coarse node -> source vertex) */
             Arena_Mark smark = Arena_save(arena);
             uint32_t *buf = (uint32_t *)ARENA_ALLOC(
-                arena, (long)(nkeep * sizeof(uint32_t)));
+                arena, (size_t)(nkeep * sizeof(uint32_t)));
             if (phase != NULL && rc == 0) {
                 const uint32_t *in = (const uint32_t *)(const void *)phase;
                 for (size_t r = 0; r < nkeep; r++)
@@ -275,7 +275,7 @@ static int rs_extract(Arena_T arena, const MeshBinData *m,
 {
     Arena_Mark mark = Arena_save(arena);
     int32_t *remap = (int32_t *)ARENA_ALLOC(
-        arena, (long)(m->nv * sizeof(int32_t)));
+        arena, (size_t)(m->nv * sizeof(int32_t)));
     size_t snv = 0, snf = 0;
     float *sverts = NULL, *suv = NULL;
     int32_t *sfaces = NULL;
@@ -296,7 +296,7 @@ static int rs_extract(Arena_T arena, const MeshBinData *m,
         return -1;
     }
     sfaces = (int32_t *)ARENA_ALLOC(
-        arena, (long)(snf * 3 * sizeof(int32_t)));
+        arena, (size_t)(snf * 3 * sizeof(int32_t)));
     snf = 0;
     for (size_t f = 0; f < m->nf; f++) {
         const int32_t *fv = &m->faces[f * 3];
@@ -310,9 +310,9 @@ static int rs_extract(Arena_T arena, const MeshBinData *m,
         }
         snf++;
     }
-    sverts = (float *)ARENA_ALLOC(arena, (long)(snv * 3 * sizeof(float)));
+    sverts = (float *)ARENA_ALLOC(arena, (size_t)(snv * 3 * sizeof(float)));
     suv = m->uv != NULL
-        ? (float *)ARENA_ALLOC(arena, (long)(snv * 2 * sizeof(float)))
+        ? (float *)ARENA_ALLOC(arena, (size_t)(snv * 2 * sizeof(float)))
         : NULL;
     for (size_t i = 0; i < m->nv; i++) {
         int32_t r = remap[i];
@@ -390,8 +390,8 @@ static int rs_prolong(Arena_T arena, const char *fine_path,
      * does survive: the coarse VERTEX POSITIONS are exact fine vertices, so
      * match by 3D position hash (quantized to 1/64 vox). */
     while (cap < 2 * coarse.nv + 16) cap <<= 1;
-    hkey = (int64_t *)ARENA_ALLOC(arena, (long)(cap * sizeof(int64_t)));
-    hidx = (int32_t *)ARENA_ALLOC(arena, (long)(cap * sizeof(int32_t)));
+    hkey = (int64_t *)ARENA_ALLOC(arena, (size_t)(cap * sizeof(int64_t)));
+    hidx = (int32_t *)ARENA_ALLOC(arena, (size_t)(cap * sizeof(int32_t)));
     for (size_t h = 0; h < cap; h++) hkey[h] = -1;
     for (size_t i = 0; i < coarse.nv; i++) {
         int64_t kz = (int64_t)llround((double)coarse.verts[i * 3 + 0] * 64.0);
@@ -411,15 +411,15 @@ static int rs_prolong(Arena_T arena, const char *fine_path,
     /* Every fine vertex: locate its coarse lattice cell by (col,row), find
      * the up-to-4 coarse corners AS FINE VERTICES (they are), read their
      * SOLVED u from the coarse mesh via the position hash, and blend. */
-    fuv = (float *)ARENA_ALLOC(arena, (long)(fine.nv * 2 * sizeof(float)));
+    fuv = (float *)ARENA_ALLOC(arena, (size_t)(fine.nv * 2 * sizeof(float)));
     {
         /* index fine vertices by (col,row) so corner lookups are exact */
         size_t fcap = 1;
         int64_t *fkey = NULL;
         int32_t *fidx = NULL;
         while (fcap < 2 * fine.nv + 16) fcap <<= 1;
-        fkey = (int64_t *)ARENA_ALLOC(arena, (long)(fcap * sizeof(int64_t)));
-        fidx = (int32_t *)ARENA_ALLOC(arena, (long)(fcap * sizeof(int32_t)));
+        fkey = (int64_t *)ARENA_ALLOC(arena, (size_t)(fcap * sizeof(int64_t)));
+        fidx = (int32_t *)ARENA_ALLOC(arena, (size_t)(fcap * sizeof(int32_t)));
         for (size_t h = 0; h < fcap; h++) fkey[h] = -1;
         for (size_t i = 0; i < fine.nv; i++) {
             long col = lround((double)fine.uv[i * 2 + 0] / cell_du);
@@ -678,7 +678,7 @@ int main(int argc, char **argv)
     for (size_t i = 0; i < m.nv; i++)
         if (labels[i] >= 0) count[labels[i]]++;
     RsCount *rank = (RsCount *)ARENA_ALLOC(
-        arena, (long)(nlab * sizeof(RsCount)));
+        arena, (size_t)(nlab * sizeof(RsCount)));
     size_t nused = 0;
     for (size_t l = 0; l < nlab; l++) {
         if (count[l] == 0) continue;

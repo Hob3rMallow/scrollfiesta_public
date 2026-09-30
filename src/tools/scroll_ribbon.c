@@ -28,6 +28,7 @@
 #include "../common/ves_omp.h"
 #endif
 
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -38,6 +39,7 @@
 #include "../common/except.h"
 #include "../common/mesh_bin.h"
 #include "../common/obj_io.h"
+#include "../flatten/lane_turn_mrf.h"
 #include "../flatten/seam_cut.h"
 #include "../flatten/unwrap.h"
 #include "../flatten/ribbon.h"
@@ -159,6 +161,139 @@ static int write_raw_exact(const char *path, const void *data,
     return ok ? 0 : -1;
 }
 
+typedef struct {
+    double q;
+    double u;
+    double local_u;
+} ProjectiveUKnot;
+
+static int projective_u_knot_compare(const void *pa, const void *pb)
+{
+    const ProjectiveUKnot *a = (const ProjectiveUKnot *)pa;
+    const ProjectiveUKnot *b = (const ProjectiveUKnot *)pb;
+    if (a->q != b->q) return a->q < b->q ? -1 : 1;
+    if (a->u != b->u) return a->u < b->u ? -1 : 1;
+    return 0;
+}
+
+/* Extend an immutable parent's metric chart through an exact overlap.  The
+ * parent U(q) curve is copied on its supported q interval; beyond either end
+ * the child's local arc-length map continues with a constant translation.
+ * Boundary vertices themselves are copied bit-for-bit.  V has an exact
+ * translation because both domains use the same axial geometry.
+ *
+ * This operation has no fitted scalar and no crop-wide vote: every datum is an
+ * exact shared input vertex.  It is therefore compositional along a canonical
+ * block chain. */
+static int apply_projective_boundary_uv(
+    Arena_T arena, float *uv, const float *verts, size_t nv,
+    const UnwrapResult *ures, const UnwrapOpts *uopts)
+{
+    (void)verts;
+    if (uopts == NULL || uopts->boundary_winding == NULL) return 0;
+    if (uopts->boundary_u == NULL || uopts->boundary_v == NULL ||
+        uopts->boundary_material == NULL || ures == NULL ||
+        ures->winding_index == NULL)
+        return -1;
+    size_t nsample = 0;
+    for (size_t i = 0; i < nv; i++)
+        if (isfinite((double)uopts->boundary_winding[i])) nsample++;
+    if (nsample == 0) return -1;
+    ProjectiveUKnot *knot = (ProjectiveUKnot *)ARENA_ALLOC(
+        arena, nsample * sizeof *knot);
+    size_t at = 0;
+    double vshift = 0.0;
+    int have_vshift = 0;
+    for (size_t i = 0; i < nv; i++) {
+        double q = (double)uopts->boundary_winding[i];
+        if (!isfinite(q)) continue;
+        double pu = (double)uopts->boundary_u[i];
+        double pv = (double)uopts->boundary_v[i];
+        double vs = pv - (double)uv[i * 2 + 1];
+        if (!isfinite(pu) || !isfinite(pv) || uopts->boundary_material[i] < 0)
+            return -1;
+        if (!have_vshift) { vshift = vs; have_vshift = 1; }
+        else if (fabs(vs - vshift) > 0.01) {
+            fprintf(stderr, "  projective UV: non-translational V boundary "
+                    "at vertex %zu (%+.9g vs %+.9g)\n", i, vs, vshift);
+            return -1;
+        }
+        knot[at].q = q;
+        knot[at].u = pu;
+        knot[at].local_u = (double)uv[i * 2];
+        at++;
+    }
+    qsort(knot, at, sizeof *knot, projective_u_knot_compare);
+    /* Collapse identical float-q samples.  Parent U is mathematically a
+     * function of q; tolerate only float roundoff, never a material-scale
+     * disagreement hidden behind an average. */
+    size_t nknot = 0;
+    for (size_t i = 0; i < at; ) {
+        size_t j = i + 1;
+        double su = knot[i].u, sl = knot[i].local_u;
+        while (j < at && knot[j].q == knot[i].q) {
+            /* q is persisted as float while U can change by several thousand
+             * vox/turn.  One q ulp at the outer scroll is therefore a few
+             * hundredths of a voxel in U; 0.25 remains far below one raster
+             * sample and catches only a genuinely multivalued chart. */
+            if (fabs(knot[j].u - knot[i].u) > 0.25) {
+                fprintf(stderr, "  projective UV: parent U is multivalued at "
+                        "q=%.9g (%.9g vs %.9g)\n",
+                        knot[i].q, knot[i].u, knot[j].u);
+                return -1;
+            }
+            su += knot[j].u;
+            sl += knot[j].local_u;
+            j++;
+        }
+        knot[nknot].q = knot[i].q;
+        knot[nknot].u = su / (double)(j - i);
+        knot[nknot].local_u = sl / (double)(j - i);
+        if (nknot > 0 && knot[nknot].u + 0.25 < knot[nknot - 1].u) {
+            fprintf(stderr, "  projective UV: parent U(q) is not monotone at "
+                    "q=%.9g (%.9g after %.9g)\n", knot[nknot].q,
+                    knot[nknot].u, knot[nknot - 1].u);
+            return -1;
+        }
+        nknot++;
+        i = j;
+    }
+    for (size_t i = 0; i < nv; i++) {
+        double q = (double)ures->winding_index[i];
+        double local_u = (double)uv[i * 2];
+        double u = 0.0;
+        if (!isfinite(q) || !isfinite(local_u)) return -1;
+        if (nknot == 1 || q <= knot[0].q) {
+            u = local_u + knot[0].u - knot[0].local_u;
+        } else if (q >= knot[nknot - 1].q) {
+            u = local_u + knot[nknot - 1].u -
+                            knot[nknot - 1].local_u;
+        } else {
+            size_t lo = 0, hi = nknot - 1;
+            while (hi - lo > 1) {
+                size_t mid = lo + (hi - lo) / 2;
+                if (knot[mid].q <= q) lo = mid;
+                else hi = mid;
+            }
+            double d = knot[hi].q - knot[lo].q;
+            double f = d > 0.0 ? (q - knot[lo].q) / d : 0.0;
+            u = knot[lo].u + f * (knot[hi].u - knot[lo].u);
+        }
+        uv[i * 2] = (float)u;
+        uv[i * 2 + 1] = (float)((double)uv[i * 2 + 1] + vshift);
+    }
+    /* Shared vertices are not merely close: the recursive certificate is the
+     * parent's exact IEEE-754 sample at the overlap. */
+    for (size_t i = 0; i < nv; i++) {
+        if (!isfinite((double)uopts->boundary_winding[i])) continue;
+        uv[i * 2] = uopts->boundary_u[i];
+        uv[i * 2 + 1] = uopts->boundary_v[i];
+    }
+    fprintf(stderr, "  projective UV boundary: %zu exact samples, %zu U(q) "
+            "knots, V shift=%+.6f\n", nsample, nknot, vshift);
+    return 0;
+}
+
 /* Materialize the probabilistic winding certificate as a topology-preserving
  * VMESH that the fixed-topology metric solve can consume directly.  U is a
  * generously scaled winding coordinate (one turn = 1200 units); V is axial Z.
@@ -167,9 +302,11 @@ static int write_winding_ready_vmesh(
         Arena_T arena, const char *input_path, const char *out_dir,
         const char *id, const float *verts, size_t nv,
          const int32_t *faces, size_t nf, const UnwrapResult *ures,
+         const UnwrapOpts *uopts,
          double winding_seconds, int conflict_correction_enabled)
 {
-    const double pixels_per_turn = 1200.0;
+    const double pixels_per_turn = 1200.0;   /* legacy, reported only */
+    double effective_ppt = 1200.0;
     char vmesh_path[4096], report_path[4096];
     char json_input[4096], json_output[4096];
     float *uv;
@@ -187,11 +324,52 @@ static int write_winding_ready_vmesh(
         if (z < z_lo) z_lo = z;
         if (z > z_hi) z_hi = z;
     }
-    for (size_t i = 0; i < nv; i++) {
-        uv[i*2] = (float)(((double)ures->winding_index[i] - winding_lo) *
-                          pixels_per_turn);
-        uv[i*2+1] = (float)((double)verts[i*3] - z_lo);
+    /* U is ARC LENGTH along the sheet, not turns x a constant.
+     *
+     * This used to be (winding - winding_lo) * pixels_per_turn with
+     * pixels_per_turn = 1200 -- the same number of voxels per turn at every
+     * radius.  On the 4x5x5 the material runs from r = 13 to r = 438, so a
+     * turn at the umbilicus really is ~82 vox of papyrus and a turn at the rim
+     * ~2,750, and pricing both at 1200 oversampled the core by ~15x.  Measured
+     * on the emitted ribbon: 2.20% of triangles carried under a quarter of the
+     * sheet's median 3-D area per unit of UV area, ALL of them squashed, none
+     * stretched, at a median radius of 45 vox against 242 for the sheet.
+     *
+     * Unwrap already integrates the empirical radius profile against lifted
+     * phase, so carry that.  It is a monotone reparameterization of the same
+     * certificate: equal winding still gives equal U and the turn ordering is
+     * untouched.  Orientation is taken from the winding index so a
+     * negative-sense scroll still runs U in the certificate's direction. */
+    {
+        int flip = 0;
+        double a_lo = 0.0, a_hi = 0.0, u_hi = 0.0;
+        size_t i_lo = 0, i_hi = 0;
+        for (size_t i = 0; i < nv; i++) {
+            double w = (double)ures->winding_index[i];
+            if (w <= winding_lo) i_lo = i;
+            if (w >= winding_hi) i_hi = i;
+            if ((double)ures->uv[i*2] > u_hi) u_hi = (double)ures->uv[i*2];
+        }
+        a_lo = (double)ures->uv[i_lo*2];
+        a_hi = (double)ures->uv[i_hi*2];
+        flip = a_lo > a_hi;
+        for (size_t i = 0; i < nv; i++) {
+            double a = (double)ures->uv[i*2];
+            if (!isfinite(a)) return -1;
+            uv[i*2] = (float)(flip ? u_hi - a : a);
+            uv[i*2+1] = (float)((double)verts[i*3] - z_lo);
+        }
+        effective_ppt = winding_hi > winding_lo
+                      ? u_hi / (winding_hi - winding_lo) : pixels_per_turn;
+        fprintf(stderr,
+                "  winding certificate U: arc length, span %.1f vox over "
+                "%.3f turns (mean %.1f vox/turn; the fixed %.0f vox/turn this "
+                "replaces oversampled the umbilicus)%s\n",
+                u_hi, winding_hi - winding_lo, effective_ppt,
+                 pixels_per_turn, flip ? " [flipped to winding sense]" : "");
     }
+    if (apply_projective_boundary_uv(arena, uv, verts, nv, ures, uopts) != 0)
+        return -1;
 
     snprintf(vmesh_path, sizeof vmesh_path, "%s/%s_winding.vmesh",
              out_dir, id);
@@ -239,7 +417,7 @@ static int write_winding_ready_vmesh(
         "  },\n"
         "  \"timing_sec\": { \"winding\": %.3f }\n"
         "}\n",
-        json_input, json_output, nv, nf, pixels_per_turn,
+        json_input, json_output, nv, nf, effective_ppt,
         winding_lo, winding_hi, winding_hi - winding_lo, z_lo, z_hi,
         ures->n_components, ures->winding_continuation_components,
         ures->winding_relation_components, ures->winding_relations,
@@ -264,6 +442,68 @@ static int write_winding_ready_vmesh(
             vmesh_path, report_path);
     return 0;
 }
+/* Load the concat's per-cube table (mesh_cubes.tsv beside the input) and
+ * expand it to a per-vertex source-cube id.  Row order IS concat order, so
+ * the cumulative nv column maps vertex ranges to cubes; a table whose total
+ * does not match the mesh is stale and refused.  Arms the register's exact
+ * OVERLAP relation family on halo-overlap piles; harmless (NULL) elsewhere. */
+static int32_t *load_vertex_cube_table(Arena_T arena, const char *mesh_path,
+                                       size_t nv)
+{
+    char path[2048];
+    size_t len = strlen(mesh_path);
+    const char *slash = strrchr(mesh_path, '/');
+    const char *bslash = strrchr(mesh_path, 92);
+    const char *cut = slash > bslash ? slash : bslash;
+    size_t dirlen = cut != NULL ? (size_t)(cut - mesh_path) + 1 : 0;
+    FILE *f = NULL;
+    int32_t *out = NULL;
+    size_t at = 0, row = 0;
+    char line[4096];
+    if (dirlen + 16 >= sizeof path) return NULL;
+    memcpy(path, mesh_path, dirlen);
+    memcpy(path + dirlen, "mesh_cubes.tsv", 15);
+    f = fopen(path, "rb");
+    if (f == NULL) return NULL;
+    out = (int32_t *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(int32_t)));
+    if (fgets(line, sizeof line, f) == NULL) { fclose(f); return NULL; }
+    size_t empty_rows = 0;
+    while (fgets(line, sizeof line, f) != NULL) {
+        unsigned long long cnv = 0;
+        const char *tab = strchr(line, 9);
+        if (tab == NULL) continue;
+        cnv = strtoull(tab + 1, NULL, 10);
+        /* A cube whose vertices were all routed away (core curl) is a
+         * legitimate EMPTY row, not a broken table: skip it but keep its
+         * row id so provenance stays aligned.  Refusing here silently
+         * disarmed the overlap family on every fixed-axis pile lane
+         * (measured 2026-09-03: 4 of 100 empty rows -> ovl=0). */
+        if (cnv == 0) { empty_rows++; row++; continue; }
+        if (at + cnv > nv) {
+            fprintf(stderr, "  vertex cube table: row %zu overruns the mesh "
+                    "(%llu verts at %zu of %zu); overlap family NOT armed\n",
+                    row, cnv, at, nv);
+            fclose(f);
+            return NULL;
+        }
+        for (size_t v = 0; v < cnv; v++) out[at + v] = (int32_t)row;
+        at += cnv;
+        row++;
+    }
+    fclose(f);
+    if (at != nv) {
+        fprintf(stderr, "  vertex cube table: %zu verts listed vs %zu in the "
+                "mesh; overlap family NOT armed\n", at, nv);
+        return NULL;
+    }
+    fprintf(stderr, "  vertex cube table: %zu cubes (%zu empty) over %zu verts "
+            "-> overlap family ARMED (%s)",
+            row, empty_rows, nv, path);
+    fputc(10, stderr);
+    return out;
+}
+
+
 
 int main(int argc, char *argv[])
 {
@@ -277,9 +517,11 @@ int main(int argc, char *argv[])
         int f1 = Ribbon_selftest();
         int f2 = Unwrap_selftest();
         int f3 = SeamCut_selftest();
-        int fails = f0 + f1 + f2 + f3;
-        fprintf(stderr, "\nscroll_ribbon --selftest: %s (sparse=%d ribbon=%d unwrap=%d seamcut=%d failures)\n",
-                fails == 0 ? "PASS" : "FAIL", f0, f1, f2, f3);
+        int f4 = LaneTurn_selftest();
+        int f5 = RibbonGridIO_selftest();
+        int fails = f0 + f1 + f2 + f3 + f4 + f5;
+        fprintf(stderr, "\nscroll_ribbon --selftest: %s (sparse=%d ribbon=%d unwrap=%d seamcut=%d laneturn=%d gridio=%d failures)\n",
+                fails == 0 ? "PASS" : "FAIL", f0, f1, f2, f3, f4, f5);
         return fails == 0 ? 0 : 1;
     }
 
@@ -290,6 +532,9 @@ int main(int argc, char *argv[])
             "          [--no-winding-field] [--winding-field-eps F] [--winding-field-beta F]\n"
             "          [--no-winding-conflict-correction]\n"
             "                            (diagnostic: retain initial MRF certificate)\n"
+            "          [--boundary-winding FILE --boundary-u FILE\n"
+            "           --boundary-v FILE --boundary-material FILE]\n"
+            "                            (exact canonical-parent overlap)\n"
             "          [--slice-h F] [--sample-h F] [--match-r F] [--match-ang F]\n"
             "          [--iters N] [--final-iters N] [--metric-iters N]\n"
             "          [--metric-weight F] [--threads N] [--no-amg]\n"
@@ -299,6 +544,12 @@ int main(int argc, char *argv[])
             "                             robust solve round, then per final\n"
             "                             coarse-to-fine level; optional text OBJ)\n"
             "          [--grid-u F]\n"
+            "          [--trust-gauge | --solve-carried-u]\n"
+            "                            (reuse source winding/material sidecars;\n"
+            "                             trust freezes U, solve refines U with\n"
+            "                             the geometry-driven Stage-C solve)\n"
+            "          [--coarse-chain-seed] (with --solve-carried-u: solve\n"
+            "                             chain offsets before fine samples)\n"
             "          [--preserve-input-topology]\n"
             "                            (parameterize the input ribbon in place:\n"
             "                             identical vertices/faces, new UV only)\n"
@@ -306,12 +557,25 @@ int main(int argc, char *argv[])
             "                            (diagnostic legacy exact-row projection;\n"
             "                             requires --preserve-input-topology)\n"
             "          [--vmesh-only]    (skip the redundant text OBJ output)\n"
+            "          [--peel-layers N] (claims-mode collision depth, 1..64; default 2; checked memory budget)\n"
+            "          [--peel-layer N] (store only zero-based projective-owner layer N)\n"
+            "          [--promote-peel-min-share F]\n"
+            "                            (pack collision-peel U runs with at least\n"
+            "                             F times the primary vertex count beside it)\n"
+            "          [--promote-peel-min-vertices N]\n"
+            "                            (also promote runs with at least N vertices;\n"
+            "                             the smaller positive threshold wins)\n"
              "          [--fit-cover-width] (diagnostic: retain cover grid extent)\n"
             "          [--verify-fit-width] (diagnostic: compare compact/padded fits)\n"
             "          [--no-sever]     (skip fusion-handle severing)\n"
             "          [--component-global] (whole welded-component fitted-grid\n"
             "                            consensus; resolve duplicate u claims by\n"
             "                            authoritative winding instead of chain order)\n"
+            "          [--coherent-claims] (default with --trust-gauge + claims:\n"
+            "                            retain UV frame, use measured cross-row\n"
+            "                            continuity and balanced U/V break costs)\n"
+            "          [--legacy-owner-claims] (diagnostic: reproduce the old\n"
+            "                            slice-independent owner selection)\n"
             "          [--ownership claims|construction] (component-global mode:\n"
             "                            'claims' = frozen whole-row claimant path,\n"
             "                            DEFAULT;\n"
@@ -349,10 +613,27 @@ int main(int argc, char *argv[])
     int preserve_input_topology = 0;
     int metric_iters_explicit = 0;
     int metric_project_only_requested = 0;
+    int trust_gauge = 0;   /* --trust-gauge: parameterize the carried certificate
+                            * U directly (solve_reference_u==0 fast path) --
+                            * skip the pair graph / winding / metric ADMM solve.
+                            * The streaming block fit and M1 use this; the slow
+                            * metric solve is being moved to geometric multigrid
+                            * on coarse proxies (see project_fullscroll_block_
+                            * architecture). */
     int winding_only = 0;
+    int solve_carried_u = 0; /* same measured source/correspondence as trust,
+                             * but U is an initializer, not a frozen result */
+    int legacy_owner_claims = 0;
     int write_text_obj = 1;
+    double promote_peel_min_share = 0.0;
+    size_t promote_peel_min_vertices = 0;
     char gmg_level_prefix[4096];
+    const char *boundary_winding_path = NULL;
+    const char *boundary_u_path = NULL;
+    const char *boundary_v_path = NULL;
+    const char *boundary_material_path = NULL;
 
+    int no_cube_table = 0;
     for (int i = 3; i < argc; i++) {
         if (strcmp(argv[i], "--id") == 0 && i + 1 < argc) {
             snprintf(id, sizeof id, "%s", argv[++i]);
@@ -366,6 +647,22 @@ int main(int argc, char *argv[])
             uopts.axis_dir[2]=(float)atof(argv[++i]);
         } else if (strcmp(argv[i], "--wrap-spacing") == 0 && i + 1 < argc) {
             uopts.wrap_spacing = atof(argv[++i]);
+        } else if (strcmp(argv[i], "--no-cube-table") == 0) {
+            no_cube_table = 1;    /* A/B switch: leave the OVERLAP family unarmed */
+        } else if (strcmp(argv[i], "--boundary-winding") == 0 &&
+                   i + 1 < argc) {
+            boundary_winding_path = argv[++i];
+        } else if (strcmp(argv[i], "--boundary-u") == 0 && i + 1 < argc) {
+            boundary_u_path = argv[++i];
+        } else if (strcmp(argv[i], "--boundary-v") == 0 && i + 1 < argc) {
+            boundary_v_path = argv[++i];
+        } else if (strcmp(argv[i], "--boundary-material") == 0 &&
+                   i + 1 < argc) {
+            boundary_material_path = argv[++i];
+        } else if (strcmp(argv[i], "--winding-sense") == 0 && i + 1 < argc) {
+            int ws = atoi(argv[++i]);
+            uopts.winding_sense = ws > 0 ? 1 : (ws < 0 ? -1 : 0);
+            ropts.winding_sense = uopts.winding_sense;
         } else if (strcmp(argv[i], "--no-winding-field") == 0) {
             uopts.winding_field_mode = -1;
         } else if (strcmp(argv[i], "--winding-field-eps") == 0 &&
@@ -424,10 +721,64 @@ int main(int argc, char *argv[])
             preserve_input_topology = 1;
         } else if (strcmp(argv[i], "--metric-project-only") == 0) {
             metric_project_only_requested = 1;
+        } else if (strcmp(argv[i], "--trust-gauge") == 0) {
+            trust_gauge = 1;
+        } else if (strcmp(argv[i], "--solve-carried-u") == 0) {
+            solve_carried_u = 1;
+        } else if (strcmp(argv[i], "--coarse-chain-seed") == 0) {
+            ropts.coarse_chain_seed = 1;
+        } else if (strcmp(argv[i], "--coherent-claims") == 0) {
+            ropts.coherent_claims = 1;
+        } else if (strcmp(argv[i], "--legacy-owner-claims") == 0) {
+            legacy_owner_claims = 1;
         } else if (strcmp(argv[i], "--winding-only") == 0) {
             winding_only = 1;
+        } else if (strcmp(argv[i], "--radial-site-split") == 0) {
+            uopts.radial_site_split = 1;   /* R1 experiment; see unwrap.h */
         } else if (strcmp(argv[i], "--vmesh-only") == 0) {
             write_text_obj = 0;
+        } else if (strcmp(argv[i], "--peel-layers") == 0 &&
+                   i + 1 < argc) {
+            char *end = NULL;
+            const char *value = argv[++i];
+            long layers = strtol(value, &end, 10);
+            if (end == value || *end != '\0' || layers < 1 || layers > RIBBON_MAX_PEEL_LAYERS) {
+                fprintf(stderr,
+                        "ERROR: --peel-layers must be an integer in [1,%d]\n", RIBBON_MAX_PEEL_LAYERS);
+                return 1;
+            }
+            ropts.peel_layers = (int)layers;
+        } else if (strcmp(argv[i], "--peel-layer") == 0 && i + 1 < argc) {
+            char *end = NULL;
+            const char *value = argv[++i];
+            long layer = strtol(value, &end, 10);
+            if (end == value || *end != '\0' || layer < 0 || layer >= RIBBON_MAX_PEEL_LAYERS) {
+                fprintf(stderr, "ERROR: --peel-layer must be an integer in [0,%d]\n", RIBBON_MAX_PEEL_LAYERS-1);
+                return 1;
+            }
+            ropts.peel_layer = (int)layer;
+        } else if (strcmp(argv[i], "--promote-peel-min-share") == 0 &&
+                   i + 1 < argc) {
+            promote_peel_min_share = strtod(argv[++i], NULL);
+            if (!isfinite(promote_peel_min_share) ||
+                promote_peel_min_share < 0.0) {
+                fprintf(stderr,
+                        "ERROR: --promote-peel-min-share must be finite and "
+                        "non-negative\n");
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--promote-peel-min-vertices") == 0 &&
+                   i + 1 < argc) {
+            char *end = NULL;
+            unsigned long long value = strtoull(argv[++i], &end, 10);
+            if (end == argv[i] || *end != '\0' || value == 0 ||
+                value > (unsigned long long)SIZE_MAX) {
+                fprintf(stderr,
+                        "ERROR: --promote-peel-min-vertices must be a "
+                        "positive integer\n");
+                return 1;
+            }
+            promote_peel_min_vertices = (size_t)value;
         } else if (strcmp(argv[i], "--fit-cover-width") == 0) {
             ropts.fit_cover_width = 1;
         } else if (strcmp(argv[i], "--verify-fit-width") == 0) {
@@ -460,6 +811,39 @@ int main(int argc, char *argv[])
     }
     memcpy(ropts.axis_point, uopts.axis_point, sizeof ropts.axis_point);
     memcpy(ropts.axis_dir,   uopts.axis_dir,   sizeof ropts.axis_dir);
+    if (ropts.coarse_chain_seed && !solve_carried_u) {
+        fprintf(stderr, "ERROR: --coarse-chain-seed requires --solve-carried-u\n");
+        return 1;
+    }
+    if (solve_carried_u) {
+        if (trust_gauge || winding_only || preserve_input_topology ||
+            metric_project_only_requested || legacy_owner_claims) {
+            fprintf(stderr, "ERROR: --solve-carried-u is a fitted-grid metric "
+                    "solve, incompatible with frozen-U, winding-only, "
+                    "fixed-topology, or legacy-owner modes\n");
+            return 1;
+        }
+        /* Reuse the complete sidecar loader and preserve source topology.
+         * The only coordinate authority changed below is solve_reference_u. */
+        trust_gauge = 1;
+    }
+    {
+        int boundary_args = (boundary_winding_path != NULL) +
+                            (boundary_u_path != NULL) +
+                            (boundary_v_path != NULL) +
+                            (boundary_material_path != NULL);
+        if (boundary_args != 0 && boundary_args != 4) {
+            fprintf(stderr, "ERROR: projective boundary requires all four of "
+                    "--boundary-winding/--boundary-u/--boundary-v/"
+                    "--boundary-material\n");
+            return 1;
+        }
+        if (boundary_args == 4) {
+            /* Boundary arrays index the input topology.  A topology-changing
+             * sever pass would invalidate their exact vertex correspondence. */
+            sever_handles = 0;
+        }
+    }
     if (preserve_input_topology) {
         /* This is the controlled quad-ribbon parameterization experiment.
          * Geometry and connectivity are the independent variable; only
@@ -488,6 +872,38 @@ int main(int argc, char *argv[])
                     "--preserve-input-topology\n");
             return 1;
         }
+    }
+    /* A trusted winding certificate already fixed the source topology and
+     * integer gauge.  Cutting handles here would change its vertex order and
+     * invalidate every carried sidecar before the fit even starts. */
+    if (trust_gauge) {
+        sever_handles = 0;
+        ropts.projective_grid = 1;
+        if (promote_peel_min_share > 0.0 ||
+            promote_peel_min_vertices > 0) {
+            fprintf(stderr,
+                    "  trusted projective atlas: peel promotion disabled; "
+                    "secondary claims remain in extras\n");
+            promote_peel_min_share = 0.0;
+            promote_peel_min_vertices = 0;
+        }
+    }
+    if (legacy_owner_claims && ropts.coherent_claims) {
+        fprintf(stderr, "ERROR: coherent and legacy-owner claims are mutually exclusive\n");
+        return 1;
+    }
+    /* Trusting the coordinate frame does not imply independent row ownership.
+     * Keep that obsolete policy available only as an explicit control. */
+    if (trust_gauge && ropts.component_global && !ropts.ownership_construction &&
+        !ropts.discard_conflicting_claims && !preserve_input_topology &&
+        !winding_only && !legacy_owner_claims)
+        ropts.coherent_claims = 1;
+    if ((ropts.coherent_claims || legacy_owner_claims) &&
+        (!trust_gauge || !ropts.component_global || ropts.ownership_construction ||
+         ropts.discard_conflicting_claims || preserve_input_topology || winding_only)) {
+        fprintf(stderr, "ERROR: coherent/legacy-owner selection requires --trust-gauge "
+                        "--component-global with retained claims and fitted-grid output\n");
+        return 1;
     }
     if (metric_project_only_requested && !preserve_input_topology) {
         fprintf(stderr,
@@ -539,8 +955,22 @@ int main(int argc, char *argv[])
             dump_gmg_levels,
             dump_gmg_level_objs ? " (text OBJ too)" : "",
             winding_only ? "winding certificate only" :
-            preserve_input_topology ? "input topology + solved UV" :
-                                      "fitted ribbon grid");
+             preserve_input_topology ? "input topology + solved UV" :
+                                       "fitted ribbon grid");
+    if (promote_peel_min_share > 0.0)
+        fprintf(stderr,
+                "  collision-peel promotion: minimum %.6g of primary "
+                "fitted vertices\n", promote_peel_min_share);
+    if (promote_peel_min_vertices > 0)
+        fprintf(stderr,
+                "  collision-peel absolute promotion criterion: %zu vertices\n",
+                promote_peel_min_vertices);
+    if (ropts.peel_layers > 0)
+        fprintf(stderr, "  collision-peel layers: %d (explicit)\n",
+                ropts.peel_layers);
+    if (ropts.coherent_claims)
+        fprintf(stderr, "  claim policy: carried UV frame; measured rolling-row "
+                        "continuity; balanced U/V breaks; crossing-aware U fill\n");
 
     double t0 = ves_clock_sec();
     Arena_T arena = Arena_new();
@@ -556,7 +986,17 @@ int main(int argc, char *argv[])
         /* --- Load. --- */
         float *verts = NULL; int32_t *faces = NULL;
         double *input_reference_u = NULL;
+        double *input_reference_v = NULL;
         float *input_reference_u_confidence = NULL;
+        float *certificate_winding = NULL;
+        float *certificate_phi = NULL;
+        int32_t *certificate_material = NULL;
+        int32_t *certificate_relation = NULL;
+        int32_t *certificate_mesh_component = NULL;
+        int32_t *certificate_owner_block = NULL;
+        size_t certificate_material_count = 0;
+        size_t certificate_relation_count = 0;
+        size_t certificate_mesh_component_count = 0;
         float *sidecar_phase = NULL;
         int32_t *sidecar_material = NULL;
         char sidecar_phase_path[4096], sidecar_material_path[4096];
@@ -582,25 +1022,31 @@ int main(int argc, char *argv[])
                  * armed the reference.  That made a direct fit from a
                  * winding-only VMESH recompute its own gauge instead of
                  * fitting the supplied certificate. */
-                if ((preserve_input_topology || ropts.scaffold_solve) &&
+                if ((preserve_input_topology || ropts.scaffold_solve ||
+                     trust_gauge) &&
                     mesh.uv != NULL) {
                     double ulo = 1e300, uhi = -1e300;
                     input_reference_u = (double *)ARENA_ALLOC(
                         arena, nv * sizeof(*input_reference_u));
+                    input_reference_v = (double *)ARENA_ALLOC(
+                        arena, nv * sizeof(*input_reference_v));
                     for (size_t vi = 0; vi < nv; vi++) {
                         double u = (double)mesh.uv[vi * 2];
-                        if (!isfinite(u)) {
+                        double v = (double)mesh.uv[vi * 2 + 1];
+                        if (!isfinite(u) || !isfinite(v)) {
                             fprintf(stderr,
-                                    "ERROR: non-finite input U at vertex %zu\n",
+                                    "ERROR: non-finite input UV at vertex %zu\n",
                                     vi);
                             RAISE(IO_Failed);
                         }
                         input_reference_u[vi] = u;
+                        input_reference_v[vi] = v;
                         if (u < ulo) ulo = u;
                         if (u > uhi) uhi = u;
                     }
                     ropts.reference_u = input_reference_u;
-                    ropts.solve_reference_u = 1;
+                    ropts.reference_v = input_reference_v;
+                    ropts.solve_reference_u = !trust_gauge || solve_carried_u;
                     fprintf(stderr,
                             "  quadribbon U scaffold: input VMESH U=[%.3f,%.3f] "
                             "orients/gates Stage-C correspondences\n",
@@ -629,6 +1075,99 @@ int main(int argc, char *argv[])
                         }
                     }
                 }
+                if (trust_gauge) {
+                    char cert_path[4096];
+                    int32_t material_hi = -1, relation_hi = -1, mesh_hi = -1;
+                    if (stem_suffix_path(input_path, "_index.f32", cert_path,
+                                         sizeof cert_path) == 0)
+                        certificate_winding = (float *)read_raw_exact(
+                            arena, cert_path, sizeof(float), nv);
+                    if (stem_suffix_path(input_path,
+                                         "_material_identity.i32", cert_path,
+                                         sizeof cert_path) == 0)
+                        certificate_material = (int32_t *)read_raw_exact(
+                            arena, cert_path, sizeof(int32_t), nv);
+                    if (stem_suffix_path(input_path, "_relation_island.i32",
+                                         cert_path, sizeof cert_path) == 0)
+                        certificate_relation = (int32_t *)read_raw_exact(
+                            arena, cert_path, sizeof(int32_t), nv);
+                    if (stem_suffix_path(input_path, "_mesh_component.i32",
+                                         cert_path, sizeof cert_path) == 0)
+                        certificate_mesh_component = (int32_t *)read_raw_exact(
+                            arena, cert_path, sizeof(int32_t), nv);
+                    if (nv <= SIZE_MAX / 3 &&
+                        stem_suffix_path(input_path, "_owner_block.i32",
+                                         cert_path, sizeof cert_path) == 0)
+                        certificate_owner_block = (int32_t *)read_raw_exact(
+                            arena, cert_path, sizeof(int32_t), nv * 3);
+                    if (certificate_winding == NULL ||
+                        input_reference_u_confidence == NULL ||
+                        certificate_material == NULL ||
+                        certificate_relation == NULL ||
+                        certificate_mesh_component == NULL) {
+                        fprintf(stderr,
+                                "ERROR: --trust-gauge requires the complete "
+                                "winding certificate sidecars beside %s\n",
+                                input_path);
+                        RAISE(IO_Failed);
+                    }
+                    certificate_phi = (float *)ARENA_ALLOC(
+                        arena, nv * sizeof(*certificate_phi));
+                    for (size_t vi = 0; vi < nv; vi++) {
+                        double q = (double)certificate_winding[vi];
+                        double phi = (uopts.winding_sense < 0 ? -1.0 : 1.0) *
+                                     q * 6.283185307179586476925286766559;
+                        if (!isfinite(q) || !isfinite(phi) ||
+                            certificate_material[vi] < 0 ||
+                            certificate_relation[vi] < 0 ||
+                            certificate_mesh_component[vi] < 0) {
+                            fprintf(stderr,
+                                    "ERROR: invalid trusted certificate at "
+                                    "vertex %zu\n", vi);
+                            RAISE(IO_Failed);
+                        }
+                        certificate_phi[vi] = (float)phi;
+                        if (certificate_material[vi] > material_hi)
+                            material_hi = certificate_material[vi];
+                        if (certificate_relation[vi] > relation_hi)
+                            relation_hi = certificate_relation[vi];
+                        if (certificate_mesh_component[vi] > mesh_hi)
+                            mesh_hi = certificate_mesh_component[vi];
+                        if (certificate_owner_block != NULL) {
+                            for (int d = 0; d < 3; d++) {
+                                if (certificate_owner_block[vi * 3 +
+                                                            (size_t)d] ==
+                                    INT32_MIN) {
+                                    fprintf(stderr,
+                                            "ERROR: invalid canonical owner "
+                                            "coordinate at vertex %zu\n", vi);
+                                    RAISE(IO_Failed);
+                                }
+                            }
+                        }
+                    }
+                    certificate_material_count = (size_t)material_hi + 1;
+                    certificate_relation_count = (size_t)relation_hi + 1;
+                    certificate_mesh_component_count = (size_t)mesh_hi + 1;
+                    /* The canonical block merger gives every physical source
+                     * component a stable global id.  Do not throw that away
+                     * and renumber charts from crop-local face order: claimant
+                     * ties would then select a different sheet merely because
+                     * lower-coordinate cubes were prepended. */
+                    ropts.reference_chart = certificate_mesh_component;
+                    ropts.reference_chart_count =
+                        certificate_mesh_component_count;
+                    ropts.reference_owner_block = certificate_owner_block;
+                    fprintf(stderr,
+                            "  trusted certificate: winding/material/relation/"
+                            "component sidecars authoritative (%zu/%zu/%zu "
+                            "labels); canonical ownership %s\n",
+                            certificate_material_count,
+                            certificate_relation_count,
+                            certificate_mesh_component_count,
+                            certificate_owner_block != NULL
+                                ? "armed" : "unavailable (legacy certificate)");
+                }
             } else if (ObjIO_read(
                            arena, input_path, &verts, &nv, &faces, &nf) != 0) {
                 fprintf(stderr, "ERROR: cannot read %s\n", input_path);
@@ -637,6 +1176,45 @@ int main(int argc, char *argv[])
         }
         t_load = ves_clock_sec() - ta;
         fprintf(stderr, "  loaded %zu verts, %zu faces (%.2fs)\n", nv, nf, t_load);
+        if (boundary_winding_path != NULL) {
+            float *bw = (float *)read_raw_exact(
+                arena, boundary_winding_path, sizeof(float), nv);
+            float *bu = (float *)read_raw_exact(
+                arena, boundary_u_path, sizeof(float), nv);
+            float *bv = (float *)read_raw_exact(
+                arena, boundary_v_path, sizeof(float), nv);
+            int32_t *bm = (int32_t *)read_raw_exact(
+                arena, boundary_material_path, sizeof(int32_t), nv);
+            size_t supported = 0;
+            if (bw == NULL || bu == NULL || bv == NULL || bm == NULL) {
+                fprintf(stderr, "ERROR: cannot read exact projective boundary "
+                        "arrays for %zu vertices\n", nv);
+                RAISE(IO_Failed);
+            }
+            for (size_t vi = 0; vi < nv; vi++) {
+                int valid = isfinite((double)bw[vi]);
+                if ((valid && (!isfinite((double)bu[vi]) ||
+                               !isfinite((double)bv[vi]) || bm[vi] < 0)) ||
+                    (!valid && (isfinite((double)bu[vi]) ||
+                                isfinite((double)bv[vi]) || bm[vi] >= 0))) {
+                    fprintf(stderr, "ERROR: inconsistent projective boundary "
+                            "validity at vertex %zu\n", vi);
+                    RAISE(IO_Failed);
+                }
+                supported += valid;
+            }
+            if (supported == 0) {
+                fprintf(stderr, "ERROR: projective boundary has no supported "
+                        "vertices\n");
+                RAISE(IO_Failed);
+            }
+            uopts.boundary_winding = bw;
+            uopts.boundary_u = bu;
+            uopts.boundary_v = bv;
+            uopts.boundary_material = bm;
+            fprintf(stderr, "  projective boundary: %zu/%zu exact parent "
+                    "vertices loaded\n", supported, nv);
+        }
         if (preserve_input_topology &&
             sibling_path(input_path, "ribbon_phase.f32",
                          sidecar_phase_path, sizeof sidecar_phase_path) == 0 &&
@@ -680,7 +1258,42 @@ int main(int argc, char *argv[])
          * the crumpled core pinched thin necks apart (fragmenting a 1-component
          * sheet into hundreds), so parameterization uses the input resolution. */
         ta = ves_clock_sec();
-        int urc = Unwrap_run(arena, verts, nv, faces, nf, &uopts, &ures);
+        int urc = 0;
+        if (trust_gauge && certificate_winding != NULL) {
+            double qlo = INFINITY, qhi = -INFINITY;
+            double ulo = INFINITY, uhi = -INFINITY;
+            for (size_t vi = 0; vi < nv; vi++) {
+                double q = certificate_winding[vi];
+                double u = input_reference_u[vi];
+                if (q < qlo) qlo = q;
+                if (q > qhi) qhi = q;
+                if (u < ulo) ulo = u;
+                if (u > uhi) uhi = u;
+            }
+            ures.phi = certificate_phi;
+            ures.winding_index = certificate_winding;
+            ures.winding_confidence = input_reference_u_confidence;
+            ures.continuation_island = certificate_material;
+            ures.island = certificate_relation;
+            ures.mesh_component = certificate_mesh_component;
+            ures.n_components = certificate_mesh_component_count <= INT_MAX
+                              ? (int)certificate_mesh_component_count : INT_MAX;
+            ures.winding_continuation_components = certificate_material_count;
+            ures.winding_relation_components = certificate_relation_count;
+            ures.winding_sense = uopts.winding_sense;
+            ures.turns = qhi - qlo;
+            ures.u_span = uhi - ulo;
+            ures.continuation_satisfaction = 1.0;
+            ures.order_satisfaction = 1.0;
+            fprintf(stderr,
+                    "  unwrap ref: BYPASSED crop-wide solve; consuming "
+                    "immutable trusted certificate (%.3f turns)\n",
+                    ures.turns);
+        } else {
+            uopts.vertex_cube = no_cube_table ? NULL :
+                load_vertex_cube_table(arena, input_path, nv);
+            urc = Unwrap_run(arena, verts, nv, faces, nf, &uopts, &ures);
+        }
         t_unwrap = ves_clock_sec() - ta;
         if (urc == 0) {
             ropts.reference_phi = ures.phi;
@@ -694,6 +1307,34 @@ int main(int argc, char *argv[])
                          "%s/%s_winding_confidence.f32", out_dir, id);
                 sidecar_rc |= write_raw_exact(
                     winding_path, ures.winding_confidence, sizeof(float), nv);
+                /* Streaming-block registration needs the certificate gauge
+                 * per physical sheet, not one vote over every sheet in a
+                 * shared cube.  continuation_island is exactly the material
+                 * identity consumed by Ribbon below, so persist it beside the
+                 * topology-preserving winding VMESH.  The other two labels
+                 * are diagnostics: relation-island is an observability class,
+                 * while mesh-component records the input topology. */
+                snprintf(winding_path, sizeof winding_path,
+                         "%s/%s_winding_material_identity.i32", out_dir, id);
+                sidecar_rc |= write_raw_exact(
+                    winding_path, ures.continuation_island,
+                    sizeof(int32_t), nv);
+                snprintf(winding_path, sizeof winding_path,
+                         "%s/%s_winding_relation_island.i32", out_dir, id);
+                sidecar_rc |= write_raw_exact(
+                    winding_path, ures.island, sizeof(int32_t), nv);
+                snprintf(winding_path, sizeof winding_path,
+                         "%s/%s_winding_mesh_component.i32", out_dir, id);
+                sidecar_rc |= write_raw_exact(
+                    winding_path, ures.mesh_component,
+                    sizeof(int32_t), nv);
+                if (certificate_owner_block != NULL) {
+                    snprintf(winding_path, sizeof winding_path,
+                             "%s/%s_winding_owner_block.i32", out_dir, id);
+                    sidecar_rc |= write_raw_exact(
+                        winding_path, certificate_owner_block,
+                        sizeof(int32_t), nv * 3);
+                }
                 if (ures.winding_field_used && ures.field_winding != NULL &&
                     ures.field_jump != NULL) {
                     snprintf(winding_path, sizeof winding_path,
@@ -712,7 +1353,9 @@ int main(int argc, char *argv[])
                 }
                 fprintf(stderr,
                     "  winding index: wrote %s/%s_winding_{index,confidence}.f32"
-                    "%s\n", out_dir, id,
+                    " + material/relation/mesh identity i32%s%s\n",
+                    out_dir, id,
+                    certificate_owner_block != NULL ? " + owner-block i32x3" : "",
                     ures.winding_field_used ? " (+field,jump)" : "");
             }
             /* Positive same-sheet continuation is material identity, not an
@@ -840,8 +1483,8 @@ int main(int argc, char *argv[])
 
         if (winding_only) {
             if (urc != 0 || write_winding_ready_vmesh(
-                     arena, input_path, out_dir, id, verts, nv, faces, nf,
-                     &ures, t_unwrap,
+                      arena, input_path, out_dir, id, verts, nv, faces, nf,
+                      &ures, &uopts, t_unwrap,
                      uopts.winding_conflict_mode >= 0) != 0) {
                 fprintf(stderr,
                         "ERROR: winding-only certificate emission failed\n");
@@ -898,6 +1541,8 @@ int main(int argc, char *argv[])
         size_t rib_nv = 0, rib_nf = 0;
         size_t rib_atlas_cols = 0, rib_atlas_runs = 0;
         size_t rib_empty_cols_removed = 0;
+        RibbonWriteStats wstats;
+        memset(&wstats, 0, sizeof wstats);
         if (preserve_input_topology) {
             size_t finite_uv = 0;
             if (rres.uv == NULL) {
@@ -956,11 +1601,12 @@ int main(int argc, char *argv[])
                     nv - rres.uv_filled - rres.uv_fallback,
                     rres.uv_filled, rres.uv_fallback);
         } else {
-            RibbonWriteStats wstats;
-            memset(&wstats, 0, sizeof wstats);
             snprintf(path, sizeof path, "%s/%s_ribbon.obj", out_dir, id);
             ves_ensure_parent_dir(path);
-            if (Ribbon_write_obj(path, &rres, write_text_obj, 0, &wstats) != 0) {
+            if (Ribbon_write_obj_promote_peels(
+                    path, &rres, write_text_obj, 0,
+                    promote_peel_min_share, promote_peel_min_vertices,
+                    &wstats) != 0) {
                 fprintf(stderr,"  ERROR: fitted ribbon emission failed: %s\n",path);
                 RAISE(IO_Failed);
             }
@@ -969,7 +1615,9 @@ int main(int argc, char *argv[])
             rib_atlas_cols = wstats.atlas_columns;
             rib_atlas_runs = wstats.atlas_runs;
             rib_empty_cols_removed = wstats.empty_columns_removed;
-            if (write_text_obj) {
+            if (rib_nf == 0 && rres.grid_projective) {
+                fprintf(stderr, "  wrote empty/point-only layer inventory; no surface file\n");
+            } else if (write_text_obj) {
                 fprintf(stderr,
                         "  wrote %s (%zu verts, %zu faces, direct grid %zux%zu)\n",
                         path, rib_nv, rib_nf, rres.nu, rres.nk);
@@ -995,6 +1643,18 @@ int main(int argc, char *argv[])
                     "occupied run(s), %zu empty column(s) removed\n",
                     rres.nu, rib_atlas_cols, rib_atlas_runs,
                     rib_empty_cols_removed);
+            if (wstats.promoted_peel_runs > 0 ||
+                promote_peel_min_share > 0.0)
+                fprintf(stderr,
+                        "          peel partition: %zu run(s)/%zu vertices "
+                        "promoted, %zu run(s)/%zu vertices retained as extras "
+                        "(threshold %zu of %zu primary-layer vertices)\n",
+                        wstats.promoted_peel_runs,
+                        wstats.promoted_peel_vertices,
+                        wstats.extra_peel_runs,
+                        wstats.extra_peel_vertices,
+                        wstats.peel_promotion_threshold,
+                        wstats.primary_peel_vertices);
             if (ropts.component_global) {
                 fprintf(stderr, "          reconstruction components: %zu "
                         "(%zu far path conflict(s), %zu branch split(s), "
@@ -1034,12 +1694,21 @@ int main(int argc, char *argv[])
                 "  \"opts\": { \"slice_h\": %.3f, \"sample_h\": %.3f, \"match_r\": %.3f,\n"
                 "            \"match_ang_deg\": %.1f, \"relax_iters\": %d, \"final_iters\": %d,\n"
                 "            \"metric_iters\": %d, \"metric_weight\": %.6g,\n"
-                "            \"grid_u\": %.3f, \"component_global\": %s,\n"
+                "            \"solve_carried_u\": %s,\n"
+                "            \"coarse_chain_seed\": %s,\n"
+                "            \"grid_u\": %.3f, \"peel_layers_requested\": %d, \"peel_layer_selected\": %d, "
+                "\"component_global\": %s,\n"
                 "            \"ownership\": \"%s\", \"discard_conflicting_claims\": %s,\n"
-                "            \"wrap_spacing_requested\": %.4f },\n"
+                "            \"coherent_claims\": %s, \"ufill_rejected_crossings\": %zu,\n"
+                "            \"wrap_spacing_requested\": %.4f,\n"
+                "            \"promote_peel_min_share\": %.9g,\n"
+                "            \"promote_peel_min_vertices\": %zu },\n"
                 "  \"winding\": { \"n_components\": %d, \"turns\": %.4f, \"r_ref\": %.3f,\n"
                 "               \"spiral_b\": %.4f, \"spiral_r2\": %.4f, \"u_span_cyl\": %.2f },\n"
-                "  \"winding_registration\": { \"sense\": %d, \"bins\": %zu, \"strands\": %zu,\n"
+                "  \"winding_registration\": { \"sense\": %d, \"sense_pinned\": %d,\n"
+                "              \"sense_spiral\": %d, \"sense_ray_vote\": %d,\n"
+                "              \"sense_ray_vote_agree\": %.3f, \"sense_ray_vote_pairs\": %zu,\n"
+                "              \"bins\": %zu, \"strands\": %zu,\n"
                 "    \"continuation_observations\": %zu, \"order_observations\": %zu, \"order_observations_suppressed\": %zu,\n"
                 "    \"relations\": %zu, \"eligible_relations\": %zu, \"forest_relations\": %zu, \"order_relations_suppressed\": %zu,\n"
                 "    \"continuation_components\": %zu, \"relation_components\": %zu, \"packed_relation_components\": %zu, \"packed_mesh_components\": %zu,\n"
@@ -1078,10 +1747,17 @@ int main(int argc, char *argv[])
                 "          \"gauge_observations\": %zu, \"gauge_relations\": %zu, \"gauge_max_shift\": %.6f,\n"
                 "          \"atlas_islands\": %zu, \"atlas_packed_islands\": %zu,\n"
                 "          \"atlas_gutter\": %.6f, \"atlas_pack_saved\": %.6f },\n"
-                "  \"ribbon\": { \"nu\": %zu, \"nk\": %zu, \"du\": %.3f, \"dv\": %.3f,\n"
+                "  \"ribbon\": { \"nu\": %zu, \"nk\": %zu, \"grid_layers\": %zu, "
+                "\"du\": %.3f, \"dv\": %.3f,\n"
                 "              \"obj_verts\": %zu, \"obj_faces\": %zu,\n"
                 "              \"atlas_cols\": %zu, \"atlas_column_runs\": %zu, "
                 "\"empty_columns_removed\": %zu,\n"
+                "              \"primary_peel_vertices\": %zu, "
+                "\"peel_promotion_threshold\": %zu,\n"
+                "              \"promoted_peel_runs\": %zu, "
+                "\"promoted_peel_vertices\": %zu,\n"
+                "              \"extra_peel_runs\": %zu, "
+                "\"extra_peel_vertices\": %zu,\n"
                 "              \"long_edges_rowfit\": %zu, \"claim_repairs\": %zu, "
                 "\"long_edges_repaired\": %zu, \"long_edges_vfill\": %zu,\n"
                 "              \"local_outlier_repairs\": %zu, "
@@ -1096,6 +1772,9 @@ int main(int argc, char *argv[])
                 "              \"long_edges_smooth\": %zu, \"both_diagonals_long\": %zu,\n"
                 "              \"claim_conflicts\": %zu, \"claim_conflict_cells\": %zu,\n"
                 "              \"claim_discarded_cells\": %zu, \"claim_replaced\": %zu,\n"
+                "              \"claim_candidates\": %zu, \"claim_required_peels\": %zu, "
+                "\"claim_overflow\": %zu, \"claim_stored\": %zu,\n"
+                "              \"subcell_claim_chains\": %zu,\n"
                 "              \"reconstruction_components\": %zu, "
                 "\"branch_conflicts\": %zu, \"branch_splits\": %zu,\n"
                 "              \"branch_relation_cuts\": %zu, "
@@ -1103,6 +1782,16 @@ int main(int argc, char *argv[])
                 "              \"row_wrap_splits\": %zu,\n"
                 "              \"row_wrap_same_mesh\": %zu,\n"
                 "              \"row_wrap_same_solve\": %zu, \"row_wrap_same_island\": %zu },\n"
+                "  \"ribbon_topology\": {\n"
+                "              \"long_edges_diag_main\": %zu, "
+                "\"long_edges_diag_anti\": %zu,\n"
+                "              \"cell_lane_hist\": "
+                "[%zu, %zu, %zu, %zu, %zu, %zu, %zu, %zu],\n"
+                 "              \"vfill_runs\": %zu, \"vfill_rows\": %zu,\n"
+                 "              \"vfill_reject_crossing\": %zu,\n"
+                 "              \"material_faces_cut\": %zu,\n"
+                 "              \"vfill_run_hist\": "
+                "[%zu, %zu, %zu, %zu, %zu, %zu] },\n"
                 "  \"timing_sec\": { \"load\": %.3f, \"sever\": %.3f,\n"
                 "                  \"winding\": %.3f, \"ribbon\": %.3f, \"write\": %.3f,\n"
                 "                  \"total\": %.3f }\n"
@@ -1113,13 +1802,23 @@ int main(int argc, char *argv[])
                 (double)ropts.slice_h, (double)ropts.sample_h, (double)ropts.match_r,
                 (double)ropts.match_ang_deg, ropts.relax_iters, ropts.final_iters,
                  ropts.metric_iters, (double)ropts.metric_weight,
-                 (double)ropts.grid_u, ropts.component_global ? "true" : "false",
+                 solve_carried_u ? "true" : "false",
+                 ropts.coarse_chain_seed ? "true" : "false",
+                 (double)ropts.grid_u, ropts.peel_layers, ropts.peel_layer,
+                 ropts.component_global ? "true" : "false",
                  ropts.ownership_construction ? "construction" : "claims",
                  ropts.discard_conflicting_claims ? "true" : "false",
+                 ropts.coherent_claims ? "true" : "false",
+                 rres.grid_ufill_reject_crossing,
                  (double)ropts.wrap_spacing,
+                 promote_peel_min_share,
+                 promote_peel_min_vertices,
                 ures.n_components, ures.turns, ures.r_ref,
                 ures.spiral_b, ures.spiral_r2, ures.u_span,
-                ures.winding_sense, ures.winding_bins,
+                ures.winding_sense, uopts.winding_sense,
+                ures.winding_sense_spiral, ures.winding_sense_vote,
+                ures.winding_sense_vote_agree, ures.winding_sense_vote_n,
+                ures.winding_bins,
                 ures.winding_strands,
                 ures.continuation_observations, ures.order_observations,
                 ures.order_observations_suppressed,
@@ -1187,9 +1886,14 @@ int main(int argc, char *argv[])
                 rres.uv_gauge_max_shift,
                 rres.uv_atlas_islands, rres.uv_atlas_packed_islands,
                  rres.uv_atlas_gutter, rres.uv_atlas_pack_saved,
-                 rres.nu, rres.nk, (double)rres.grid_du, (double)rres.grid_dv,
+                 rres.nu, rres.nk, rres.grid_layers,
+                 (double)rres.grid_du, (double)rres.grid_dv,
                  rib_nv, rib_nf, rib_atlas_cols, rib_atlas_runs,
                  rib_empty_cols_removed,
+                 wstats.primary_peel_vertices,
+                 wstats.peel_promotion_threshold,
+                 wstats.promoted_peel_runs, wstats.promoted_peel_vertices,
+                 wstats.extra_peel_runs, wstats.extra_peel_vertices,
                   rres.grid_long_edges_rowfit, rres.grid_claim_repairs,
                   rres.grid_long_edges_repaired,rres.grid_long_edges_vfill,
                   rres.grid_local_outlier_repairs,
@@ -1210,6 +1914,11 @@ int main(int argc, char *argv[])
                   rres.grid_claim_conflict_cells,
                   rres.grid_claim_discarded_cells,
                   rres.grid_claim_replaced,
+                  rres.grid_claim_candidates,
+                  rres.grid_claim_required_peels,
+                  rres.grid_claim_overflow,
+                  rres.grid_claim_stored,
+                  rres.grid_subcell_claim_chains,
                   rres.grid_reconstruction_components,
                   rres.grid_branch_conflicts,
                   rres.grid_branch_splits,
@@ -1218,6 +1927,18 @@ int main(int argc, char *argv[])
                  rres.grid_row_wrap_splits,
                  rres.grid_row_wrap_same_mesh,
                  rres.grid_row_wrap_same_solve,rres.grid_row_wrap_same_island,
+                 rres.grid_long_edges_diag_main,
+                 rres.grid_long_edges_diag_anti,
+                 rres.grid_cell_lane_hist[0], rres.grid_cell_lane_hist[1],
+                 rres.grid_cell_lane_hist[2], rres.grid_cell_lane_hist[3],
+                 rres.grid_cell_lane_hist[4], rres.grid_cell_lane_hist[5],
+                 rres.grid_cell_lane_hist[6], rres.grid_cell_lane_hist[7],
+                  rres.grid_vfill_runs, rres.grid_vfill_rows,
+                  rres.grid_vfill_reject_crossing,
+                  rres.grid_material_faces_cut,
+                 rres.grid_vfill_run_hist[0], rres.grid_vfill_run_hist[1],
+                 rres.grid_vfill_run_hist[2], rres.grid_vfill_run_hist[3],
+                 rres.grid_vfill_run_hist[4], rres.grid_vfill_run_hist[5],
                 t_load, t_sever, t_unwrap, t_ribbon, t_write, t_total);
             fclose(js);
             fprintf(stderr, "  wrote %s\n", path);

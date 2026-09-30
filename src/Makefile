@@ -173,7 +173,7 @@ grid_pipeline: tools/grid_pipeline.o common/ves_platform.o common/arena.o \
 	$(CC) $(CFLAGS) $(BUILD_FLAGS) $^ -o $@ $(LDFLAGS)
 
 # Register and place per-cube charts in one scroll coordinate frame.
-scroll_whole: tools/scroll_whole.o whole/cube_schedule.o whole/axis_warp.o \
+scroll_whole: tools/scroll_whole.o whole/cube_schedule.o whole/axis_warp.o whole/shaft_warp.o \
               whole/placed_cube.o whole/cube_register.o whole/group_graph.o \
               whole/weld_track.o whole/weld_build.o whole/arc_reg.o \
               common/maxflow.o flatten/ribbon.o flatten/ribbon_grid_io.o \

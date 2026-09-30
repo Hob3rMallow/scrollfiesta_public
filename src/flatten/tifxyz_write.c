@@ -73,10 +73,10 @@ int TifXYZ_write_double(Arena_T arena, const char *out_dir, const char *uuid,
     double pxf_v = (double)(H - 1) / vspan;
 
     size_t ncell = (size_t)W * (size_t)H;
-    float *xg = (float *)ARENA_ALLOC(arena, (long)(ncell * sizeof(float)));
-    float *yg = (float *)ARENA_ALLOC(arena, (long)(ncell * sizeof(float)));
-    float *zg = (float *)ARENA_ALLOC(arena, (long)(ncell * sizeof(float)));
-    uint8_t *state = (uint8_t *)ARENA_CALLOC(arena, (long)ncell, 1L);
+    float *xg = (float *)ARENA_ALLOC(arena, (size_t)(ncell * sizeof(float)));
+    float *yg = (float *)ARENA_ALLOC(arena, (size_t)(ncell * sizeof(float)));
+    float *zg = (float *)ARENA_ALLOC(arena, (size_t)(ncell * sizeof(float)));
+    uint8_t *state = (uint8_t *)ARENA_CALLOC(arena, (size_t)ncell, 1L);
     for (size_t i = 0; i < ncell; i++) {
         xg[i] = TIFXYZ_INVALID; yg[i] = TIFXYZ_INVALID; zg[i] = TIFXYZ_INVALID;
     }

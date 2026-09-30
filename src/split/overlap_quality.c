@@ -128,7 +128,7 @@ static int constrained_cvt_dual(Arena_T arena,
     }
     size_t nf = (size_t)output.numberoftriangles;
     int32_t *faces = (int32_t *)ARENA_ALLOC(
-        arena, (long)(nf * 3 * sizeof(*faces)));
+        arena, (size_t)(nf * 3 * sizeof(*faces)));
     for (size_t fi = 0; fi < nf; fi++) {
         int32_t a = (int32_t)output.trianglelist[fi * 3];
         int32_t b = (int32_t)output.trianglelist[fi * 3 + 1];
@@ -295,7 +295,7 @@ static int harmonic_height_patch(Arena_T arena,
     const int32_t *target = CSR_target(adjacency);
     size_t directed_edges = (size_t)offset[nv];
     double *weight = (double *)ARENA_CALLOC(
-        arena, (long)directed_edges, (long)sizeof(*weight));
+        arena, (size_t)directed_edges, sizeof(*weight));
 
     for (size_t fi = 0; fi < nf; fi++) {
         int32_t a = faces[fi * 3];
@@ -315,9 +315,9 @@ static int harmonic_height_patch(Arena_T arena,
     }
 
     float *height = (float *)ARENA_ALLOC(
-        arena, (long)(nv * sizeof(*height)));
+        arena, (size_t)(nv * sizeof(*height)));
     float *next = (float *)ARENA_ALLOC(
-        arena, (long)(nv * sizeof(*next)));
+        arena, (size_t)(nv * sizeof(*next)));
     double boundary_sum = 0.0;
     size_t boundary_count = 0;
     for (size_t vi = 0; vi < nv; vi++) {
@@ -434,7 +434,7 @@ static int cvt_patch_conforming(Arena_T arena,
                                 size_t expected_boundary_edges)
 {
     int32_t *pin_for_input = (int32_t *)ARENA_ALLOC(
-        arena, (long)(input_nv * sizeof(*pin_for_input)));
+        arena, (size_t)(input_nv * sizeof(*pin_for_input)));
     for (size_t vi = 0; vi < input_nv; vi++) pin_for_input[vi] = -1;
     for (size_t pin = 0; pin < n_pin; pin++) {
         int32_t src = site_src[pin];
@@ -445,7 +445,7 @@ static int cvt_patch_conforming(Arena_T arena,
     }
 
     QualityEdge *input_edges = (QualityEdge *)ARENA_ALLOC(
-        arena, (long)(input_nf * 3 * sizeof(*input_edges)));
+        arena, (size_t)(input_nf * 3 * sizeof(*input_edges)));
     for (size_t fi = 0; fi < input_nf; fi++) {
         for (int edge = 0; edge < 3; edge++) {
             int32_t a = input_faces[fi * 3 + (size_t)edge];
@@ -459,7 +459,7 @@ static int cvt_patch_conforming(Arena_T arena,
           compare_quality_edge);
 
     QualityEdge *output_edges = (QualityEdge *)ARENA_ALLOC(
-        arena, (long)(cvt_nf * 3 * sizeof(*output_edges)));
+        arena, (size_t)(cvt_nf * 3 * sizeof(*output_edges)));
     for (size_t fi = 0; fi < cvt_nf; fi++) {
         for (int edge = 0; edge < 3; edge++) {
             int32_t a = cvt_faces[fi * 3 + (size_t)edge];
@@ -497,9 +497,9 @@ static int cvt_patch_conforming(Arena_T arena,
 
     size_t output_boundary_edges = 0;
     int32_t *parent = (int32_t *)ARENA_ALLOC(
-        arena, (long)(cvt_nf * sizeof(*parent)));
+        arena, (size_t)(cvt_nf * sizeof(*parent)));
     uint8_t *rank = (uint8_t *)ARENA_CALLOC(
-        arena, (long)cvt_nf, (long)sizeof(*rank));
+        arena, (size_t)cvt_nf, sizeof(*rank));
     for (size_t fi = 0; fi < cvt_nf; fi++) parent[fi] = (int32_t)fi;
     for (size_t begin = 0; begin < cvt_nf * 3;) {
         size_t end = begin + 1;
@@ -568,7 +568,7 @@ int OverlapQuality_improve(Arena_T arena,
     const size_t patch_start = merge->patch_face_start;
     const size_t patch_nf = old_nf - patch_start;
     int32_t *old_to_local = (int32_t *)ARENA_ALLOC(
-        arena, (long)(old_nv * sizeof(*old_to_local)));
+        arena, (size_t)(old_nv * sizeof(*old_to_local)));
     for (size_t vi = 0; vi < old_nv; vi++) old_to_local[vi] = -1;
     size_t patch_nv = 0;
     for (size_t fi = patch_start; fi < old_nf; fi++) {
@@ -582,15 +582,15 @@ int OverlapQuality_improve(Arena_T arena,
     if (patch_nv < 4 || patch_nf < 2) return -1;
 
     int32_t *local_to_old = (int32_t *)ARENA_ALLOC(
-        arena, (long)(patch_nv * sizeof(*local_to_old)));
+        arena, (size_t)(patch_nv * sizeof(*local_to_old)));
     for (size_t old = 0; old < old_nv; old++)
         if (old_to_local[old] >= 0)
             local_to_old[(size_t)old_to_local[old]] = (int32_t)old;
 
     float *patch_verts = (float *)ARENA_ALLOC(
-        arena, (long)(patch_nv * 3 * sizeof(*patch_verts)));
+        arena, (size_t)(patch_nv * 3 * sizeof(*patch_verts)));
     float *patch_chart = (float *)ARENA_ALLOC(
-        arena, (long)(patch_nv * 2 * sizeof(*patch_chart)));
+        arena, (size_t)(patch_nv * 2 * sizeof(*patch_chart)));
     for (size_t local = 0; local < patch_nv; local++) {
         size_t old = (size_t)local_to_old[local];
         memcpy(&patch_verts[local * 3], &candidate->verts[old * 3],
@@ -599,7 +599,7 @@ int OverlapQuality_improve(Arena_T arena,
                2 * sizeof(float));
     }
     int32_t *patch_faces = (int32_t *)ARENA_ALLOC(
-        arena, (long)(patch_nf * 3 * sizeof(*patch_faces)));
+        arena, (size_t)(patch_nf * 3 * sizeof(*patch_faces)));
     for (size_t local_fi = 0; local_fi < patch_nf; local_fi++) {
         size_t fi = patch_start + local_fi;
         for (int k = 0; k < 3; k++)
@@ -608,7 +608,7 @@ int OverlapQuality_improve(Arena_T arena,
     }
 
     QualityEdge *patch_edges = (QualityEdge *)ARENA_ALLOC(
-        arena, (long)(patch_nf * 3 * sizeof(*patch_edges)));
+        arena, (size_t)(patch_nf * 3 * sizeof(*patch_edges)));
     for (size_t fi = 0; fi < patch_nf; fi++) {
         for (int edge = 0; edge < 3; edge++) {
             int32_t a = patch_faces[fi * 3 + (size_t)edge];
@@ -621,7 +621,7 @@ int OverlapQuality_improve(Arena_T arena,
     qsort(patch_edges, patch_nf * 3, sizeof(*patch_edges),
           compare_quality_edge);
     uint8_t *boundary = (uint8_t *)ARENA_CALLOC(
-        arena, (long)patch_nv, (long)sizeof(*boundary));
+        arena, (size_t)patch_nv, sizeof(*boundary));
     size_t boundary_edges = 0;
     for (size_t begin = 0; begin < patch_nf * 3;) {
         size_t end = begin + 1;
@@ -653,7 +653,7 @@ int OverlapQuality_improve(Arena_T arena,
     QualityMeasure input_quality =
         measure_quality(patch_verts, patch_faces, patch_nf);
     float *fair_verts = (float *)ARENA_ALLOC(
-        arena, (long)(patch_nv * 3 * sizeof(*fair_verts)));
+        arena, (size_t)(patch_nv * 3 * sizeof(*fair_verts)));
     if (harmonic_height_patch(
             arena, patch_verts, patch_faces, patch_nf, patch_nv,
             patch_chart, boundary, merge->plane_center,
@@ -712,7 +712,7 @@ int OverlapQuality_improve(Arena_T arena,
      * frontier edge as a PSLG segment.
      */
     int32_t *pin_for_input = (int32_t *)ARENA_ALLOC(
-        arena, (long)(patch_nv * sizeof(*pin_for_input)));
+        arena, (size_t)(patch_nv * sizeof(*pin_for_input)));
     for (size_t local = 0; local < patch_nv; local++)
         pin_for_input[local] = -1;
     for (size_t pin = 0; pin < n_pin; pin++) {
@@ -726,7 +726,7 @@ int OverlapQuality_improve(Arena_T arena,
     }
 
     int32_t *cvt_segments = (int32_t *)ARENA_ALLOC(
-        arena, (long)(boundary_edges * 2 * sizeof(*cvt_segments)));
+        arena, (size_t)(boundary_edges * 2 * sizeof(*cvt_segments)));
     size_t segment_count = 0;
     for (size_t begin = 0; begin < patch_nf * 3;) {
         size_t end = begin + 1;
@@ -759,7 +759,7 @@ int OverlapQuality_improve(Arena_T arena,
     float axis_u[3], axis_v[3];
     PCA_orthonormal_basis(normal, axis_u, axis_v);
     double *cvt_uv = (double *)ARENA_ALLOC(
-        arena, (long)(cvt_nv * 2 * sizeof(*cvt_uv)));
+        arena, (size_t)(cvt_nv * 2 * sizeof(*cvt_uv)));
     for (size_t site = 0; site < n_pin; site++) {
         size_t src = (size_t)site_src[site];
         cvt_uv[site * 2] = patch_chart[src * 2];
@@ -876,7 +876,7 @@ int OverlapQuality_improve(Arena_T arena,
     }
 
     uint8_t *old_kept = (uint8_t *)ARENA_CALLOC(
-        arena, (long)old_nv, (long)sizeof(*old_kept));
+        arena, (size_t)old_nv, sizeof(*old_kept));
     for (size_t fi = 0; fi < patch_start; fi++)
         for (int k = 0; k < 3; k++)
             old_kept[candidate->faces[fi * 3 + (size_t)k]] = 1;
@@ -890,7 +890,7 @@ int OverlapQuality_improve(Arena_T arena,
     }
 
     int32_t *old_remap = (int32_t *)ARENA_ALLOC(
-        arena, (long)(old_nv * sizeof(*old_remap)));
+        arena, (size_t)(old_nv * sizeof(*old_remap)));
     size_t kept_nv = 0;
     for (size_t old = 0; old < old_nv; old++) {
         if (old_kept[old]) old_remap[old] = (int32_t)kept_nv++;
@@ -900,11 +900,11 @@ int OverlapQuality_improve(Arena_T arena,
     size_t new_nv = kept_nv + new_interior;
     size_t new_nf = patch_start + cvt_nf;
     float *new_verts = (float *)ARENA_ALLOC(
-        arena, (long)(new_nv * 3 * sizeof(*new_verts)));
+        arena, (size_t)(new_nv * 3 * sizeof(*new_verts)));
     uint8_t *new_role = (uint8_t *)ARENA_CALLOC(
-        arena, (long)new_nv, (long)sizeof(*new_role));
+        arena, (size_t)new_nv, sizeof(*new_role));
     float *new_chart = (float *)ARENA_ALLOC(
-        arena, (long)(new_nv * 2 * sizeof(*new_chart)));
+        arena, (size_t)(new_nv * 2 * sizeof(*new_chart)));
     for (size_t old = 0; old < old_nv; old++) {
         if (old_remap[old] < 0) continue;
         size_t next = (size_t)old_remap[old];
@@ -930,7 +930,7 @@ int OverlapQuality_improve(Arena_T arena,
     }
 
     int32_t *new_faces = (int32_t *)ARENA_ALLOC(
-        arena, (long)(new_nf * 3 * sizeof(*new_faces)));
+        arena, (size_t)(new_nf * 3 * sizeof(*new_faces)));
     for (size_t fi = 0; fi < patch_start; fi++) {
         for (int k = 0; k < 3; k++) {
             int32_t old = candidate->faces[fi * 3 + (size_t)k];
@@ -942,7 +942,7 @@ int OverlapQuality_improve(Arena_T arena,
         }
     }
     int32_t *site_global = (int32_t *)ARENA_ALLOC(
-        arena, (long)(cvt_nv * sizeof(*site_global)));
+        arena, (size_t)(cvt_nv * sizeof(*site_global)));
     for (size_t site = 0; site < n_pin; site++) {
         int32_t local = site_src[site];
         int32_t old = local_to_old[local];

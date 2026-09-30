@@ -1,10 +1,100 @@
 /* rawtex_bake.c -- see rawtex_bake.h. Extracted verbatim from obj_bake_raw.c
  * (the rasterizer + its private helpers), plus an optional face_skip mask. */
 #include "rawtex_bake.h"
+#include "../common/pipeline_constants.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+typedef struct { uint64_t key; size_t hits; } RawtexPair;
+typedef struct {
+    Arena_T arena;
+    RawtexPair *table;
+    size_t capacity,used,byte_limit,peak_payload;
+} RawtexPairs;
+
+static size_t rawtex_pair_slot(uint64_t key,size_t capacity)
+{
+    key^=key>>30; key*=UINT64_C(0xbf58476d1ce4e5b9);
+    key^=key>>27; key*=UINT64_C(0x94d049bb133111eb);
+    key^=key>>31;
+    return (size_t)key&(capacity-1);
+}
+
+static int rawtex_pair_grow(RawtexPairs *pairs)
+{
+    size_t capacity=0;
+    size_t limit=pairs->byte_limit/sizeof(RawtexPair),payload=0;
+    Arena_T arena=NULL;
+    RawtexPair *table=NULL;
+    if (pairs->capacity>SIZE_MAX/2) return -1;
+    capacity=pairs->capacity ? 2*pairs->capacity : 64;
+    if (capacity>limit ||
+        pairs->capacity>limit-capacity) return -1;
+    /* Bound both live tables during rehash, not just the eventual table.
+     * Arena chunk overhead and other raster buffers are separate. */
+    payload=(capacity+pairs->capacity)*sizeof(RawtexPair);
+    arena=Arena_new();
+    table=(RawtexPair *)ARENA_CALLOC(arena,capacity,sizeof *table);
+    for (size_t i=0;i<pairs->capacity;i++) if (pairs->table[i].key) {
+        size_t slot=rawtex_pair_slot(pairs->table[i].key,capacity);
+        while (table[slot].key) slot=(slot+1)&(capacity-1);
+        table[slot]=pairs->table[i];
+    }
+    if (pairs->arena) Arena_dispose(&pairs->arena);
+    pairs->arena=arena; pairs->table=table; pairs->capacity=capacity;
+    if (payload>pairs->peak_payload) pairs->peak_payload=payload;
+    return 0;
+}
+
+static int rawtex_pair_add(RawtexPairs *pairs,int32_t a,int32_t b)
+{
+    uint64_t key=0;
+    size_t slot=0;
+    if (!pairs || a<0 || b<0 || a==b) return -1;
+    if (a>b) { int32_t swap=a; a=b; b=swap; }
+    key=((uint64_t)((uint32_t)a+1)<<32)|((uint32_t)b+1);
+    if (pairs->capacity) {
+        slot=rawtex_pair_slot(key,pairs->capacity);
+        while (pairs->table[slot].key && pairs->table[slot].key!=key)
+            slot=(slot+1)&(pairs->capacity-1);
+        if (pairs->table[slot].key) {
+            if (pairs->table[slot].hits==SIZE_MAX) return -1;
+            pairs->table[slot].hits++; return 0;
+        }
+    }
+    if (pairs->used>=pairs->capacity/2) {
+        if (rawtex_pair_grow(pairs)!=0) return -1;
+        slot=rawtex_pair_slot(key,pairs->capacity);
+        while (pairs->table[slot].key) slot=(slot+1)&(pairs->capacity-1);
+    }
+    pairs->table[slot]=(RawtexPair){key,1}; pairs->used++;
+    return 0;
+}
+
+static int rawtex_pair_compare(const void *pa,const void *pb)
+{
+    const RawtexPair *a=(const RawtexPair *)pa,*b=(const RawtexPair *)pb;
+    return a->key<b->key ? -1 : a->key>b->key;
+}
+
+/* The legacy diagnostic prints unordered pairs in source-label order. Compact
+ * and sort the exact sparse counts in place only after rasterization ends. */
+static void rawtex_pairs_report(RawtexPairs *pairs,size_t components)
+{
+    size_t count=0;
+    for (size_t i=0;i<pairs->capacity;i++) if (pairs->table[i].key)
+        pairs->table[count++]=pairs->table[i];
+    if (count) qsort(pairs->table,count,sizeof *pairs->table,rawtex_pair_compare);
+    for (size_t i=0;i<count;i++)
+        fprintf(stderr,"    component conflict %zu-%zu support=%zu\n",
+            (size_t)(pairs->table[i].key>>32)-1,
+            (size_t)(uint32_t)pairs->table[i].key-1,pairs->table[i].hits);
+    fprintf(stderr,"  component conflict graph: vertices=%zu edges=%zu\n",components,count);
+    fprintf(stderr,"  component conflict storage: sparse pairs=%zu table=%zu peak-rehash-payload=%zu cap=%zu bytes\n",
+        count,pairs->capacity*sizeof *pairs->table,pairs->peak_payload,pairs->byte_limit);
+}
 
 static int32_t rawtex_component_find(int32_t *parent, int32_t vertex)
 {
@@ -67,13 +157,13 @@ static double gray_of(double v, double lo, double hi)
     return g;
 }
 
-static double face_sigma(const float *verts, const float *uv,
+static double face_sigma(const float *verts, RawtexUv uv,
                          size_t a, size_t b, size_t c, double *out_smin)
 {
     /* Sander et al. 2001 singular values of the UV->3D map */
-    double s1 = (double)uv[a * 2 + 0], t1 = (double)uv[a * 2 + 1];
-    double s2 = (double)uv[b * 2 + 0], t2 = (double)uv[b * 2 + 1];
-    double s3 = (double)uv[c * 2 + 0], t3 = (double)uv[c * 2 + 1];
+    double s1 = (double)Rawtex_uv(uv,a * 2 + 0), t1 = (double)Rawtex_uv(uv,a * 2 + 1);
+    double s2 = (double)Rawtex_uv(uv,b * 2 + 0), t2 = (double)Rawtex_uv(uv,b * 2 + 1);
+    double s3 = (double)Rawtex_uv(uv,c * 2 + 0), t3 = (double)Rawtex_uv(uv,c * 2 + 1);
     double A2 = (s2 - s1) * (t3 - t1) - (s3 - s1) * (t2 - t1);
     double Ss[3], St[3];
     double aa = 0.0, bb = 0.0, cc = 0.0, disc = 0.0;
@@ -160,11 +250,13 @@ static size_t plan_dim(double span, double step)
 {
     double cells = ceil(span / step);
     if (cells < 1.0) return 1;
+    if (!isfinite(cells) || cells > (double)SIZE_MAX) return SIZE_MAX;
     return (size_t)cells;
 }
 
-int Rawtex_plan(const float *uv, size_t nv, double du, double dv,
-                size_t max_px, RawtexPlan *out)
+int Rawtex_plan_field(RawtexUv uv, size_t nv, double du, double dv,
+                       size_t max_px, const RawtexWindow *window,
+                       RawtexPlan *out)
 {
     size_t i = 0;
     double span_u = 0.0, span_v = 0.0;
@@ -172,9 +264,13 @@ int Rawtex_plan(const float *uv, size_t nv, double du, double dv,
 
     if (out == NULL) return -1;
     memset(out, 0, sizeof *out);
-    if (nv == 0 || uv == NULL || du <= 0.0 || dv <= 0.0) return -1;
+    if (nv == 0 || !Rawtex_has_uv(uv) || !isfinite(du) || !isfinite(dv) ||
+        du <= 0.0 || dv <= 0.0)
+        return -1;
     for (i = 0; i < nv; i++) {
-        double uu = (double)uv[i * 2 + 0], vv = (double)uv[i * 2 + 1];
+        double uu = (double)Rawtex_uv(uv,i * 2 + 0), vv = (double)Rawtex_uv(uv,i * 2 + 1);
+        if (!isfinite(uu) || !isfinite(vv)) return -1;
+        if (window != NULL) continue;
         if (i == 0) {
             out->umin = out->umax = uu;
             out->vmin = out->vmax = vv;
@@ -184,6 +280,16 @@ int Rawtex_plan(const float *uv, size_t nv, double du, double dv,
         if (uu > out->umax) out->umax = uu;
         if (vv < out->vmin) out->vmin = vv;
         if (vv > out->vmax) out->vmax = vv;
+    }
+    if (window != NULL) {
+        if (!isfinite(window->umin) || !isfinite(window->umax) ||
+            !isfinite(window->vmin) || !isfinite(window->vmax) ||
+            window->umax <= window->umin || window->vmax <= window->vmin)
+            return -1;
+        out->umin = window->umin;
+        out->umax = window->umax;
+        out->vmin = window->vmin;
+        out->vmax = window->vmax;
     }
     out->max_px = max_px > 0 ? max_px : RAWTEX_MAX_PX_DEFAULT;
     span_u = out->umax - out->umin;
@@ -223,19 +329,26 @@ int Rawtex_plan(const float *uv, size_t nv, double du, double dv,
     return 0;
 }
 
-int Rawtex_write_tif(const char *path, CubeTable *ct,
-                     const float *verts, const float *uv, size_t nv,
-                     const int32_t *faces, size_t nf,
-                     const float *normals,
-                     const uint8_t *face_skip,
-                     double range, int nsteps,
-                     double du, double dv, double lo, double hi,
-                     double stretch_ratio, double stretch_floor,
-                     double max_edge3d, size_t max_px,
-                     const DiagOpts *diag,
-                     size_t *out_W, size_t *out_H,
-                     double *out_fill, size_t *out_multi,
-                     size_t *out_skip_uv, size_t *out_skip_3d)
+int Rawtex_plan(const float *uv, size_t nv, double du, double dv,
+                size_t max_px, RawtexPlan *out)
+{
+    return Rawtex_plan_window(uv, nv, du, dv, max_px, NULL, out);
+}
+
+int Rawtex_write_tif_field(const char *path, CubeTable *ct,
+                            const float *verts, RawtexUv uv, size_t nv,
+                            const int32_t *faces, size_t nf,
+                            const float *normals,
+                            const uint8_t *face_skip,
+                            double range, int nsteps,
+                            double du, double dv, double lo, double hi,
+                            double stretch_ratio, double stretch_floor,
+                            double max_edge3d, size_t max_px,
+                            const RawtexWindow *window,
+                            const DiagOpts *diag,
+                            size_t *out_W, size_t *out_H,
+                            double *out_fill, size_t *out_multi,
+                            size_t *out_skip_uv, size_t *out_skip_3d)
 {
     /* A boundary-only hit is ownership, not a second surface layer.  The
      * fitted ribbon deliberately puts vertices on its raster lattice, so a
@@ -261,18 +374,20 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
     int32_t *component_parent = NULL, *component_label = NULL;
     int32_t *owner_component = NULL;
     float *owner_position = NULL;
-    size_t *component_pair_hits = NULL, component_count = 0;
+    RawtexPairs component_pairs={0};
+    size_t component_count = 0;
+    uint8_t *component_active = NULL;
     size_t *component_vertices = NULL;
     double *component_u_lo = NULL, *component_u_hi = NULL;
     uint8_t *multi_topology = NULL; /* bit 0: same CC, bit 1: cross CC */
     uint8_t *multi_physical = NULL; /* bit 0: <=6 vox, bit 1: >6 vox */
     double zoff = 0.0;
-    int rc = 0;
+    int rc = 0, coverage_rc = 0;
 
     *out_W = 0; *out_H = 0; *out_fill = 0.0; *out_multi = 0;
     if (out_skip_uv != NULL) *out_skip_uv = 0;
     if (out_skip_3d != NULL) *out_skip_3d = 0;
-    if (nv == 0 || nf == 0 || uv == NULL || du <= 0.0 || dv <= 0.0) return -1;
+    if (nv == 0 || nf == 0 || !Rawtex_has_uv(uv) || du <= 0.0 || dv <= 0.0) return -1;
     /* Size from the UV BOUNDING BOX.  A winding frame lifted from registration
      * has its natural origin wherever the spiral starts -- on the 4x21x21 that
      * is u in [-1174233, +341207] and v in [4352, 4864], v being world z -- so
@@ -282,7 +397,8 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
      * expensive sampling pass; a plan that reports ok never rejects here. */
     {
         RawtexPlan plan;
-        if (Rawtex_plan(uv, nv, du, dv, max_px, &plan) != 0) return -1;
+        if (Rawtex_plan_field(uv, nv, du, dv, max_px, window, &plan) != 0)
+            return -1;
         if (!plan.ok) {
             fprintf(stderr,
                 "ERROR: raster %zux%zu unreasonable for uv u=[%.1f,%.1f] "
@@ -335,8 +451,8 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
         for (i = 0; i < nv; i++)
             if (component_parent[i] < 0 && component_parent[i] != INT32_MIN)
                 component_label[i] = (int32_t)component_count++;
-        component_pair_hits = (size_t *)xcalloc(
-            component_count * component_count, sizeof(*component_pair_hits));
+        component_pairs.byte_limit=RAWTEX_CONFLICT_HASH_BYTES;
+        component_active=(uint8_t *)xcalloc(component_count,1);
         component_vertices = (size_t *)xcalloc(
             component_count, sizeof(*component_vertices));
         component_u_lo = (double *)xmalloc(
@@ -349,7 +465,7 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
         }
         for (i = 0; i < nv; i++) {
             int32_t label;
-            double u = (double)uv[i * 2];
+            double u = (double)Rawtex_uv(uv,i * 2);
             if (component_parent[i] == INT32_MIN) continue;
             label = component_label[
                 rawtex_component_find(component_parent, (int32_t)i)];
@@ -363,7 +479,7 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
         stride = (nv > 200000) ? nv / 200000 : 1;
         zv = (double *)xmalloc((nv / stride + 1) * sizeof(double));
         for (i = 0; i < nv; i += stride)
-            zv[n_probe++] = (double)verts[i * 3 + 0] - (double)uv[i * 2 + 1];
+            zv[n_probe++] = (double)verts[i * 3 + 0] - (double)Rawtex_uv(uv,i * 2 + 1);
         qsort(zv, n_probe, sizeof(double), cmp_double);
         zoff = zv[n_probe / 2];
         free(zv);
@@ -379,12 +495,12 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
                                ? component_label[rawtex_component_find(
                                      component_parent, (int32_t)a)]
                                : -1;
-        double ua = ((double)uv[a * 2 + 0] - umin) / du;
-        double va = ((double)uv[a * 2 + 1] - vmin) / dv;
-        double ub = ((double)uv[b * 2 + 0] - umin) / du;
-        double vb = ((double)uv[b * 2 + 1] - vmin) / dv;
-        double uc = ((double)uv[c * 2 + 0] - umin) / du;
-        double vc = ((double)uv[c * 2 + 1] - vmin) / dv;
+        double ua = ((double)Rawtex_uv(uv,a * 2 + 0) - umin) / du;
+        double va = ((double)Rawtex_uv(uv,a * 2 + 1) - vmin) / dv;
+        double ub = ((double)Rawtex_uv(uv,b * 2 + 0) - umin) / du;
+        double vb = ((double)Rawtex_uv(uv,b * 2 + 1) - vmin) / dv;
+        double uc = ((double)Rawtex_uv(uv,c * 2 + 0) - umin) / du;
+        double vc = ((double)Rawtex_uv(uv,c * 2 + 1) - vmin) / dv;
         double A2 = (ub - ua) * (vc - va) - (vb - va) * (uc - ua);
         double lox = ua < ub ? (ua < uc ? ua : uc) : (ub < uc ? ub : uc);
         double hix = ua > ub ? (ua > uc ? ua : uc) : (ub > uc ? ub : uc);
@@ -409,8 +525,8 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
                     d3 += dd * dd;
                 }
                 d3 = sqrt(d3);
-                dueg = (double)uv[q * 2 + 0] - (double)uv[p * 2 + 0];
-                dveg = (double)uv[q * 2 + 1] - (double)uv[p * 2 + 1];
+                dueg = (double)Rawtex_uv(uv,q * 2 + 0) - (double)Rawtex_uv(uv,p * 2 + 0);
+                dveg = (double)Rawtex_uv(uv,q * 2 + 1) - (double)Rawtex_uv(uv,p * 2 + 1);
                 e2d = sqrt(dueg * dueg + dveg * dveg);
                 if (max_edge3d > 0.0 && d3 > max_edge3d) bad_3d = 1;
                 if (stretch_ratio > 0.0
@@ -425,11 +541,11 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
         if (diag != NULL) {
             double smin = 0.0, smax = face_sigma(verts, uv, a, b, c, &smin);
             double e0 = fabs(((double)verts[a * 3 + 0] - zoff)
-                             - (double)uv[a * 2 + 1]);
+                             - (double)Rawtex_uv(uv,a * 2 + 1));
             double e1 = fabs(((double)verts[b * 3 + 0] - zoff)
-                             - (double)uv[b * 2 + 1]);
+                             - (double)Rawtex_uv(uv,b * 2 + 1));
             double e2 = fabs(((double)verts[c * 3 + 0] - zoff)
-                             - (double)uv[c * 2 + 1]);
+                             - (double)Rawtex_uv(uv,c * 2 + 1));
             double emax = e0 > e1 ? (e0 > e2 ? e0 : e2) : (e1 > e2 ? e1 : e2);
             f_smax = log2_to_u8(smax);
             f_smin = log2_to_u8(smin);
@@ -528,9 +644,12 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
                                 multi_physical[pi] |= 1;
                             else
                                 multi_physical[pi] |= 2;
-                            component_pair_hits[
-                                (size_t)owner_component[pi] * component_count +
-                                (size_t)face_component]++;
+                            if (rawtex_pair_add(&component_pairs,owner_component[pi],face_component)!=0) {
+                                fprintf(stderr,"ERROR: exact component conflict counts exceed the sparse storage/counter budget; bake not published\n");
+                                rc=-1; goto done;
+                            }
+                            component_active[owner_component[pi]]=1;
+                            component_active[face_component]=1;
                         }
                     }
                     sum[pi] += s;
@@ -619,32 +738,10 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
                     "far=%zu mixed=%zu (gate %.1f vox)\n",
                     near, far, both, 6.0);
         }
-        if (component_pair_hits != NULL) {
-            size_t edges = 0;
+        if (component_active != NULL) {
+            rawtex_pairs_report(&component_pairs,component_count);
             for (size_t a = 0; a < component_count; a++) {
-                for (size_t b = a + 1; b < component_count; b++) {
-                    size_t support =
-                        component_pair_hits[a * component_count + b] +
-                        component_pair_hits[b * component_count + a];
-                    if (support == 0) continue;
-                    fprintf(stderr,
-                            "    component conflict %zu-%zu support=%zu\n",
-                            a, b, support);
-                    edges++;
-                }
-            }
-            fprintf(stderr,
-                    "  component conflict graph: vertices=%zu edges=%zu\n",
-                    component_count, edges);
-            for (size_t a = 0; a < component_count; a++) {
-                int active = 0;
-                for (size_t b = 0; b < component_count; b++)
-                    if (component_pair_hits[a * component_count + b] != 0 ||
-                        component_pair_hits[b * component_count + a] != 0) {
-                        active = 1;
-                        break;
-                    }
-                if (active)
+                if (component_active[a])
                     fprintf(stderr,
                             "    component %zu vertices=%zu U=[%.1f,%.1f] "
                             "width=%.1f\n",
@@ -753,7 +850,8 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
                          "_coverage.png");
             else
                 snprintf(cpath + plen, sizeof cpath - plen, "_coverage.png");
-            VesPng_write_gray(cpath, cimg, (int)W, (int)H);
+            if (VesPng_write_gray(cpath, cimg, (int)W, (int)H) != 0)
+                fprintf(stderr, "  coverage PNG unavailable; retaining TIFF and tiles\n");
             /* TIF sibling: the C sheet compositor reads coverage via TiffIO
              * (ves_png is write-only) */
             snprintf(cpath, sizeof cpath, "%s", path);
@@ -762,12 +860,13 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
                          "_coverage.tif");
             else
                 snprintf(cpath + plen, sizeof cpath - plen, "_coverage.tif");
-            TiffIO_save(cpath, cimg, 1, (int)H, (int)W);
+            coverage_rc = TiffIO_save(cpath, cimg, 1, (int)H, (int)W);
             free(cimg);
         }
         free(cover);
     }
     rc = TiffIO_save(path, img, 1, (int)H, (int)W);
+    if (coverage_rc != 0) rc = -1;
     {   /* also a full-res grayscale PNG sibling (<path>.png), written from C
          * via stb -- no GDI+ round-trip (which truncates >~3k-col images). */
         char pngpath[2600];
@@ -777,7 +876,8 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
             snprintf(pngpath + plen - 4, sizeof pngpath - (plen - 4), ".png");
         else
             snprintf(pngpath + plen, sizeof pngpath - plen, ".png");
-        VesPng_write_gray(pngpath, img, (int)W, (int)H);
+        if (VesPng_write_gray(pngpath, img, (int)W, (int)H) != 0)
+            fprintf(stderr, "  texture PNG unavailable; retaining TIFF and tiles\n");
     }
     {   /* multi-line strip sibling (<base>_strip.tif + .png): a readable
          * stacked view of the very wide unroll (see tif_strip.h). Every bake
@@ -860,10 +960,10 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
                         shown,
                         tiles[shown].tx * tw, (tiles[shown].tx + 1) * tw,
                         tiles[shown].ty * th, (tiles[shown].ty + 1) * th,
-                        (double)(tiles[shown].tx * tw) * du,
-                        (double)((tiles[shown].tx + 1) * tw) * du,
-                        (double)(tiles[shown].ty * th) * dv,
-                        (double)((tiles[shown].ty + 1) * th) * dv,
+                         umin + (double)(tiles[shown].tx * tw) * du,
+                         umin + (double)((tiles[shown].tx + 1) * tw) * du,
+                         vmin + (double)(tiles[shown].ty * th) * dv,
+                         vmin + (double)((tiles[shown].ty + 1) * th) * dv,
                         100.0 * tiles[shown].bad,
                         tiles[shown].nbad, tiles[shown].ncov);
             }
@@ -921,7 +1021,7 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
                 zhist[bidx]++;
                 for (m = 0; m < 3; m++) {
                     size_t vi = (size_t)faces[f*3+m];
-                    double uu = (double)uv[vi*2+0];
+                    double uu = (double)Rawtex_uv(uv,vi*2+0);
                     double dy = (double)verts[vi*3+1] - 3405.0;
                     double dx = (double)verts[vi*3+2] - 2878.0;
                     if (uu < umn) umn = uu;
@@ -947,15 +1047,115 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
             fprintf(stderr, "  (>=1 = winding-index jump; 0 = sub-wrap "
                     "registration/QP)\n");
         }
-        free(is_smear);
     }
+done:
+    free(is_smear);
     free(sum); free(cnt); free(img);
     free(dsmax); free(dsmin); free(dverr); free(dcls);
     free(cover_uv); free(cover_3d);
     free(component_parent); free(component_label); free(owner_component);
     free(owner_position);
-    free(component_pair_hits); free(multi_topology);
+    if (component_pairs.arena) Arena_dispose(&component_pairs.arena);
+    free(component_active); free(multi_topology);
     free(multi_physical);
     free(component_vertices); free(component_u_lo); free(component_u_hi);
     return rc;
+}
+
+int Rawtex_write_tif(const char *path, CubeTable *ct,
+                     const float *verts, const float *uv, size_t nv,
+                     const int32_t *faces, size_t nf,
+                     const float *normals,
+                     const uint8_t *face_skip,
+                     double range, int nsteps,
+                     double du, double dv, double lo, double hi,
+                     double stretch_ratio, double stretch_floor,
+                     double max_edge3d, size_t max_px,
+                     const DiagOpts *diag,
+                     size_t *out_W, size_t *out_H,
+                     double *out_fill, size_t *out_multi,
+                     size_t *out_skip_uv, size_t *out_skip_3d)
+{
+    return Rawtex_write_tif_window(
+        path, ct, verts, uv, nv, faces, nf, normals, face_skip,
+        range, nsteps, du, dv, lo, hi, stretch_ratio, stretch_floor,
+        max_edge3d, max_px, NULL, diag, out_W, out_H, out_fill, out_multi,
+        out_skip_uv, out_skip_3d);
+}
+
+int Rawtex_plan_window(const float *uv, size_t nv, double du, double dv,
+                       size_t max_px, const RawtexWindow *window,
+                       RawtexPlan *out)
+{
+    return Rawtex_plan_field((RawtexUv){uv,NULL},nv,du,dv,max_px,window,out);
+}
+
+int Rawtex_write_tif_window(const char *path, CubeTable *ct,
+                            const float *verts, const float *uv, size_t nv,
+                            const int32_t *faces, size_t nf,
+                            const float *normals,
+                            const uint8_t *face_skip,
+                            double range, int nsteps,
+                            double du, double dv, double lo, double hi,
+                            double stretch_ratio, double stretch_floor,
+                            double max_edge3d, size_t max_px,
+                            const RawtexWindow *window,
+                            const DiagOpts *diag,
+                            size_t *out_W, size_t *out_H,
+                            double *out_fill, size_t *out_multi,
+                            size_t *out_skip_uv, size_t *out_skip_3d)
+{
+    return Rawtex_write_tif_field(path,ct,verts,(RawtexUv){uv,NULL},nv,faces,nf,normals,face_skip,
+        range,nsteps,du,dv,lo,hi,stretch_ratio,stretch_floor,max_edge3d,max_px,window,diag,
+        out_W,out_H,out_fill,out_multi,out_skip_uv,out_skip_3d);
+}
+
+int Rawtex_selftest(void)
+{
+    enum { N=16 };
+    size_t dense[N*N]={0},nonzero=0,total=0;
+    RawtexPairs pairs={0},limited={0};
+    uint32_t state=813735u;
+    int fail=0;
+    pairs.byte_limit=1024u*1024u;
+    for (size_t i=0;i<10000;i++) {
+        int32_t a=0,b=0;
+        state=1664525u*state+1013904223u; a=(int32_t)((state>>16)%N);
+        state=1664525u*state+1013904223u; b=(int32_t)((state>>16)%N);
+        if (a==b) continue;
+        dense[(size_t)a*N+b]++; total++;
+        fail+=rawtex_pair_add(&pairs,a,b)!=0;
+    }
+    for (size_t a=0;a<N;a++) for (size_t b=a+1;b<N;b++)
+        nonzero+=dense[a*N+b]+dense[b*N+a]>0;
+    fail+=pairs.used!=nonzero || pairs.peak_payload>pairs.byte_limit;
+    for (size_t i=0;i<pairs.capacity;i++) if (pairs.table[i].key) {
+        size_t a=(size_t)(pairs.table[i].key>>32)-1;
+        size_t b=(size_t)(uint32_t)pairs.table[i].key-1;
+        fail+=a>=N || b>=N;
+        if (a<N && b<N) fail+=pairs.table[i].hits!=dense[a*N+b]+dense[b*N+a];
+        total-=pairs.table[i].hits;
+    }
+    fail+=total!=0;
+    fail+=rawtex_pair_add(&pairs,3984599,INT32_MAX)!=0;
+    fail+=rawtex_pair_add(&pairs,INT32_MAX,3984599)!=0;
+    fail+=rawtex_pair_add(&pairs,-1,0)==0 || rawtex_pair_add(&pairs,0,0)==0;
+    limited.byte_limit=64*sizeof(RawtexPair);
+    for (int32_t i=1;i<=32;i++) fail+=rawtex_pair_add(&limited,0,i)!=0;
+    fail+=rawtex_pair_add(&limited,0,33)==0 || limited.used!=32;
+    /* Existing counters stay usable at capacity; no accepted prefix is
+     * published by the caller if a NEW pair cannot be counted. */
+    fail+=rawtex_pair_add(&limited,1,0)!=0 || limited.used!=32;
+    if (limited.capacity) {
+        size_t slot=rawtex_pair_slot((UINT64_C(1)<<32)|2,limited.capacity);
+        while (limited.table[slot].key!=((UINT64_C(1)<<32)|2))
+            slot=(slot+1)&(limited.capacity-1);
+        fail+=limited.table[slot].hits!=2;
+        limited.table[slot].hits=SIZE_MAX;
+        fail+=rawtex_pair_add(&limited,0,1)==0 || limited.table[slot].hits!=SIZE_MAX;
+    }
+    if (pairs.arena) Arena_dispose(&pairs.arena);
+    if (limited.arena) Arena_dispose(&limited.arena);
+    fprintf(stderr,"[selftest] rawtex sparse component counts %s (%d failures)\n",fail ? "FAIL" : "PASS",fail);
+    return fail ? -1 : 0;
 }

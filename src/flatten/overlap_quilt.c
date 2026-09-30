@@ -447,14 +447,14 @@ int Quilt_run(Arena_T arena,
     free(rcur);
 
     /* outputs */
-    out->uv = (float *)ARENA_ALLOC(arena, (long)(nv*2*sizeof(float)));
+    out->uv = (float *)ARENA_ALLOC(arena, (size_t)(nv*2*sizeof(float)));
     memcpy(out->uv, uv, nv*2*sizeof(float));
-    out->face_keep = (uint8_t *)ARENA_ALLOC(arena, (long)nf);
+    out->face_keep = (uint8_t *)ARENA_ALLOC(arena, (size_t)nf);
     memset(out->face_keep, 1, nf);
-    out->face_dec = (uint8_t *)ARENA_CALLOC(arena, (long)nf, 1);
-    out->face_region = (int32_t *)ARENA_ALLOC(arena, (long)(nf*sizeof(int32_t)));
-    out->face_layer = (int32_t *)ARENA_ALLOC(arena, (long)(nf*sizeof(int32_t)));
-    out->face_energy = (double *)ARENA_ALLOC(arena, (long)(nf*sizeof(double)));
+    out->face_dec = (uint8_t *)ARENA_CALLOC(arena, (size_t)nf, 1);
+    out->face_region = (int32_t *)ARENA_ALLOC(arena, (size_t)(nf*sizeof(int32_t)));
+    out->face_layer = (int32_t *)ARENA_ALLOC(arena, (size_t)(nf*sizeof(int32_t)));
+    out->face_energy = (double *)ARENA_ALLOC(arena, (size_t)(nf*sizeof(double)));
     for (size_t f = 0; f < nf; f++) {
         out->face_region[f] = region_of[f];
         out->face_layer[f] = -1;

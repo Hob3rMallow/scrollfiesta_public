@@ -43,6 +43,10 @@
  * caller-provided (allocate with ARENA_ALLOC of size nv*3*sizeof(float)
  * before calling).
  */
+/* Optional per-point weights for the NEXT MLS_project_verts calls (indexed
+ * like `verts`); NULL restores the unweighted kernel.  Read-only, not owned. */
+void MLS_set_point_weights(const float *weights);
+
 void MLS_project_verts(Arena_T arena,
                        const float *verts, size_t nv,
                        float radius_vox,

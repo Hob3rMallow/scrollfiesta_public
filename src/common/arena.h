@@ -18,6 +18,11 @@ typedef struct {
 
 /* Lifecycle */
 Arena_T Arena_new(void);
+/* An arena whose chunks hold chunk_bytes (at least 4 KiB) instead of the 64 MB
+ * default; a larger request still gets a chunk of its own size.  For small,
+ * long-lived arenas: every chunk is committed memory, so a few KB kept in a
+ * default arena commit 64 MB (Windows commits a malloc'd block whole). */
+Arena_T Arena_new_sized(size_t chunk_bytes);
 void    Arena_dispose(Arena_T *ap);
 void    Arena_free(Arena_T arena);
 

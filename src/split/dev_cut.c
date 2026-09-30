@@ -33,7 +33,7 @@ static void mark_boundary(Arena_T arena, const int32_t *faces, size_t nf, size_t
 {
     Arena_Mark mark = Arena_save(arena);
     size_t ne = nf*3;
-    uint64_t *keys = (uint64_t *)ARENA_ALLOC(arena, (long)(ne*sizeof(uint64_t)));
+    uint64_t *keys = (uint64_t *)ARENA_ALLOC(arena, (size_t)(ne*sizeof(uint64_t)));
     size_t m = 0;
     for (size_t t = 0; t < nf; t++) {
         int32_t v[3] = { faces[t*3+0], faces[t*3+1], faces[t*3+2] };
@@ -77,7 +77,7 @@ static void finalize_submesh(ComponentMesh *m, float *v, size_t nv,
 static int emit_single(Arena_T arena, const ComponentMesh *mesh,
                        ComponentMesh **out, size_t *n)
 {
-    ComponentMesh *o = (ComponentMesh *)ARENA_ALLOC(arena, (long)sizeof(ComponentMesh));
+    ComponentMesh *o = (ComponentMesh *)ARENA_ALLOC(arena, sizeof(ComponentMesh));
     *o = *mesh; o->self = o;
     *out = o; *n = 1;
     return 0;
@@ -96,7 +96,7 @@ static int build_component(Arena_T arena, const ComponentMesh *mesh,
     }
     if (cnf == 0) return -1;
 
-    int32_t *o2n = (int32_t *)ARENA_ALLOC(arena, (long)(N*sizeof(int32_t)));
+    int32_t *o2n = (int32_t *)ARENA_ALLOC(arena, (size_t)(N*sizeof(int32_t)));
     for (size_t i = 0; i < N; i++) o2n[i] = -1;
     for (size_t f = 0; f < nf; f++) {
         int32_t a = mesh->faces[f*3+0], b = mesh->faces[f*3+1], d = mesh->faces[f*3+2];
@@ -108,14 +108,14 @@ static int build_component(Arena_T arena, const ComponentMesh *mesh,
     for (size_t i = 0; i < N; i++) if (o2n[i] != -1) o2n[i] = cnv++;
     if (cnv < 3) return -1;
 
-    float *vv = (float *)ARENA_ALLOC(arena, (long)((size_t)cnv*3*sizeof(float)));
+    float *vv = (float *)ARENA_ALLOC(arena, (size_t)((size_t)cnv*3*sizeof(float)));
     for (size_t i = 0; i < N; i++) if (o2n[i] >= 0) {
         size_t ni = (size_t)o2n[i];
         vv[ni*3+0] = mesh->verts[i*3+0];
         vv[ni*3+1] = mesh->verts[i*3+1];
         vv[ni*3+2] = mesh->verts[i*3+2];
     }
-    int32_t *ff = (int32_t *)ARENA_ALLOC(arena, (long)(cnf*3*sizeof(int32_t)));
+    int32_t *ff = (int32_t *)ARENA_ALLOC(arena, (size_t)(cnf*3*sizeof(int32_t)));
     size_t k = 0;
     for (size_t f = 0; f < nf; f++) {
         int32_t a = mesh->faces[f*3+0], b = mesh->faces[f*3+1], d = mesh->faces[f*3+2];
@@ -143,14 +143,14 @@ int DevCut_process(Arena_T arena, const ComponentMesh *mesh,
     Arena_Mark scratch = Arena_save(arena);
 
     /* 1. per-vertex Crane energy (boundary verts come back 0). */
-    double *lam = (double *)ARENA_ALLOC(arena, (long)(nv*sizeof(double)));
+    double *lam = (double *)ARENA_ALLOC(arena, (size_t)(nv*sizeof(double)));
     if (Develop_vertex_energy(arena, mesh->verts, nv, mesh->faces, nf, lam) != 0) {
         Arena_restore(arena, scratch);
         return emit_single(arena, mesh, out_meshes, out_count);
     }
 
     /* 2. seam vertices. */
-    unsigned char *seam = (unsigned char *)ARENA_CALLOC(arena, (long)nv, 1L);
+    unsigned char *seam = (unsigned char *)ARENA_CALLOC(arena, (size_t)nv, 1L);
     size_t n_seam = 0;
     for (size_t v = 0; v < nv; v++) if (lam[v] > eps) { seam[v] = 1; n_seam++; }
     if (n_seam == 0) {                              /* developable -> no cut */
@@ -160,9 +160,9 @@ int DevCut_process(Arena_T arena, const ComponentMesh *mesh,
 
     /* 3. exclusion band: seam verts dilated by gap_depth (KD-tree, like
      * bridge_cut's CUT_GAP_DEPTH). gap_depth <= 0 -> seam verts only. */
-    unsigned char *excluded = (unsigned char *)ARENA_CALLOC(arena, (long)nv, 1L);
+    unsigned char *excluded = (unsigned char *)ARENA_CALLOC(arena, (size_t)nv, 1L);
     if (gap_depth > 0.0) {
-        float *spts = (float *)ARENA_ALLOC(arena, (long)(n_seam*3*sizeof(float)));
+        float *spts = (float *)ARENA_ALLOC(arena, (size_t)(n_seam*3*sizeof(float)));
         size_t si = 0;
         for (size_t v = 0; v < nv; v++) if (seam[v]) {
             spts[si*3+0] = mesh->verts[v*3+0];
@@ -184,7 +184,7 @@ int DevCut_process(Arena_T arena, const ComponentMesh *mesh,
     /* 4. connected components of the SURVIVING faces (none of whose verts are
      * excluded). The removed band severs the mesh where the seam spanned it. */
     UnionFind uf = UF_new(arena, (int32_t)nv);
-    unsigned char *refd = (unsigned char *)ARENA_CALLOC(arena, (long)nv, 1L);
+    unsigned char *refd = (unsigned char *)ARENA_CALLOC(arena, (size_t)nv, 1L);
     for (size_t f = 0; f < nf; f++) {
         int32_t a = mesh->faces[f*3+0], b = mesh->faces[f*3+1], c = mesh->faces[f*3+2];
         if (excluded[a] || excluded[b] || excluded[c]) continue;
@@ -193,9 +193,9 @@ int DevCut_process(Arena_T arena, const ComponentMesh *mesh,
     }
 
     /* 5. component sizes over referenced verts; promote big ones to real pieces. */
-    int32_t *vcount = (int32_t *)ARENA_CALLOC(arena, (long)nv, (long)sizeof(int32_t));
+    int32_t *vcount = (int32_t *)ARENA_CALLOC(arena, (size_t)nv, sizeof(int32_t));
     for (size_t v = 0; v < nv; v++) if (refd[v]) vcount[uf_find(&uf, (int32_t)v)]++;
-    int32_t *comp_of_root = (int32_t *)ARENA_ALLOC(arena, (long)(nv*sizeof(int32_t)));
+    int32_t *comp_of_root = (int32_t *)ARENA_ALLOC(arena, (size_t)(nv*sizeof(int32_t)));
     for (size_t v = 0; v < nv; v++) comp_of_root[v] = -1;
     int32_t n_real = 0;
     for (size_t v = 0; v < nv; v++) {
@@ -221,7 +221,7 @@ int DevCut_process(Arena_T arena, const ComponentMesh *mesh,
 
     /* 7. materialize the pieces. */
     ComponentMesh *o = (ComponentMesh *)ARENA_ALLOC(arena,
-                          (long)((size_t)n_real*sizeof(ComponentMesh)));
+                          (size_t)((size_t)n_real*sizeof(ComponentMesh)));
     size_t cnt = 0;
     for (int32_t c = 0; c < n_real; c++) {
         if (build_component(arena, mesh, vert_comp, c, &o[cnt]) == 0) {
@@ -250,9 +250,9 @@ double DevCut_nondev_fraction(Arena_T arena, const ComponentMesh *mesh,
     size_t nv = mesh->nv, nf = mesh->nf;
     Arena_Mark mark = Arena_save(arena);
 
-    double *lam = (double *)ARENA_ALLOC(arena, (long)(nv*sizeof(double)));
-    unsigned char *is_b = (unsigned char *)ARENA_ALLOC(arena, (long)nv);
-    unsigned char *used = (unsigned char *)ARENA_CALLOC(arena, (long)nv, 1L);
+    double *lam = (double *)ARENA_ALLOC(arena, (size_t)(nv*sizeof(double)));
+    unsigned char *is_b = (unsigned char *)ARENA_ALLOC(arena, (size_t)nv);
+    unsigned char *used = (unsigned char *)ARENA_CALLOC(arena, (size_t)nv, 1L);
     mark_boundary(arena, mesh->faces, nf, nv, is_b, used);
     if (Develop_vertex_energy(arena, mesh->verts, nv, mesh->faces, nf, lam) != 0) {
         Arena_restore(arena, mark);
@@ -285,8 +285,8 @@ static void make_grid(Arena_T arena, int ncol, int nrow, const float *z,
 {
     size_t nv = (size_t)ncol*(size_t)nrow;
     size_t nf = (size_t)(ncol-1)*(size_t)(nrow-1)*2;
-    float   *v = (float *)ARENA_ALLOC(arena, (long)(nv*3*sizeof(float)));
-    int32_t *f = (int32_t *)ARENA_ALLOC(arena, (long)(nf*3*sizeof(int32_t)));
+    float   *v = (float *)ARENA_ALLOC(arena, (size_t)(nv*3*sizeof(float)));
+    int32_t *f = (int32_t *)ARENA_ALLOC(arena, (size_t)(nf*3*sizeof(int32_t)));
     for (int r = 0; r < nrow; r++) for (int c = 0; c < ncol; c++) {
         size_t idx = (size_t)r*(size_t)ncol + (size_t)c;
         v[idx*3+0] = (float)c;
@@ -326,7 +326,7 @@ int DevCut_selftest(void)
     /* (1) Flat sheet: developable -> no cut, fraction 0. */
     {
         int N = 11; size_t nz = (size_t)N*(size_t)N;
-        float *z = (float *)ARENA_CALLOC(arena, (long)nz, (long)sizeof(float));
+        float *z = (float *)ARENA_CALLOC(arena, (size_t)nz, sizeof(float));
         float *v; int32_t *f; size_t nv, nf;
         make_grid(arena, N, N, z, &v, &nv, &f, &nf);
         ComponentMesh cm; wrap_mesh(&cm, v, nv, f, nf);
@@ -348,8 +348,8 @@ int DevCut_selftest(void)
         int nu = 13, nvr = 11; double R = 5.0;        /* half-cylinder grid */
         size_t nv = (size_t)nu*(size_t)nvr;
         size_t nf = (size_t)(nu-1)*(size_t)(nvr-1)*2;
-        float   *v = (float *)ARENA_ALLOC(arena, (long)(nv*3*sizeof(float)));
-        int32_t *f = (int32_t *)ARENA_ALLOC(arena, (long)(nf*3*sizeof(int32_t)));
+        float   *v = (float *)ARENA_ALLOC(arena, (size_t)(nv*3*sizeof(float)));
+        int32_t *f = (int32_t *)ARENA_ALLOC(arena, (size_t)(nf*3*sizeof(int32_t)));
         for (int r = 0; r < nvr; r++) for (int c = 0; c < nu; c++) {
             double u = M_PI * (double)c/(nu-1);
             size_t idx = (size_t)r*(size_t)nu + (size_t)c;
@@ -368,7 +368,7 @@ int DevCut_selftest(void)
         }
         ComponentMesh cm; wrap_mesh(&cm, v, nv, f, fi);
 
-        double *lam = (double *)ARENA_ALLOC(arena, (long)(nv*sizeof(double)));
+        double *lam = (double *)ARENA_ALLOC(arena, (size_t)(nv*sizeof(double)));
         Develop_vertex_energy(arena, v, nv, f, fi, lam);
         double lmax = 0.0; for (size_t i = 0; i < nv; i++) if (lam[i] > lmax) lmax = lam[i];
         double frac = DevCut_nondev_fraction(arena, &cm, eps, NULL);
@@ -388,7 +388,7 @@ int DevCut_selftest(void)
     {
         int ncol = 11, nrow = 15, mid = 7; double amp = 1.0;
         size_t nz = (size_t)ncol*(size_t)nrow;
-        float *z = (float *)ARENA_CALLOC(arena, (long)nz, (long)sizeof(float));
+        float *z = (float *)ARENA_CALLOC(arena, (size_t)nz, sizeof(float));
         for (int c = 0; c < ncol; c++)
             z[(size_t)mid*(size_t)ncol+(size_t)c] = (float)((c & 1) ? amp : -amp);
         float *v; int32_t *f; size_t nv, nf;

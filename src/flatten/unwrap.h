@@ -50,6 +50,37 @@ typedef struct {
      * diagnostic spiral fit; it never predicts an absolute component turn.
      * <=0 = estimate a local pitch from the largest component. */
     double wrap_spacing;
+
+    /* R1 radial-layer site splitting (2026-09-01, experimental).  1 splits
+     * fused mesh components into per-wrap register sites before the winding
+     * registration; 0 keeps whole-component sites.  Measured: on the 4x5x5
+     * weld it cuts adjacent-wrap zero-steps 20.2% -> 9.0%; on the 10x weld
+     * the 30,952 sites shatter the relation graph into 7,353 gauge islands,
+     * so it stays OFF until the island-scale (block-hierarchical) relation
+     * aggregation lands.  Default 0. */
+    int radial_site_split;
+
+    /* Winding sense pin: 0 = auto (sign of the diagnostic spiral fit, which
+     * is a coin flip: r2 0.008-0.23 on every recorded run, +1 in 7 lanes and
+     * -1 in 6 on the same scroll); +1/-1 = the scroll's physical sense from
+     * config.  A frame-independent ray vote is always computed and reported
+     * (winding_sense_vote*) so a wrong pin is caught. */
+    int    winding_sense;
+
+    /* [nv] source-cube id per vertex (concat provenance), or NULL.  Arms the
+     * register's exact OVERLAP relation family on halo-overlap piles. */
+    const int32_t *vertex_cube;
+    /* Projective parent overlap.  Finite boundary_winding samples are absolute
+     * registered turns copied from an immutable canonical parent; NaN means
+     * this vertex is outside the overlap.  boundary_material carries that
+     * parent's stable same-sheet identity (-1 outside the overlap).
+     * boundary_u/v are the parent's canonical metric coordinates at the same
+     * samples and are consumed by the winding-certificate writer.  Expanding the input may add
+     * constraints, but it cannot move a component already fixed here. */
+    const float   *boundary_winding; /* [nv], finite or NaN */
+    const float   *boundary_u;       /* [nv], finite wherever winding is */
+    const float   *boundary_v;       /* [nv], finite wherever winding is */
+    const int32_t *boundary_material;/* [nv], >=0 wherever winding is */
     /* Generalized-winding unary for disconnected-component registration.
      * 0 = auto (enabled when the mesh has >1 component), >0 = force, <0 =
      * disable.  epsilon/beta <=0 select scale-aware defaults. */
@@ -80,6 +111,13 @@ typedef struct {
     int32_t *continuation_island; /* [nv] same-sheet continuation-only graph
                              * identity.  Radial-order observations never merge
                              * these labels. NULL unless opts->keep_phi. */
+    /* frame-independent winding-sense evidence: over same-component vertex
+     * pairs on one (axial, theta) ray one wrap apart, the sign of the lifted
+     * phase difference from inner to outer.  agree = |sum| / n. */
+    int    winding_sense_vote;       /* +1 / -1 / 0 (no evidence) */
+    double winding_sense_vote_agree; /* 0..1 */
+    size_t winding_sense_vote_n;     /* ray pairs voting */
+    int    winding_sense_spiral;     /* sign of the diagnostic spiral slope */
     int32_t *mesh_component; /* [nv] source mesh connected-component identity,
                              * before any winding observations are considered.
                              * NULL unless opts->keep_phi. */
@@ -145,6 +183,11 @@ typedef struct {
     size_t  winding_mrf_conflict_winner_locks;
     size_t  winding_mrf_conflict_label_changes;
     int     winding_mrf_conflict_converged;
+    size_t  winding_boundary_vertices;
+    size_t  winding_boundary_components;
+    size_t  winding_boundary_relation_cuts;
+    size_t  winding_boundary_lineage_cuts;
+    size_t  winding_boundary_supported_relation_components;
     /* generalized-winding field diagnostics */
     int     winding_field_used;
     int     winding_field_backend;

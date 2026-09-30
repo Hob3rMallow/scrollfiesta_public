@@ -25,9 +25,8 @@
 \newlength{\rowaw}\setlength{\rowaw}{0.30\textwidth}
 \newlength{\rowbw}\setlength{\rowbw}{0.46\textwidth}
 
-%% Appendix A marks the delta against the July 31 public paper in blue.  The
-%% body of the paper describes the current system as one continuous account
-%% and does not use these.
+%% Appendix A marks the historical August delta against the July 31 paper
+%% in blue. The September release is described in its own body section.
 \newenvironment{revision}{\begingroup\color{blue}}{\endgroup}
 \newcommand{\rev}[1]{\textcolor{blue}{#1}}
 
@@ -59,6 +58,11 @@
 \title{ScrollFiesta: A Virtual Meshing and Unwrapping Toolkit for the Herculaneum Papyri}
 
 \renewcommand{\shortauthors}{ScrollFiesta}
+\hypersetup{
+  pdftitle={ScrollFiesta: A Virtual Meshing and Unwrapping Toolkit for the Herculaneum Papyri},
+  pdfsubject={September 2026 public release and August research results},
+  pdfauthor={ScrollFiesta}
+}
 
 \begin{abstract}
 Virtually unwrapping a carbonized Herculaneum papyrus poses a geometry problem of an unusual shape. The target is not the boundary of a solid but a single open sheet, many meters long, wound into a hundred or more turns that touch, fuse, delaminate, and tear. Standard machinery fits it badly: isosurfacing and Poisson reconstruction recover closed, two-sided boundaries; a flattener minimizes distortion against whatever mesh it is handed, so two fused turns flatten into one clean page; and the freedom an atlas packer relies on --- place a chart wherever space allows --- is exactly the freedom this problem lacks, because horizontal position on the page \emph{is} developed arc length, shared by every fragment of a turn and fixed only up to a whole number of turns.
@@ -67,11 +71,14 @@ We present \emph{ScrollFiesta}, a meshing and unwrapping toolkit organized aroun
 
 ScrollFiesta takes a completed surface-probability volume as its input; producing that volume is the subject of the companion \emph{Socratic Method} report, and is deliberately out of scope here. We contribute three pieces. \emph{First}, we separate local geometry from large-scale identity. Geometry is extracted per cube by an iterated moving-least-squares collapse, ball pivoting guarded by anti-parallel and accumulated-winding tests, topology repair, and CVT remeshing; identity is carried independently as sheet tracks whose pairwise integer winding relations compose through a maximum-support forest with integer subtree-shift loop closure, so geometry is never fused to make an order graph connected. \emph{Second}, winding is inferred rather than obtained by rounding one fragile measurement. A two-sided generalized winding number field supplies noisy absolute per-component observations, local continuation and radial-order measurements supply pairwise factors, and an integer-label Markov random field reconciles both by alpha--beta swap graph cuts. \emph{Third}, the accepted geometry is fitted to a ribbon of quadrilaterals whose horizontal coordinate is exact developed arc length, reconciled by Huber-IRLS sparse least squares, untangled by exact triangle-contact response, and composited against CT.
 
-On a fresh $4\times5\times5$ block the winding MRF resolves 882,219 vertices in 10.8 seconds, lowering energy from 221.37 to 200.49 at continuation/order satisfaction 0.9997/0.9982; sheet books carry over 70\% of evidenced material at every rung through $21\times21\times21$, ordering 15,457 tracks across 112 turns; and the metric fit conserves all 4.03M faces of the $4\times5\times5$ ribbon in 9.6 seconds. We also report the negative results that shaped the design, including a slab splitter that separates 0 of 246 fused runs and an overlap-minimizing tabu atlas that removes 99.5\% of UV overlaps while tearing 41 weld relations --- both instances of a geometric objective being asked to decide a question geometry cannot see.
+In the August research campaigns, on a fresh $4\times5\times5$ block the winding MRF resolves 882,219 vertices in 10.8 seconds, lowering energy from 221.37 to 200.49 at continuation/order satisfaction 0.9997/0.9982; sheet books carry over 70\% of evidenced material at every rung through $21\times21\times21$, ordering 15,457 tracks across 112 turns; and the metric fit conserves all 4.03M faces of the $4\times5\times5$ ribbon in 9.6 seconds. We also report the negative results that shaped the design, including a slab splitter that separates 0 of 246 fused runs and an overlap-minimizing tabu atlas that removes 99.5\% of UV overlaps while tearing 41 weld relations --- both instances of a geometric objective being asked to decide a question geometry cannot see.
+
+The September public release removes tuning and automation frameworks and bottom-up hierarchical runners, preserves the versioned C API, and supplies one generic configuration. Its separate $4\times5\times5$ native sheet-assembly check preserves the represented source geometry and produces a CT-textured partial sheet at 47.4\% source-area coverage, with 171 overlapping triangle pairs. We report that result as unqualified and retain the earlier research results with their original scope.
 \end{abstract}
 
 \begin{teaserfigure}
   \centering
+  \resizebox{\textwidth}{!}{%
   \begin{tikzpicture}[
       panel/.style={inner sep=0pt, outer sep=0pt, draw=black!35, line width=0.4pt},
       stage/.style={font=\sffamily\footnotesize\bfseries, align=center,
@@ -109,9 +116,10 @@ On a fresh $4\times5\times5$ block the winding MRF resolves 882,219 vertices in 
   %% ---- the wrap from the end of row 1 into the start of row 2 -----------
   \draw[fl, rounded corners=3pt]
     (P3.south) -- ++(0,-0.55\rowgap) -| (P4.north);
-  \end{tikzpicture}
-  \caption{\textbf{ScrollFiesta end to end, on one PHerc0139 $4\times5\times5$
-  block.} (1)~The input: a completed coarse surface prediction (red) over raw CT
+  \end{tikzpicture}}
+  \caption{\textbf{August research pipeline, on one PHerc0139 $4\times5\times5$
+  block.} The September public-configuration result appears separately in
+  Figure~\ref{fig:public-release-sheet}. (1)~The input: a completed coarse surface prediction (red) over raw CT
   at $z{=}4416$. Producing that volume without inventing a connection onto
   a neighbouring turn is the subject of the companion \emph{Socratic
   Method} report; ScrollFiesta takes it as given
@@ -152,6 +160,7 @@ On a fresh $4\times5\times5$ block the winding MRF resolves 882,219 vertices in 
 \input{sections/07_sheet_books}
 \input{sections/08_quad_ribbon}
 \input{sections/09_finishing}
+\input{sections/10_public_release}
 \input{sections/10_interfaces}
 \input{sections/11_results}
 \input{sections/12_conclusions}

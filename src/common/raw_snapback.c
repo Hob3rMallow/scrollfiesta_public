@@ -50,7 +50,7 @@ static size_t extract_surface_voxels(Arena_T arena,
 
     /* Pass 2: collect surface voxel centers */
     float *pts = (float *)ARENA_ALLOC(arena,
-                                       (long)count * 3 * (long)sizeof(float));
+                                       (size_t)count * 3 * sizeof(float));
     size_t wi = 0;
     for (size_t z = 0; z < D; z++) {
         for (size_t y = 0; y < H; y++) {
@@ -129,7 +129,7 @@ int RawSnap_process(Arena_T arena,
          * the mesh in-place so every emitted vert appears in some face. */
         {
             uint8_t *vuse = (uint8_t *)ARENA_ALLOC(arena,
-                (long)cm->nv * (long)sizeof(uint8_t));
+                (size_t)cm->nv * sizeof(uint8_t));
             memset(vuse, 0, cm->nv * sizeof(uint8_t));
             for (size_t f = 0; f < cm->nf; f++) {
                 vuse[cm->faces[f * 3 + 0]] = 1;
@@ -138,7 +138,7 @@ int RawSnap_process(Arena_T arena,
             }
             size_t nv_used = 0;
             int32_t *remap = (int32_t *)ARENA_ALLOC(arena,
-                (long)cm->nv * (long)sizeof(int32_t));
+                (size_t)cm->nv * sizeof(int32_t));
             for (size_t i = 0; i < cm->nv; i++) {
                 if (vuse[i]) {
                     if (nv_used != i) {
@@ -174,9 +174,9 @@ int RawSnap_process(Arena_T arena,
 
         /* One-shot NN query: build targets + weights */
         float *targets = (float *)ARENA_ALLOC(arena,
-                                               (long)cm->nv * 3 * (long)sizeof(float));
+                                               (size_t)cm->nv * 3 * sizeof(float));
         float *w = (float *)ARENA_ALLOC(arena,
-                                         (long)cm->nv * (long)sizeof(float));
+                                         (size_t)cm->nv * sizeof(float));
 
         size_t n_matched = 0;
         double sum_dist_matched = 0.0;
@@ -219,7 +219,7 @@ int RawSnap_process(Arena_T arena,
         size_t n_pinned = 0;
         if (cm->pin_mask) {
             pinned_save = (float *)ARENA_ALLOC(arena,
-                              (long)cm->nv * 3 * (long)sizeof(float));
+                              (size_t)cm->nv * 3 * sizeof(float));
             for (size_t i = 0; i < cm->nv; i++) {
                 if (cm->pin_mask[i]) {
                     pinned_save[i * 3 + 0] = cm->verts[i * 3 + 0];

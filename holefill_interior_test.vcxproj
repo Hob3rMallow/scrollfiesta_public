@@ -94,6 +94,7 @@
   <ItemGroup>
     <ClCompile Include="scripts\holefill\holefill_interior_test.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\holefill\hole_fill.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\remesh\pinhole_fill.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\arena.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\obj_io.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\except.c"><CompileAs>CompileAsC</CompileAs></ClCompile>

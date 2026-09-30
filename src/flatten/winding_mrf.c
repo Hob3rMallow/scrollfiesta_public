@@ -1,6 +1,7 @@
 #include "winding_mrf.h"
 
 #include "../common/gco_wrap.h"
+#include "../common/union_find.h"
 
 #include <float.h>
 #include <limits.h>
@@ -14,8 +15,10 @@
 typedef struct {
     int32_t a, b;
     int32_t target;
+    int kind;
     double weight;
     int32_t graph_weight;
+    int64_t graph_baseline;
 } WmFactor;
 
 typedef struct {
@@ -36,7 +39,16 @@ static int wm_factor_compare(const void *lhs, const void *rhs)
     if (a->a != b->a) return a->a < b->a ? -1 : 1;
     if (a->b != b->b) return a->b < b->b ? -1 : 1;
     if (a->target != b->target) return a->target < b->target ? -1 : 1;
+    if (a->kind != b->kind) return a->kind < b->kind ? -1 : 1;
     return 0;
+}
+
+static int64_t wm_violation(const WmFactor *factor, int64_t difference)
+{
+    int64_t residual=difference-factor->target;
+    if (factor->kind==WINDING_MRF_AT_LEAST) return residual<0 ? -residual : 0;
+    if (factor->kind==WINDING_MRF_AT_MOST) return residual>0 ? residual : 0;
+    return residual<0 ? -residual : residual;
 }
 
 static const WmGroup *wm_find_group(
@@ -95,8 +107,7 @@ static int32_t wm_smooth_cost(
     int64_t energy = 0;
     for (size_t i = 0; i < group->count; i++) {
         const WmFactor *factor = &context->factors[group->first + i];
-        int64_t residual = (int64_t)difference - factor->target;
-        if (residual < 0) residual = -residual;
+        int64_t residual = wm_violation(factor,difference)-factor->graph_baseline;
         energy += (int64_t)factor->graph_weight * residual;
         if (energy >= WM_COST_MAX) return WM_COST_MAX;
     }
@@ -122,7 +133,7 @@ static double wm_pair_energy(
     for (size_t i = 0; i < nfactors; i++) {
         const WmFactor *factor = &factors[i];
         int64_t difference = (int64_t)labels[factor->b] - labels[factor->a];
-        energy += factor->weight * fabs((double)difference - factor->target);
+        energy += factor->weight * (double)wm_violation(factor,difference);
     }
     return energy;
 }
@@ -171,6 +182,95 @@ static int64_t wm_quantized_energy(
     return energy;
 }
 
+typedef struct {
+    double natural, compensation, magnitude;
+    int64_t quantized;
+    size_t sites;
+    int reject;
+} WmMoveDelta;
+
+static void wm_move_add(WmMoveDelta *move,double value)
+{
+    double corrected=value-move->compensation;
+    double sum=move->natural+corrected;
+    move->compensation=(sum-move->natural)-corrected;
+    move->natural=sum;
+    move->magnitude+=fabs(value);
+}
+
+/* Changed-site components in the ORIGINAL factor graph have independent
+ * energy deltas: any edge between two changed sites puts them in the same
+ * component; all remaining endpoints are unchanged boundary conditions.
+ * Accepting one whole component cannot change another's energy. This keeps
+ * improving moves while refusing integer-cost ties which worsen weak real
+ * evidence, rather than letting four leaves drift or veto a whole scroll. */
+static void wm_accept_components(
+    Arena_T arena,const WindingMRFSite *sites,size_t nsites,
+    const WmSmoothContext *context,size_t nfactors,const WindingMRFOptions *options,
+    const double *extra_unary,int nlabels,const int32_t *initial,int32_t *labels,
+    size_t *rejected_components,size_t *rejected_sites)
+{
+    Arena_Mark mark=Arena_save(arena);
+    UnionFind graph=UF_new(arena,(int32_t)nsites);
+    WmMoveDelta *delta=ARENA_CALLOC(arena,nsites,sizeof *delta);
+    *rejected_components=0; *rejected_sites=0;
+    for (size_t i=0;i<nfactors;i++) {
+        const WmFactor *f=context->factors+i;
+        if (labels[f->a]!=initial[f->a] && labels[f->b]!=initial[f->b])
+            uf_union(&graph,f->a,f->b);
+    }
+    for (size_t i=0;i<nsites;i++) if (labels[i]!=initial[i]) {
+        WmMoveDelta *move=delta+uf_find(&graph,(int32_t)i);
+        double before=wm_unary_energy(sites+i,initial[i],options);
+        double after=wm_unary_energy(sites+i,labels[i],options);
+        if (extra_unary) {
+            before+=extra_unary[i*(size_t)nlabels+(size_t)(initial[i]-options->label_min)];
+            after+=extra_unary[i*(size_t)nlabels+(size_t)(labels[i]-options->label_min)];
+        }
+        wm_move_add(move,after-before);
+        move->quantized+=(int64_t)wm_round_cost(options->cost_scale*after)-
+                                  wm_round_cost(options->cost_scale*before);
+        move->sites++;
+        if (sites[i].fixed) move->reject=1;
+    }
+    for (size_t i=0;i<nfactors;i++) {
+        const WmFactor *f=context->factors+i;
+        int32_t changed=labels[f->a]!=initial[f->a] ? f->a :
+                        labels[f->b]!=initial[f->b] ? f->b : -1;
+        if (changed<0) continue;
+        int64_t before=(int64_t)initial[f->b]-initial[f->a];
+        int64_t after=(int64_t)labels[f->b]-labels[f->a];
+        /* Subtract integer violations BEFORE multiplying by the real weight;
+         * a far target's unavoidable constant cannot erase a small delta. */
+        wm_move_add(delta+uf_find(&graph,changed),
+                    f->weight*(double)(wm_violation(f,after)-wm_violation(f,before)));
+    }
+    for (size_t i=0;i<context->ngroups;i++) {
+        const WmGroup *g=context->groups+i;
+        int32_t changed=labels[g->a]!=initial[g->a] ? g->a :
+                        labels[g->b]!=initial[g->b] ? g->b : -1;
+        if (changed<0) continue;
+        int32_t before=wm_smooth_cost(g->a,g->b,initial[g->a]-options->label_min,
+                                      initial[g->b]-options->label_min,(void *)context);
+        int32_t after=wm_smooth_cost(g->a,g->b,labels[g->a]-options->label_min,
+                                     labels[g->b]-options->label_min,(void *)context);
+        delta[uf_find(&graph,changed)].quantized+=(int64_t)after-before;
+    }
+    for (size_t i=0;i<nsites;i++) if (delta[i].sites) {
+        WmMoveDelta *move=delta+i;
+        if (!isfinite(move->natural) || !isfinite(move->magnitude) ||
+            !(move->natural < -64*DBL_EPSILON*move->magnitude) || move->quantized>0)
+            move->reject=1;
+        if (move->reject) {
+            (*rejected_components)++; *rejected_sites+=move->sites;
+        }
+    }
+    for (size_t i=0;i<nsites;i++)
+        if (labels[i]!=initial[i] && delta[uf_find(&graph,(int32_t)i)].reject)
+            labels[i]=initial[i];
+    Arena_restore(arena,mark);
+}
+
 static double wm_site_conditional_energy(
     size_t site_index, int32_t candidate,
     const WindingMRFSite *sites,
@@ -191,14 +291,51 @@ static double wm_site_conditional_energy(
         if ((size_t)factor->a == site_index) {
             int64_t difference = (int64_t)labels[factor->b] - candidate;
             energy += factor->weight *
-                      fabs((double)difference - factor->target);
+                      (double)wm_violation(factor,difference);
         } else if ((size_t)factor->b == site_index) {
             int64_t difference = (int64_t)candidate - labels[factor->a];
             energy += factor->weight *
-                      fabs((double)difference - factor->target);
+                      (double)wm_violation(factor,difference);
         }
     }
     return energy;
+}
+
+/* The graph cut cannot locate a site whose every pairwise weight rounds to
+ * zero. Solve that site's finite conditional objective with the ORIGINAL
+ * weights instead. Neighbor labels are held at the current proposal, and
+ * candidates may not increase the already quantized unary. Thus this exact
+ * scalar solve cannot raise the graph-cut objective or inflate weak evidence.
+ * A sweep is not a global optimum for mutually coupled invisible sites. */
+static size_t wm_refine_invisible_sites(
+    const WindingMRFSite *sites,size_t nsites,const WmFactor *factors,
+    const size_t *incident_offset,const int32_t *incident_factor,
+    const WindingMRFOptions *options,const double *extra_unary,int nlabels,
+    const int32_t *data,const int32_t *initial,int32_t *labels)
+{
+    size_t refined=0;
+    for (size_t i=0;i<nsites;i++) {
+        int visible=sites[i].fixed;
+        for (size_t p=incident_offset[i];!visible && p<incident_offset[i+1];p++)
+            visible=factors[incident_factor[p]].graph_weight!=0;
+        if (visible) continue;
+        int32_t original=labels[i];
+        int32_t budget=data[i*(size_t)nlabels+(size_t)(original-options->label_min)];
+        int32_t best=data[i*(size_t)nlabels+(size_t)(initial[i]-options->label_min)]<=budget
+                     ? initial[i] : original;
+        double energy=wm_site_conditional_energy(i,best,sites,factors,incident_offset,
+                                                 incident_factor,options,labels,extra_unary,nlabels);
+        for (int k=0;k<nlabels;k++) {
+            int32_t candidate=options->label_min+k;
+            if (data[i*(size_t)nlabels+(size_t)k]>budget) continue;
+            double value=wm_site_conditional_energy(i,candidate,sites,factors,incident_offset,
+                                                    incident_factor,options,labels,extra_unary,nlabels);
+            if (value<energy) { energy=value; best=candidate; }
+        }
+        labels[i]=best;
+        refined+=best!=original;
+    }
+    return refined;
 }
 
 void WindingMRF_default_options(WindingMRFOptions *options)
@@ -213,15 +350,18 @@ void WindingMRF_default_options(WindingMRFOptions *options)
     options->abstain_threshold = 0.35;
 }
 
-int WindingMRF_solve_with_penalties(
+static int wm_solve(
     Arena_T arena,
     const WindingMRFSite *sites, size_t nsites,
     const WindingMRFEdge *edges, size_t nedges,
+    const int *kinds,
     const WindingMRFUnaryPenalty *penalties, size_t npenalties,
     const WindingMRFOptions *options_arg,
     int32_t **out_labels, float **out_confidence,
     WindingMRFStats *stats)
 {
+    if (out_labels!=NULL) *out_labels=NULL;
+    if (out_confidence!=NULL) *out_confidence=NULL;
     WindingMRFOptions defaults;
     WindingMRF_default_options(&defaults);
     const WindingMRFOptions *options = options_arg != NULL
@@ -257,6 +397,8 @@ int WindingMRF_solve_with_penalties(
         const WindingMRFEdge *edge = &edges[i];
         if (edge->a < 0 || edge->b < 0 || edge->a == edge->b ||
             (size_t)edge->a >= nsites || (size_t)edge->b >= nsites ||
+            edge->target==INT32_MIN ||
+            (kinds && (kinds[i]<WINDING_MRF_EQUAL || kinds[i]>WINDING_MRF_AT_MOST)) ||
             edge->weight < 0.0 || !isfinite(edge->weight))
             return -1;
     }
@@ -283,6 +425,7 @@ int WindingMRF_solve_with_penalties(
         const WindingMRFEdge *edge = &edges[i];
         if (!(edge->weight > 0.0)) continue;
         WmFactor factor;
+        factor.kind=kinds ? kinds[i] : WINDING_MRF_EQUAL;
         if (edge->a < edge->b) {
             factor.a = edge->a;
             factor.b = edge->b;
@@ -291,11 +434,24 @@ int WindingMRF_solve_with_penalties(
             factor.a = edge->b;
             factor.b = edge->a;
             factor.target = -edge->target;
+            if (factor.kind==WINDING_MRF_AT_LEAST) factor.kind=WINDING_MRF_AT_MOST;
+            else if (factor.kind==WINDING_MRF_AT_MOST) factor.kind=WINDING_MRF_AT_LEAST;
         }
         factor.weight = edge->weight;
         factor.graph_weight = wm_round_cost(
             options->cost_scale * edge->weight);
-        if (factor.graph_weight < 1) factor.graph_weight = 1;
+        /* Remove only the unavoidable constant within this label window.
+         * A distant, weak outlier otherwise overflows GCO even though its
+         * preference between allowed labels is small. Natural energy and
+         * residual diagnostics retain the complete, unshifted observation. */
+        int64_t width=label_count64-1, best=factor.target;
+        if (best < -width) best=-width;
+        if (best > width) best=width;
+        factor.graph_baseline=wm_violation(&factor,best);
+        /* Do not promote arbitrarily weak evidence to one graph-cost unit:
+         * one source face split over many factors would regain unbounded
+         * influence through that minimum. Zero-quantized terms remain in
+         * natural-energy/confidence accounting, but do not force a cut. */
         factors[nfactors++] = factor;
     }
     if (nfactors > 1)
@@ -408,13 +564,24 @@ int WindingMRF_solve_with_penalties(
     GCO_get_labels(graph, gco_labels, (int)nsites);
     GCO_destroy(graph);
 
-    size_t changed = 0;
+    size_t changed = 0, proposed = 0, rejected_components = 0, rejected_sites = 0;
+    int32_t *initial = ARENA_ALLOC(arena, nsites * sizeof *initial);
+    memcpy(initial, labels, nsites * sizeof *initial);
+    for (size_t i = 0; i < nsites; i++) {
+        labels[i] = options->label_min + gco_labels[i];
+        proposed += labels[i] != initial[i];
+    }
+    size_t natural_refined = wm_refine_invisible_sites(
+        sites, nsites, factors, incident_offset, incident_factor, options,
+        extra_unary, nlabels, data, initial, labels);
+    wm_accept_components(arena, sites, nsites, &context, nfactors, options,
+                          extra_unary, nlabels, initial, labels,
+                          &rejected_components, &rejected_sites);
     int32_t solution_min = options->label_max;
     int32_t solution_max = options->label_min;
     for (size_t i = 0; i < nsites; i++) {
-        int32_t solved = options->label_min + gco_labels[i];
-        if (solved != labels[i]) changed++;
-        labels[i] = solved;
+        int32_t solved = labels[i];
+        if (solved != initial[i]) changed++;
         if (solved < solution_min) solution_min = solved;
         if (solved > solution_max) solution_max = solved;
     }
@@ -480,9 +647,34 @@ int WindingMRF_solve_with_penalties(
         stats->energy_after = energy_after;
         stats->mean_confidence = confidence_sum / nsites;
         stats->min_confidence = confidence_min;
+        stats->proposed_changes = proposed;
+        stats->rejected_move_components = rejected_components;
+        stats->rejected_move_sites = rejected_sites;
+        stats->natural_refined_sites = natural_refined;
     }
     Arena_restore(arena, scratch);
     return 0;
+}
+
+int WindingMRF_solve_with_penalties(
+    Arena_T arena, const WindingMRFSite *sites, size_t nsites,
+    const WindingMRFEdge *edges, size_t nedges,
+    const WindingMRFUnaryPenalty *penalties, size_t npenalties,
+    const WindingMRFOptions *options,
+    int32_t **out_labels, float **out_confidence, WindingMRFStats *stats)
+{
+    return wm_solve(arena,sites,nsites,edges,nedges,NULL,penalties,npenalties,
+                    options,out_labels,out_confidence,stats);
+}
+
+int WindingMRF_solve_evidence(
+    Arena_T arena, const WindingMRFSite *sites, size_t nsites,
+    const WindingMRFEdge *edges, const int *kinds, size_t nedges,
+    const WindingMRFOptions *options,
+    int32_t **out_labels, float **out_confidence, WindingMRFStats *stats)
+{
+    return wm_solve(arena,sites,nsites,edges,nedges,kinds,NULL,0,
+                    options,out_labels,out_confidence,stats);
 }
 
 int WindingMRF_solve(
@@ -677,6 +869,99 @@ int WindingMRF_selftest(void)
             "shifted-order-flat", 1, 0.02, separated, &fails);
         wm_artifact_c_case(
             "shifted-order-prior32", 1, 32.02, separated, &fails);
+    }
+    {
+        Arena_T scratch=Arena_new();
+        WindingMRFSite order_sites[2]={{0}};
+        WindingMRFEdge edge={0,1,1,100};
+        WindingMRFOptions order_options;
+        WindingMRFStats order_stats={0};
+        int kind=WINDING_MRF_AT_LEAST;
+        int32_t *order_labels=NULL;
+        WindingMRF_default_options(&order_options);
+        order_options.label_min=-4; order_options.label_max=4;
+        order_sites[0].fixed=1;
+        order_sites[1].center=3; order_sites[1].sigma=1; order_sites[1].weight=1;
+        wm_selftest_check(WindingMRF_solve_evidence(scratch,order_sites,2,&edge,&kind,1,
+            &order_options,&order_labels,NULL,&order_stats)==0 && order_labels && order_labels[1]==3,
+            "one-sided order does not pull a valid separation to one turn",&fails);
+        edge=(WindingMRFEdge){1,0,-1,100}; kind=WINDING_MRF_AT_MOST;
+        wm_selftest_check(WindingMRF_solve_evidence(scratch,order_sites,2,&edge,&kind,1,
+            &order_options,&order_labels,NULL,&order_stats)==0 && order_labels && order_labels[1]==3,
+            "reversing endpoints reverses inequality direction",&fails);
+        kind=WINDING_MRF_EQUAL;
+        wm_selftest_check(WindingMRF_solve_evidence(scratch,order_sites,2,&edge,&kind,1,
+            &order_options,&order_labels,NULL,&order_stats)==0 && order_labels && order_labels[1]==1,
+            "equality remains a distinct legacy objective",&fails);
+        edge=(WindingMRFEdge){0,1,2,100}; kind=WINDING_MRF_AT_LEAST;
+        order_sites[1].center=-2;
+        wm_selftest_check(WindingMRF_solve_evidence(scratch,order_sites,2,&edge,&kind,1,
+            &order_options,&order_labels,NULL,&order_stats)==0 && order_labels && order_labels[1]==2,
+            "violated order incurs the expected hinge penalty",&fails);
+        kind=99;
+        wm_selftest_check(WindingMRF_solve_evidence(scratch,order_sites,2,&edge,&kind,1,
+            &order_options,&order_labels,NULL,&order_stats)!=0 && order_labels==NULL,
+            "unknown factor family fails closed",&fails);
+        Arena_dispose(&scratch);
+    }
+    {
+        /* PHerc0139 21^3 round-7 witness: four degree-one charts, each
+         * connected by one real factor below half a graph-cost quantum.
+         * GCO moved all four by -4 every round, accumulating -24 before a
+         * natural-energy refusal. An unrelated improving component must
+         * survive rejection of those harmful zero-quantized tie moves. */
+        const double weights[4]={.0017088167924956337,.0011167488587801287,
+                                  .0019162146074757124,.0009111515882936122};
+        for (int strong=0;strong<2;strong++) for (int drift=0;drift<2;drift++) {
+            Arena_T scratch=Arena_new();
+            WindingMRFSite leaf_sites[10]={{0}};
+            WindingMRFEdge leaf_edges[5]={{0}};
+            WindingMRFOptions leaf_options;
+            WindingMRFStats leaf_stats={0};
+            int32_t *leaf_labels=NULL;
+            WindingMRF_default_options(&leaf_options);
+            leaf_options.label_min=-4; leaf_options.label_max=4;
+            for (int i=0;i<4;i++) {
+                leaf_sites[2*i].fixed=1;
+                leaf_edges[i]=(WindingMRFEdge){2*i,2*i+1,drift ? 24 : 0,weights[i]};
+            }
+            leaf_sites[8].fixed=1;
+            leaf_edges[4]=(WindingMRFEdge){8,9,1,2};
+            int rc=WindingMRF_solve_evidence(scratch,leaf_sites,strong ? 10 : 8,
+                    leaf_edges,NULL,strong ? 5 : 4,&leaf_options,&leaf_labels,NULL,&leaf_stats);
+            int stable=rc==0 && leaf_labels!=NULL;
+            for (int i=0;stable && i<8;i++)
+                if (leaf_labels[i]!=(drift && i%2 ? 4 : 0)) stable=0;
+            if (strong && stable && (leaf_labels[8]!=0 || leaf_labels[9]!=1)) stable=0;
+            fprintf(stderr,"[winding MRF selftest] quantized leaf drift=%d strong=%d: natural %.17g -> %.17g, %s\n",
+                    drift,strong,leaf_stats.energy_before,leaf_stats.energy_after,stable ? "stable" : "FAIL");
+            wm_selftest_check(stable,"original-weight conditional solves prevent or reverse invisible leaf drift without vetoing a strong improvement",&fails);
+            Arena_dispose(&scratch);
+        }
+    }
+    {
+        /* v28's independent full-scroll residual audit found that accepting
+         * changed components alone still lets a weak leaf ride along with a
+         * temporarily moving strong neighbor. Its exact conditional must
+         * follow that neighbor in EITHER direction, not GCO's lowest tie. */
+        for (int sign=-1;sign<=1;sign+=2) {
+            Arena_T scratch=Arena_new();
+            WindingMRFSite moving_sites[3]={{0}};
+            WindingMRFEdge moving_edges[2]={{0,1,0,2},{1,2,0,.0009111515882936122}};
+            WindingMRFOptions moving_options;
+            WindingMRFStats moving_stats={0};
+            int32_t *moving_labels=NULL;
+            WindingMRF_default_options(&moving_options);
+            moving_options.label_min=-4; moving_options.label_max=4;
+            moving_sites[0].fixed=1; moving_edges[0].target=sign;
+            int rc=WindingMRF_solve_evidence(scratch,moving_sites,3,moving_edges,NULL,2,
+                    &moving_options,&moving_labels,NULL,&moving_stats);
+            wm_selftest_check(rc==0 && moving_labels && moving_labels[0]==0 &&
+                moving_labels[1]==sign && moving_labels[2]==sign &&
+                moving_stats.natural_refined_sites>0 && moving_stats.energy_after==0,
+                "invisible weak leaf follows a moving supported neighbor without accumulated drift",&fails);
+            Arena_dispose(&scratch);
+        }
     }
     fprintf(stderr, "[winding MRF selftest] %s (%d failure(s))\n",
             fails == 0 ? "PASS" : "FAIL", fails);

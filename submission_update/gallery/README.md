@@ -2,7 +2,9 @@
 
 This directory is the evidence index for Appendix B, Progress Exhibit Gallery.
 The gallery deliberately separates visual quality, geometric scale, and fit
-state.
+state. Claims of current runs in this directory refer to the August snapshot.
+The September public configuration has a separate [reference check](../release/README.md).
+The checksum ledger covers these historical exhibits, not the evolving paper source.
 
 ## Start here
 

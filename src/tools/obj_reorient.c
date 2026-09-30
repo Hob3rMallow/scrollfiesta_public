@@ -726,7 +726,7 @@ static size_t cut_edges_split(Arena_T arena, float **pverts, size_t *pnv,
     if (extra == 0) goto done;
 
     /* pass 2: grow verts, recompute fans, assign ids, repoint corners */
-    nvert = (float *)ARENA_ALLOC(arena, (long)((nv + extra) * 3 * sizeof(float)));
+    nvert = (float *)ARENA_ALLOC(arena, (size_t)((nv + extra) * 3 * sizeof(float)));
     memcpy(nvert, *pverts, nv * 3 * sizeof(float));
     next_new = nv;
     for (a = 0; a < na; a++) {

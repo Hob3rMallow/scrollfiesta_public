@@ -99,6 +99,7 @@
     <ClCompile Include="src\unroll\piece_set.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\unroll\scaffold.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\unroll\export_atlas.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\whole\shaft_warp.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\whole\axis_warp.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\unroll\scroll_raster.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\unroll\strip_metrics.c"><CompileAs>CompileAsC</CompileAs></ClCompile>

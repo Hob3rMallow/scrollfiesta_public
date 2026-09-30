@@ -1,4 +1,7 @@
 #include "intersection_cleanup.h"
+#include "../common/arena.h"
+#include "../common/pipeline_constants.h"
+#include "../common/ves_platform.h"
 
 #include <float.h>
 #include <math.h>
@@ -325,6 +328,250 @@ static void vcross(double out[3], const double a[3], const double b[3])
 static double vdot(const double a[3], const double b[3])
 {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+typedef struct {
+    FaceBox *boxes;
+    FaceBoxNode *nodes;
+    FaceBoxOrder *order;
+} ClearanceTree;
+
+static int clearance_tree(Arena_T arena, const float *verts, size_t nv,
+                            const int32_t *faces, size_t nf, ClearanceTree *tree)
+{
+    double lo[3]={DBL_MAX,DBL_MAX,DBL_MAX},hi[3]={-DBL_MAX,-DBL_MAX,-DBL_MAX};
+    size_t leaves=1,nodes=0,next=0;
+    if (!verts || !faces || !nf || nf>INT32_MAX || nf>SIZE_MAX/sizeof(FaceBox)) return -1;
+    tree->boxes=(FaceBox *)ARENA_ALLOC(arena,nf*sizeof(FaceBox));
+    for (size_t f=0;f<nf;f++) {
+        FaceBox *box=tree->boxes+f;
+        box->face=(int32_t)f; box->morton=0;
+        for (int j=0;j<3;j++) {
+            int32_t id=faces[3*f+j];
+            if (id<0 || (size_t)id>=nv) return -1;
+            for (int k=0;k<3;k++) {
+                double value=verts[3*(size_t)id+k];
+                if (!isfinite(value)) return -1;
+                if (!j) box->lo[k]=box->hi[k]=value;
+                else { box->lo[k]=fmin(box->lo[k],value); box->hi[k]=fmax(box->hi[k],value); }
+            }
+        }
+        for (int k=0;k<3;k++) {
+            double mid=.5*(box->lo[k]+box->hi[k]);
+            lo[k]=fmin(lo[k],mid); hi[k]=fmax(hi[k],mid);
+        }
+    }
+    for (size_t f=0;f<nf;f++) {
+        uint32_t q[3]={0};
+        for (int k=0;k<3;k++)
+            q[k]=facebox_quantize(.5*(tree->boxes[f].lo[k]+tree->boxes[f].hi[k]),lo[k],hi[k]);
+        tree->boxes[f].morton=facebox_part1by2(q[0]) |
+            (facebox_part1by2(q[1])<<1) | (facebox_part1by2(q[2])<<2);
+    }
+    if (facebox_morton_order(tree->boxes,nf,&tree->order)!=0) return -1;
+    while (leaves<(nf+FACEBOX_BVH_LEAF-1)/FACEBOX_BVH_LEAF) leaves*=2;
+    nodes=2*leaves-1;
+    if (nodes>INT32_MAX || nodes>SIZE_MAX/sizeof(FaceBoxNode)) return -1;
+    tree->nodes=(FaceBoxNode *)ARENA_ALLOC(arena,nodes*sizeof(FaceBoxNode));
+    return facebox_bvh_build(tree->nodes,nodes,&next,tree->boxes,tree->order,0,nf)==0 ? 0 : -1;
+}
+
+/* Any separating projection bounds Euclidean distance from below. We do not
+ * require a complete SAT or treat failure to separate as proof of intersection.
+ * Subtract a dot-product roundoff enclosure; close/degenerate cases get zero. */
+static double clearance_axis(const double a[3][3],const double b[3][3],
+                               const double axis[3])
+{
+    double length=sqrt(vdot(axis,axis)),scale=0;
+    double alo=DBL_MAX,ahi=-DBL_MAX,blo=DBL_MAX,bhi=-DBL_MAX;
+    if (!(length>DBL_MIN) || !isfinite(length)) return 0;
+    for (int i=0;i<3;i++) {
+        double pa=vdot(a[i],axis),pb=vdot(b[i],axis),sa=0,sb=0;
+        for (int k=0;k<3;k++) { sa+=fabs(a[i][k]*axis[k]); sb+=fabs(b[i][k]*axis[k]); }
+        scale=fmax(scale,fmax(sa,sb));
+        alo=fmin(alo,pa); ahi=fmax(ahi,pa); blo=fmin(blo,pb); bhi=fmax(bhi,pb);
+    }
+    return fmax(0,fmax(blo-ahi,alo-bhi)-64*DBL_EPSILON*scale)/(length*(1+16*DBL_EPSILON));
+}
+
+static double clearance_lower_bound(const float *av,const int32_t *af,
+                                      const float *bv,const int32_t *bf,double stop)
+{
+    double a[3][3]={{0}},b[3][3]={{0}},ea[3][3]={{0}},eb[3][3]={{0}};
+    double na[3]={0},nb[3]={0},lower=0;
+    for (int i=0;i<3;i++) for (int k=0;k<3;k++) {
+        a[i][k]=(double)av[3*(size_t)af[i]+k]-av[3*(size_t)af[0]+k];
+        b[i][k]=(double)bv[3*(size_t)bf[i]+k]-av[3*(size_t)af[0]+k];
+    }
+    for (int i=0;i<3;i++) { vsub(ea[i],a[(i+1)%3],a[i]); vsub(eb[i],b[(i+1)%3],b[i]); }
+    vcross(na,ea[0],ea[1]); vcross(nb,eb[0],eb[1]);
+    lower=fmax(clearance_axis(a,b,na),clearance_axis(a,b,nb));
+    if (lower>=stop) return lower;
+    for (int i=0;i<3;i++) {
+        double axis[3]={0};
+        axis[i]=1; lower=fmax(lower,clearance_axis(a,b,axis));
+        vcross(axis,na,ea[i]); lower=fmax(lower,clearance_axis(a,b,axis));
+        vcross(axis,nb,eb[i]); lower=fmax(lower,clearance_axis(a,b,axis));
+        if (lower>=stop) return lower;
+        for (int j=0;j<3;j++) {
+            vcross(axis,ea[i],eb[j]); lower=fmax(lower,clearance_axis(a,b,axis));
+            if (lower>=stop) return lower;
+        }
+    }
+    return lower;
+}
+
+typedef struct {
+    const float *verts[2];
+    const int32_t *faces[2];
+    double *budget[2];
+    double gap;
+    size_t tested;
+    const int32_t *owner; /* optional same-mesh whole-domain batch ownership */
+    int32_t *candidate_a,*candidate_b;
+    double *candidate_budget;
+    size_t pending,chunk;
+} ClearancePair;
+
+static int clearance_flush(ClearancePair *p)
+{
+    ptrdiff_t i=0;
+    /* Budgets are immutable throughout this parallel region. A snapshot's
+     * short-circuit threshold is at least the eventual serial threshold, so
+     * extra projections cannot change either folded minimum. No atomics,
+     * per-thread face arrays or reordered floating-point reductions. */
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) if(p->pending>=INTERSECTION_CLEARANCE_PARALLEL_MIN)
+#endif
+    for (i=0;i<(ptrdiff_t)p->pending;i++) {
+        int32_t a=p->candidate_a[i],b=p->candidate_b[i];
+        p->candidate_budget[i]=.25*clearance_lower_bound(
+            p->verts[0],p->faces[0]+3*(size_t)a,p->verts[1],p->faces[1]+3*(size_t)b,
+            4*fmax(p->budget[0][a],p->budget[1][b]));
+    }
+    for (size_t j=0;j<p->pending;j++) {
+        int32_t a=p->candidate_a[j],b=p->candidate_b[j];
+        /* Preserve the exact legacy traversal/count semantics: a preceding
+         * pending pair may have already made both envelopes zero. */
+        if (p->budget[0][a]==0 && p->budget[1][b]==0) continue;
+        if (p->tested==SIZE_MAX) return -1;
+        p->tested++;
+        p->budget[0][a]=fmin(p->budget[0][a],p->candidate_budget[j]);
+        p->budget[1][b]=fmin(p->budget[1][b],p->candidate_budget[j]);
+    }
+    p->pending=0; return 0;
+}
+
+static int clearance_visit(const ClearanceTree *ta,const ClearanceTree *tb,
+                             int32_t ia,int32_t ib,ClearancePair *p)
+{
+    const FaceBoxNode *a=ta->nodes+ia,*b=tb->nodes+ib;
+    int al=a->left<0,bl=b->left<0;
+    if (!facebox_bounds_overlap(a->lo,a->hi,b->lo,b->hi,p->gap)) return 0;
+    if (ta==tb && ia==ib && !al) {
+        if (clearance_visit(ta,tb,a->left,a->left,p)!=0 ||
+            clearance_visit(ta,tb,a->left,a->right,p)!=0 ||
+            clearance_visit(ta,tb,a->right,a->right,p)!=0) return -1;
+        return 0;
+    }
+    if (al && bl) {
+        for (size_t i=a->begin;i<a->end;i++) for (size_t j=ta==tb && ia==ib ? i+1 : b->begin;j<b->end;j++) {
+            const FaceBox *fa=ta->boxes+ta->order[i].index,*fb=tb->boxes+tb->order[j].index;
+            double budget=0;
+            if (p->owner && p->owner[fa->face]==p->owner[fb->face]) continue;
+            if (!facebox_bounds_overlap(fa->lo,fa->hi,fb->lo,fb->hi,p->gap)) continue;
+            if (p->budget[0][fa->face]==0 && p->budget[1][fb->face]==0) continue;
+            if (p->chunk) {
+                p->candidate_a[p->pending]=fa->face; p->candidate_b[p->pending]=fb->face;
+                p->pending++;
+                if (p->pending==p->chunk && clearance_flush(p)!=0) return -1;
+                continue;
+            }
+            if (p->tested==SIZE_MAX) return -1;
+            p->tested++;
+            /* Two quarter-distance envelopes leave half the measured lower
+             * bound as clearance; this is not a material-evidence weight. */
+            /* The old exhaustive result is the maximum of these same
+             * projections. Once one is >= four times BOTH current budgets,
+             * every remaining projection leaves both fmin results bitwise
+             * unchanged. This skips arithmetic, never a candidate pair. */
+            budget=.25*clearance_lower_bound(p->verts[0],p->faces[0]+3*(size_t)fa->face,
+                p->verts[1],p->faces[1]+3*(size_t)fb->face,
+                4*fmax(p->budget[0][fa->face],p->budget[1][fb->face]));
+            p->budget[0][fa->face]=fmin(p->budget[0][fa->face],budget);
+            p->budget[1][fb->face]=fmin(p->budget[1][fb->face],budget);
+        }
+        return 0;
+    }
+    if (al || (!bl && b->end-b->begin>a->end-a->begin)) {
+        if (clearance_visit(ta,tb,ia,b->left,p)!=0 || clearance_visit(ta,tb,ia,b->right,p)!=0) return -1;
+    } else if (clearance_visit(ta,tb,a->left,ib,p)!=0 || clearance_visit(ta,tb,a->right,ib,p)!=0) return -1;
+    return 0;
+}
+
+static int clearance_execute(Arena_T arena,const ClearanceTree *a,const ClearanceTree *b,
+                                ClearancePair *p,size_t chunk)
+{
+    p->chunk=chunk;
+    if (chunk>PTRDIFF_MAX || chunk>SIZE_MAX/sizeof(double)) return -1;
+    if (chunk) {
+        p->candidate_a=(int32_t *)ARENA_ALLOC(arena,chunk*sizeof(int32_t));
+        p->candidate_b=(int32_t *)ARENA_ALLOC(arena,chunk*sizeof(int32_t));
+        p->candidate_budget=(double *)ARENA_ALLOC(arena,chunk*sizeof(double));
+    }
+    if (clearance_visit(a,b,0,0,p)!=0) return -1;
+    return p->pending ? clearance_flush(p) : 0;
+}
+
+int IntersectionCleanup_cross_budget(
+    const float *av,size_t anv,const int32_t *af,size_t anf,
+    const float *bv,size_t bnv,const int32_t *bf,size_t bnf,
+    double maximum,double *ab,double *bb,size_t *tested)
+{
+    Arena_T arena=Arena_new();
+    ClearanceTree a={0},b={0};
+    ClearancePair p={{av,bv},{af,bf},{ab,bb},0,0,NULL};
+    double started=ves_clock_sec(),built=0;
+    int rc=-1;
+    if (!tested || !isfinite(maximum) || maximum<0 || maximum>DBL_MAX/2 ||
+        (anf && !ab) || (bnf && !bb)) goto done;
+    *tested=0;
+    p.gap=2*maximum;
+    for (size_t i=0;i<anf;i++) if (!isfinite(ab[i]) || ab[i]<0 || ab[i]>maximum) goto done;
+    for (size_t i=0;i<bnf;i++) if (!isfinite(bb[i]) || bb[i]<0 || bb[i]>maximum) goto done;
+    if (!anf || !bnf) { rc=0; goto done; }
+    if (clearance_tree(arena,av,anv,af,anf,&a)!=0 || clearance_tree(arena,bv,bnv,bf,bnf,&b)!=0) goto done;
+    built=ves_clock_sec();
+    rc=clearance_execute(arena,&a,&b,&p,INTERSECTION_CLEARANCE_CHUNK);
+    fprintf(stderr,"[clearance] cross trees %.2fs, pair tests/fold %.2fs, bounded chunk %zu pairs\n",
+        built-started,ves_clock_sec()-built,p.chunk);
+    *tested=p.tested;
+done:
+    free(a.order); free(b.order); Arena_dispose(&arena); return rc;
+}
+
+int IntersectionCleanup_partition_budget(const float *verts,size_t nv,
+    const int32_t *faces,size_t nf,const int32_t *owner,double maximum,
+    double *budget,size_t *tested)
+{
+    Arena_T arena=Arena_new();
+    ClearanceTree tree={0};
+    ClearancePair p={{verts,verts},{faces,faces},{budget,budget},0,0,owner};
+    double started=ves_clock_sec(),built=0;
+    int rc=-1;
+    if (!tested || !isfinite(maximum) || maximum<0 || maximum>DBL_MAX/2 ||
+        (nf && (!owner || !budget))) goto done;
+    *tested=0; p.gap=2*maximum;
+    for (size_t f=0;f<nf;f++)
+        if (owner[f]<0 || !isfinite(budget[f]) || budget[f]<0 || budget[f]>maximum) goto done;
+    if (nf<2) { rc=0; goto done; }
+    if (clearance_tree(arena,verts,nv,faces,nf,&tree)!=0) goto done;
+    built=ves_clock_sec();
+    rc=clearance_execute(arena,&tree,&tree,&p,INTERSECTION_CLEARANCE_CHUNK); *tested=p.tested;
+    fprintf(stderr,"[clearance] partition tree %.2fs, pair tests/fold %.2fs, bounded chunk %zu pairs\n",
+        built-started,ves_clock_sec()-built,p.chunk);
+done:
+    free(tree.order); Arena_dispose(&arena); return rc;
 }
 
 static int tri_unit_normal(const double p0[3], const double p1[3],
@@ -1504,6 +1751,130 @@ int IntersectionCleanup_selftest(void)
     IntersectionCleanup_default_params(&params);
     params.max_delete_fraction = 0.5;
     params.max_delete_fraction_hard = 0.5;
+
+    {
+        float av[9]={0,0,0,2,0,0,0,2,0};
+        float bv[9]={0,0,.125f,2,0,.125f,0,2,.125f};
+        int32_t face[3]={0,1,2};
+        double ab=4,bb=4;
+        size_t tested=0;
+        selftest_check(IntersectionCleanup_cross_budget(av,3,face,1,bv,3,face,1,4,&ab,&bb,&tested)==0 &&
+                       tested==1 && ab>0 && ab<=.03125 && fabs(ab-.03125)<1e-12 && ab==bb,
+                       "cross-surface approximation budgets leave positive clearance",&fails);
+        for (int i=0;i<9;i++) { av[i]+=1000000; bv[i]+=1000000; }
+        ab=bb=4;
+        selftest_check(IntersectionCleanup_cross_budget(av,3,face,1,bv,3,face,1,4,&ab,&bb,&tested)==0 &&
+                       ab>0 && ab<=.03125 && fabs(ab-.03125)<1e-12,
+                       "clearance budget remains conservative at large world coordinates",&fails);
+        bv[8]=999999.875f; ab=bb=4;
+        selftest_check(IntersectionCleanup_cross_budget(av,3,face,1,bv,3,face,1,4,&ab,&bb,&tested)==0 &&
+                       ab==0 && bb==0,
+                       "original interpenetration requests exact detail, not deletion",&fails);
+        ab=bb=4;
+        selftest_check(IntersectionCleanup_cross_budget(av,3,face,1,av,3,face,1,4,&ab,&bb,&tested)==0 &&
+                       ab==0 && bb==0,
+                       "coincident separately indexed surfaces remain explicit contacts",&fails);
+    }
+
+    {
+        enum { N=64 };
+        float verts[9*N]={0};
+        int32_t faces[3*N]={0},owner[N]={0};
+        double actual[N]={0},expected[N]={0};
+        size_t tested=0;
+        int ok=1;
+        for (int f=0;f<N;f++) {
+            float x=(float)((f/2)%8)*4,y=(float)((f/2)/8)*4,z=(float)(f%2)*.125f;
+            float tri[9]={x,y,z,x+2,y,z,x,y+2,z};
+            memcpy(verts+9*f,tri,sizeof tri);
+            for (int k=0;k<3;k++) faces[3*f+k]=3*f+k;
+            owner[f]=f%2; actual[f]=expected[f]=4;
+        }
+        for (int a=0;a<N;a++) for (int b=a+1;b<N;b++) if (owner[a]!=owner[b]) {
+            double limit=.25*clearance_lower_bound(verts,faces+3*a,verts,faces+3*b,DBL_MAX);
+            expected[a]=fmin(expected[a],limit); expected[b]=fmin(expected[b],limit);
+        }
+        ok=IntersectionCleanup_partition_budget(verts,3*N,faces,N,owner,4,actual,&tested)==0 && tested>0;
+        for (int f=0;f<N;f++) ok=ok && actual[f]>0 && actual[f]<=.03125 && fabs(actual[f]-expected[f])<1e-12;
+        selftest_check(ok,"partition tree covers cross-owner pairs with conservative source budgets",&fails);
+        for (int f=0;f<N;f++) { owner[f]=0; actual[f]=4; }
+        ok=IntersectionCleanup_partition_budget(verts,3*N,faces,N,owner,4,actual,&tested)==0 && tested==0;
+        for (int f=0;f<N;f++) ok=ok && actual[f]==4;
+        selftest_check(ok,"a single coupled owner needs no partition envelope",&fails);
+        owner[0]=-1;
+        selftest_check(IntersectionCleanup_partition_budget(verts,3*N,faces,N,owner,4,actual,&tested)!=0,
+                       "negative partition ownership is rejected",&fails);
+    }
+
+    {
+        uint32_t state=UINT32_C(2847519);
+        int32_t face[3]={0,1,2};
+        size_t shortened=0;
+        int ok=1;
+        for (int sample=0;sample<2048;sample++) {
+            float a[9]={0},b[9]={0};
+            double full=0;
+            for (int k=0;k<9;k++) {
+                state=UINT32_C(1664525)*state+UINT32_C(1013904223);
+                a[k]=(float)(state%4096)/1024;
+                state=UINT32_C(1664525)*state+UINT32_C(1013904223);
+                b[k]=(float)(state%4096)/1024+(k%3==2 ? 6.0f : 0.0f);
+                if (sample%3==0) { a[k]+=1000000; b[k]+=1000000; }
+            }
+            if (sample%7==0) memcpy(b,a,sizeof a);
+            full=.25*clearance_lower_bound(a,face,b,face,DBL_MAX);
+            for (int limit=0;limit<8;limit++) {
+                double before_a=ldexp(4.,-3*limit),before_b=ldexp(3.,-2*limit);
+                double bound=.25*clearance_lower_bound(a,face,b,face,4*fmax(before_a,before_b));
+                double fast[2]={fmin(before_a,bound),fmin(before_b,bound)};
+                double slow[2]={fmin(before_a,full),fmin(before_b,full)};
+                shortened+=bound<full;
+                ok=ok && memcmp(fast,slow,sizeof fast)==0;
+            }
+        }
+        selftest_check(ok && shortened>1000,
+            "clearance projection short-circuit matches exhaustive budget bits (16384 cases)",&fails);
+    }
+
+    {
+        enum { N=96 };
+        Arena_T arena=Arena_new();
+        ClearanceTree a={0},b={0};
+        float av[9*N]={0},bv[9*N]={0};
+        int32_t faces[3*N]={0},owner[N]={0};
+        const size_t chunks[4]={1,7,256,INTERSECTION_CLEARANCE_CHUNK};
+        double initial[2*N]={0},expected[2*N]={0},actual[2*N]={0};
+        int ok=1;
+        for (int f=0;f<N;f++) {
+            float x=(float)(f%12),y=(float)((f/12)%4),z=(float)(f%9)*.125f;
+            float tri[9]={x,y,z,x+2,y,z,x,y+2,z};
+            for (int k=0;k<9;k++) {
+                av[9*f+k]=tri[k]+1000000;
+                bv[9*f+k]=av[9*f+k]+(k%3==2 && f%7 ? .125f : 0);
+            }
+            for (int k=0;k<3;k++) faces[3*f+k]=3*f+k;
+            owner[f]=f%4;
+            initial[f]=f%5 ? 4.0/(1+f%8) : 0;
+            initial[N+f]=f%3 ? 4.0/(1+f%7) : 0;
+        }
+        if (clearance_tree(arena,av,3*N,faces,N,&a)!=0 ||
+            clearance_tree(arena,bv,3*N,faces,N,&b)!=0) ok=0;
+        for (int same=0;same<2 && ok;same++) {
+            ClearancePair serial={{av,same ? av : bv},{faces,faces},
+                {expected,same ? expected : expected+N},8,0,same ? owner : NULL};
+            memcpy(expected,initial,sizeof expected);
+            ok=clearance_execute(arena,&a,same ? &a : &b,&serial,0)==0 && serial.tested>0;
+            for (size_t c=0;c<4 && ok;c++) {
+                ClearancePair batched={{av,same ? av : bv},{faces,faces},
+                    {actual,same ? actual : actual+N},8,0,same ? owner : NULL};
+                memcpy(actual,initial,sizeof actual);
+                ok=clearance_execute(arena,&a,same ? &a : &b,&batched,chunks[c])==0 &&
+                    batched.tested==serial.tested && !memcmp(actual,expected,sizeof actual);
+            }
+        }
+        selftest_check(ok,"batched cross/partition clearance matches serial budget bits AND test counts at four chunk sizes",&fails);
+        free(a.order); free(b.order); Arena_dispose(&arena);
+    }
 
     /* Directed slab distance is intentionally symmetric.  All vertices of
      * the small tilted triangle are close to the coarse z=0 plane, while the

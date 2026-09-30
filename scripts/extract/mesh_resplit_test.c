@@ -16,6 +16,12 @@
 #include <string.h>
 #include <math.h>
 
+#ifdef _WIN32
+#define SET_ENV(name, value) _putenv_s((name), (value))
+#else
+#define SET_ENV(name, value) setenv((name), (value), 1)
+#endif
+
 static int g_fails = 0;
 #define CHECK(cond, msg) do { \
     if (!(cond)) { printf("  FAIL: %s\n", (msg)); g_fails++; } \
@@ -219,6 +225,11 @@ int main(void)
         double mz0=0; for(size_t i=0;i<per_nv;i++) mz0+=LV[i*3]; mz0/=(double)per_nv;
         double zvar0=0; for(size_t i=0;i<per_nv;i++){ double d=LV[i*3]-mz0; zvar0+=d*d; } zvar0/=(double)per_nv;
 
+        /* This fixture lies on the local z=0 cube face, where production seam
+         * pinning correctly freezes every sample.  Disable that independent
+         * boundary policy so this test isolates the own-vertex re-LOP/BPA
+         * smoothing contract it is intended to exercise. */
+        SET_ENV("VES_SEAM_PIN_OFF", "1");
         int rc = MeshResplit_resurface_own(arena, &lm, NULL, 10);
         CHECK(rc==0, "resurface_own returns 0");
         CHECK(ComponentMesh_valid(&lm) && lm.comp_id==7, "valid mesh, comp_id preserved");
@@ -233,6 +244,66 @@ int main(void)
         CHECK(zvar1 < zvar0*0.7, "through-thickness lumps flattened");
         CHECK(lm.nv <= (size_t)((double)per_nv*1.3), "not inflated (own verts only, no vacuuming)");
         free(LV); free(LF);
+    }
+
+    /* Connectivity alone does not identify one physical sheet. These two
+     * close grids share a wall and therefore form one component; Euclidean
+     * re-LOP would average them into their intervening gap. Keep the original
+     * geometry until the downstream projected-overlap separator cuts it. */
+    printf("[connected stack: defer smoothing until sheet separation]\n");
+    {
+        size_t stack_nv = 2*per_nv, stack_nf = 2*per_nf + 2*(C-1);
+        float *SV = (float *)malloc((stack_nv+per_nv)*3*sizeof(float));
+        int32_t *SF = (int32_t *)malloc(stack_nf*3*sizeof(int32_t));
+        int32_t *OF = (int32_t *)malloc(per_nf*3*sizeof(int32_t));
+        size_t tmp_nv, tmp_nf;
+        build_grid(SV, SF, 0, 0, R, C, 60.0f, &tmp_nv, &tmp_nf);
+        build_grid(SV, SF, (int)per_nv, (int)per_nf, R, C, 62.5f, &tmp_nv, &tmp_nf);
+        for (size_t f=per_nf; f<2*per_nf; f++) {
+            int32_t swap=SF[3*f+1]; SF[3*f+1]=SF[3*f+2]; SF[3*f+2]=swap;
+        }
+        for (int c=0; c<C-1; c++) {
+            size_t f=2*per_nf+2*(size_t)c;
+            SF[3*f]=(int32_t)c; SF[3*f+1]=(int32_t)(per_nv+c);
+            SF[3*f+2]=(int32_t)(per_nv+c+1);
+            SF[3*(f+1)]=(int32_t)c; SF[3*(f+1)+1]=(int32_t)(per_nv+c+1);
+            SF[3*(f+1)+2]=(int32_t)(c+1);
+        }
+        build_grid(SV+3*stack_nv, OF, 0, 0, R, C, 85.0f, &tmp_nv, &tmp_nf);
+        for (size_t v=0; v<stack_nv+per_nv; v++) {
+            SV[3*v+1]+=50.0f; SV[3*v+2]+=50.0f;
+        }
+        ComponentMesh pieces[2]; memset(pieces,0,sizeof pieces);
+        pieces[0].verts=SV; pieces[0].faces=SF; pieces[0].nv=stack_nv;
+        pieces[0].nf=stack_nf; pieces[0].self=&pieces[0]; pieces[0].comp_id=10;
+        pieces[1].verts=SV+3*stack_nv; pieces[1].faces=OF;
+        pieces[1].nv=per_nv; pieces[1].nf=per_nf; pieces[1].self=&pieces[1];
+        MeshResplitCloud joined_cloud; memset(&joined_cloud,0,sizeof joined_cloud);
+        joined_cloud.orig_pts=SV; joined_cloud.lop_pts=SV; joined_cloud.n=stack_nv+per_nv;
+        float *saved_v=(float *)malloc(stack_nv*3*sizeof(float));
+        int32_t *saved_f=(int32_t *)malloc(stack_nf*3*sizeof(int32_t));
+        memcpy(saved_v,SV,stack_nv*3*sizeof(float));
+        memcpy(saved_f,SF,stack_nf*3*sizeof(int32_t));
+        ComponentMesh *result=NULL; size_t count=0; MeshResplitCloud *result_clouds=NULL;
+        int rc=MeshResplit_remesh_pieces(arena,&joined_cloud,pieces,2,NULL,NULL,
+                                       &result,&count,&result_clouds);
+        CHECK(rc==0 && count==2, "stack and separate sheet both retained");
+        CHECK(count==2 && result[0].nv==stack_nv && result[0].nf==stack_nf &&
+              memcmp(result[0].verts,saved_v,stack_nv*3*sizeof(float))==0 &&
+              memcmp(result[0].faces,saved_f,stack_nf*3*sizeof(int32_t))==0,
+              "stack source coordinates and all faces preserved exactly");
+        CHECK(count==2 && result_clouds && result_clouds[0].n==stack_nv &&
+              result_clouds[1].n==per_nv, "deferred stack keeps aligned source clouds");
+        ComponentMesh own=pieces[0]; own.self=&own;
+        rc=MeshResplit_resurface_own(arena,&own,NULL,20);
+        CHECK(rc==0 && own.nv==stack_nv && own.nf==stack_nf && own.comp_id==10 &&
+              memcmp(own.verts,saved_v,stack_nv*3*sizeof(float))==0 &&
+              memcmp(own.faces,saved_f,stack_nf*3*sizeof(int32_t))==0,
+              "own-vertex smoothing also preserves an unresolved stack");
+        CHECK(memcmp(SV,saved_v,stack_nv*3*sizeof(float))==0 &&
+              memcmp(SF,saved_f,stack_nf*3*sizeof(int32_t))==0,
+              "input stack is unchanged by both calls");
+        free(saved_v); free(saved_f); free(SV); free(SF); free(OF);
     }
 
     Arena_dispose(&arena);

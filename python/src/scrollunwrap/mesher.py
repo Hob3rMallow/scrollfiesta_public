@@ -6,7 +6,7 @@ cubes on disk. cube_mesh writes its per-cube OBJ dump; ``grid_weld`` then
 stitches those dumps into ``welded.obj``.
 
 stdin-raw contract (must match the C patch in main.c / mesh_extract.c):
-    cube_mesh --stdin-raw <p_size> <oz> <oy> <ox> --halo <h> --dump-obj <dir> [--no-qem]
+    cube_mesh --stdin-raw <p_size> <oz> <oy> <ox> --halo <h> --dump-obj <dir> [--no-simplify]
     stdin = p_size**3 bytes of uint8, C-order (z,y,x); buffer index (0,0,0) maps
     to world voxel (oz-h, oy-h, ox-h); cube owned origin is (oz,oy,ox).
 """
@@ -50,7 +50,7 @@ class MesherResult:
 
 
 def _mesh_one_cube(vol: ZarrVolume, cube: Cube, dump_dir: Path, *, cube_mesh_bin,
-                   halo: int, threshold: str | None, skip_qem: bool, size: int,
+                   halo: int, threshold: str | None, skip_simplify: bool, size: int,
                    env: dict, timeout: float,
                    adaptive_bpa: AdaptiveBpaConfig | None = None) -> CubeResult:
     p = size + 2 * halo
@@ -70,8 +70,8 @@ def _mesh_one_cube(vol: ZarrVolume, cube: Cube, dump_dir: Path, *, cube_mesh_bin
         cmd = [str(cube_mesh_bin), "--stdin-raw", str(p),
                str(cube.oz), str(cube.oy), str(cube.ox),
                "--halo", str(halo), "--dump-obj", str(one_dump)]
-        if skip_qem:
-            cmd.append("--no-qem")
+        if skip_simplify:
+            cmd.append("--no-simplify")
         run_env = dict(env)
         if rho is not None:
             run_env["BPA_RHO"] = f"{rho:.6g}"
@@ -216,7 +216,7 @@ def run_grid_weld(dump_dir, welded_obj, *, grid_weld_bin, env, timeout=1800.0):
 
 def run_mesher(vol: ZarrVolume, cubes: list[Cube], mesh_dir, *, cube_mesh_bin,
                grid_weld_bin, halo: int = 13, threshold: str | None = None,
-               skip_qem: bool = False, size: int = 128, max_concurrent: int | None = None,
+               skip_simplify: bool = False, size: int = 128, max_concurrent: int | None = None,
                threads_per_cube: int = 1, cube_timeout: float = 1200.0,
                adaptive_bpa: AdaptiveBpaConfig | None = None,
                mls_backend: str | None = None) -> MesherResult:
@@ -232,7 +232,8 @@ def run_mesher(vol: ZarrVolume, cubes: list[Cube], mesh_dir, *, cube_mesh_bin,
     results: list[CubeResult] = []
     with ThreadPoolExecutor(max_workers=max_concurrent) as ex:
         futs = [ex.submit(_mesh_one_cube, vol, c, dump_dir, cube_mesh_bin=cube_mesh_bin,
-                          halo=halo, threshold=threshold, skip_qem=skip_qem, size=size,
+                          halo=halo, threshold=threshold,
+                          skip_simplify=skip_simplify, size=size,
                           env=env, timeout=cube_timeout,
                           adaptive_bpa=adaptive_bpa) for c in cubes]
         for f in tqdm(as_completed(futs), total=len(futs), desc="mesh cubes"):

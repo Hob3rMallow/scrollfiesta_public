@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{7D1C2E54-3B9A-4F0E-9C61-5A2F8E0B4D17}</ProjectGuid>
+    <RootNamespace>vmesh_tifxyz</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType><UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset><CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir Condition="'$(OutDir)'==''">$(SolutionDir)build\Release\</OutDir>
+    <IntDir>$(SolutionDir)build\obj\vmesh_tifxyz_$(Configuration)\</IntDir>
+    <DepsRoot Condition="'$(DepsRoot)'==''">$(SolutionDir)</DepsRoot>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel><Optimization>MaxSpeed</Optimization>
+      <PreprocessorDefinitions>NDEBUG;_CRT_SECURE_NO_WARNINGS;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)src;$(DepsRoot)deps\include;$(DepsRoot)deps\src\tiff-4.7.1\libtiff;$(DepsRoot)deps\src\tiff-4.7.1\bld\libtiff;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ConformanceMode>true</ConformanceMode><LanguageStandard_C>stdc17</LanguageStandard_C>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary><MultiProcessorCompilation>true</MultiProcessorCompilation>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem><GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(DepsRoot)deps\lib\win64\Release;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>tiff.lib;zs.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="src\tools\vmesh_tifxyz.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\tifxyz_write.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\mesh_bin.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\tiff_io.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\union_find.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\arena.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\except.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\ves_platform.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

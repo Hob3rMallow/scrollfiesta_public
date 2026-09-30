@@ -59,19 +59,19 @@ int NeckProbe_scan(Arena_T arena,
     float cos_thresh = cosf(o.deg_thresh / NP_RAD2DEG);
 
     /* Persistent outputs (allocated below the scratch mark so they survive). */
-    uint8_t *face_flag = (uint8_t *)ARENA_CALLOC(arena, (long)nf, 1L);
-    float   *face_dev  = (float *)  ARENA_ALLOC(arena, (long)(nf * sizeof(float)));
+    uint8_t *face_flag = (uint8_t *)ARENA_CALLOC(arena, (size_t)nf, 1L);
+    float   *face_dev  = (float *)  ARENA_ALLOC(arena, (size_t)(nf * sizeof(float)));
 
     Arena_Mark mark = Arena_save(arena);
 
     /* Face normals. */
-    float *fn = (float *)ARENA_ALLOC(arena, (long)(nf * 3 * sizeof(float)));
+    float *fn = (float *)ARENA_ALLOC(arena, (size_t)(nf * 3 * sizeof(float)));
     for (size_t fi = 0; fi < nf; fi++)
         np_face_normal(verts, &faces[fi * 3], &fn[fi * 3]);
 
     /* Half-edges, sorted -> runs of equal (lo,hi) are the faces sharing an edge. */
     size_t hcap = nf * 3;
-    HEdge *he = (HEdge *)ARENA_ALLOC(arena, (long)(hcap * sizeof(HEdge)));
+    HEdge *he = (HEdge *)ARENA_ALLOC(arena, (size_t)(hcap * sizeof(HEdge)));
     size_t hk = 0;
     for (size_t fi = 0; fi < nf; fi++) {
         const int32_t *f = &faces[fi * 3];
@@ -88,8 +88,8 @@ int NeckProbe_scan(Arena_T arena,
 
     /* For each face, accumulate the (summed) unit normals of its edge neighbours
      * and a neighbour count. The mean-of-others per shared edge is added in O(run). */
-    float   *nbr_sum = (float *)  ARENA_CALLOC(arena, (long)(nf * 3), (long)sizeof(float));
-    int32_t *nbr_cnt = (int32_t *)ARENA_CALLOC(arena, (long)nf, (long)sizeof(int32_t));
+    float   *nbr_sum = (float *)  ARENA_CALLOC(arena, (size_t)(nf * 3), sizeof(float));
+    int32_t *nbr_cnt = (int32_t *)ARENA_CALLOC(arena, (size_t)nf, sizeof(int32_t));
 
     size_t i = 0;
     while (i < hk) {

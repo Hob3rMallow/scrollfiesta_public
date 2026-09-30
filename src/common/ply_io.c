@@ -116,11 +116,11 @@ int PlyIO_read_mesh(Arena_T arena, const char *path,
 
     /* Allocate output arrays */
     float *verts = (float *)ARENA_ALLOC(arena,
-                                         (long)(n_verts * 3 * sizeof(float)));
+                                         (size_t)(n_verts * 3 * sizeof(float)));
     float *density = NULL;
     if (has_density && out_density) {
         density = (float *)ARENA_ALLOC(arena,
-                                        (long)(n_verts * sizeof(float)));
+                                        (size_t)(n_verts * sizeof(float)));
     }
 
     /* Read vertex data */
@@ -168,7 +168,7 @@ int PlyIO_read_mesh(Arena_T arena, const char *path,
     int32_t *faces = NULL;
     if (n_faces > 0) {
         faces = (int32_t *)ARENA_ALLOC(arena,
-                                        (long)(n_faces * 3 * sizeof(int32_t)));
+                                        (size_t)(n_faces * 3 * sizeof(int32_t)));
         for (size_t i = 0; i < n_faces; i++) {
             /* Read face vertex count (1 or 4 bytes depending on PLY format) */
             int32_t count = 0;

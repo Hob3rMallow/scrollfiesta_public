@@ -347,7 +347,7 @@ int main(int argc, char **argv){
         if(!vcolors) fprintf(stderr,"  (--vcolor: %s has no per-vertex colours; using normals)\n", in);
     }
     V3 *vn=NULL;
-    if(nv>0){ vn=(V3*)ARENA_ALLOC(arena,(long)(nv*sizeof(V3)));
+    if(nv>0){ vn=(V3*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(V3)));
               if(nf>0) compute_normals(verts,nv,faces,nf,vn); }
 
     /* --views: 2x2 contact sheet -- iso / top / front / side -- so an edge-on

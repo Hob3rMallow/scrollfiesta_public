@@ -9,8 +9,10 @@ UnionFind UF_new(Arena_T arena, int32_t n)
 
     uf.n     = n;
     uf.count = n;
-    uf.parent = (int32_t *)ARENA_ALLOC(arena, (long)n * (long)sizeof(int32_t));
-    uf.rank   = (int32_t *)ARENA_CALLOC(arena, (long)n, (long)sizeof(int32_t));
+    /* size_t arithmetic: (long) is 32 bits on Windows, and n > 2^29 wrapped the
+     * byte count negative (a 579M-face contact field at PHerc0139 21^3). */
+    uf.parent = (int32_t *)ARENA_ALLOC(arena, (size_t)n * sizeof(int32_t));
+    uf.rank   = (int32_t *)ARENA_CALLOC(arena, (size_t)n, sizeof(int32_t));
 
     for (int32_t i = 0; i < n; i++) {
         uf.parent[i] = i;

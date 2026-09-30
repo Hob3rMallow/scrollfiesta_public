@@ -18,6 +18,7 @@ void AxisWarp_dispose(AxisWarp *warp)
     free(warp->z);
     free(warp->y);
     free(warp->x);
+    ShaftWarp_free(warp->physical);
     AxisWarp_init(warp);
 }
 
@@ -30,6 +31,11 @@ int AxisWarp_valid(const AxisWarp *warp)
 void AxisWarp_eval(const AxisWarp *warp, double z, double *y, double *x)
 {
     size_t lo = 0;
+    if (warp && warp->physical) {
+        if (y) *y=NAN;
+        if (x) *x=NAN;
+        return;
+    }
     if (!AxisWarp_valid(warp)) {
         if (y != NULL) *y = 0.0;
         if (x != NULL) *x = 0.0;
@@ -104,10 +110,126 @@ int AxisWarp_load_csv(AxisWarp *warp, const char *path)
     return 0;
 }
 
+int AxisWarp_create_physical(AxisWarp *warp, const double *points, size_t count,
+                            const AxisWarpPhysical *config, double reference_y, double reference_x)
+{
+    AxisWarp fresh;
+    if (!warp || !points || !config || count<3 || count>SIZE_MAX/(3*sizeof(double)) ||
+        !isfinite(reference_y) || !isfinite(reference_x) ||
+        !isfinite(config->metric_voxel_um) || config->metric_voxel_um<=0. ||
+        !isfinite(config->maximum_radius_um) || config->maximum_radius_um<0. ||
+        !isfinite(config->minimum_jacobian) || config->minimum_jacobian<=0. || config->minimum_jacobian>1. ||
+        !isfinite(config->ambiguity_um) || config->ambiguity_um<0. ||
+        (config->has_initial_normal!=0 && config->has_initial_normal!=1)) return -1;
+    for (int a=0;a<3;a++)
+        if (!isfinite(config->source_voxel_um_zyx[a]) || config->source_voxel_um_zyx[a]<=0. ||
+            !isfinite(config->source_origin_um_zyx[a]) ||
+            (config->has_initial_normal && !isfinite(config->initial_normal_zyx[a]))) return -1;
+    AxisWarp_init(&fresh);
+    if (ShaftWarp_create(&fresh.physical,points,count,
+                        config->has_initial_normal ? config->initial_normal_zyx : NULL)!=0) return -1;
+    fresh.z=(double*)malloc(count*sizeof(double));
+    fresh.y=(double*)malloc(count*sizeof(double));
+    fresh.x=(double*)malloc(count*sizeof(double));
+    if (!fresh.z || !fresh.y || !fresh.x) { AxisWarp_dispose(&fresh); return -1; }
+    for (size_t i=0;i<count;i++) { fresh.z[i]=points[3*i]; fresh.y[i]=points[3*i+1]; fresh.x[i]=points[3*i+2]; }
+    fresh.n=count; fresh.physical_config=*config;
+    fresh.reference_y=reference_y; fresh.reference_x=reference_x;
+    AxisWarp_dispose(warp); *warp=fresh; return 0;
+}
+
+static int aw_finite3(const double *p)
+{ return p && isfinite(p[0]) && isfinite(p[1]) && isfinite(p[2]); }
+
+int AxisWarp_to_metric(const AxisWarp *warp, const double in[3], double out[3], uint32_t *flags)
+{
+    double value[3];
+    if (!out || !flags || !aw_finite3(in)) return -1;
+    *flags=0;
+    if (warp && warp->physical) {
+        const AxisWarpPhysical *c=&warp->physical_config;
+        double world[3]; int status;
+        for (int a=0;a<3;a++) world[a]=in[a]*c->source_voxel_um_zyx[a]+c->source_origin_um_zyx[a];
+        status=ShaftWarp_to_metric(warp->physical,world,c->maximum_radius_um,c->minimum_jacobian,
+                                  c->ambiguity_um,value,flags);
+        if (status) return status;
+        for (int a=0;a<3;a++) value[a]/=c->metric_voxel_um;
+        value[1]+=warp->reference_y; value[2]+=warp->reference_x;
+    } else {
+        memcpy(value,in,sizeof(value));
+        if (AxisWarp_valid(warp)) {
+            double y,x; AxisWarp_eval(warp,in[0],&y,&x);
+            value[1]+=warp->reference_y-y; value[2]+=warp->reference_x-x;
+        }
+    }
+    if (!aw_finite3(value)) return -1;
+    memcpy(out,value,sizeof(value)); return 0;
+}
+
+int AxisWarp_to_world(const AxisWarp *warp, const double in[3], double out[3], uint32_t *flags)
+{
+    double value[3];
+    if (!out || !flags || !aw_finite3(in)) return -1;
+    *flags=0;
+    if (warp && warp->physical) {
+        const AxisWarpPhysical *c=&warp->physical_config;
+        double metric[3]={in[0]*c->metric_voxel_um,(in[1]-warp->reference_y)*c->metric_voxel_um,
+                         (in[2]-warp->reference_x)*c->metric_voxel_um};
+        int status=ShaftWarp_from_metric(warp->physical,metric,c->maximum_radius_um,c->minimum_jacobian,
+                                        c->ambiguity_um,value,flags);
+        if (status) return status;
+        for (int a=0;a<3;a++) value[a]=(value[a]-c->source_origin_um_zyx[a])/c->source_voxel_um_zyx[a];
+    } else {
+        memcpy(value,in,sizeof(value));
+        if (AxisWarp_valid(warp)) {
+            double y,x; AxisWarp_eval(warp,in[0],&y,&x);
+            value[1]+=y-warp->reference_y; value[2]+=x-warp->reference_x;
+        }
+    }
+    if (!aw_finite3(value)) return -1;
+    memcpy(out,value,sizeof(value)); return 0;
+}
+
+static uint64_t aw_hash(uint64_t hash,const void *data,size_t count)
+{
+    const unsigned char *bytes=(const unsigned char*)data;
+    for (size_t i=0;i<count;i++) { hash^=bytes[i]; hash*=UINT64_C(1099511628211); }
+    return hash;
+}
+uint64_t AxisWarp_fingerprint(const AxisWarp *warp)
+{
+    uint64_t hash=UINT64_C(14695981039346656037),revision=1;
+    uint64_t mode=!AxisWarp_valid(warp) ? 0 : warp->physical ? 2 : 1;
+    hash=aw_hash(hash,&revision,sizeof(revision)); hash=aw_hash(hash,&mode,sizeof(mode));
+    if (!mode) return hash;
+    uint64_t count=warp->n;
+    hash=aw_hash(hash,&count,sizeof(count));
+    hash=aw_hash(hash,&warp->reference_y,sizeof(double)); hash=aw_hash(hash,&warp->reference_x,sizeof(double));
+    hash=aw_hash(hash,warp->z,warp->n*sizeof(double)); hash=aw_hash(hash,warp->y,warp->n*sizeof(double));
+    hash=aw_hash(hash,warp->x,warp->n*sizeof(double));
+    if (warp->physical) {
+        const AxisWarpPhysical *c=&warp->physical_config;
+        hash=aw_hash(hash,c->source_voxel_um_zyx,3*sizeof(double));
+        hash=aw_hash(hash,c->source_origin_um_zyx,3*sizeof(double));
+        hash=aw_hash(hash,&c->metric_voxel_um,sizeof(double)); hash=aw_hash(hash,&c->maximum_radius_um,sizeof(double));
+        hash=aw_hash(hash,&c->minimum_jacobian,sizeof(double)); hash=aw_hash(hash,&c->ambiguity_um,sizeof(double));
+        uint64_t has_normal=c->has_initial_normal;
+        hash=aw_hash(hash,&has_normal,sizeof(has_normal));
+        if (has_normal) hash=aw_hash(hash,c->initial_normal_zyx,3*sizeof(double));
+    }
+    return hash;
+}
+
 void AxisWarp_straighten_point(const AxisWarp *warp,
                                const float in_zyx[3], float out_zyx[3])
 {
     double y, x;
+    if (warp && warp->physical) {
+        double in[3]={in_zyx[0],in_zyx[1],in_zyx[2]},out[3]; uint32_t flags;
+        if (AxisWarp_to_metric(warp,in,out,&flags)!=0) out[0]=out[1]=out[2]=NAN;
+        for (int a=0;a<3;a++) out_zyx[a]=(float)out[a];
+        return;
+    }
     if (!AxisWarp_valid(warp)) {
         if (out_zyx != in_zyx) memcpy(out_zyx, in_zyx, 3 * sizeof(float));
         return;

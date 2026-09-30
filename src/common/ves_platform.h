@@ -24,6 +24,19 @@
  * Compiler compat
  * ================================================================ */
 
+/* Thread-local storage for per-call solver state that concurrent callers
+ * must not share (the QP deadlines of convex_qp.c and active_set_qp.c).
+ * Same spelling rules as EXCEPT_THREAD_LOCAL in except.h. */
+#if defined(_MSC_VER)
+  #define VES_THREAD_LOCAL __declspec(thread)
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_THREADS__)
+  #define VES_THREAD_LOCAL _Thread_local
+#elif defined(__GNUC__)
+  #define VES_THREAD_LOCAL __thread
+#else
+  #define VES_THREAD_LOCAL
+#endif
+
 #ifdef _MSC_VER
   /* MSVC does not support C99 'restrict'; use __restrict instead */
   #ifndef restrict
@@ -192,6 +205,15 @@ static inline int ves_mkdir(const char *path)
     return _mkdir(path);
 #else
     return mkdir(path, 0755);
+#endif
+}
+
+static inline int ves_rmdir(const char *path)
+{
+#ifdef _WIN32
+    return _rmdir(path);
+#else
+    return rmdir(path);
 #endif
 }
 

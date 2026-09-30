@@ -20,6 +20,7 @@
 #include "../remesh/normal_orient.h"
 #include "../remesh/orient_mesh.h"
 #include "../remesh/patch_repair.h"
+#include "../split/overlap_sep.h"
 
 #include <string.h>
 #include <assert.h>
@@ -97,7 +98,7 @@ static size_t drop_small_fragments(Arena_T arena, size_t nv,
         uf_union(&uf, faces[i*3+1], faces[i*3+2]);
         uf_union(&uf, faces[i*3+0], faces[i*3+2]);
     }
-    int32_t *fc = (int32_t *)ARENA_CALLOC(arena, (long)nv, (long)sizeof(int32_t));
+    int32_t *fc = (int32_t *)ARENA_CALLOC(arena, (size_t)nv, sizeof(int32_t));
     for (size_t i = 0; i < nf; i++) fc[uf_find(&uf, faces[i*3])]++;
     size_t kept = 0;
     for (size_t i = 0; i < nf; i++) {
@@ -117,11 +118,11 @@ static void compact_unreferenced(Arena_T arena,
                                  int32_t *faces, size_t nf,
                                  float **new_v, size_t *new_nv)
 {
-    int32_t *remap = (int32_t *)ARENA_CALLOC(arena, (long)old_nv, (long)sizeof(int32_t));
+    int32_t *remap = (int32_t *)ARENA_CALLOC(arena, (size_t)old_nv, sizeof(int32_t));
     for (size_t i = 0; i < nf*3; i++) remap[faces[i]] = 1;
     int32_t count = 0;
     for (size_t i = 0; i < old_nv; i++) remap[i] = remap[i] ? count++ : -1;
-    float *v = (float *)ARENA_ALLOC(arena, (long)((size_t)count*3*sizeof(float)));
+    float *v = (float *)ARENA_ALLOC(arena, (size_t)((size_t)count*3*sizeof(float)));
     for (size_t i = 0; i < old_nv; i++) if (remap[i] >= 0) {
         v[remap[i]*3+0] = old_v[i*3+0];
         v[remap[i]*3+1] = old_v[i*3+1];
@@ -152,7 +153,7 @@ static int extract_submesh(Arena_T arena, const ComponentMesh *src,
     for (size_t f = 0; f < src->nf; f++)
         if (uf_find(uf, src->faces[f*3]) == root) nf++;
     if (nf == 0) return -1;
-    int32_t *faces = (int32_t *)ARENA_ALLOC(arena, (long)(nf*3*sizeof(int32_t)));
+    int32_t *faces = (int32_t *)ARENA_ALLOC(arena, (size_t)(nf*3*sizeof(int32_t)));
     size_t k = 0;
     for (size_t f = 0; f < src->nf; f++)
         if (uf_find(uf, src->faces[f*3]) == root) {
@@ -177,11 +178,11 @@ static int relop_rebpa(Arena_T arena, const float *pts, size_t n,
                        int lop_iters, const float *pin_w, ComponentMesh *out)
 {
     if (n < 3) return -1;
-    float *pv = (float *)ARENA_ALLOC(arena, (long)(n*3*sizeof(float)));
-    float *pn = (float *)ARENA_ALLOC(arena, (long)(n*3*sizeof(float)));
-    float *sn = (float *)ARENA_ALLOC(arena, (long)(n*3*sizeof(float)));
+    float *pv = (float *)ARENA_ALLOC(arena, (size_t)(n*3*sizeof(float)));
+    float *pn = (float *)ARENA_ALLOC(arena, (size_t)(n*3*sizeof(float)));
+    float *sn = (float *)ARENA_ALLOC(arena, (size_t)(n*3*sizeof(float)));
     float *sv = (lop_iters >= 2)
-        ? (float *)ARENA_ALLOC(arena, (long)(n*3*sizeof(float))) : NULL;
+        ? (float *)ARENA_ALLOC(arena, (size_t)(n*3*sizeof(float))) : NULL;
     const float *src = pts;
     float *dst = pv;
     for (int it = 0; it < lop_iters; it++) {
@@ -288,9 +289,9 @@ static int pass_pieces_through(Arena_T arena,
                                MeshResplitCloud **out_clouds)
 {
     ComponentMesh *o = (ComponentMesh *)ARENA_ALLOC(arena,
-                           (long)(n_pieces * sizeof(ComponentMesh)));
+                           (size_t)(n_pieces * sizeof(ComponentMesh)));
     MeshResplitCloud *oc = out_clouds
-        ? (MeshResplitCloud *)ARENA_ALLOC(arena, (long)(n_pieces * sizeof(MeshResplitCloud)))
+        ? (MeshResplitCloud *)ARENA_ALLOC(arena, (size_t)(n_pieces * sizeof(MeshResplitCloud)))
         : NULL;
     for (size_t p = 0; p < n_pieces; p++) {
         o[p] = pieces[p]; o[p].self = &o[p]; o[p].comp_id = (int)(p + 1);
@@ -301,13 +302,37 @@ static int pass_pieces_through(Arena_T arena,
     return 0;
 }
 
-/* Re-LOP + re-BPA a mesh from its OWN vertices (no cloud relabel, so no
- * vacuuming/fold) -- the clean re-triangulation CVT needs. See mesh_resplit.h. */
+/* A connected component may still contain close sheets joined by a wall or
+ * contact. Euclidean MLS then averages across the layers even when every input
+ * point belongs to this component. Preserve that geometry until the ordinary
+ * overlap separator has assigned the sheets; use its exact detector here too.
+ * Recompute the frame because callers need not populate the cached PCA fields. */
+static int relop_single_sheet(Arena_T arena, const ComponentMesh *mesh)
+{
+    Arena_Mark mark = Arena_save(arena);
+    ComponentMesh probe = *mesh;
+    OverlapSepPairSet pairs = {0};
+    int rc;
+    PCA_normal(probe.verts, probe.nv, probe.pca_normal, probe.centroid);
+    rc = OverlapSep_detect_pairs(arena, &probe, &pairs);
+    int safe = rc == 0 && pairs.count == 0;
+    if (!safe)
+        fprintf(stderr,
+                "    re-LOP deferred: %zu faces, %zu projected overlap pairs "
+                "(audit rc=%d); source geometry retained for sheet separation\n",
+                mesh->nf, pairs.count, rc);
+    Arena_restore(arena, mark);
+    return safe;
+}
+
+/* Re-LOP + re-BPA a single sheet from its own vertices. A still-overlapping
+ * stack remains unchanged for separation. See mesh_resplit.h. */
 int MeshResplit_resurface_own(Arena_T arena, ComponentMesh *m,
                               const float cell_origin[3], int iters)
 {
     assert(arena && m && m->self == m);
     if (m->nv < 3 || iters <= 0) return 0;
+    if (!relop_single_sheet(arena, m)) return 0;
     float cori[3] = { 0.0f, 0.0f, 0.0f };
     if (cell_origin) { cori[0] = cell_origin[0]; cori[1] = cell_origin[1]; cori[2] = cell_origin[2]; }
 
@@ -317,7 +342,7 @@ int MeshResplit_resurface_own(Arena_T arena, ComponentMesh *m,
     float *pinw = NULL;
     double band = seam_pin_band();
     if (band > 0.0) {
-        pinw = (float *)ARENA_CALLOC(arena, (long)m->nv, (long)sizeof(float));
+        pinw = (float *)ARENA_CALLOC(arena, (size_t)m->nv, sizeof(float));
         for (size_t i = 0; i < m->nv; i++)
             pinw[i] = seam_pin_weight(&m->verts[i*3], band);
     }
@@ -362,13 +387,13 @@ int MeshResplit_remesh_pieces(Arena_T arena,
      * close-wrap ~2-3 vox away) are DROPPED instead of vacuumed into the piece;
      * vacuuming them is what grew the piece ~60% and folded its re-BPA'd sheet
      * (the step7_cc_bpa fold). margin = 0 reverts to greedy nearest-vertex. */
-    KDTree_T *ptree = (KDTree_T *)ARENA_ALLOC(arena, (long)(n_pieces*sizeof(KDTree_T)));
+    KDTree_T *ptree = (KDTree_T *)ARENA_ALLOC(arena, (size_t)(n_pieces*sizeof(KDTree_T)));
     for (size_t p = 0; p < n_pieces; p++)
         ptree[p] = KDTree_new(arena, pieces[p].verts, pieces[p].nv);
 
     const float margin = MLS_RESPLIT_ASSIGN_MARGIN_VOX;
-    size_t  *bsz    = (size_t *)ARENA_CALLOC(arena, (long)n_pieces, (long)sizeof(size_t));
-    int32_t *plabel = (int32_t *)ARENA_ALLOC(arena, (long)(cloud->n*sizeof(int32_t)));
+    size_t  *bsz    = (size_t *)ARENA_CALLOC(arena, (size_t)n_pieces, sizeof(size_t));
+    int32_t *plabel = (int32_t *)ARENA_ALLOC(arena, (size_t)(cloud->n*sizeof(int32_t)));
     size_t n_drop = 0;
     for (size_t j = 0; j < cloud->n; j++) {
         float best = FLT_MAX, second = FLT_MAX;
@@ -388,13 +413,13 @@ int MeshResplit_remesh_pieces(Arena_T arena,
     }
 
     /* gather each piece's original + LOP point subsets (dropped points skipped) */
-    float **porig = (float **)ARENA_ALLOC(arena, (long)(n_pieces*sizeof(float*)));
-    float **plop  = (float **)ARENA_ALLOC(arena, (long)(n_pieces*sizeof(float*)));
-    size_t *bpos  = (size_t *)ARENA_CALLOC(arena, (long)n_pieces, (long)sizeof(size_t));
+    float **porig = (float **)ARENA_ALLOC(arena, (size_t)(n_pieces*sizeof(float*)));
+    float **plop  = (float **)ARENA_ALLOC(arena, (size_t)(n_pieces*sizeof(float*)));
+    size_t *bpos  = (size_t *)ARENA_CALLOC(arena, (size_t)n_pieces, sizeof(size_t));
     for (size_t p = 0; p < n_pieces; p++) {
         size_t m = bsz[p] ? bsz[p] : 1;
-        porig[p] = (float *)ARENA_ALLOC(arena, (long)(m*3*sizeof(float)));
-        plop[p]  = (float *)ARENA_ALLOC(arena, (long)(m*3*sizeof(float)));
+        porig[p] = (float *)ARENA_ALLOC(arena, (size_t)(m*3*sizeof(float)));
+        plop[p]  = (float *)ARENA_ALLOC(arena, (size_t)(m*3*sizeof(float)));
     }
     for (size_t j = 0; j < cloud->n; j++) {
         if (plabel[j] < 0) continue;
@@ -427,9 +452,9 @@ int MeshResplit_remesh_pieces(Arena_T arena,
     }
 
     ComponentMesh   *o  = (ComponentMesh *)ARENA_ALLOC(arena,
-                              (long)(n_pieces*sizeof(ComponentMesh)));
+                              (size_t)(n_pieces*sizeof(ComponentMesh)));
     MeshResplitCloud *oc = out_clouds
-        ? (MeshResplitCloud *)ARENA_ALLOC(arena, (long)(n_pieces*sizeof(MeshResplitCloud)))
+        ? (MeshResplitCloud *)ARENA_ALLOC(arena, (size_t)(n_pieces*sizeof(MeshResplitCloud)))
         : NULL;
     /* Only a parent that actually SPLIT (yielded >1 pieces) gets the higher
      * re-LOP pass count -- a pass-through single piece keeps the lighter extract
@@ -455,8 +480,8 @@ int MeshResplit_remesh_pieces(Arena_T arena,
                 if (in_seam_band(&pieces[p].verts[v*3], band)) ns++;
             if (ns > 0) {
                 size_t ncomb = ns + bsz[p];
-                float *comb = (float *)ARENA_ALLOC(arena, (long)(ncomb*3*sizeof(float)));
-                float *pinc = (float *)ARENA_CALLOC(arena, (long)ncomb, (long)sizeof(float));
+                float *comb = (float *)ARENA_ALLOC(arena, (size_t)(ncomb*3*sizeof(float)));
+                float *pinc = (float *)ARENA_CALLOC(arena, (size_t)ncomb, sizeof(float));
                 size_t w = 0;
                 for (size_t v = 0; v < pieces[p].nv; v++)
                     if (in_seam_band(&pieces[p].verts[v*3], band)) {
@@ -483,9 +508,10 @@ int MeshResplit_remesh_pieces(Arena_T arena,
         }
 
         ComponentMesh m;
-        if (relop_rebpa(arena, rpts, rn, cloud->cell_origin,
+        if (!relop_single_sheet(arena, &pieces[p]) ||
+            relop_rebpa(arena, rpts, rn, cloud->cell_origin,
                         dump, tag, lop_iters, rpin, &m) != 0) {
-            m = pieces[p];                 /* fall back to the piece unchanged */
+            m = pieces[p];  /* unresolved stack or failed remesh: keep source */
             float fpca[3] = {0,0,1}, fcen[3] = {0,0,0};   /* keep centroid/pca valid */
             PCA_normal(m.verts, m.nv, fpca, fcen);
             m.pca_normal[0]=fpca[0]; m.pca_normal[1]=fpca[1]; m.pca_normal[2]=fpca[2];
@@ -523,19 +549,19 @@ int MeshResplit_run(Arena_T arena,
 
     size_t cap = n_in + 8, cnt = 0;
     ComponentMesh    *acc  = (ComponentMesh *)ARENA_ALLOC(arena,
-                                 (long)(cap * sizeof(ComponentMesh)));
+                                 (size_t)(cap * sizeof(ComponentMesh)));
     MeshResplitCloud *accc = out_clouds
-        ? (MeshResplitCloud *)ARENA_ALLOC(arena, (long)(cap * sizeof(MeshResplitCloud)))
+        ? (MeshResplitCloud *)ARENA_ALLOC(arena, (size_t)(cap * sizeof(MeshResplitCloud)))
         : NULL;
     MeshResplitCloud zerocl; memset(&zerocl, 0, sizeof zerocl);
 
     #define ENSURE_CAP() do { if (cnt >= cap) { size_t nc = cap * 2;            \
         ComponentMesh *na = (ComponentMesh *)ARENA_ALLOC(arena,                 \
-            (long)(nc * sizeof(ComponentMesh)));                               \
+            (size_t)(nc * sizeof(ComponentMesh)));                               \
         memcpy(na, acc, cnt * sizeof(ComponentMesh));                          \
         for (size_t _i = 0; _i < cnt; _i++) na[_i].self = &na[_i]; acc = na;    \
         if (accc) { MeshResplitCloud *nq = (MeshResplitCloud *)ARENA_ALLOC(     \
-                arena, (long)(nc * sizeof(MeshResplitCloud)));                  \
+                arena, (size_t)(nc * sizeof(MeshResplitCloud)));                  \
             memcpy(nq, accc, cnt * sizeof(MeshResplitCloud)); accc = nq; }      \
         cap = nc; } } while (0)
     #define EMIT(MSH, CLD) do { ENSURE_CAP();                                   \
@@ -554,10 +580,10 @@ int MeshResplit_run(Arena_T arena,
             uf_union(&uf, cm->faces[f*3+1], cm->faces[f*3+2]);
             uf_union(&uf, cm->faces[f*3+0], cm->faces[f*3+2]);
         }
-        int32_t *vcount = (int32_t *)ARENA_CALLOC(arena, (long)cm->nv,
-                                                  (long)sizeof(int32_t));
+        int32_t *vcount = (int32_t *)ARENA_CALLOC(arena, (size_t)cm->nv,
+                                                  sizeof(int32_t));
         for (size_t v = 0; v < cm->nv; v++) vcount[uf_find(&uf, (int32_t)v)]++;
-        int32_t *compid = (int32_t *)ARENA_ALLOC(arena, (long)(cm->nv*sizeof(int32_t)));
+        int32_t *compid = (int32_t *)ARENA_ALLOC(arena, (size_t)(cm->nv*sizeof(int32_t)));
         for (size_t v = 0; v < cm->nv; v++) compid[v] = -1;
         int32_t n_real = 0;
         for (size_t v = 0; v < cm->nv; v++) {
@@ -572,11 +598,11 @@ int MeshResplit_run(Arena_T arena,
         }
 
         /* build connectivity sub-meshes for the real components */
-        int32_t *root_of = (int32_t *)ARENA_ALLOC(arena, (long)(n_real*sizeof(int32_t)));
+        int32_t *root_of = (int32_t *)ARENA_ALLOC(arena, (size_t)(n_real*sizeof(int32_t)));
         for (size_t v = 0; v < cm->nv; v++)
             if (compid[v] >= 0) root_of[compid[v]] = (int32_t)v;
         ComponentMesh *pieces = (ComponentMesh *)ARENA_ALLOC(arena,
-                                    (long)(n_real*sizeof(ComponentMesh)));
+                                    (size_t)(n_real*sizeof(ComponentMesh)));
         size_t np = 0;
         for (int32_t c = 0; c < n_real; c++)
             if (extract_submesh(arena, cm, &uf, root_of[c], &pieces[np]) == 0) np++;

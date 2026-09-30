@@ -32,7 +32,11 @@ struct Arena_T {
     struct Arena_chunk *current;
     struct Arena_chunk *freelist;
     int                 free_count;
+    size_t              chunk_size;   /* data bytes of an ordinary chunk */
 };
+
+/* The smallest chunk an Arena_new_sized arena uses */
+#define MIN_CHUNK_SIZE ((size_t)4096)
 
 /* Round a byte count up to ALIGNMENT. size_t throughout so >2 GB requests do
  * not truncate on LLP64 (Win64). */
@@ -45,10 +49,10 @@ static size_t roundup(size_t nbytes)
     return nbytes;
 }
 
-static struct Arena_chunk *chunk_new(size_t min_bytes)
+static struct Arena_chunk *chunk_new(size_t min_bytes, size_t chunk_size)
 {
     size_t header_size = roundup(sizeof(struct Arena_chunk));
-    size_t data_size = min_bytes > CHUNK_SIZE ? min_bytes : CHUNK_SIZE;
+    size_t data_size = min_bytes > chunk_size ? min_bytes : chunk_size;
     size_t total = header_size + data_size;
     struct Arena_chunk *c = malloc(total);
     if (c == NULL) {
@@ -70,6 +74,14 @@ Arena_T Arena_new(void)
     arena->current    = NULL;
     arena->freelist   = NULL;
     arena->free_count = 0;
+    arena->chunk_size = CHUNK_SIZE;
+    return arena;
+}
+
+Arena_T Arena_new_sized(size_t chunk_bytes)
+{
+    Arena_T arena = Arena_new();
+    arena->chunk_size = roundup(chunk_bytes > MIN_CHUNK_SIZE ? chunk_bytes : MIN_CHUNK_SIZE);
     return arena;
 }
 
@@ -150,7 +162,7 @@ void *Arena_alloc(Arena_T arena, size_t nbytes, const char *file, int line)
     }
 
     /* Allocate new chunk */
-    struct Arena_chunk *nc = chunk_new(nbytes);
+    struct Arena_chunk *nc = chunk_new(nbytes, arena->chunk_size);
     if (nc == NULL) {
         if (file) {
             fprintf(stderr, "Arena_alloc: OOM at %s:%d (%zu bytes)\n",
@@ -192,7 +204,7 @@ Arena_Mark Arena_save(Arena_T arena)
     assert(arena);
     if (arena->current == NULL) {
         /* Force a chunk so we have something to save */
-        struct Arena_chunk *nc = chunk_new(0);
+        struct Arena_chunk *nc = chunk_new(0, arena->chunk_size);
         if (nc == NULL) {
             RAISE(Arena_Failed);
         }

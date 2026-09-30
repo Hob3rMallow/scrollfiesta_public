@@ -89,12 +89,12 @@ static size_t rsc_collect(Arena_T arena,
     size_t table_size = 1;
     uint64_t *seen = NULL;
     RscCrossing *crossing = (RscCrossing *)ARENA_ALLOC(
-        arena, (long)(capacity * sizeof(RscCrossing)));
+        arena, (size_t)(capacity * sizeof(RscCrossing)));
     /* dedup via open-addressed hash of the undirected edge key */
     while (table_size < nf) table_size <<= 1;
     table_size <<= 1;
-    seen = (uint64_t *)ARENA_CALLOC(arena, (long)table_size,
-                                    (long)sizeof(uint64_t));
+    seen = (uint64_t *)ARENA_CALLOC(arena, (size_t)table_size,
+                                    sizeof(uint64_t));
     for (size_t f = 0; f < nf; f++) {
         for (int k = 0; k < 3; k++) {
             size_t va = (size_t)faces[f * 3 + (size_t)k];
@@ -122,7 +122,7 @@ static size_t rsc_collect(Arena_T arena,
                 t * ((double)uv[vb * 2] - uv[va * 2]);
             if (count == capacity) {
                 RscCrossing *grown = (RscCrossing *)ARENA_ALLOC(
-                    arena, (long)(capacity * 2 * sizeof(RscCrossing)));
+                    arena, (size_t)(capacity * 2 * sizeof(RscCrossing)));
                 memcpy(grown, crossing, count * sizeof(RscCrossing));
                 crossing = grown;
                 capacity *= 2;
@@ -172,7 +172,7 @@ static int rsc_check_plane(Arena_T arena,
     for (int b = 0; b < RSC_THETA_BINS; b++) bin_first[b + 1] += bin_first[b];
     {
         RscCrossing *sorted = (RscCrossing *)ARENA_ALLOC(
-            arena, (long)(count * sizeof(RscCrossing)));
+            arena, (size_t)(count * sizeof(RscCrossing)));
         size_t cursor[RSC_THETA_BINS];
         for (int b = 0; b < RSC_THETA_BINS; b++) cursor[b] = bin_first[b];
         for (size_t i = 0; i < count; i++)
@@ -326,10 +326,10 @@ static int rsc_selftest(void)
     int nturn = 6, nphi = 64, fails = 0;
     size_t nv = (size_t)nturn * nphi * 2;
     size_t nf = (size_t)nturn * (nphi - 1) * 2;
-    float *verts = (float *)ARENA_ALLOC(arena, (long)(nv * 3 * sizeof(float)));
-    float *uv = (float *)ARENA_ALLOC(arena, (long)(nv * 2 * sizeof(float)));
+    float *verts = (float *)ARENA_ALLOC(arena, (size_t)(nv * 3 * sizeof(float)));
+    float *uv = (float *)ARENA_ALLOC(arena, (size_t)(nv * 2 * sizeof(float)));
     int32_t *faces = (int32_t *)ARENA_ALLOC(arena,
-                                            (long)(nf * 3 * sizeof(int32_t)));
+                                            (size_t)(nf * 3 * sizeof(int32_t)));
     if (arena == NULL || verts == NULL || uv == NULL || faces == NULL)
         return -1;
     /* clean spiral must PASS */

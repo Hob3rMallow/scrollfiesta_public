@@ -34,7 +34,7 @@ static void mark_boundary(Arena_T arena, const int32_t *faces, size_t nf, size_t
 {
     Arena_Mark mark = Arena_save(arena);
     size_t ne = nf*3;
-    uint64_t *keys = (uint64_t *)ARENA_ALLOC(arena, (long)(ne*sizeof(uint64_t)));
+    uint64_t *keys = (uint64_t *)ARENA_ALLOC(arena, (size_t)(ne*sizeof(uint64_t)));
     size_t m = 0;
     for (size_t t = 0; t < nf; t++) {
         int32_t v[3] = { faces[t*3+0], faces[t*3+1], faces[t*3+2] };
@@ -192,15 +192,15 @@ int Develop_optimize(Arena_T arena, float *verts, size_t nv,
     int    max_ls    = (opts && opts->max_ls>0)       ? opts->max_ls       : 30;
 
     Arena_Mark mark = Arena_save(arena);
-    double *X     = (double *)ARENA_ALLOC(arena, (long)(nv*3*sizeof(double)));
-    double *X0    = (double *)ARENA_ALLOC(arena, (long)(nv*3*sizeof(double)));
-    double *Xtry  = (double *)ARENA_ALLOC(arena, (long)(nv*3*sizeof(double)));
+    double *X     = (double *)ARENA_ALLOC(arena, (size_t)(nv*3*sizeof(double)));
+    double *X0    = (double *)ARENA_ALLOC(arena, (size_t)(nv*3*sizeof(double)));
+    double *Xtry  = (double *)ARENA_ALLOC(arena, (size_t)(nv*3*sizeof(double)));
     for (size_t i = 0; i < nv*3; i++) { X[i] = (double)verts[i]; X0[i] = X[i]; }
 
-    char *is_b = (char *)ARENA_ALLOC(arena, (long)nv);
+    char *is_b = (char *)ARENA_ALLOC(arena, (size_t)nv);
     mark_boundary(arena, faces, nf, nv, is_b);
-    char *interior = (char *)ARENA_ALLOC(arena, (long)nv);
-    char *movable  = (char *)ARENA_ALLOC(arena, (long)nv);
+    char *interior = (char *)ARENA_ALLOC(arena, (size_t)nv);
+    char *movable  = (char *)ARENA_ALLOC(arena, (size_t)nv);
     for (size_t v = 0; v < nv; v++) {
         interior[v] = (char)!is_b[v];
         int mv = interior[v] || !pin_bd;            /* boundary movable only if not pinned */
@@ -209,9 +209,9 @@ int Develop_optimize(Arena_T arena, float *verts, size_t nv,
         movable[v] = (char)mv;
     }
 
-    double *Asym = (double *)ARENA_ALLOC(arena, (long)(nv*6*sizeof(double)));
-    double *uvec = (double *)ARENA_ALLOC(arena, (long)(nv*3*sizeof(double)));
-    double *grad = (double *)ARENA_ALLOC(arena, (long)(nv*3*sizeof(double)));
+    double *Asym = (double *)ARENA_ALLOC(arena, (size_t)(nv*6*sizeof(double)));
+    double *uvec = (double *)ARENA_ALLOC(arena, (size_t)(nv*3*sizeof(double)));
+    double *grad = (double *)ARENA_ALLOC(arena, (size_t)(nv*3*sizeof(double)));
 
     double E = assemble_energy(X, nv, faces, nf, interior, Asym, NULL, uvec);
     double e_init = E;
@@ -314,17 +314,17 @@ int Develop_vertex_energy(Arena_T arena, const float *verts, size_t nv,
     if (nv < 3 || nf < 1) return 0;                 /* trivial: all developable */
 
     Arena_Mark mark = Arena_save(arena);
-    double *X = (double *)ARENA_ALLOC(arena, (long)(nv*3*sizeof(double)));
+    double *X = (double *)ARENA_ALLOC(arena, (size_t)(nv*3*sizeof(double)));
     for (size_t i = 0; i < nv*3; i++) X[i] = (double)verts[i];
 
-    char *is_b = (char *)ARENA_ALLOC(arena, (long)nv);
+    char *is_b = (char *)ARENA_ALLOC(arena, (size_t)nv);
     mark_boundary(arena, faces, nf, nv, is_b);
-    char *interior = (char *)ARENA_ALLOC(arena, (long)nv);
+    char *interior = (char *)ARENA_ALLOC(arena, (size_t)nv);
     for (size_t v = 0; v < nv; v++) interior[v] = (char)!is_b[v];
 
     /* assemble_energy writes lam[v] only for interior verts; boundary stays 0
      * from the zero-fill above. uvec=NULL -> eigenvectors are not needed here. */
-    double *Asym = (double *)ARENA_ALLOC(arena, (long)(nv*6*sizeof(double)));
+    double *Asym = (double *)ARENA_ALLOC(arena, (size_t)(nv*6*sizeof(double)));
     (void)assemble_energy(X, nv, faces, nf, interior, Asym, lam_out, NULL);
 
     Arena_restore(arena, mark);
@@ -339,8 +339,8 @@ static void build_bump(Arena_T arena, int N, double amp,
                        float **ov, size_t *onv, int32_t **of, size_t *onf)
 {
     size_t nv=(size_t)N*N, nf=(size_t)(N-1)*(N-1)*2;
-    float   *v=(float*)ARENA_ALLOC(arena,(long)(nv*3*sizeof(float)));
-    int32_t *f=(int32_t*)ARENA_ALLOC(arena,(long)(nf*3*sizeof(int32_t)));
+    float   *v=(float*)ARENA_ALLOC(arena,(size_t)(nv*3*sizeof(float)));
+    int32_t *f=(int32_t*)ARENA_ALLOC(arena,(size_t)(nf*3*sizeof(int32_t)));
     for (int j=0;j<N;j++) for(int i=0;i<N;i++){
         double x=(double)i/(N-1), y=(double)j/(N-1);
         size_t idx=(size_t)j*N+i;
@@ -368,15 +368,15 @@ int Develop_selftest(void)
     {
         float *v; int32_t *f; size_t nv, nf;
         build_bump(arena, 9, 1.5, &v, &nv, &f, &nf);
-        double *X = (double*)ARENA_ALLOC(arena,(long)(nv*3*sizeof(double)));
+        double *X = (double*)ARENA_ALLOC(arena,(size_t)(nv*3*sizeof(double)));
         for (size_t i=0;i<nv*3;i++) X[i]=(double)v[i];
-        char *is_b=(char*)ARENA_ALLOC(arena,(long)nv);
+        char *is_b=(char*)ARENA_ALLOC(arena,(size_t)nv);
         mark_boundary(arena,f,nf,nv,is_b);
-        char *interior=(char*)ARENA_ALLOC(arena,(long)nv);
+        char *interior=(char*)ARENA_ALLOC(arena,(size_t)nv);
         for (size_t i=0;i<nv;i++) interior[i]=(char)!is_b[i];
-        double *Asym=(double*)ARENA_ALLOC(arena,(long)(nv*6*sizeof(double)));
-        double *uvec=(double*)ARENA_ALLOC(arena,(long)(nv*3*sizeof(double)));
-        double *grad=(double*)ARENA_ALLOC(arena,(long)(nv*3*sizeof(double)));
+        double *Asym=(double*)ARENA_ALLOC(arena,(size_t)(nv*6*sizeof(double)));
+        double *uvec=(double*)ARENA_ALLOC(arena,(size_t)(nv*3*sizeof(double)));
+        double *grad=(double*)ARENA_ALLOC(arena,(size_t)(nv*3*sizeof(double)));
         assemble_energy(X,nv,f,nf,interior,Asym,NULL,uvec);
         for (size_t i=0;i<nv*3;i++) grad[i]=0.0;
         accumulate_grad(X,nv,f,nf,interior,uvec,grad);
@@ -436,9 +436,9 @@ int Develop_selftest(void)
     {
         float *v; int32_t *f; size_t nv, nf;
         build_bump(arena, 7, 1.0, &v, &nv, &f, &nf);
-        uint8_t *pin=(uint8_t*)ARENA_ALLOC(arena,(long)nv);
+        uint8_t *pin=(uint8_t*)ARENA_ALLOC(arena,(size_t)nv);
         for (size_t i=0;i<nv;i++) pin[i]=1;            /* pin everything -> no-op */
-        float *v0=(float*)ARENA_ALLOC(arena,(long)(nv*3*sizeof(float)));
+        float *v0=(float*)ARENA_ALLOC(arena,(size_t)(nv*3*sizeof(float)));
         memcpy(v0,v,nv*3*sizeof(float));
         DevelopOpts o; memset(&o,0,sizeof(o)); o.max_iters=20;
         DevelopStats st;

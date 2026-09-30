@@ -10,6 +10,9 @@ build/
 # deps/taucs/.gitignore then keeps the genuine build output out.
 !deps/taucs/build/
 /build-*/
+# sheet_strip/sheet_reading/sheet_layers/vmesh_tifxyz/grid_carve keep MSBuild's
+# default $(Platform)\$(Configuration) output directory.
+/x64/
 *.obj
 *.exe
 *.pdb

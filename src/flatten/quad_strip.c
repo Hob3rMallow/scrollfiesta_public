@@ -10,6 +10,10 @@
 #include "../common/snap_cg.h"
 #include "../common/eig3.h"
 #include "../common/ves_platform.h"
+#include "../common/pipeline_constants.h"
+#ifndef QUAD_STRIP_NO_TAUCS
+#include "sparse_solve.h"
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,6 +23,17 @@
 
 #define QUAD_PI     3.1415926535897932384626433832795
 #define QUAD_TWO_PI 6.283185307179586476925286766559
+
+/* Harmonic-fill solver: 1 = TAUCS supernodal Cholesky, factored once per
+ * component and solved for every channel (the CLAUDE.md solver doctrine);
+ * 0 = the legacy Jacobi-PCG, kept for A/B and for executables that do not
+ * link TAUCS (QUAD_STRIP_NO_TAUCS forces 0). */
+#ifdef QUAD_STRIP_NO_TAUCS
+#define QUAD_STRIP_HARMONIC_SOLVER_DEFAULT 0
+#endif
+#ifndef QUAD_STRIP_HARMONIC_SOLVER_DEFAULT
+#define QUAD_STRIP_HARMONIC_SOLVER_DEFAULT 1
+#endif
 
 #ifdef _OPENMP
 #endif
@@ -37,6 +52,8 @@ void QuadStrip_defaults(QuadStripOpts *o) {
     o->axis_x = 0.0;
     o->relax_rounds = 0;
     o->relax_cg_iters = 96;
+    o->trend_per_row = 0;
+    o->harmonic_solver = QUAD_STRIP_HARMONIC_SOLVER_DEFAULT;
 }
 
 void QuadStripArap_defaults(QuadStripArapOpts *o) {
@@ -1883,12 +1900,107 @@ static double harmonic_uv_edge_weight(const float *uv,size_t a,size_t b) {
     return d>1e-12?1.0/(d*d):0.0;
 }
 
+#ifndef QUAD_STRIP_NO_TAUCS
+/* TAUCS branch of the Dirichlet harmonic fill: the reduced fill-only system
+ * (deg on the diagonal, -w on fill/fill edges, the observed rim folded into
+ * the right-hand side) is assembled ONCE as lower-triangle COO, factored once
+ * (supernodal multifrontal Cholesky) and solved for every channel in a single
+ * multi-RHS call.  Returns 0 on success. */
+static int harmonic_fill_taucs(const int32_t *off, const int32_t *tgt,
+                               float *verts, const float *uv, size_t nfill,
+                               const int32_t *g2f, const size_t *f2g,
+                               const double *deg, int first_ch, int end_ch,
+                               const char *const channel_name[3]) {
+    size_t cap = nfill * 5u + 1u, nt = 0;
+    int nch = end_ch - first_ch;
+    int *rows = NULL, *cols = NULL;
+    double *vals = NULL, *B = NULL, *X = NULL;
+    SparseFactor_T F = NULL;
+    double t0 = ves_clock_sec(), t_factor = 0.0, t_solve = 0.0;
+    int rc = -1;
+    if (nfill == 0) return 0;
+    if (nfill > (size_t)INT_MAX / 8u || cap > (size_t)INT_MAX || nch <= 0) return -1;
+    rows = (int *)malloc(cap * sizeof *rows);
+    cols = (int *)malloc(cap * sizeof *cols);
+    vals = (double *)malloc(cap * sizeof *vals);
+    B = (double *)malloc(nfill * (size_t)nch * sizeof *B);
+    X = (double *)malloc(nfill * (size_t)nch * sizeof *X);
+    if (!rows || !cols || !vals || !B || !X) goto done;
+    for (size_t k = 0; k < nfill; k++) {
+        size_t i = f2g[k];
+        rows[nt] = (int)k; cols[nt] = (int)k; vals[nt] = deg[k]; nt++;
+        for (int32_t e = off[i]; e < off[i + 1]; e++) {
+            int32_t j = tgt[e], kj = g2f[j];
+            double w = 0.0;
+            if (kj < 0 || (size_t)kj >= k) continue;   /* lower triangle, once */
+            w = harmonic_uv_edge_weight(uv, i, (size_t)j);
+            if (w <= 0.0) continue;                     /* quad diagonal */
+            if (nt >= cap) goto done;
+            rows[nt] = (int)k; cols[nt] = kj; vals[nt] = -w; nt++;
+        }
+    }
+    for (int ch = first_ch; ch < end_ch; ch++) {
+        double *b = B + (size_t)(ch - first_ch) * nfill;
+        for (size_t k = 0; k < nfill; k++) {
+            size_t i = f2g[k];
+            double sum = 0.0;
+            for (int32_t e = off[i]; e < off[i + 1]; e++) {
+                int32_t j = tgt[e];
+                if (g2f[j] < 0)
+                    sum += harmonic_uv_edge_weight(uv, i, (size_t)j) *
+                           (double)verts[(size_t)j * 3 + (size_t)ch];
+            }
+            b[k] = sum;
+        }
+    }
+    memset(X, 0, nfill * (size_t)nch * sizeof *X);
+    if (Sparse_factor_spd((int)nfill, (int)nt, rows, cols, vals, &F) != 0) {
+        fprintf(stderr, "      harmonic fill: TAUCS factorization failed "
+                        "(n=%zu nnz=%zu)\n", nfill, nt);
+        goto done;
+    }
+    t_factor = ves_clock_sec() - t0;
+    if (Sparse_factor_solve_multi(F, B, X, nch) != 0) {
+        fprintf(stderr, "      harmonic fill: TAUCS solve failed\n");
+        goto done;
+    }
+    t_solve = ves_clock_sec() - t0 - t_factor;
+    for (int ch = first_ch; ch < end_ch; ch++) {
+        const double *b = B + (size_t)(ch - first_ch) * nfill;
+        const double *x = X + (size_t)(ch - first_ch) * nfill;
+        double rn = 0.0, bn = 0.0;
+        for (size_t k = 0; k < nfill; k++) {
+            size_t i = f2g[k];
+            double ax = deg[k] * x[k];
+            for (int32_t e = off[i]; e < off[i + 1]; e++) {
+                int32_t j = tgt[e];
+                if (g2f[j] >= 0)
+                    ax -= harmonic_uv_edge_weight(uv, i, (size_t)j) * x[g2f[j]];
+            }
+            rn += (b[k] - ax) * (b[k] - ax);
+            bn += b[k] * b[k];
+            verts[i * 3 + (size_t)ch] = (float)x[k];
+        }
+        fprintf(stderr,
+                "      harmonic fill %s: TAUCS n=%zu nnz=%zu factor=%.2fs solve=%.2fs "
+                "rel_res=%.2e\n",
+                channel_name[ch], nfill, nt, t_factor, t_solve,
+                bn > 1e-30 ? sqrt(rn / bn) : sqrt(rn));
+    }
+    rc = 0;
+done:
+    if (F != NULL) Sparse_factor_free(&F);
+    free(rows); free(cols); free(vals); free(B); free(X);
+    return rc;
+}
+#endif
+
 static int harmonic_fill_channels(const int32_t *off, const int32_t *tgt,
                                   const uint8_t *filled, float *verts,
                                   const float *uv,size_t nv,
                                   int first_ch,int end_ch,
                                   const char *const channel_name[3],
-                                  int max_iter, double tol) {
+                                  int max_iter, double tol, int solver) {
     size_t nfill = 0;
     for (size_t i = 0; i < nv; i++) nfill += filled[i] ? 1u : 0u;
     if (nfill == 0) return 0;
@@ -1922,6 +2034,16 @@ static int harmonic_fill_channels(const int32_t *off, const int32_t *tgt,
             return -1;
         }
     }
+#ifndef QUAD_STRIP_NO_TAUCS
+    if (solver == 1) {
+        int trc = harmonic_fill_taucs(off, tgt, verts, uv, nfill, g2f, f2g, deg,
+                                      first_ch, end_ch, channel_name);
+        free(g2f);free(f2g);free(deg);free(x);free(r);free(z);free(pp);free(Ap);free(rhs);
+        return trc;
+    }
+#else
+    (void)solver;
+#endif
     for (int ch = first_ch; ch < end_ch; ch++) {
         double channel_started = ves_clock_sec();
         double last_progress = channel_started;
@@ -2844,7 +2966,137 @@ static void fit_cylindrical_affine(const uint8_t *domain, const float *field,
     }
 }
 
-int QuadStrip_build_topology_with_phase(Arena_T arena,
+/* Per-row trend for the cylindrical channels (1 = radius, 2 = lifted phase):
+ * trend(row, col) = row_a[ch][row] + col_c[ch] * col.  The column slope is the
+ * MEDIAN of the differences between adjacent observed cells in the same row,
+ * so a run whose fragments sit out of angular order cannot flip it the way a
+ * least-squares fit over the whole rectangle does; each row's offset comes
+ * from that row's own observations, and rows without any are interpolated
+ * between the nearest observed rows (held constant beyond the ends).  A
+ * channel with no adjacent pair falls back to the affine slope. */
+typedef struct CylRowTrend {
+    double *row_a[3];     /* [H] per channel (channel 0 unused) */
+    double  col_c[3];
+} CylRowTrend;
+
+static int fit_cylindrical_rows(Arena_T arena, const uint8_t *domain,
+                                const float *field, const double *theta,
+                                int H, int W, double axis_y, double axis_x,
+                                const double affine[3][3], CylRowTrend *t) {
+    size_t HW = (size_t)H * (size_t)W;
+    double *diff = ARENA_ALLOC(arena, (HW > 0 ? HW : 1) * sizeof *diff);
+    uint8_t *has = ARENA_CALLOC(arena, (size_t)H, 1);
+    memset(t, 0, sizeof *t);
+    for (int ch = 1; ch < 3; ch++) {
+        size_t nd = 0;
+        t->row_a[ch] = ARENA_ALLOC(arena, (size_t)H * sizeof(double));
+        for (int r = 0; r < H; r++) for (int c = 0; c + 1 < W; c++) {
+            size_t k = (size_t)r * (size_t)W + (size_t)c;
+            double qa = 0.0, qb = 0.0, dy = 0.0, dx = 0.0;
+            if (!domain[k] || !domain[k + 1]) continue;
+            if (ch == 2) { qa = theta[k]; qb = theta[k + 1]; }
+            else {
+                dy = (double)field[k*3+1] - axis_y; dx = (double)field[k*3+2] - axis_x;
+                qa = sqrt(dy*dy + dx*dx);
+                dy = (double)field[(k+1)*3+1] - axis_y; dx = (double)field[(k+1)*3+2] - axis_x;
+                qb = sqrt(dy*dy + dx*dx);
+            }
+            diff[nd++] = qb - qa;
+        }
+        if (ch == 1) {
+            /* radius is not linear in u over several turns (eccentricity and
+             * ellipticity dominate) and the spiral pitch is negligible over a
+             * fill reach: continue one-sided fills at the rim radius */
+            t->col_c[ch] = 0.0;
+        } else if (nd > 0) {
+            qsort(diff, nd, sizeof *diff, compare_double);
+            t->col_c[ch] = diff[nd / 2];
+        } else {
+            t->col_c[ch] = affine[ch][2];
+        }
+        for (int r = 0; r < H; r++) {
+            size_t n = 0;
+            for (int c = 0; c < W; c++) {
+                size_t k = (size_t)r * (size_t)W + (size_t)c;
+                double q = 0.0, dy = 0.0, dx = 0.0;
+                if (!domain[k]) continue;
+                if (ch == 2) q = theta[k];
+                else { dy = (double)field[k*3+1] - axis_y; dx = (double)field[k*3+2] - axis_x; q = sqrt(dy*dy + dx*dx); }
+                diff[n++] = q - t->col_c[ch] * (double)c;   /* scratch reuse */
+            }
+            if (n > 0) {
+                qsort(diff, n, sizeof *diff, compare_double);
+                t->row_a[ch][r] = n & 1u ? diff[n / 2] : 0.5 * (diff[n / 2 - 1] + diff[n / 2]);
+                if (ch == 1) has[r] = 1;
+            } else {
+                t->row_a[ch][r] = NAN;
+            }
+        }
+        /* rows without observations: interpolate between neighbours */
+        {
+            int prev = -1;
+            for (int r = 0; r < H; r++) {
+                if (isfinite(t->row_a[ch][r])) { prev = r; continue; }
+                {
+                    int next = r + 1;
+                    while (next < H && !isfinite(t->row_a[ch][next])) next++;
+                    if (prev >= 0 && next < H) {
+                        double w = (double)(r - prev) / (double)(next - prev);
+                        t->row_a[ch][r] = t->row_a[ch][prev] * (1.0 - w) + t->row_a[ch][next] * w;
+                    } else if (prev >= 0) {
+                        t->row_a[ch][r] = t->row_a[ch][prev];
+                    } else if (next < H) {
+                        t->row_a[ch][r] = t->row_a[ch][next];
+                    } else {
+                        t->row_a[ch][r] = affine[ch][0] + affine[ch][1] * (double)r;
+                    }
+                }
+            }
+        }
+        /* Smooth the RADIUS baseline along the rows.  Each row's value is the
+         * median of that row's own observations, so it carries the sampling
+         * noise of which columns happened to be observed there; the fills that
+         * ride on it then step between rows.  A wrap's radius is smooth in z,
+         * so a short running median removes that without moving any
+         * observation -- the harmonic residual still reproduces those exactly. */
+        if (ch == 1 && QS_ROW_TREND_SMOOTH > 1 && H > QS_ROW_TREND_SMOOTH) {
+            int hwv = QS_ROW_TREND_SMOOTH / 2;
+            double *sm = ARENA_ALLOC(arena, (size_t)H * sizeof(double));
+            if (sm != NULL) {
+                for (int r = 0; r < H; r++) {
+                    double buf[QS_ROW_TREND_SMOOTH > 1 ? QS_ROW_TREND_SMOOTH : 2];
+                    int n = 0, k = 0;
+                    for (k = -hwv; k <= hwv; k++) {
+                        int rr = r + k;
+                        if (rr < 0 || rr >= H) continue;
+                        if (!isfinite(t->row_a[ch][rr])) continue;
+                        buf[n++] = t->row_a[ch][rr];
+                    }
+                    if (n == 0) { sm[r] = t->row_a[ch][r]; continue; }
+                    qsort(buf, (size_t)n, sizeof *buf, compare_double);
+                    sm[r] = n & 1 ? buf[n / 2] : 0.5 * (buf[n / 2 - 1] + buf[n / 2]);
+                }
+                for (int r = 0; r < H; r++) t->row_a[ch][r] = sm[r];
+            }
+        }
+        fprintf(stderr,
+                "      cylindrical per-row trend %s: column slope %.5f (%s; %zu "
+                "adjacent pairs; affine gave %.5f), row offsets = medians\n",
+                ch == 1 ? "radius" : "phase", t->col_c[ch],
+                ch == 1 ? "held at 0" : "median adjacent step", nd, affine[ch][2]);
+    }
+    (void)has;
+    return 0;
+}
+
+static double cyl_trend_at(const CylRowTrend *t, const double affine[3][3],
+                           int ch, int j, int i) {
+    if (t->row_a[ch] != NULL)
+        return t->row_a[ch][j] + t->col_c[ch] * (double)i;
+    return affine[ch][0] + affine[ch][1] * (double)j + affine[ch][2] * (double)i;
+}
+
+int QuadStrip_build_topology_with_phase_ex(Arena_T arena,
                     const uint8_t *topology,
                     const uint8_t *domain, const float *field,
                     const float *lifted_phase,
@@ -2852,7 +3104,9 @@ int QuadStrip_build_topology_with_phase(Arena_T arena,
                     const QuadStripOpts *opts,
                     float **out_verts, size_t *out_nv,
                     int32_t **out_faces, size_t *out_nf,
-                    float **out_uv, uint8_t **out_filled) {
+                    float **out_uv, uint8_t **out_filled,
+                    float **out_phase) {
+    float *phase_out = NULL;
     if (domain == NULL || field == NULL || H < 1 || W < 1) return -1;
     QuadStripOpts o = *opts;
     if (o.max_row_gap < 1) return -1;
@@ -2879,6 +3133,10 @@ int QuadStrip_build_topology_with_phase(Arena_T arena,
     float   *verts  = ARENA_ALLOC(arena, nv * 3 * sizeof *verts);
     float   *uv     = ARENA_ALLOC(arena, nv * 2 * sizeof *uv);
     uint8_t *filled = ARENA_ALLOC(arena, nv);
+    if (out_phase) {
+        phase_out = ARENA_ALLOC(arena, nv * sizeof *phase_out);
+        for (size_t v = 0; v < nv; v++) phase_out[v] = NAN;
+    }
 
     /* Optional winding-aware coordinates.  Cartesian harmonic interpolation
      * draws a chord through a rolled sheet; (z,r,unwrapped theta) harmonic
@@ -2912,13 +3170,23 @@ int QuadStrip_build_topology_with_phase(Arena_T arena,
      * affine lattice trend, which is near zero and extrapolates one-sided tails. */
     double cz = 0.0, cy = 0.0, cx = 0.0;
     double cyl_affine[3][3] = {{0}};
+    CylRowTrend row_trend;
+    memset(&row_trend, 0, sizeof row_trend);
     if (theta) {
         fit_cylindrical_affine(domain, field, theta, H, W,
                                o.axis_y, o.axis_x, cyl_affine);
-        reduced_radius=fit_local_pitch_model(
-                arena,domain,field,theta,H,W,o.axis_y,o.axis_x,
-                &pitch_model,cyl_affine[1]);
-        if(reduced_radius<0)return -1;
+        if (o.trend_per_row) {
+            if (fit_cylindrical_rows(arena, domain, field, theta, H, W,
+                                     o.axis_y, o.axis_x, cyl_affine,
+                                     &row_trend) != 0)
+                return -1;
+            reduced_radius = 0;
+        } else {
+            reduced_radius=fit_local_pitch_model(
+                    arena,domain,field,theta,H,W,o.axis_y,o.axis_x,
+                    &pitch_model,cyl_affine[1]);
+            if(reduced_radius<0)return -1;
+        }
     }
     if(theta) {
         cyl_affine[0][0]=axial_z0;
@@ -2963,9 +3231,9 @@ int QuadStrip_build_topology_with_phase(Arena_T arena,
                                       +cyl_affine[1][1]*(double)j
                                       +cyl_affine[1][2]
                                        *cyl_pitch_trend(&pitch_model,(double)j,q[2])
-                                     : cyl_affine[ch][0]
-                                      +cyl_affine[ch][1]*(double)j
-                                      +cyl_affine[ch][2]*(double)i;
+                                     : (ch == 0
+                                        ? cyl_affine[0][0]+cyl_affine[0][1]*(double)j
+                                        : cyl_trend_at(&row_trend, cyl_affine, ch, j, i));
                         verts[vi*3+(size_t)ch] = (float)(q[ch] - trend);
                     }
                 } else {
@@ -3002,7 +3270,7 @@ int QuadStrip_build_topology_with_phase(Arena_T arena,
          * already-lifted phase are unknown. */
         if(harmonic_fill_channels(off,tgt,filled,verts,uv,nv,
                 theta?1:0,3,theta?cylindrical_name:cartesian_name,
-                o.pde_max_iter,o.pde_tol)!=0)return -1;
+                o.pde_max_iter,o.pde_tol,o.harmonic_solver)!=0)return -1;
 
         /* Phase B: unfold the harmonic fill developably (fitted rim fixed). */
         if (!theta && o.relax_rounds > 0)
@@ -3019,21 +3287,21 @@ int QuadStrip_build_topology_with_phase(Arena_T arena,
             size_t c = (size_t)j * (size_t)W + (size_t)i;
             if (!solid[c]) continue;
             size_t v = (size_t)idx[c];
-            double phase=(double)verts[v*3+2]+cyl_affine[2][0]
-                        +cyl_affine[2][1]*(double)j
-                        +cyl_affine[2][2]*(double)i;
-            double radius=(double)verts[v*3+1]+cyl_affine[1][0]
-                          +cyl_affine[1][1]*(double)j
+            double phase=(double)verts[v*3+2]
+                        +cyl_trend_at(&row_trend, cyl_affine, 2, j, i);
+            double radius=(double)verts[v*3+1]
                           +(reduced_radius
-                            ?cyl_affine[1][2]
+                            ?cyl_affine[1][0]+cyl_affine[1][1]*(double)j
+                             +cyl_affine[1][2]
                               *cyl_pitch_trend(&pitch_model,(double)j,phase)
-                            :cyl_affine[1][2]*(double)i);
+                            :cyl_trend_at(&row_trend, cyl_affine, 1, j, i));
             if(!isfinite(radius)||!isfinite(phase)||radius<=0.0) {
                 fprintf(stderr,
                         "      cylindrical fill: invalid radius/phase at row=%d "
                         "col=%d (r=%.6g phi=%.6g)\n",j,i,radius,phase);
                 return -1;
             }
+            if (phase_out) phase_out[v] = (float)phase;
             verts[v*3+0]=(float)(axial_z0+(double)j);
             verts[v*3+1]=(float)(o.axis_y+radius*cos(remainder(phase,QUAD_TWO_PI)));
             verts[v*3+2]=(float)(o.axis_x+radius*sin(remainder(phase,QUAD_TWO_PI)));
@@ -3076,7 +3344,22 @@ int QuadStrip_build_topology_with_phase(Arena_T arena,
     if (out_nf)     *out_nf = nf;
     if (out_uv)     *out_uv = uv;
     if (out_filled) *out_filled = filled;
+    if (out_phase)  *out_phase = phase_out;
     return 0;
+}
+
+int QuadStrip_build_topology_with_phase(Arena_T arena,
+                    const uint8_t *topology,
+                    const uint8_t *domain, const float *field,
+                    const float *lifted_phase,
+                    int H, int W, int gr0, int c0, double grid_du,
+                    const QuadStripOpts *opts,
+                    float **out_verts, size_t *out_nv,
+                    int32_t **out_faces, size_t *out_nf,
+                    float **out_uv, uint8_t **out_filled) {
+    return QuadStrip_build_topology_with_phase_ex(
+        arena,topology,domain,field,lifted_phase,H,W,gr0,c0,grid_du,opts,
+        out_verts,out_nv,out_faces,out_nf,out_uv,out_filled,NULL);
 }
 
 int QuadStrip_build_with_phase(Arena_T arena,

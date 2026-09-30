@@ -31,7 +31,7 @@ int Mesh_trim_to_owned_box(Arena_T arena,
      * seam back into z-fight range (~0.5 vox). All-vertex containment makes the
      * inset exact, so adjacent cubes end up a clean 2*inset apart. */
     int32_t *kept_faces = (int32_t *)ARENA_ALLOC(arena,
-                              (long)nf_in * 3L * (long)sizeof(int32_t));
+                              (size_t)nf_in * 3L * sizeof(int32_t));
     size_t nf_kept = 0;
     for (size_t f = 0; f < nf_in; f++) {
         int32_t a = faces_in[f * 3 + 0];
@@ -59,7 +59,7 @@ int Mesh_trim_to_owned_box(Arena_T arena,
     if (nf_kept == 0) return 0;
 
     /* Pass 2: mark referenced vertices. */
-    uint8_t *used = (uint8_t *)ARENA_CALLOC(arena, (long)nv_in, 1L);
+    uint8_t *used = (uint8_t *)ARENA_CALLOC(arena, (size_t)nv_in, 1L);
     for (size_t f = 0; f < nf_kept; f++) {
         used[kept_faces[f * 3 + 0]] = 1;
         used[kept_faces[f * 3 + 1]] = 1;
@@ -68,7 +68,7 @@ int Mesh_trim_to_owned_box(Arena_T arena,
 
     /* Pass 3: build remap and compact verts. */
     int32_t *remap = (int32_t *)ARENA_ALLOC(arena,
-                         (long)nv_in * (long)sizeof(int32_t));
+                         (size_t)nv_in * sizeof(int32_t));
     size_t nv_kept = 0;
     for (size_t v = 0; v < nv_in; v++) {
         if (used[v]) {
@@ -80,7 +80,7 @@ int Mesh_trim_to_owned_box(Arena_T arena,
     }
 
     float *new_verts = (float *)ARENA_ALLOC(arena,
-                          (long)nv_kept * 3L * (long)sizeof(float));
+                          (size_t)nv_kept * 3L * sizeof(float));
     size_t wi = 0;
     for (size_t v = 0; v < nv_in; v++) {
         if (used[v]) {
@@ -92,7 +92,7 @@ int Mesh_trim_to_owned_box(Arena_T arena,
     }
 
     int32_t *new_faces = (int32_t *)ARENA_ALLOC(arena,
-                            (long)nf_kept * 3L * (long)sizeof(int32_t));
+                            (size_t)nf_kept * 3L * sizeof(int32_t));
     for (size_t f = 0; f < nf_kept; f++) {
         new_faces[f * 3 + 0] = remap[kept_faces[f * 3 + 0]];
         new_faces[f * 3 + 1] = remap[kept_faces[f * 3 + 1]];
@@ -107,7 +107,7 @@ int Mesh_trim_to_owned_box(Arena_T arena,
     /* Pin mask: pure index remap (no vert position changes). */
     if (pin_mask_in && out_pin_mask) {
         uint8_t *new_pins = (uint8_t *)ARENA_CALLOC(arena,
-                                (long)nv_kept, 1L);
+                                (size_t)nv_kept, 1L);
         for (size_t v = 0; v < nv_in; v++) {
             if (used[v] && pin_mask_in[v]) {
                 new_pins[remap[v]] = 1;
@@ -472,7 +472,7 @@ int Mesh_trim_cut_to_owned_box(Arena_T arena,
         remap[v] = used[v] ? (int32_t)nv_kept++ : -1;
 
     float *new_verts = (float *)ARENA_ALLOC(arena,
-                          (long)nv_kept * 3L * (long)sizeof(float));
+                          (size_t)nv_kept * 3L * sizeof(float));
     size_t wi = 0;
     for (size_t v = 0; v < vg.n; v++) {
         if (!used[v]) continue;
@@ -482,7 +482,7 @@ int Mesh_trim_cut_to_owned_box(Arena_T arena,
         wi++;
     }
     int32_t *new_faces = (int32_t *)ARENA_ALLOC(arena,
-                            (long)nf_out * 3L * (long)sizeof(int32_t));
+                            (size_t)nf_out * 3L * sizeof(int32_t));
     for (size_t f = 0; f < nf_out; f++) {
         new_faces[f*3+0] = remap[fout[f*3+0]];
         new_faces[f*3+1] = remap[fout[f*3+1]];

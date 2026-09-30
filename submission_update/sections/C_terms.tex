@@ -1,7 +1,12 @@
 \section{Parameters and Retired Baselines}
 \label{app:terms}
 
-This appendix records the exact numerical parameters referenced in the body. Sections~\ref{app:assembly}--\ref{app:solid} give the active sheet-checking, winding, metric, fill, collision, and output-masking constants; Sections~\ref{app:extraction}--\ref{app:cvt} give the extraction and remeshing constants; and Sections~\ref{app:slice}--\ref{app:ribbon} document methods that have been retired from the production path but remain reproducible, and which Section~\ref{sec:deadends} evaluates. Lengths are in coarse voxels and angles in continuously lifted turns unless stated otherwise.
+These parameters describe the August research methods and retired baselines.
+Their experiment drivers are not part of the September public release.
+The shipped configuration is \path{configs/default.json}, with its measured
+reference check in Section~\ref{sec:public-release}.
+
+This appendix records the exact numerical parameters referenced in the body. Sections~\ref{app:assembly}--\ref{app:solid} give the active sheet-checking, winding, metric, fill, collision, and output-masking constants; Sections~\ref{app:extraction}--\ref{app:cvt} give the extraction and remeshing constants; and Sections~\ref{app:slice}--\ref{app:ribbon} document the recorded methods and parameters of retired baselines, and which Section~\ref{sec:deadends} evaluates. Lengths are in coarse voxels and angles in continuously lifted turns unless stated otherwise.
 
 Wherever possible a constant here is derived from a measured property of the object rather than tuned. The ${\sim}7$-voxel inter-wrap clearance and the ${\sim}9.5$-voxel pitch of PHerc0139 bound the ball radii, weld radii, collapse lengths, and neighbour distances below; the point spacing after MLS projection bounds them from the other side. Where a value was instead fixed by an experiment, the experiment is named alongside it.
 

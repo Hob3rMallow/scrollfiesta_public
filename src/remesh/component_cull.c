@@ -34,7 +34,7 @@ static int extract_cc(Arena_T arena, const ComponentMesh *src,
         if (uf_find(uf, src->faces[f*3]) == root) nf++;
     if (nf == 0) return -1;
 
-    int32_t *faces = (int32_t *)ARENA_ALLOC(arena, (long)(nf*3*sizeof(int32_t)));
+    int32_t *faces = (int32_t *)ARENA_ALLOC(arena, (size_t)(nf*3*sizeof(int32_t)));
     size_t k = 0;
     for (size_t f = 0; f < src->nf; f++)
         if (uf_find(uf, src->faces[f*3]) == root) {
@@ -44,12 +44,12 @@ static int extract_cc(Arena_T arena, const ComponentMesh *src,
             k++;
         }
 
-    int32_t *remap = (int32_t *)ARENA_CALLOC(arena, (long)src->nv, (long)sizeof(int32_t));
+    int32_t *remap = (int32_t *)ARENA_CALLOC(arena, (size_t)src->nv, sizeof(int32_t));
     for (size_t i = 0; i < nf*3; i++) remap[faces[i]] = 1;
     int32_t cnt = 0;
     for (size_t i = 0; i < src->nv; i++) remap[i] = remap[i] ? cnt++ : -1;
     if (cnt < 3) return -1;
-    float *v = (float *)ARENA_ALLOC(arena, (long)((size_t)cnt*3*sizeof(float)));
+    float *v = (float *)ARENA_ALLOC(arena, (size_t)((size_t)cnt*3*sizeof(float)));
     for (size_t i = 0; i < src->nv; i++) if (remap[i] >= 0) {
         v[remap[i]*3+0]=src->verts[i*3+0];
         v[remap[i]*3+1]=src->verts[i*3+1];
@@ -85,11 +85,11 @@ int ComponentCull_by_area(Arena_T arena,
 
     /* split every input into connectivity-components; collect each with its area */
     size_t cap = n_in + 8, cnt = 0;
-    ComponentMesh *ccs   = (ComponentMesh *)ARENA_ALLOC(arena, (long)(cap*sizeof(ComponentMesh)));
-    double        *areas = (double *)ARENA_ALLOC(arena, (long)(cap*sizeof(double)));
-    size_t        *parent = (size_t *)ARENA_ALLOC(arena, (long)(cap*sizeof(size_t)));
-    double *parent_total = (double *)ARENA_CALLOC(arena, (long)n_in,
-                                                   (long)sizeof(double));
+    ComponentMesh *ccs   = (ComponentMesh *)ARENA_ALLOC(arena, (size_t)(cap*sizeof(ComponentMesh)));
+    double        *areas = (double *)ARENA_ALLOC(arena, (size_t)(cap*sizeof(double)));
+    size_t        *parent = (size_t *)ARENA_ALLOC(arena, (size_t)(cap*sizeof(size_t)));
+    double *parent_total = (double *)ARENA_CALLOC(arena, (size_t)n_in,
+                                                   sizeof(double));
 
     for (size_t i = 0; i < n_in; i++) {
         const ComponentMesh *cm = &in[i];
@@ -101,19 +101,19 @@ int ComponentCull_by_area(Arena_T arena,
             uf_union(&uf, cm->faces[f*3+0], cm->faces[f*3+2]);
         }
         /* roots that carry at least one face */
-        uint8_t *has_face = (uint8_t *)ARENA_CALLOC(arena, (long)cm->nv, (long)sizeof(uint8_t));
+        uint8_t *has_face = (uint8_t *)ARENA_CALLOC(arena, (size_t)cm->nv, sizeof(uint8_t));
         for (size_t f = 0; f < cm->nf; f++)
             has_face[uf_find(&uf, cm->faces[f*3])] = 1;
         for (size_t r = 0; r < cm->nv; r++) {
             if (!has_face[r]) continue;
             if (cnt >= cap) {
                 size_t nc = cap*2;
-                ComponentMesh *na = (ComponentMesh *)ARENA_ALLOC(arena, (long)(nc*sizeof(ComponentMesh)));
+                ComponentMesh *na = (ComponentMesh *)ARENA_ALLOC(arena, (size_t)(nc*sizeof(ComponentMesh)));
                 memcpy(na, ccs, cnt*sizeof(ComponentMesh));
                 for (size_t _i=0;_i<cnt;_i++) na[_i].self = &na[_i];
-                double *naa = (double *)ARENA_ALLOC(arena, (long)(nc*sizeof(double)));
+                double *naa = (double *)ARENA_ALLOC(arena, (size_t)(nc*sizeof(double)));
                 memcpy(naa, areas, cnt*sizeof(double));
-                size_t *npa = (size_t *)ARENA_ALLOC(arena, (long)(nc*sizeof(size_t)));
+                size_t *npa = (size_t *)ARENA_ALLOC(arena, (size_t)(nc*sizeof(size_t)));
                 memcpy(npa, parent, cnt*sizeof(size_t));
                 ccs = na; areas = naa; parent = npa; cap = nc;
             }
@@ -130,13 +130,13 @@ int ComponentCull_by_area(Arena_T arena,
      * comparing each with the cube total deletes all of them once the sheet count
      * exceeds 1/min_frac. The input array already carries the semantic split, so
      * this pass should only remove disconnected crumbs within each input. */
-    uint8_t *take = (uint8_t *)ARENA_CALLOC(arena, (long)cnt,
-                                             (long)sizeof(uint8_t));
-    uint8_t *parent_has = (uint8_t *)ARENA_CALLOC(arena, (long)n_in,
-                                                   (long)sizeof(uint8_t));
-    size_t *best = (size_t *)ARENA_ALLOC(arena, (long)(n_in*sizeof(size_t)));
-    double *best_area = (double *)ARENA_CALLOC(arena, (long)n_in,
-                                                (long)sizeof(double));
+    uint8_t *take = (uint8_t *)ARENA_CALLOC(arena, (size_t)cnt,
+                                             sizeof(uint8_t));
+    uint8_t *parent_has = (uint8_t *)ARENA_CALLOC(arena, (size_t)n_in,
+                                                   sizeof(uint8_t));
+    size_t *best = (size_t *)ARENA_ALLOC(arena, (size_t)(n_in*sizeof(size_t)));
+    double *best_area = (double *)ARENA_CALLOC(arena, (size_t)n_in,
+                                                sizeof(double));
     for (size_t i = 0; i < n_in; i++) best[i] = (size_t)-1;
     for (size_t c = 0; c < cnt; c++) {
         size_t p = parent[c];
@@ -151,7 +151,7 @@ int ComponentCull_by_area(Arena_T arena,
     for (size_t i = 0; i < n_in; i++)
         if (!parent_has[i] && best[i] != (size_t)-1) take[best[i]] = 1;
 
-    ComponentMesh *keep = (ComponentMesh *)ARENA_ALLOC(arena, (long)(cnt*sizeof(ComponentMesh)));
+    ComponentMesh *keep = (ComponentMesh *)ARENA_ALLOC(arena, (size_t)(cnt*sizeof(ComponentMesh)));
     size_t nk = 0, dropped = 0;
     for (size_t c = 0; c < cnt; c++) {
         if (take[c]) {

@@ -11,12 +11,17 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* Chart mode may separate a pair of distinct, coincident boundary vertices
- * along their local boundary bisectors so one topological cycle can be filled
- * as one disk.  This is the hard per-vertex displacement cap.  Attribute
- * lineage consumers use the same contract and reject any larger source motion
- * (allowing only float-rounding epsilon). */
+/* Legacy displacement allowance for lineage readers of older hole-fill
+ * artifacts. Current chart filling retains source coordinates and vertex IDs;
+ * an uncertifiable cycle stays open. */
 #define HOLEFILL_CHART_PINCH_MAX_STEP_VOX 0.25f
+
+/* Chart fills must not create a closed source fan that already makes the
+ * assembler's 0.75..1.25 stretch band impossible. This is a necessary angle
+ * bound, independent of triangulation density, coordinate axes, and UV seeds.
+ * An incompatible opening stays open; original material is never discarded
+ * merely to make a generated cap pass. */
+#define HOLEFILL_CHART_MAX_CONDITION (1.25 / 0.75)
 
 /*
  * HoleFill_process — detect and fill interior holes in a triangle mesh.
@@ -55,7 +60,9 @@ int HoleFill_process(Arena_T arena,
  *   interior_only == 2 : chart mode.  Treat each connected component as one
  *                        source chart, preserve that chart's longest boundary
  *                        loop as its perimeter, and fill every other cleanly-
- *                        fillable loop.  This is the post-weld mode when chart
+ *                        fillable loop. New interior fans must also pass the
+ *                        necessary bound HOLEFILL_CHART_MAX_CONDITION. This is
+ *                        the post-weld mode when chart
  *                        provenance is authoritative and avoids misclassifying
  *                        steep 3-D punctures by projected winding.
  *   interior_only == 0 : fill every cleanly-fillable closed 4+ loop

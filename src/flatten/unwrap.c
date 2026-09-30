@@ -8,6 +8,7 @@
 #include "../common/pipeline_constants.h"
 
 #include <assert.h>
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +28,88 @@ typedef struct {
     int32_t component;
     float value, reliability;
 } UnwrapFieldSample;
+
+/* Arc-length u map (step 8).  0.05 rad is ~3 degrees, far finer than a
+ * wrap; the bin cap bounds a whole-scroll run; a bin under the sample
+ * floor inherits its neighbour rather than inventing a radius. */
+#define UNWRAP_ARCLEN_BIN_RAD   0.05
+#define UNWRAP_ARCLEN_MAX_BINS  65536
+#define UNWRAP_ARCLEN_MIN_BIN   8
+#define UNWRAP_ARCLEN_MIN_R     1e-3
+
+/* --- Radial-layer site splitting (R1) --------------------------------------
+ * A mesh component whose faces FUSE two wraps (a weld bridge, a thick
+ * prediction neck) short-circuits the phase lift: the BFS carries one lifted
+ * turn across both wraps, and the register can never separate them because a
+ * component is ONE correction site.  Measured 2026-09-01 on the 10x weld
+ * certificate: 65.2% of radially adjacent wrap pairs shared a lifted turn
+ * (88% at r>640) and the lift spanned 25.6 turns against ~88 physical wraps.
+ *
+ * The split is GEOMETRIC, on the register's own lattice, so it works even
+ * when the lift is already fused: vertices are keyed by (component, axial
+ * bin, lifted phase bin); each key run is cut into radial layers at gaps
+ * over UNWRAP_SPLIT_LAYER_GAP x pitch (a prediction shell is ~1-2 vox thick
+ * and stays whole; the inter-wrap clearance is ~7 vox and always cuts);
+ * layers link across neighbouring keys only when their wrap invariant
+ * rho = r - pitch*q agrees within UNWRAP_SPLIT_LINK_TOL x pitch.  A part
+ * whose inherited lift is internally torn by 2*pi lands in different phase
+ * keys with rho a full pitch apart, so it simply splits further -- the
+ * construction is self-healing, never wrong-joining.  Classes under
+ * UNWRAP_SPLIT_MIN_VERTS merge back into their parent's largest class.
+ * The result REFINES the true mesh components (out->mesh_component keeps
+ * the unsplit identity). */
+#define UNWRAP_SPLIT_AXIAL_H    2.0   /* vox per axial bin (matches WR use) */
+#define UNWRAP_SPLIT_PHASE_BINS 256   /* bins per turn of lifted phase */
+#define UNWRAP_SPLIT_LAYER_GAP  0.55  /* x pitch: radial cut threshold */
+#define UNWRAP_SPLIT_LINK_TOL   0.25  /* x pitch: cross-key union tolerance.
+                                       * Must sit BELOW half the layer-gap
+                                       * cut: a gradual fusion neck emits a
+                                       * merged transition layer at rho
+                                       * midway between the two wraps
+                                       * (+-gap/2 ~ +-3 vox), and a tolerance
+                                       * above that bridges the wraps right
+                                       * back together (measured: 13,604
+                                       * fused keys yielded only 29 sibling
+                                       * pairs at 0.35).  Same-wrap links
+                                       * run |drho| 0..1.5 vox. */
+#define UNWRAP_SPLIT_MIN_VERTS  64    /* absolute floor; see SITE_BUDGET */
+#define UNWRAP_SPLIT_SITE_BUDGET 1500  /* effective min class size is
+                                       * nv/SITE_BUDGET: relation evidence is
+                                       * only reliable between LARGE sites
+                                       * (many independent observations per
+                                       * pair).  Measured 2026-09-01: 30,952
+                                       * sites at 10x shattered into 7,353
+                                       * gauge islands whose pairs carried a
+                                       * MEDIAN OF ONE relation -- nothing to
+                                       * vote with; the 783-piece pile hit
+                                       * the same wall at 8-13%% wrong
+                                       * relations. */
+#define UNWRAP_SPLIT_STRICT_TOL 1.0   /* vox: tier-1 same-wrap link */
+/* Fused-only gate: R1 splits ONLY components whose (axial, phase) keys show
+ * two radial layers often enough to be a wrap fusion.  Splitting every piece
+ * (2026-09-02, 21x3x3 tube) shattered the gauge -- 14 -> 143 islands, 24 ->
+ * 179 lifted turns -- because the flood of sub-sites cannot chain; the
+ * 4x5x5 end-to-end run died the same way.  A piece that never stacks on
+ * itself stays ONE site. */
+#define UNWRAP_SPLIT_FUSED_ONLY     1
+#define UNWRAP_SPLIT_FUSED_MIN_KEYS 4     /* two-layer keys needed */
+#define UNWRAP_SPLIT_FUSED_MIN_FRAC 0.02  /* ... and share of the piece's keys */
+#define UNWRAP_SPLIT_NECK_SPAN  0.60  /* x pitch: a tier-1 class whose loose
+                                       * links reach two classes this far
+                                       * apart in rho is a fusion NECK: the
+                                       * transition band of a gradual merge.
+                                       * Its loose links are discarded so it
+                                       * can never bridge the wraps it
+                                       * touches (min-verts folds it into a
+                                       * side at the end). */
+
+static int unwrap_cmp_float(const void *a, const void *b)
+{
+    float x = *(const float *)a, y = *(const float *)b;
+    if (x < y) return -1;
+    if (x > y) return 1;
+    return 0;
+}
 
 static int cmp_ridx(const void *pa, const void *pb)
 {
@@ -360,7 +443,7 @@ static size_t unwrap_sync_gauges(Arena_T arena, size_t nv,
 
     Arena_Mark mark = Arena_save(arena);
     UnwrapSyncKey *keys = (UnwrapSyncKey *)ARENA_ALLOC(
-        arena, (long)((nv + 1) * sizeof(UnwrapSyncKey)));
+        arena, (size_t)((nv + 1) * sizeof(UnwrapSyncKey)));
     size_t *isl_pop = (size_t *)ARENA_CALLOC(
         arena, (size_t)nisl + 1, sizeof(size_t));
     double t_lo = 1e300;
@@ -499,11 +582,11 @@ static size_t unwrap_sync_gauges(Arena_T arena, size_t nv,
          * exact cycle certificate */
         {
             int32_t *edge_a = (int32_t *)ARENA_ALLOC(
-                arena, (long)(((size_t)nisl * 4 + 8) * sizeof(int32_t)));
+                arena, (size_t)(((size_t)nisl * 4 + 8) * sizeof(int32_t)));
             int32_t *edge_b = (int32_t *)ARENA_ALLOC(
-                arena, (long)(((size_t)nisl * 4 + 8) * sizeof(int32_t)));
+                arena, (size_t)(((size_t)nisl * 4 + 8) * sizeof(int32_t)));
             int32_t *edge_k = (int32_t *)ARENA_ALLOC(
-                arena, (long)(((size_t)nisl * 4 + 8) * sizeof(int32_t)));
+                arena, (size_t)(((size_t)nisl * 4 + 8) * sizeof(int32_t)));
             size_t nedge = 0, printed = 0, naccept = 0;
             for (size_t s = 0; s < (size_t)UNWRAP_SYNC_PAIR_TAB; s++) {
                 const UnwrapSyncPair *p = &tab[s];
@@ -535,15 +618,15 @@ static size_t unwrap_sync_gauges(Arena_T arena, size_t nv,
             }
             if (nedge > 0) {
                 int32_t *off = (int32_t *)ARENA_ALLOC(
-                    arena, (long)(((size_t)nisl + 1) * sizeof(int32_t)));
+                    arena, (size_t)(((size_t)nisl + 1) * sizeof(int32_t)));
                 int32_t *root = (int32_t *)ARENA_ALLOC(
-                    arena, (long)(((size_t)nisl + 1) * sizeof(int32_t)));
+                    arena, (size_t)(((size_t)nisl + 1) * sizeof(int32_t)));
                 uint8_t *have = (uint8_t *)ARENA_CALLOC(
                     arena, (size_t)nisl + 1, 1);
                 uint8_t *bad_root = (uint8_t *)ARENA_CALLOC(
                     arena, (size_t)nisl + 1, 1);
                 int32_t *queue = (int32_t *)ARENA_ALLOC(
-                    arena, (long)(((size_t)nisl + 1) * sizeof(int32_t)));
+                    arena, (size_t)(((size_t)nisl + 1) * sizeof(int32_t)));
                 /* BFS over accepted edges; the root of each component keeps
                  * offset 0 (sync is relative, so the root choice is
                  * arbitrary) */
@@ -699,15 +782,15 @@ static void unwrap_gauge_islands_by_junction(
     if (nisl < 2 || !(pitch > 1e-6)) { Arena_restore(arena, mark); return; }
     {
         double *ilo = (double *)ARENA_ALLOC(
-            arena, (long)((size_t)nisl * sizeof(double)));
+            arena, (size_t)((size_t)nisl * sizeof(double)));
         double *ihi = (double *)ARENA_ALLOC(
-            arena, (long)((size_t)nisl * sizeof(double)));
+            arena, (size_t)((size_t)nisl * sizeof(double)));
         size_t *icount = (size_t *)ARENA_CALLOC(
-            arena, (long)nisl, (long)sizeof(size_t));
+            arena, (size_t)nisl, sizeof(size_t));
         int32_t *order = (int32_t *)ARENA_ALLOC(
-            arena, (long)((size_t)nisl * sizeof(int32_t)));
+            arena, (size_t)((size_t)nisl * sizeof(int32_t)));
         int32_t *shift = (int32_t *)ARENA_CALLOC(
-            arena, (long)nisl, (long)sizeof(int32_t));
+            arena, (size_t)nisl, sizeof(int32_t));
         double tmin = INFINITY, tmax = -INFINITY;
         size_t nbin = 0;
         for (int32_t k = 0; k < nisl; k++) {
@@ -729,15 +812,15 @@ static void unwrap_gauge_islands_by_junction(
         {
             /* per-island junction-window radius accumulators, both ends */
             double *hi_sum = (double *)ARENA_CALLOC(
-                arena, (long)((size_t)nisl * nbin), (long)sizeof(double));
+                arena, (size_t)((size_t)nisl * nbin), sizeof(double));
             double *lo_sum = (double *)ARENA_CALLOC(
-                arena, (long)((size_t)nisl * nbin), (long)sizeof(double));
+                arena, (size_t)((size_t)nisl * nbin), sizeof(double));
             uint32_t *hi_n = (uint32_t *)ARENA_CALLOC(
-                arena, (long)((size_t)nisl * nbin), (long)sizeof(uint32_t));
+                arena, (size_t)((size_t)nisl * nbin), sizeof(uint32_t));
             uint32_t *lo_n = (uint32_t *)ARENA_CALLOC(
-                arena, (long)((size_t)nisl * nbin), (long)sizeof(uint32_t));
+                arena, (size_t)((size_t)nisl * nbin), sizeof(uint32_t));
             double *delta = (double *)ARENA_ALLOC(
-                arena, (long)(nbin * sizeof(double)));
+                arena, (size_t)(nbin * sizeof(double)));
             for (size_t i = 0; i < nv; i++) {
                 int32_t k = continuation_island[comp[i]];
                 double w = (double)winding_sense * Phi[i];
@@ -871,6 +954,560 @@ static void unwrap_gauge_islands_by_junction(
 
 /* ---- main ----------------------------------------------------------------- */
 
+/* ---- R1 radial-layer splitter (see the constants block above) ---------- */
+
+typedef struct {
+    uint64_t key;
+    float    r;
+    int32_t  idx;
+} UnwrapSplitVert;
+
+static int unwrap_split_cmp(const void *pa, const void *pb)
+{
+    const UnwrapSplitVert *a = (const UnwrapSplitVert *)pa;
+    const UnwrapSplitVert *b = (const UnwrapSplitVert *)pb;
+    if (a->key != b->key) return a->key < b->key ? -1 : 1;
+    if (a->r != b->r) return a->r < b->r ? -1 : 1;
+    return a->idx < b->idx ? -1 : (a->idx > b->idx);
+}
+
+typedef struct {
+    uint64_t key;      /* the run's lattice key */
+    int32_t  first;    /* first index in the sorted vert array */
+    int32_t  count;    /* verts in this layer */
+    float    rho;      /* median wrap invariant r - pitch*q */
+    int32_t  comp;     /* parent component */
+} UnwrapSplitNode;
+
+typedef struct {
+    int32_t a, b;      /* node ids */
+    float   drho;      /* rho difference at the link */
+} UnwrapSplitLink;
+
+static int unwrap_split_node_cmp_b(const void *pa, const void *pb)
+{
+    /* ordering B: (comp, pb, axial) so axial-adjacent runs are adjacent */
+    const UnwrapSplitNode *a = (const UnwrapSplitNode *)pa;
+    const UnwrapSplitNode *b = (const UnwrapSplitNode *)pb;
+    uint64_t ka = ((a->key >> 28) << 28)
+                | ((a->key & 0x7fffu) << 13)
+                | ((a->key >> 15) & 0x1fffu);
+    uint64_t kb = ((b->key >> 28) << 28)
+                | ((b->key & 0x7fffu) << 13)
+                | ((b->key >> 15) & 0x1fffu);
+    if (ka != kb) return ka < kb ? -1 : 1;
+    if (a->rho != b->rho) return a->rho < b->rho ? -1 : 1;
+    return 0;
+}
+
+static int unwrap_split_tri_cmp(const void *pa, const void *pb)
+{
+    const int32_t *a = (const int32_t *)pa;
+    const int32_t *b = (const int32_t *)pb;
+    if (a[0] != b[0]) return a[0] < b[0] ? -1 : 1;
+    if (a[1] != b[1]) return a[1] < b[1] ? -1 : 1;
+    if (a[2] != b[2]) return a[2] < b[2] ? -1 : 1;
+    return 0;
+}
+
+static int32_t unwrap_split_find(int32_t *par, int32_t x)
+{
+    while (par[x] != x) {
+        par[x] = par[par[x]];
+        x = par[x];
+    }
+    return x;
+}
+
+/* Refine comp[] into radially coherent layer classes.  Returns the new
+ * component count (>= ncomp), or ncomp unchanged when the input is too small
+ * or the pitch is degenerate.  self_conflict_keys counts lattice keys whose
+ * run held two or more radial layers -- the direct census of lift fusion. */
+static int32_t unwrap_split_radial_layers(
+    Arena_T arena, size_t nv, const double *t, double tmin,
+    const double *r, const double *qturn, double pitch,
+    int32_t *comp, int32_t ncomp, size_t *self_conflict_keys,
+    WindingSiblingPair **out_sibling, size_t *out_nsibling)
+{
+    if (self_conflict_keys != NULL) *self_conflict_keys = 0;
+    if (out_sibling != NULL) *out_sibling = NULL;
+    if (out_nsibling != NULL) *out_nsibling = 0;
+    if (nv < 2 || ncomp <= 0 || !(pitch > 1e-6)) return ncomp;
+    Arena_Mark mark = Arena_save(arena);
+    UnwrapSplitVert *sv = (UnwrapSplitVert *)ARENA_ALLOC(
+        arena, (size_t)(nv * sizeof *sv));
+    double cut = UNWRAP_SPLIT_LAYER_GAP * pitch;
+    double tol = UNWRAP_SPLIT_LINK_TOL * pitch;
+    size_t i = 0, nnode = 0, nrun = 0, conflict = 0;
+    int32_t result = ncomp;
+    for (i = 0; i < nv; i++) {
+        long axial = (long)((t[i] - tmin) / UNWRAP_SPLIT_AXIAL_H);
+        double qq = qturn[i];
+        long turn = (long)floor(qq + 1e-9);
+        long bin = (long)((qq - (double)turn) *
+                          (double)UNWRAP_SPLIT_PHASE_BINS);
+        long pb = (turn + 64) * UNWRAP_SPLIT_PHASE_BINS + bin;
+        if (axial < 0) axial = 0;
+        if (axial > 0x1fff) axial = 0x1fff;
+        if (pb < 0) pb = 0;
+        if (pb > 0x7fff) pb = 0x7fff;
+        sv[i].key = ((uint64_t)(uint32_t)comp[i] << 28)
+                  | ((uint64_t)axial << 15)
+                  | (uint64_t)pb;
+        sv[i].r = (float)r[i];
+        sv[i].idx = (int32_t)i;
+    }
+    qsort(sv, nv, sizeof *sv, unwrap_split_cmp);
+    for (i = 0; i < nv; i++) {
+        int newrun = i == 0 || sv[i].key != sv[i - 1].key;
+        int newlayer = newrun ||
+            (double)sv[i].r - (double)sv[i - 1].r > cut;
+        if (newrun) nrun++;
+        if (newlayer) nnode++;
+    }
+    (void)nrun;
+    /* per-component fusion evidence: keys (runs) with >= 2 radial layers */
+    uint8_t *fused = (uint8_t *)ARENA_CALLOC(arena, (size_t)ncomp, 1);
+    {
+        size_t *nkeys = (size_t *)ARENA_CALLOC(arena, (size_t)ncomp,
+                                               sizeof(size_t));
+        size_t *nconf = (size_t *)ARENA_CALLOC(arena, (size_t)ncomp,
+                                               sizeof(size_t));
+        size_t layers = 0;
+        int32_t rc0 = -1, c2 = 0, nfused = 0;
+        for (i = 0; i <= nv; i++) {
+            int newrun = i == 0 || i == nv || sv[i].key != sv[i - 1].key;
+            if (newrun) {
+                if (rc0 >= 0) {
+                    nkeys[rc0]++;
+                    if (layers >= 2) nconf[rc0]++;
+                }
+                if (i == nv) break;
+                rc0 = comp[sv[i].idx];
+                layers = 1;
+            } else if ((double)sv[i].r - (double)sv[i - 1].r > cut) {
+                layers++;
+            }
+        }
+        for (c2 = 0; c2 < ncomp; c2++) {
+            if (!UNWRAP_SPLIT_FUSED_ONLY ||
+                (nconf[c2] >= UNWRAP_SPLIT_FUSED_MIN_KEYS &&
+                 (double)nconf[c2] >=
+                     UNWRAP_SPLIT_FUSED_MIN_FRAC * (double)nkeys[c2]))
+                fused[c2] = 1;
+            nfused += fused[c2];
+        }
+        fprintf(stderr, "  radial-site split: fused-only=%d -> %d of %d "
+                "components qualify (>= %d two-layer keys and >= %.0f%%)"
+                "%c", UNWRAP_SPLIT_FUSED_ONLY, nfused, ncomp,
+                UNWRAP_SPLIT_FUSED_MIN_KEYS,
+                100.0 * UNWRAP_SPLIT_FUSED_MIN_FRAC, 10);
+    }
+    {
+        UnwrapSplitNode *node = (UnwrapSplitNode *)ARENA_ALLOC(
+            arena, (size_t)(nnode * sizeof *node));
+        int32_t *vnode = (int32_t *)ARENA_ALLOC(
+            arena, (size_t)(nv * sizeof *vnode));
+        int32_t *par = NULL, *root_of = NULL;
+        size_t at = 0, run_first_node = 0;
+        for (i = 0; i < nv; i++) {
+            int newrun = i == 0 || sv[i].key != sv[i - 1].key;
+            int newlayer = newrun ||
+                (double)sv[i].r - (double)sv[i - 1].r > cut;
+            if (newlayer) {
+                if (newrun) {
+                    if (at > run_first_node + 1) conflict++;
+                    run_first_node = at;
+                }
+                node[at].key = sv[i].key;
+                node[at].first = (int32_t)i;
+                node[at].count = 0;
+                node[at].comp = comp[sv[i].idx];
+                at++;
+            }
+            node[at - 1].count++;
+            vnode[sv[i].idx] = (int32_t)(at - 1);
+        }
+        if (at > run_first_node + 1) conflict++;
+        assert(at == nnode);
+        for (i = 0; i < nnode; i++) {
+            int32_t mid = node[i].first + node[i].count / 2;
+            int32_t vi = sv[mid].idx;
+            node[i].rho = (float)(r[vi] - pitch * qturn[vi]);
+        }
+        par = (int32_t *)ARENA_ALLOC(arena, (size_t)(nnode * sizeof *par));
+        for (i = 0; i < nnode; i++) par[i] = (int32_t)i;
+        UnwrapSplitLink *link = (UnwrapSplitLink *)ARENA_ALLOC(
+            arena, (size_t)((2 * nnode + 16) * sizeof *link));
+        size_t nlink = 0, linkcap = 2 * nnode + 16;
+        /* ordering A: nodes already grouped (comp, axial, pb); union layers
+         * of pb-adjacent runs whose rho agree */
+        {
+            size_t a0 = 0, b0 = 0;
+            for (a0 = 0; a0 < nnode; ) {
+                size_t a1 = a0;
+                while (a1 < nnode && node[a1].key == node[a0].key) a1++;
+                b0 = a1;
+                if (b0 < nnode) {
+                    uint64_t ka = node[a0].key, kb = node[b0].key;
+                    if ((ka >> 15) == (kb >> 15) &&
+                        (kb & 0x7fffu) == (ka & 0x7fffu) + 1u) {
+                        size_t b1 = b0, x = a0, y = b0;
+                        while (b1 < nnode && node[b1].key == node[b0].key)
+                            b1++;
+                        while (x < a1 && y < b1) {
+                            double dd = (double)node[x].rho -
+                                        (double)node[y].rho;
+                            if (dd > tol) { y++; continue; }
+                            if (dd < -tol) { x++; continue; }
+                            if (nlink < linkcap) {
+                                link[nlink].a = (int32_t)x;
+                                link[nlink].b = (int32_t)y;
+                                link[nlink].drho = (float)dd;
+                                nlink++;
+                            }
+                            if ((double)node[x].rho < (double)node[y].rho)
+                                x++;
+                            else
+                                y++;
+                        }
+                    }
+                }
+                a0 = a1;
+            }
+        }
+        /* ordering B: axial-adjacent runs */
+        {
+            UnwrapSplitNode *nb = (UnwrapSplitNode *)ARENA_ALLOC(
+                arena, (size_t)(nnode * sizeof *nb));
+            int32_t *borig = (int32_t *)ARENA_ALLOC(
+                arena, (size_t)(nnode * sizeof *borig));
+            size_t a0 = 0;
+            memcpy(nb, node, nnode * sizeof *nb);
+            for (i = 0; i < nnode; i++) nb[i].first = (int32_t)i;
+            qsort(nb, nnode, sizeof *nb, unwrap_split_node_cmp_b);
+            for (i = 0; i < nnode; i++) borig[i] = nb[i].first;
+            for (a0 = 0; a0 < nnode; ) {
+                size_t a1 = a0, b0 = 0, b1 = 0;
+                while (a1 < nnode && nb[a1].key == nb[a0].key) a1++;
+                b0 = a1;
+                if (b0 < nnode) {
+                    uint64_t ka = nb[a0].key, kb = nb[b0].key;
+                    uint64_t ca = ka >> 28, cb = kb >> 28;
+                    uint64_t qa = ka & 0x7fffu, qb = kb & 0x7fffu;
+                    uint64_t xa = (ka >> 15) & 0x1fffu;
+                    uint64_t xb = (kb >> 15) & 0x1fffu;
+                    if (ca == cb && qa == qb && xb == xa + 1u) {
+                        size_t x = a0, y = b0;
+                        b1 = b0;
+                        while (b1 < nnode && nb[b1].key == nb[b0].key) b1++;
+                        while (x < a1 && y < b1) {
+                            double dd = (double)nb[x].rho -
+                                        (double)nb[y].rho;
+                            if (dd > tol) { y++; continue; }
+                            if (dd < -tol) { x++; continue; }
+                            if (nlink < linkcap) {
+                                link[nlink].a = borig[x];
+                                link[nlink].b = borig[y];
+                                link[nlink].drho = (float)dd;
+                                nlink++;
+                            }
+                            if ((double)nb[x].rho < (double)nb[y].rho) x++;
+                            else y++;
+                        }
+                    }
+                }
+                a0 = a1;
+            }
+        }
+        /* tier 1: strict same-wrap links only */
+        for (i = 0; i < nlink; i++) {
+            if (fabs((double)link[i].drho) > UNWRAP_SPLIT_STRICT_TOL)
+                continue;
+            {
+                int32_t rx = unwrap_split_find(par, link[i].a);
+                int32_t ry = unwrap_split_find(par, link[i].b);
+                if (rx != ry) par[ry] = rx;
+            }
+        }
+        /* tier 2: loose links may extend a wrap through rho drift, but a
+         * tier-1 class whose loose links span both sides of a fusion is the
+         * NECK transition band; its loose links are discarded outright. */
+        {
+            float *lo2 = (float *)ARENA_ALLOC(
+                arena, (size_t)(nnode * sizeof(float)));
+            float *hi2 = (float *)ARENA_ALLOC(
+                arena, (size_t)(nnode * sizeof(float)));
+            double span_gate = UNWRAP_SPLIT_NECK_SPAN * pitch;
+            for (i = 0; i < nnode; i++) {
+                lo2[i] = 1e30f;
+                hi2[i] = -1e30f;
+            }
+            for (i = 0; i < nlink; i++) {
+                double ad = fabs((double)link[i].drho);
+                if (ad <= UNWRAP_SPLIT_STRICT_TOL) continue;
+                {
+                    int32_t ra = unwrap_split_find(par, link[i].a);
+                    int32_t rb = unwrap_split_find(par, link[i].b);
+                    float pa2 = node[link[i].b].rho;
+                    float pb2 = node[link[i].a].rho;
+                    if (ra == rb) continue;
+                    if (pa2 < lo2[ra]) lo2[ra] = pa2;
+                    if (pa2 > hi2[ra]) hi2[ra] = pa2;
+                    if (pb2 < lo2[rb]) lo2[rb] = pb2;
+                    if (pb2 > hi2[rb]) hi2[rb] = pb2;
+                }
+            }
+            for (i = 0; i < nlink; i++) {
+                double ad = fabs((double)link[i].drho);
+                if (ad <= UNWRAP_SPLIT_STRICT_TOL) continue;
+                {
+                    int32_t ra = unwrap_split_find(par, link[i].a);
+                    int32_t rb = unwrap_split_find(par, link[i].b);
+                    if (ra == rb) continue;
+                    if ((double)hi2[ra] - (double)lo2[ra] > span_gate)
+                        continue;      /* a-side class is a neck */
+                    if ((double)hi2[rb] - (double)lo2[rb] > span_gate)
+                        continue;      /* b-side class is a neck */
+                    par[unwrap_split_find(par, rb)] =
+                        unwrap_split_find(par, ra);
+                }
+            }
+        }
+        root_of = (int32_t *)ARENA_ALLOC(
+            arena, (size_t)(nnode * sizeof *root_of));
+        for (i = 0; i < nnode; i++)
+            root_of[i] = unwrap_split_find(par, (int32_t)i);
+        {
+            size_t *rsize = (size_t *)ARENA_CALLOC(
+                arena, nnode, sizeof(size_t));
+            int32_t *best_of_comp = (int32_t *)ARENA_ALLOC(
+                arena, (size_t)((size_t)ncomp * sizeof(int32_t)));
+            int32_t *dense = (int32_t *)ARENA_ALLOC(
+                arena, (size_t)(nnode * sizeof(int32_t)));
+            int32_t *newcomp = (int32_t *)ARENA_ALLOC(
+                arena, (size_t)(nv * sizeof(int32_t)));
+            int32_t c = 0, next = 0;
+            for (i = 0; i < nnode; i++)
+                rsize[root_of[i]] += (size_t)node[i].count;
+            for (c = 0; c < ncomp; c++) best_of_comp[c] = -1;
+            for (i = 0; i < nnode; i++) {
+                int32_t rr = root_of[i];
+                int32_t pc = node[i].comp;
+                if (best_of_comp[pc] < 0 ||
+                    rsize[rr] > rsize[best_of_comp[pc]])
+                    best_of_comp[pc] = rr;
+            }
+            {
+                size_t min_verts = nv / UNWRAP_SPLIT_SITE_BUDGET;
+                if (min_verts < UNWRAP_SPLIT_MIN_VERTS)
+                    min_verts = UNWRAP_SPLIT_MIN_VERTS;
+                for (i = 0; i < nnode; i++) {
+                    int32_t rr = root_of[i];
+                    /* a FUSED piece may split down to the absolute floor:
+                     * its second layer is small (a neck's worth), and the
+                     * site budget was sized for splitting every piece */
+                    size_t lim = fused[node[i].comp]
+                                     ? (size_t)UNWRAP_SPLIT_MIN_VERTS
+                                     : min_verts;
+                    if ((rsize[rr] < lim || !fused[node[i].comp]) &&
+                        best_of_comp[node[i].comp] >= 0)
+                        root_of[i] = best_of_comp[node[i].comp];
+                }
+            }
+            for (i = 0; i < nnode; i++) dense[i] = -1;
+            for (i = 0; i < nnode; i++)
+                if (dense[root_of[i]] < 0) dense[root_of[i]] = next++;
+            for (i = 0; i < nv; i++)
+                newcomp[i] = dense[root_of[vnode[i]]];
+            /* sibling votes: consecutive layers inside one key run are
+             * geometrically adjacent wraps.  The turn delta is measured per
+             * key from the lifted phases; the local wrap spacing is taken
+             * from the RUN itself (median consecutive gap) so the vote
+             * abstains where a wrap is locally missing -- and the global
+             * pitch is only the two-layer fallback, which keeps the guard
+             * honest where the true pitch has plateaued wider (the pitch
+             * table runs 9.75..18.5 across the 0139 radial range). */
+            if (out_sibling != NULL && out_nsibling != NULL) {
+                size_t cap = nnode + 1, nt = 0, a0 = 0;
+                int32_t *tri = (int32_t *)malloc(cap * 3 * sizeof(int32_t));
+                if (tri != NULL) {
+                    for (a0 = 0; a0 < nnode; ) {
+                        size_t a1 = a0, k2 = 0, ng = 0;
+                        double gaps[64];
+                        double local = pitch;
+                        while (a1 < nnode && node[a1].key == node[a0].key)
+                            a1++;
+                        for (k2 = a0; k2 + 1 < a1 && ng < 64; k2++) {
+                            int32_t m1 = node[k2].first +
+                                         node[k2].count / 2;
+                            int32_t m2 = node[k2 + 1].first +
+                                         node[k2 + 1].count / 2;
+                            gaps[ng++] = (double)sv[m2].r -
+                                         (double)sv[m1].r;
+                        }
+                        if (ng >= 2) {
+                            size_t g1 = 0, g2 = 0;
+                            for (g1 = 1; g1 < ng; g1++) {
+                                double tv = gaps[g1];
+                                for (g2 = g1;
+                                     g2 > 0 && gaps[g2 - 1] > tv; g2--)
+                                    gaps[g2] = gaps[g2 - 1];
+                                gaps[g2] = tv;
+                            }
+                            local = gaps[ng / 2];
+                        }
+                        for (k2 = a0; k2 + 1 < a1; k2++) {
+                            int32_t m1 = node[k2].first +
+                                         node[k2].count / 2;
+                            int32_t m2 = node[k2 + 1].first +
+                                         node[k2 + 1].count / 2;
+                            int32_t v1 = sv[m1].idx, v2 = sv[m2].idx;
+                            double gap = (double)sv[m2].r -
+                                         (double)sv[m1].r;
+                            int32_t ca = dense[root_of[k2]];
+                            int32_t cb = dense[root_of[k2 + 1]];
+                            long tgt = 0;
+                            if (ca == cb) continue;
+                            if (!(gap > 5.5) || gap > 1.45 * local)
+                                continue;
+                            tgt = lround(qturn[v1] + 1.0 - qturn[v2]);
+                            if (tgt < INT32_MIN || tgt > INT32_MAX)
+                                continue;
+                            if (nt < cap) {
+                                tri[nt * 3 + 0] = ca;
+                                tri[nt * 3 + 1] = cb;
+                                tri[nt * 3 + 2] = (int32_t)tgt;
+                                nt++;
+                            }
+                        }
+                        a0 = a1;
+                    }
+                }
+                /* aggregate the votes by (inner, outer): mode target wins */
+                if (tri != NULL && nt > 0) {
+                    size_t w2 = 0, npair = 0;
+                    WindingSiblingPair *sib = NULL;
+                    qsort(tri, nt, 3 * sizeof(int32_t),
+                          unwrap_split_tri_cmp);
+                    for (w2 = 0; w2 < nt; w2++)
+                        if (w2 == 0 || tri[w2*3] != tri[w2*3-3] ||
+                            tri[w2*3+1] != tri[w2*3-2])
+                            npair++;
+                    sib = (WindingSiblingPair *)malloc(
+                        npair * sizeof *sib);
+                    if (sib != NULL) {
+                        size_t at2 = 0, f2 = 0;
+                        for (f2 = 0; f2 < nt; ) {
+                            size_t l2 = f2, best = 0, bc = 0, tc = 0;
+                            while (l2 < nt && tri[l2*3] == tri[f2*3] &&
+                                   tri[l2*3+1] == tri[f2*3+1])
+                                l2++;
+                            for (w2 = f2; w2 < l2; ) {
+                                size_t m3 = w2;
+                                while (m3 < l2 &&
+                                       tri[m3*3+2] == tri[w2*3+2])
+                                    m3++;
+                                if (m3 - w2 > bc) {
+                                    bc = m3 - w2;
+                                    best = w2;
+                                }
+                                w2 = m3;
+                            }
+                            tc = l2 - f2;
+                            sib[at2].inner = tri[f2*3];
+                            sib[at2].outer = tri[f2*3+1];
+                            sib[at2].target = tri[best*3+2];
+                            sib[at2].mode_keys = (int32_t)bc;
+                            sib[at2].total_keys = (int32_t)tc;
+                            at2++;
+                            f2 = l2;
+                        }
+                        *out_sibling = sib;
+                        *out_nsibling = at2;
+                    }
+                    free(tri);
+                } else if (tri != NULL) {
+                    free(tri);
+                }
+            }
+            for (i = 0; i < nv; i++) comp[i] = newcomp[i];
+            if (self_conflict_keys != NULL)
+                *self_conflict_keys = conflict;
+            result = next;
+        }
+    }
+    Arena_restore(arena, mark);
+    return result;
+}
+
+
+
+/* Frame-independent winding-sense vote.  Bucket vertices by (axial bin of
+ * UNWRAP_SENSE_AXIAL_BIN vox, theta bin of 1 degree); within a bucket sort
+ * by radius; consecutive SAME-component vertices whose radial gap lies in
+ * [0.35, 2.25] x pitch are adjacent wraps of one sheet, and the sign of
+ * (Phi_outer - Phi_inner) is the sense.  Needs neither the spiral fit nor
+ * the axis position beyond the local radius ordering, so it survives an
+ * axis error that scrambles the spiral slope. */
+#define UNWRAP_SENSE_AXIAL_BIN 8.0
+#define UNWRAP_SENSE_MIN_PAIRS 1000
+#define UNWRAP_SENSE_FAIL_AGREE 0.80
+
+typedef struct { uint64_t key; float r; int32_t idx; } UnwrapSenseKey;
+
+static int unwrap_sense_cmp(const void *a, const void *b)
+{
+    const UnwrapSenseKey *x = (const UnwrapSenseKey *)a;
+    const UnwrapSenseKey *y = (const UnwrapSenseKey *)b;
+    if (x->key != y->key) return x->key < y->key ? -1 : 1;
+    if (x->r != y->r) return x->r < y->r ? -1 : 1;
+    return x->idx < y->idx ? -1 : (x->idx > y->idx);
+}
+
+static int unwrap_vote_sense(Arena_T arena, size_t nv, const double *t,
+                             double tmin, const double *r, const double *theta,
+                             const double *Phi, const int32_t *comp,
+                             double pitch, double *out_agree, size_t *out_n)
+{
+    Arena_Mark mark = Arena_save(arena);
+    UnwrapSenseKey *k = (UnwrapSenseKey *)ARENA_ALLOC(
+        arena, (size_t)(nv * sizeof *k));
+    size_t i = 0, n = 0;
+    long votes = 0, npairs = 0;
+    *out_agree = 0.0;
+    *out_n = 0;
+    if (k == NULL || !(pitch > 1e-6)) { Arena_restore(arena, mark); return 0; }
+    for (i = 0; i < nv; i++) {
+        long ab = (long)((t[i] - tmin) / UNWRAP_SENSE_AXIAL_BIN);
+        long tb = (long)((theta[i] + M_PI) * (180.0 / M_PI));
+        if (ab < 0) ab = 0;
+        if (tb < 0) tb = 0;
+        if (tb > 359) tb = 359;
+        k[n].key = ((uint64_t)ab << 9) | (uint64_t)tb;
+        k[n].r = (float)r[i];
+        k[n].idx = (int32_t)i;
+        n++;
+    }
+    qsort(k, n, sizeof *k, unwrap_sense_cmp);
+    for (i = 1; i < n; i++) {
+        double gap = (double)k[i].r - (double)k[i - 1].r;
+        double dphi = 0.0;
+        if (k[i].key != k[i - 1].key) continue;
+        if (comp[k[i].idx] != comp[k[i - 1].idx]) continue;
+        if (gap < 0.35 * pitch || gap > 2.25 * pitch) continue;
+        dphi = Phi[k[i].idx] - Phi[k[i - 1].idx];
+        if (fabs(dphi) < 0.5) continue;      /* same wrap seen twice */
+        votes += dphi > 0.0 ? 1 : -1;
+        npairs++;
+    }
+    Arena_restore(arena, mark);
+    *out_n = (size_t)npairs;
+    if (npairs == 0) return 0;
+    *out_agree = fabs((double)votes) / (double)npairs;
+    return votes > 0 ? 1 : (votes < 0 ? -1 : 0);
+}
+
 int Unwrap_run(Arena_T arena,
                const float *verts, size_t nv,
                const int32_t *faces, size_t nf,
@@ -890,20 +1527,20 @@ int Unwrap_run(Arena_T arena,
     double wrap_spacing = opts ? opts->wrap_spacing : 0.0;
 
     /* Persistent output (survives the scratch restore below). */
-    out->uv = (float *)ARENA_ALLOC(arena, (long)(nv * 2 * sizeof(float)));
+    out->uv = (float *)ARENA_ALLOC(arena, (size_t)(nv * 2 * sizeof(float)));
     out->winding_index = (float *)ARENA_ALLOC(
         arena, nv * sizeof *out->winding_index);
     out->winding_confidence = (float *)ARENA_ALLOC(
         arena, nv * sizeof *out->winding_confidence);
     int keep_phi = (opts != NULL && opts->keep_phi != 0);
     if (keep_phi) {
-        out->phi = (float *)ARENA_ALLOC(arena, (long)(nv * sizeof(float)));
+        out->phi = (float *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(float)));
         out->island = (int32_t *)ARENA_ALLOC(
-            arena, (long)(nv * sizeof(int32_t)));
+            arena, (size_t)(nv * sizeof(int32_t)));
         out->continuation_island = (int32_t *)ARENA_ALLOC(
-            arena, (long)(nv * sizeof(int32_t)));
+            arena, (size_t)(nv * sizeof(int32_t)));
         out->mesh_component = (int32_t *)ARENA_ALLOC(
-            arena, (long)(nv * sizeof(int32_t)));
+            arena, (size_t)(nv * sizeof(int32_t)));
         out->field_winding = (float *)ARENA_ALLOC(
             arena, nv * sizeof *out->field_winding);
         out->field_jump = (float *)ARENA_ALLOC(
@@ -943,9 +1580,9 @@ int Unwrap_run(Arena_T arena,
                       (double)centroid[2] };
 
     /* --- 2. Per-vertex axial coord t and in-plane coords (c1, c2). --- */
-    double *t  = (double *)ARENA_ALLOC(arena, (long)(nv * sizeof(double)));
-    double *c1 = (double *)ARENA_ALLOC(arena, (long)(nv * sizeof(double)));
-    double *c2 = (double *)ARENA_ALLOC(arena, (long)(nv * sizeof(double)));
+    double *t  = (double *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(double)));
+    double *c1 = (double *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(double)));
+    double *c2 = (double *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(double)));
     double tmin = INFINITY, tmax = -INFINITY;
     for (size_t i = 0; i < nv; i++) {
         double d0 = (double)verts[i * 3 + 0] - cen[0];
@@ -963,10 +1600,10 @@ int Unwrap_run(Arena_T arena,
 
     /* --- 3. Centerline: mean in-plane position per axial slice. --- */
     const int K = FLATTEN_AXIAL_BINS;
-    double *cb1 = (double *)ARENA_CALLOC(arena, (long)K, (long)sizeof(double));
-    double *cb2 = (double *)ARENA_CALLOC(arena, (long)K, (long)sizeof(double));
-    double *cnt = (double *)ARENA_CALLOC(arena, (long)K, (long)sizeof(double));
-    char   *fil = (char   *)ARENA_CALLOC(arena, (long)K, (long)sizeof(char));
+    double *cb1 = (double *)ARENA_CALLOC(arena, (size_t)K, sizeof(double));
+    double *cb2 = (double *)ARENA_CALLOC(arena, (size_t)K, sizeof(double));
+    double *cnt = (double *)ARENA_CALLOC(arena, (size_t)K, sizeof(double));
+    char   *fil = (char   *)ARENA_CALLOC(arena, (size_t)K, sizeof(char));
     for (size_t i = 0; i < nv; i++) {
         int b = (int)((t[i] - tmin) / span * (double)(K - 1));
         if (b < 0) b = 0;
@@ -993,8 +1630,8 @@ int Unwrap_run(Arena_T arena,
     }
     /* Smooth the centerline (moving average, half-window H). */
     const int H = FLATTEN_CENTERLINE_SMOOTH;
-    double *s1 = (double *)ARENA_ALLOC(arena, (long)((size_t)K * sizeof(double)));
-    double *s2 = (double *)ARENA_ALLOC(arena, (long)((size_t)K * sizeof(double)));
+    double *s1 = (double *)ARENA_ALLOC(arena, (size_t)((size_t)K * sizeof(double)));
+    double *s2 = (double *)ARENA_ALLOC(arena, (size_t)((size_t)K * sizeof(double)));
     for (int b = 0; b < K; b++) {
         double a1 = 0.0, a2 = 0.0;
         int n = 0;
@@ -1014,8 +1651,8 @@ int Unwrap_run(Arena_T arena,
     }
 
     /* --- 4. Cylindrical depth (r) and angle (theta) per vertex. --- */
-    double *r     = (double *)ARENA_ALLOC(arena, (long)(nv * sizeof(double)));
-    double *theta = (double *)ARENA_ALLOC(arena, (long)(nv * sizeof(double)));
+    double *r     = (double *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(double)));
+    double *theta = (double *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(double)));
     for (size_t i = 0; i < nv; i++) {
         double fb = (t[i] - tmin) / span * (double)(K - 1);
         int b0 = (int)floor(fb);
@@ -1038,12 +1675,12 @@ int Unwrap_run(Arena_T arena,
     const int32_t *off = CSR_offset(adj);
     const int32_t *tgt = CSR_target(adj);
 
-    double  *Phi   = (double  *)ARENA_ALLOC(arena, (long)(nv * sizeof(double)));
-    int32_t *comp  = (int32_t *)ARENA_ALLOC(arena, (long)(nv * sizeof(int32_t)));
-    int32_t *queue = (int32_t *)ARENA_ALLOC(arena, (long)(nv * sizeof(int32_t)));
+    double  *Phi   = (double  *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(double)));
+    int32_t *comp  = (int32_t *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(int32_t)));
+    int32_t *queue = (int32_t *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(int32_t)));
     for (size_t i = 0; i < nv; i++) comp[i] = -1;
 
-    RIdx *ri = (RIdx *)ARENA_ALLOC(arena, (long)(nv * sizeof(RIdx)));
+    RIdx *ri = (RIdx *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(RIdx)));
     for (size_t i = 0; i < nv; i++) { ri[i].r = r[i]; ri[i].idx = (int32_t)i; }
     qsort(ri, nv, sizeof(RIdx), cmp_ridx);
 
@@ -1073,8 +1710,8 @@ int Unwrap_run(Arena_T arena,
     /* --- 6. Diagnostic local spiral fit on the largest component. ---
      * This estimates pitch sense/scale only.  It is not an absolute winding
      * model for a crushed or eccentric scroll. */
-    int32_t *csize = (int32_t *)ARENA_CALLOC(arena, (long)ncomp,
-                                             (long)sizeof(int32_t));
+    int32_t *csize = (int32_t *)ARENA_CALLOC(arena, (size_t)ncomp,
+                                             sizeof(int32_t));
     for (size_t i = 0; i < nv; i++) csize[comp[i]]++;
     int32_t big = 0;
     for (int32_t c = 1; c < ncomp; c++) if (csize[c] > csize[big]) big = c;
@@ -1104,7 +1741,41 @@ int Unwrap_run(Arena_T arena,
             sr2 = (sstot > 1e-12) ? 1.0 - ssres / sstot : 1.0;
         }
     }
-    int winding_sense = sb < 0.0 ? -1 : 1;
+    int winding_sense_spiral = sb < 0.0 ? -1 : 1;
+    int winding_sense = winding_sense_spiral;
+    if (opts != NULL && opts->winding_sense != 0)
+        winding_sense = opts->winding_sense > 0 ? 1 : -1;   /* config pin */
+    {
+        double vote_agree = 0.0;
+        size_t vote_n = 0;
+        double vote_pitch = wrap_spacing > 0.0 ? wrap_spacing : fabs(sb);
+        int vote = unwrap_vote_sense(arena, nv, t, tmin, r, theta, Phi, comp,
+                                     vote_pitch, &vote_agree, &vote_n);
+        out->winding_sense_vote = vote;
+        out->winding_sense_vote_agree = vote_agree;
+        out->winding_sense_vote_n = vote_n;
+        out->winding_sense_spiral = winding_sense_spiral;
+        fprintf(stderr, "  winding sense: %s=%+d spiral=%+d (r2 %.3f) "
+                "ray_vote=%+d (agree %.2f, n=%zu)\n",
+                (opts != NULL && opts->winding_sense != 0) ? "pinned" : "auto",
+                winding_sense, winding_sense_spiral, sr2, vote, vote_agree,
+                vote_n);
+        if (vote != 0 && vote != winding_sense &&
+            vote_n >= UNWRAP_SENSE_MIN_PAIRS &&
+            vote_agree >= UNWRAP_SENSE_FAIL_AGREE) {
+            if (opts != NULL && opts->winding_sense != 0) {
+                fprintf(stderr, "unwrap: pinned winding sense %+d contradicts "
+                        "the ray vote %+d (agree %.2f over %zu pairs): "
+                        "refusing (fail closed)\n",
+                        winding_sense, vote, vote_agree, vote_n);
+                return -1;
+            }
+            fprintf(stderr, "unwrap: WARNING auto winding sense %+d contradicts "
+                    "the ray vote %+d (agree %.2f over %zu pairs); using the "
+                    "vote\n", winding_sense, vote, vote_agree, vote_n);
+            winding_sense = vote;
+        }
+    }
     /* A supplied pitch fixes the signed diagnostic slope but does not make the
      * spiral model true.  Measure its actual residual. */
     if (wrap_spacing > 0.0) {
@@ -1139,7 +1810,7 @@ int Unwrap_run(Arena_T arena,
      * q is known inside each disk up to one integer.  Continuation and ray
      * order determine those integers; radius never predicts absolute q. */
     double *qturn = (double *)ARENA_ALLOC(
-        arena, (long)(nv * sizeof(double)));
+        arena, (size_t)(nv * sizeof(double)));
     for (size_t i = 0; i < nv; i++)
         qturn[i] = (double)winding_sense * Phi[i] / (2.0 * M_PI);
     double *field_center = NULL, *field_sigma = NULL, *field_weight = NULL;
@@ -1154,6 +1825,135 @@ int Unwrap_run(Arena_T arena,
     int field_mode = opts != NULL ? opts->winding_field_mode : 0;
     double registration_pitch = wrap_spacing > 0.0
                               ? wrap_spacing : fabs(sb);
+    /* --- 6b. R1 radial-layer site splitting (see constants block). ---
+     * Refines comp[] so the register can correct PER WRAP LAYER; the true
+     * mesh-component identity is preserved separately for the result. */
+    int32_t *comp_true = (int32_t *)ARENA_ALLOC(
+        arena, (size_t)(nv * sizeof(int32_t)));
+    WindingSiblingPair *split_sibling = NULL;
+    size_t n_split_sibling = 0;
+    memcpy(comp_true, comp, nv * sizeof(int32_t));
+    {
+        size_t split_conflict_keys = 0;
+        int32_t ncomp_split = ncomp;
+        if (opts != NULL && opts->radial_site_split)
+            ncomp_split = unwrap_split_radial_layers(
+                arena, nv, t, tmin, r, qturn, registration_pitch,
+                comp, ncomp, &split_conflict_keys,
+                &split_sibling, &n_split_sibling);
+        if (ncomp_split > ncomp) {
+            fprintf(stderr,
+                    "  unwrap split: %d mesh comps -> %d radial-layer sites "
+                    "(%zu fused lattice keys, %zu sibling pairs)",
+                    ncomp, ncomp_split, split_conflict_keys,
+                    n_split_sibling);
+            fputc(10, stderr);
+            ncomp = ncomp_split;
+            csize = (int32_t *)ARENA_CALLOC(arena, (size_t)ncomp,
+                                            sizeof(int32_t));
+            for (size_t si = 0; si < nv; si++) csize[comp[si]]++;
+            big = 0;
+            for (int32_t cs2 = 1; cs2 < ncomp; cs2++)
+                if (csize[cs2] > csize[big]) big = cs2;
+        }
+    }
+    /* Exact parent-overlap evidence is aggregated at the actual registration
+     * site, never at a relation island.  A relation island may contain many
+     * radial layers with different integer transformations (the 21x audit
+     * measured only 43--99% agreement per island, but 100% per mesh site).
+     * Any disagreement inside one site is therefore a real fused/ambiguous
+     * component and is refused instead of being hidden by a median. */
+    WindingRegisterBoundary boundary;
+    const WindingRegisterBoundary *boundary_ptr = NULL;
+    int32_t *boundary_correction = NULL, *boundary_lineage = NULL;
+    const int boundary_mode = opts != NULL &&
+                              opts->boundary_winding != NULL;
+    memset(&boundary, 0, sizeof boundary);
+    if (boundary_mode) {
+        if (opts->boundary_material == NULL) {
+            fprintf(stderr, "unwrap: projective boundary winding requires "
+                    "boundary material lineage\n");
+            free(split_sibling);
+            Arena_restore(arena, mark);
+            return -1;
+        }
+        boundary_correction = (int32_t *)ARENA_ALLOC(
+            arena, (size_t)((size_t)ncomp * sizeof *boundary_correction));
+        boundary_lineage = (int32_t *)ARENA_ALLOC(
+            arena, (size_t)((size_t)ncomp * sizeof *boundary_lineage));
+        for (int32_t c = 0; c < ncomp; c++) {
+            boundary_correction[c] = INT32_MIN;
+            boundary_lineage[c] = -1;
+        }
+        size_t boundary_vertices = 0;
+        for (size_t i = 0; i < nv; i++) {
+            double parent_q = (double)opts->boundary_winding[i];
+            int32_t parent_lineage = opts->boundary_material[i];
+            int32_t c = comp[i];
+            if (!isfinite(parent_q)) {
+                if (parent_lineage >= 0) {
+                    fprintf(stderr, "unwrap: boundary lineage without winding "
+                            "at vertex %zu\n", i);
+                    free(split_sibling);
+                    Arena_restore(arena, mark);
+                    return -1;
+                }
+                continue;
+            }
+            double delta = parent_q - qturn[i];
+            double rounded = nearbyint(delta);
+            if (parent_lineage < 0 || !isfinite(delta) ||
+                rounded < (double)INT32_MIN || rounded > (double)INT32_MAX ||
+                fabs(delta - rounded) > 0.05) {
+                fprintf(stderr, "unwrap: non-integral/incomplete parent "
+                        "boundary at vertex %zu (dq=%+.9g lineage=%d)\n",
+                        i, delta, parent_lineage);
+                free(split_sibling);
+                Arena_restore(arena, mark);
+                return -1;
+            }
+            int32_t k = (int32_t)rounded;
+            if ((boundary_correction[c] != INT32_MIN &&
+                 boundary_correction[c] != k) ||
+                (boundary_lineage[c] >= 0 &&
+                 boundary_lineage[c] != parent_lineage)) {
+                fprintf(stderr, "unwrap: parent boundary splits component %d "
+                        "at vertex %zu (correction %d/%d lineage %d/%d); "
+                        "refusing a median alignment\n", c, i,
+                        boundary_correction[c], k,
+                        boundary_lineage[c], parent_lineage);
+                free(split_sibling);
+                Arena_restore(arena, mark);
+                return -1;
+            }
+            boundary_correction[c] = k;
+            boundary_lineage[c] = parent_lineage;
+            boundary_vertices++;
+        }
+        if (boundary_vertices == 0) {
+            fprintf(stderr, "unwrap: projective boundary contains no finite "
+                    "overlap samples\n");
+            free(split_sibling);
+            Arena_restore(arena, mark);
+            return -1;
+        }
+        int32_t boundary_big = -1;
+        size_t boundary_components = 0;
+        for (int32_t c = 0; c < ncomp; c++) {
+            if (boundary_correction[c] == INT32_MIN) continue;
+            boundary_components++;
+            if (boundary_big < 0 || csize[c] > csize[boundary_big])
+                boundary_big = c;
+        }
+        if (boundary_big >= 0) big = boundary_big;
+        boundary.correction = boundary_correction;
+        boundary.lineage = boundary_lineage;
+        boundary_ptr = &boundary;
+        out->winding_boundary_vertices = boundary_vertices;
+        fprintf(stderr, "  projective winding boundary: %zu vertices fix "
+                "%zu/%d components; anchor component=%d\n",
+                boundary_vertices, boundary_components, ncomp, big);
+    }
     if (field_mode > 0 || (field_mode == 0 && ncomp > 1)) {
         size_t field_samples = 0, field_supported = 0;
         size_t field_clean = 0, field_invalid = 0;
@@ -1190,37 +1990,80 @@ int Unwrap_run(Arena_T arena,
     int32_t *component_continuation_island = NULL;
     float *component_winding_confidence = NULL;
     WindingRegisterStats wstats;
+    /* per-vertex unit normals (area-weighted, sign irrelevant) for the
+     * register's continuation tangency gate */
+    float *vnormal = (float *)ARENA_CALLOC(arena, nv * 3, sizeof(float));
+    {
+        size_t f2 = 0, v2 = 0;
+        for (f2 = 0; f2 < nf; f2++) {
+            const int32_t *tri = faces + f2 * 3;
+            const float *p0 = verts + (size_t)tri[0] * 3;
+            const float *p1 = verts + (size_t)tri[1] * 3;
+            const float *p2 = verts + (size_t)tri[2] * 3;
+            float e1x = p1[0] - p0[0], e1y = p1[1] - p0[1], e1z = p1[2] - p0[2];
+            float e2x = p2[0] - p0[0], e2y = p2[1] - p0[1], e2z = p2[2] - p0[2];
+            float n0 = e1y * e2z - e1z * e2y;
+            float n1 = e1z * e2x - e1x * e2z;
+            float n2 = e1x * e2y - e1y * e2x;
+            int k = 0;
+            for (k = 0; k < 3; k++) {
+                float *dst = vnormal + (size_t)tri[k] * 3;
+                dst[0] += n0; dst[1] += n1; dst[2] += n2;
+            }
+        }
+        for (v2 = 0; v2 < nv; v2++) {
+            float *n = vnormal + v2 * 3;
+            double len = sqrt((double)n[0] * n[0] + (double)n[1] * n[1] +
+                              (double)n[2] * n[2]);
+            if (len > 1e-12) {
+                n[0] = (float)(n[0] / len);
+                n[1] = (float)(n[1] / len);
+                n[2] = (float)(n[2] / len);
+            }
+        }
+    }
     if (WindingRegister_run_with_field(
             arena, verts, nv, t, r, theta, qturn, comp, ncomp, csize, big,
              tmin, registration_pitch, winding_sense,
              field_unary_ptr,
+             boundary_ptr,
+             /* The register now carries exact parent locks through its
+              * conflict pass; parent presence is not a global disable. */
              opts == NULL || opts->winding_conflict_mode >= 0,
+             split_sibling, n_split_sibling,
+             opts != NULL ? opts->vertex_cube : NULL,
+             vnormal,
              &turn_correction, &component_island,
             &component_continuation_island, &component_winding_confidence,
             &wstats) != 0) {
         fprintf(stderr, "unwrap: winding gauge registration failed\n");
+        free(split_sibling);
         Arena_restore(arena, mark);
         return -1;
     }
+    free(split_sibling);
+    split_sibling = NULL;
     for (size_t i = 0; i < nv; i++)
         Phi[i] += (double)winding_sense * 2.0 * M_PI *
                   (double)turn_correction[comp[i]];
 
     /* --- 7a. Overlap-offset gauge sync across disconnected gauge islands.
      * Runs before the continuation join so joins compare SYNCED lifts. */
-    (void)unwrap_sync_gauges(arena, nv, t, r, Phi, comp, ncomp,
-                             component_island, turn_correction,
-                             winding_sense, registration_pitch);
+    if (!boundary_mode)
+        (void)unwrap_sync_gauges(arena, nv, t, r, Phi, comp, ncomp,
+                                 component_island, turn_correction,
+                                 winding_sense, registration_pitch);
 
     /* --- 7a2. Junction-radius island gauging: spread interval-adjacent
      * islands to their radius-implied turns (see the pass's comment). */
     {
         size_t jg_shifted = 0, jg_abstained = 0;
-        unwrap_gauge_islands_by_junction(
-            arena, nv, t, r, Phi, comp, ncomp,
-            component_continuation_island, turn_correction,
-            winding_sense, registration_pitch,
-            &jg_shifted, &jg_abstained);
+        if (!boundary_mode)
+            unwrap_gauge_islands_by_junction(
+                arena, nv, t, r, Phi, comp, ncomp,
+                component_continuation_island, turn_correction,
+                winding_sense, registration_pitch,
+                &jg_shifted, &jg_abstained);
         out->island_gauge_shifts = jg_shifted;
         out->island_gauge_abstains = jg_abstained;
     }
@@ -1243,29 +2086,29 @@ int Unwrap_run(Arena_T arena,
         for (size_t c = 0; c < (size_t)ncomp; c++)
             if (component_continuation_island[c] >= nisl)
                 nisl = component_continuation_island[c] + 1;
-        if (nisl > 1) {
+        if (!boundary_mode && nisl > 1) {
             double *ilo = (double *)ARENA_ALLOC(
-                arena, (long)((size_t)nisl * sizeof(double)));
+                arena, (size_t)((size_t)nisl * sizeof(double)));
             double *ihi = (double *)ARENA_ALLOC(
-                arena, (long)((size_t)nisl * sizeof(double)));
+                arena, (size_t)((size_t)nisl * sizeof(double)));
             double *tlo = (double *)ARENA_ALLOC(
-                arena, (long)((size_t)nisl * sizeof(double)));
+                arena, (size_t)((size_t)nisl * sizeof(double)));
             double *thi = (double *)ARENA_ALLOC(
-                arena, (long)((size_t)nisl * sizeof(double)));
+                arena, (size_t)((size_t)nisl * sizeof(double)));
             double *rhi_sum = (double *)ARENA_ALLOC(
-                arena, (long)((size_t)nisl * sizeof(double)));
+                arena, (size_t)((size_t)nisl * sizeof(double)));
             double *rlo_sum = (double *)ARENA_ALLOC(
-                arena, (long)((size_t)nisl * sizeof(double)));
+                arena, (size_t)((size_t)nisl * sizeof(double)));
             size_t *rhi_n = (size_t *)ARENA_ALLOC(
-                arena, (long)((size_t)nisl * sizeof(size_t)));
+                arena, (size_t)((size_t)nisl * sizeof(size_t)));
             size_t *rlo_n = (size_t *)ARENA_ALLOC(
-                arena, (long)((size_t)nisl * sizeof(size_t)));
+                arena, (size_t)((size_t)nisl * sizeof(size_t)));
             size_t *icount = (size_t *)ARENA_ALLOC(
-                arena, (long)((size_t)nisl * sizeof(size_t)));
+                arena, (size_t)((size_t)nisl * sizeof(size_t)));
             int32_t *root = (int32_t *)ARENA_ALLOC(
-                arena, (long)((size_t)nisl * sizeof(int32_t)));
+                arena, (size_t)((size_t)nisl * sizeof(int32_t)));
             int32_t *order = (int32_t *)ARENA_ALLOC(
-                arena, (long)((size_t)nisl * sizeof(int32_t)));
+                arena, (size_t)((size_t)nisl * sizeof(int32_t)));
             for (int32_t k = 0; k < nisl; k++) {
                 ilo[k] = INFINITY; ihi[k] = -INFINITY;
                 tlo[k] = INFINITY; thi[k] = -INFINITY;
@@ -1374,7 +2217,7 @@ int Unwrap_run(Arena_T arena,
                     /* compact relabel so downstream label gates stay in
                      * [0, count) */
                     int32_t *newlab = (int32_t *)ARENA_ALLOC(
-                        arena, (long)((size_t)nisl * sizeof(int32_t)));
+                        arena, (size_t)((size_t)nisl * sizeof(int32_t)));
                     int32_t nnew = 0;
                     for (int32_t k = 0; k < nisl; k++) newlab[k] = -1;
                     for (int32_t k = 0; k < nisl; k++) {
@@ -1457,23 +2300,146 @@ int Unwrap_run(Arena_T arena,
         wstats.mrf_conflict_label_changes;
     out->winding_mrf_conflict_converged =
         wstats.mrf_conflict_converged;
+    out->winding_boundary_components = wstats.boundary_components;
+    out->winding_boundary_relation_cuts = wstats.boundary_relation_cuts;
+    out->winding_boundary_lineage_cuts = wstats.boundary_lineage_cuts;
+    out->winding_boundary_supported_relation_components =
+        wstats.boundary_supported_relation_components;
 
     /* --- 8. Assemble UV (length-like, each axis shifted to start at 0). ---
-     * u is the winding converted to an arc length via a reference radius so the
-     * grid is ~isotropic and matches vc_obj2tifxyz's metric (length) UV mode.
-     * r_ref = median radius (ri is sorted ascending by r from step 5). */
+     *
+     * u is the winding converted to ARC LENGTH.  It used to be
+     * (Phi - Phi_min) * r_ref with a single global median radius, which is
+     * only correct at that one radius: on the 4x5x5, r_ref = 241.7 against
+     * material from r = 19 to r = 457, so the umbilicus was oversampled by
+     * ~5x and 2.2% of the emitted triangles carried under a quarter of the
+     * sheet's median 3-D area per unit of UV area -- every one of them
+     * squashed, none stretched, at a median radius of 45 vox.
+     *
+     * The fix is a single monotone reparameterization of the SAME lifted
+     * phase, so the winding certificate is preserved exactly (every vertex at
+     * one Phi still receives one u, and the ordering and turn structure are
+     * untouched):
+     *
+     *     u(Phi) = integral from Phi_min to Phi of rbar(phi) dphi
+     *
+     * rbar is the empirical median radius at lifted phase phi.  At a fixed
+     * LIFTED phase all material lies on one wrap -- that is what lifting
+     * means -- so rbar is well defined, strictly positive, and du/dPhi is the
+     * local arc length per radian.  A constant rbar reduces to the old
+     * behaviour exactly. */
     double umin = INFINITY, umax = -INFINITY;
     for (size_t i = 0; i < nv; i++) {
         if (Phi[i] < umin) umin = Phi[i];
         if (Phi[i] > umax) umax = Phi[i];
     }
     double r_ref = ri[nv / 2].r;
+    double arclen_span = 0.0;
     if (r_ref < 1e-6) r_ref = 1.0;   /* flat/degenerate -> 1 vox per radian */
+    {
+    /* Phase bins for the radius profile.  0.05 rad is ~3 degrees, far finer
+     * than a wrap, and the count is capped so a whole-scroll run cannot
+     * allocate an unbounded table. */
+    size_t nbin = 0;
+    double span = umax - umin;
+    double bw = 0.0;
+    double *cum = NULL, *rbar = NULL;
+    size_t *bcount = NULL, *boff = NULL, *bcur = NULL;
+    float *brad = NULL;
+    if (!(span > 1e-9) || !isfinite(span)) {
+        nbin = 0;
+    } else {
+        double want = span / UNWRAP_ARCLEN_BIN_RAD;
+        nbin = want < 1.0 ? 1 : (want > (double)UNWRAP_ARCLEN_MAX_BINS
+                                 ? (size_t)UNWRAP_ARCLEN_MAX_BINS
+                                 : (size_t)want);
+        bw = span / (double)nbin;
+    }
+    if (nbin > 0) {
+        bcount = (size_t *)ARENA_CALLOC(arena, nbin + 1, sizeof *bcount);
+        boff = (size_t *)ARENA_CALLOC(arena, nbin + 1, sizeof *boff);
+        bcur = (size_t *)ARENA_CALLOC(arena, nbin + 1, sizeof *bcur);
+        rbar = (double *)ARENA_ALLOC(arena, (size_t)(nbin * sizeof *rbar));
+        cum = (double *)ARENA_ALLOC(arena, (size_t)((nbin + 1) * sizeof *cum));
+        brad = (float *)ARENA_ALLOC(arena, (size_t)(nv * sizeof *brad));
+    }
+    if (nbin > 0 && bcount && boff && bcur && rbar && cum && brad) {
+        size_t b = 0;
+        /* two-pass bucket fill (count -> prefix sum -> place) */
+        for (size_t i = 0; i < nv; i++) {
+            double q = (Phi[i] - umin) / bw;
+            long bi = (long)q;
+            if (bi < 0) bi = 0;
+            if ((size_t)bi >= nbin) bi = (long)nbin - 1;
+            bcount[(size_t)bi]++;
+        }
+        for (b = 0; b < nbin; b++) boff[b + 1] = boff[b] + bcount[b];
+        for (b = 0; b <= nbin; b++) bcur[b] = boff[b];
+        for (size_t i = 0; i < nv; i++) {
+            double q = (Phi[i] - umin) / bw;
+            long bi = (long)q;
+            if (bi < 0) bi = 0;
+            if ((size_t)bi >= nbin) bi = (long)nbin - 1;
+            brad[bcur[(size_t)bi]++] = (float)r[i];
+        }
+        for (b = 0; b < nbin; b++) {
+            size_t lo = boff[b], hi = boff[b + 1];
+            if (hi - lo >= UNWRAP_ARCLEN_MIN_BIN) {
+                qsort(brad + lo, hi - lo, sizeof *brad, unwrap_cmp_float);
+                rbar[b] = (double)brad[lo + (hi - lo) / 2];
+            } else {
+                rbar[b] = -1.0;      /* filled from a neighbour below */
+            }
+        }
+        /* Sparse bins inherit the nearest measured profile rather than
+         * inventing one; a run with no measured bin at all falls back to
+         * r_ref, which is exactly the old behaviour. */
+        {
+            double last = -1.0;
+            for (b = 0; b < nbin; b++) {
+                if (rbar[b] > 0.0) last = rbar[b];
+                else if (last > 0.0) rbar[b] = last;
+            }
+            last = -1.0;
+            for (b = nbin; b-- > 0; ) {
+                if (rbar[b] > 0.0) last = rbar[b];
+                else if (last > 0.0) rbar[b] = last;
+            }
+            for (b = 0; b < nbin; b++)
+                if (!(rbar[b] > UNWRAP_ARCLEN_MIN_R)) rbar[b] = r_ref;
+        }
+        cum[0] = 0.0;
+        for (b = 0; b < nbin; b++) cum[b + 1] = cum[b] + rbar[b] * bw;
+        for (size_t i = 0; i < nv; i++) {
+            double q = (Phi[i] - umin) / bw;
+            long bi = (long)q;
+            double frac;
+            if (bi < 0) bi = 0;
+            if ((size_t)bi >= nbin) bi = (long)nbin - 1;
+            frac = (Phi[i] - umin) - (double)bi * bw;
+            if (frac < 0.0) frac = 0.0;
+            if (frac > bw) frac = bw;
+            out->uv[i * 2 + 0] = (float)(cum[(size_t)bi] + rbar[(size_t)bi] * frac);
+        }
+        arclen_span = cum[nbin];
+        fprintf(stderr,
+                "  unwrap u: arc-length map over %zu phase bin(s) "
+                "(rbar %.1f..%.1f vox, r_ref %.1f); span %.1f vox "
+                "(constant-r_ref would give %.1f)\n",
+                nbin, rbar[0], rbar[nbin - 1], r_ref, arclen_span,
+                span * r_ref);
+    } else {
+        for (size_t i = 0; i < nv; i++)
+            out->uv[i * 2 + 0] = (float)((Phi[i] - umin) * r_ref);
+        arclen_span = span * r_ref;
+    }
+    }
     for (size_t i = 0; i < nv; i++) {
-        out->uv[i * 2 + 0] = (float)((Phi[i] - umin) * r_ref);
         out->uv[i * 2 + 1] = (float)(t[i] - tmin);
-        out->winding_index[i] = (float)(
-            (double)winding_sense * Phi[i] / (2.0 * M_PI));
+        out->winding_index[i] = boundary_mode &&
+            isfinite((double)opts->boundary_winding[i])
+            ? opts->boundary_winding[i]
+            : (float)((double)winding_sense * Phi[i] / (2.0 * M_PI));
         double local_confidence = 1.0;
         if (out->winding_field_used) {
             if (!isfinite(field_jump[i])) local_confidence = 0.0;
@@ -1489,11 +2455,15 @@ int Unwrap_run(Arena_T arena,
     }
     if (keep_phi) {
         for (size_t i = 0; i < nv; i++) {
-            out->phi[i] = (float)Phi[i];
+            out->phi[i] = boundary_mode &&
+                isfinite((double)opts->boundary_winding[i])
+                ? (float)((double)winding_sense * 2.0 * M_PI *
+                          (double)opts->boundary_winding[i])
+                : (float)Phi[i];
             out->island[i] = component_island[comp[i]];
             out->continuation_island[i] =
                 component_continuation_island[comp[i]];
-            out->mesh_component[i] = comp[i];
+            out->mesh_component[i] = comp_true[i];
             out->field_winding[i] = out->winding_field_used
                                   ? field_mean[i] : NAN;
             out->field_jump[i] = out->winding_field_used
@@ -1506,7 +2476,7 @@ int Unwrap_run(Arena_T arena,
     out->centroid[1] = centroid[1];
     out->centroid[2] = centroid[2];
     out->r_ref  = r_ref;
-    out->u_span = (umax - umin) * r_ref;
+    out->u_span = arclen_span;
     out->v_span = tmax - tmin;
     out->turns  = (umax - umin) / (2.0 * M_PI);
 
@@ -1527,8 +2497,8 @@ static void build_cylinder(Arena_T arena, int nu, int nh, double R, double Hgt,
 {
     size_t nvv = (size_t)nu * (size_t)nh;
     size_t nff = (size_t)(nu - 1) * (size_t)(nh - 1) * 2;
-    float   *v = (float *)ARENA_ALLOC(arena, (long)(nvv * 3 * sizeof(float)));
-    int32_t *f = (int32_t *)ARENA_ALLOC(arena, (long)(nff * 3 * sizeof(int32_t)));
+    float   *v = (float *)ARENA_ALLOC(arena, (size_t)(nvv * 3 * sizeof(float)));
+    int32_t *f = (int32_t *)ARENA_ALLOC(arena, (size_t)(nff * 3 * sizeof(int32_t)));
     double cy = 100.0, cx = 50.0;
     for (int j = 0; j < nh; j++) {
         double z = Hgt * (double)j / (double)(nh - 1);
@@ -1563,8 +2533,8 @@ static void build_spiral(Arena_T arena, int nphi, int nh, double r0,
 {
     size_t nvv = (size_t)nphi * (size_t)nh;
     size_t nff = (size_t)(nphi - 1) * (size_t)(nh - 1) * 2;
-    float   *v = (float *)ARENA_ALLOC(arena, (long)(nvv * 3 * sizeof(float)));
-    int32_t *f = (int32_t *)ARENA_ALLOC(arena, (long)(nff * 3 * sizeof(int32_t)));
+    float   *v = (float *)ARENA_ALLOC(arena, (size_t)(nvv * 3 * sizeof(float)));
+    int32_t *f = (int32_t *)ARENA_ALLOC(arena, (size_t)(nff * 3 * sizeof(int32_t)));
     double phimax = turns * 2.0 * M_PI;
     double cy = 100.0, cx = 50.0;
     for (int j = 0; j < nh; j++) {
@@ -1681,13 +2651,13 @@ int Unwrap_selftest(void)
         enum { GNB = 4, GPER = 9 };   /* axial bins x samples per bin end */
         size_t nvg = 2u * GNB * GPER * 2u;
         double *gt = (double *)ARENA_ALLOC(arena,
-                                           (long)(nvg * sizeof(double)));
+                                           (size_t)(nvg * sizeof(double)));
         double *gr = (double *)ARENA_ALLOC(arena,
-                                           (long)(nvg * sizeof(double)));
+                                           (size_t)(nvg * sizeof(double)));
         double *gphi = (double *)ARENA_ALLOC(arena,
-                                             (long)(nvg * sizeof(double)));
+                                             (size_t)(nvg * sizeof(double)));
         int32_t *gcomp = (int32_t *)ARENA_ALLOC(arena,
-                                                (long)(nvg *
+                                                (size_t)(nvg *
                                                        sizeof(int32_t)));
         int32_t gisl[2] = { 0, 1 };
         int32_t gtc[2] = { 0, 0 };
@@ -1819,14 +2789,37 @@ int Unwrap_selftest(void)
         if (ok) {
             float pmin = res.phi[0];
             for (size_t i = 1; i < nvv; i++) if (res.phi[i] < pmin) pmin = res.phi[i];
-            double err = 0.0;
-            for (size_t i = 0; i < nvv; i++) {
-                double expect = ((double)res.phi[i] - (double)pmin) * res.r_ref;
-                double d = fabs((double)res.uv[i * 2 + 0] - expect);
-                if (d > err) err = d;
+            /* u is now an ARC-LENGTH map of phi, not phi*r_ref, so the
+             * invariant to check is the one that actually matters: equal phi
+             * must give equal u, u must be monotone in phi, and the local
+             * slope must track the local radius instead of one global one. */
+            double err = 0.0, slope_lo = 1e300, slope_hi = -1e300;
+            (void)pmin;
+            for (size_t i = 1; i < nvv && ok; i++) {
+                size_t probe = i < 64 ? i : 64;
+                for (size_t k = i - probe; k < i; k++) {
+                    double dphi = (double)res.phi[i] - (double)res.phi[k];
+                    double du = (double)res.uv[i*2+0] - (double)res.uv[k*2+0];
+                    if (fabs(dphi) < 1e-6) {
+                        if (fabs(du) > err) err = fabs(du);
+                    } else if (dphi * du < -1e-9) {
+                        ok = 0;
+                        break;
+                    } else if (fabs(dphi) > 0.2) {
+                        double sl = du / dphi;
+                        if (sl < slope_lo) slope_lo = sl;
+                        if (sl > slope_hi) slope_hi = sl;
+                    }
+                }
             }
-            ok = (err < 1e-2);   /* float phi round-trip vs double internals */
-            if (!ok) fprintf(stderr, "[unwrap selftest] KEEP_PHI FAIL max u err=%.6f\n", err);
+            ok = ok && (err < 1e-2);
+            if (!ok)
+                fprintf(stderr, "[unwrap selftest] KEEP_PHI FAIL "
+                        "monotone/equal-phi spread=%.6f\n", err);
+            else
+                fprintf(stderr, "[unwrap selftest] keep_phi u monotone in phi; "
+                        "slope %.1f..%.1f vox/rad (r_ref %.1f)\n",
+                        slope_lo, slope_hi, res.r_ref);
         }
         if (!ok) {
             fprintf(stderr, "[unwrap selftest] KEEP_PHI FAIL\n");
@@ -1847,9 +2840,9 @@ int Unwrap_selftest(void)
         size_t nseg = (size_t)JNPHI * (size_t)JNH;
         size_t nvv = nseg * 2, nff = 0;
         float *v = (float *)ARENA_ALLOC(
-            arena, (long)(nvv * 3 * sizeof(float)));
+            arena, (size_t)(nvv * 3 * sizeof(float)));
         int32_t *f = (int32_t *)ARENA_ALLOC(
-            arena, (long)((size_t)(JNPHI - 1) * (JNH - 1) * 4 * 3 *
+            arena, (size_t)((size_t)(JNPHI - 1) * (JNH - 1) * 4 * 3 *
                           sizeof(int32_t)));
         for (int s = 0; s < 2; s++) {
             double phi0 = (double)s * (seg + hole);

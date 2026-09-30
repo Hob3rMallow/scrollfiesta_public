@@ -118,6 +118,31 @@ int IntersectionCleanup_pair_test(const float *verts, size_t nv,
                                   const IntersectionCleanupParams *params,
                                   int *shared_out);
 
+/* Conservative approximation budgets between two separately indexed surfaces.
+ * The caller initializes every face budget in [0,max_error]. This only tightens
+ * budgets, never edits geometry or interprets material labels. For every nearby
+ * pair, each budget is at most one quarter of a conservative projection-gap
+ * lower bound on original triangle distance. Non-separated/contact pairs get
+ * zero: they must retain their original surface, not be silently removed.
+ * Pairs beyond 2*max_error need no change. Exhaustive two-tree broad phase;
+ * no pair-prefix cap or dense concatenation. On error discard changed budgets.
+ * This protects distinct input surfaces under continuous pointwise error
+ * bounds; it does not repair existing intersections or adjudicate duplicates. */
+int IntersectionCleanup_cross_budget(
+    const float *verts_a, size_t nv_a, const int32_t *faces_a, size_t nf_a,
+    const float *verts_b, size_t nv_b, const int32_t *faces_b, size_t nf_b,
+    double max_error, double *budget_a, double *budget_b,
+    size_t *tested_pairs);
+
+/* Same separation envelopes across work batches of ONE indexed source mesh.
+ * owner[f] is nonnegative work ownership, not a material label. Pairs within
+ * an owner are skipped because its coupled fitter retains its existing guard;
+ * every spatially eligible cross-owner pair is considered once. No source
+ * geometry or connectivity changes, and no new pair graph is constructed. */
+int IntersectionCleanup_partition_budget(const float *verts,size_t nv,
+    const int32_t *faces,size_t nf,const int32_t *owner,double max_error,
+    double *budget,size_t *tested_pairs);
+
 /*
  * Remove a bounded greedy cover of all detected conflicts.
  *

@@ -17,11 +17,13 @@
  * ==========================================================================*/
 #define _USE_MATH_DEFINES
 #include "ribbon.h"
+#include "lane_turn_mrf.h"
 
 #include "../common/csr.h"
 #include "../common/kdtree.h"
 #include "../common/mesh_bin.h"   /* selftest reads back world-frame vmesh */
 #include "../common/pca.h"
+#include "../common/pipeline_constants.h"
 #include "../common/union_find.h"
 #include "../common/ves_platform.h"
 #include "../remesh/intersection_cleanup.h"
@@ -114,6 +116,45 @@
                                     * jump wraps (winding collapse / a hole
                                     * bridging across wraps), the grid SPLITS
                                      * instead of drawing a spike into space. */
+#define RIB_PEEL_LAYERS     2  /* lattice bands the row selection fills.  One
+                                * cell admits one claimant per LAYER instead of
+                                * one in total, so a losing wrap is written to
+                                * its own band rather than discarded. */
+#define RIB_PEEL_LAYERS_MAX RIBBON_MAX_PEEL_LAYERS
+/* The prediction is a thin 3-D shell, not a mathematical surface, so both
+ * faces can produce claims.  Radial continuity is a useful final tie-breaker,
+ * but claimant chain/chart identity remains authoritative: a cross-scale A/B
+ * that moved depth ahead of identity changed the selected geometry without
+ * improving coverage, coherence, distortion, or depth seams.  Keep this
+ * tolerance aligned with the depth-seam verifier. */
+#define RIB_CLAIM_DEPTH_TOL  0.75
+
+#define RIB_CLAIM_HBREAK_WEIGHT 32 /* a horizontal claim break costs this many
+                                    * vertical ones (rib_claim_path_better).
+                                    * Cross-scale A/B retained 32: lower weights
+                                    * reduce 10x depth seams, but do not improve
+                                    * coherence and lose source coverage. */
+#define RIB_VFILL_MAX_ROWS  8      /* max invalid lattice ROWS bridged within a
+                                    * ribbon column -- the v-fill's missing
+                                    * analogue of RIB_UFILL_MAX.  Measured
+                                    * 2026-09-01 on the 4x5x5: 916 generated
+                                    * v-runs, 61 of them spanning 64+ rows
+                                    * (128+ vox of z).  There is no such thing
+                                    * as a 64-row convex interpolation of a
+                                    * papyrus sheet; those are straight lines
+                                    * through empty CT. */
+#define RIB_FILL_STRETCH    1.25   /* max chord / bridged arclength for either
+                                    * fill.  The old gate was
+                                    * `d2 > gate2*steps*steps`, i.e. EACH
+                                    * bridged step may be a full 6 vox while a
+                                    * step is du = 2 vox -- licensing a chord
+                                    * three times longer than the material it
+                                    * replaces, with no individual edge ever
+                                    * exceeding the gate.  A 16-vox arc at
+                                    * r ~ 240 has chord/arc = 0.9998, so 1.25
+                                    * is anchor noise, not curvature. */
+#define RIB_FILL_CHORD_ABS  24.0   /* and an absolute ceiling (vox) on any fill
+                                    * chord, independent of du/dv and steps */
 #define RIB_MERGE_DU_MAX    8.0    /* carried-U agreement at a chain junction.
                                     * Equals chart_graph_layout.py's
                                     * MAX_FEASIBILITY_U_ERROR: the certified
@@ -318,6 +359,8 @@ static double wrap_pi(double a)
     return x - M_PI;
 }
 
+#include "ribbon_fill_guard.h"
+
 void RibbonOpts_default(RibbonOpts *opts)
 {
     assert(opts);
@@ -336,6 +379,7 @@ void RibbonOpts_default(RibbonOpts *opts)
     opts->grid_u        = 2.0f;
     opts->fit_ribbon    = 1;
     opts->wrap_spacing  = 0.0f;   /* auto-estimate */
+    opts->peel_layer    = -1;
 }
 
 /* ============================================================================
@@ -365,6 +409,9 @@ typedef struct {
     int32_t group;    /* chain-graph group id */
     int32_t mesh_comp;/* connected source-mesh component that produced chain */
     int32_t source_chart;/* exact chart provenance for direct graph gating */
+    int32_t owner_iz, owner_iy, owner_ix;/* canonical finite-domain owner.
+                            * The (0,0,0) root and then its closest ancestors
+                            * have immutable priority in projective fits. */
     int32_t winding_island;/* continuation-only material candidate; a later
                             * branch split may produce several output components */
     int32_t reconstruction_component;/* branch-aware output identity.  Starts
@@ -379,6 +426,8 @@ typedef struct {
 typedef struct {
     Sample *smp;      size_t n_smp;
     Chain  *chn;      size_t n_chn;
+    const float *source_verts; size_t source_nv;
+    const int32_t *source_faces; size_t source_nf;
     int     nplanes;
     double  tmin, tmax;
     size_t  bridge_cuts;
@@ -1185,9 +1234,10 @@ static int build_pairs(Arena_T arena, const SliceSet *S,
                          * the geometric nearest-neighbour construction, but do
                          * not let it jump to a contacting ply whose carried U
                          * is far away.  This is correspondence evidence only;
-                         * Stage C still solves a new metric U. */
+                         * Stage C may solve a new metric U; the trust-gauge
+                         * path retains this carried coordinate unchanged. */
                         double seed_du = 0.0;
-                        if (o->reference_u != NULL && o->solve_reference_u) {
+                        if (o->reference_u != NULL) {
                             seed_du = fabs(sb->u - sa->u);
                             if (!isfinite(sa->u) || !isfinite(sb->u) ||
                                 seed_du > seed_du_max) {
@@ -1196,7 +1246,7 @@ static int build_pairs(Arena_T arena, const SliceSet *S,
                             }
                         }
                         if (v3dot(sa->tau, sb->tau) < cos_gate) continue;
-                        if (o->reference_u != NULL && o->solve_reference_u) {
+                        if (o->reference_u != NULL) {
                             if (seed_du > best_seed_du + RIB_STRIP_GEOM_EPS)
                                 continue;
                             if (fabs(seed_du - best_seed_du) <=
@@ -6889,6 +6939,7 @@ typedef struct {
     int32_t mesh_comp;
     int32_t chain;
     int32_t source_chart;
+    int32_t owner_iz, owner_iy, owner_ix;
 } RibGridClaim;
 
 static double rib_claim_d2(const RibGridClaim *a, const RibGridClaim *b)
@@ -7204,6 +7255,9 @@ static int rib_claim_row_build(Arena_T arena, const SliceSet *S,
             dst->mesh_comp = ch->mesh_comp;
             dst->chain = chids[x];
             dst->source_chart = ch->source_chart;
+            dst->owner_iz = ch->owner_iz;
+            dst->owner_iy = ch->owner_iy;
+            dst->owner_ix = ch->owner_ix;
         }
     }
     row->first = rjmin;
@@ -7438,6 +7492,289 @@ static int rib_merge_build(Arena_T arena, const SliceSet *S,
     return 0;
 }
 
+/* ---- lane-pair radial evidence (feeds the lane-turn MRF) ------------------
+ *
+ * Two claims landing in the same (row, u-cell) while sitting more than the
+ * wrap gate apart in 3-D are a direct statement that the certificate placed
+ * two different wraps at one u.  Their RADIAL separation says by how much:
+ * round(dr / pitch) is the number of turns one of them is out.
+ *
+ * Observations are aggregated on the fly into a per-pair histogram of that
+ * integer, so the mode vote costs nothing to compute later and the memory is
+ * bounded by the number of distinct pairs rather than by the 300k contested
+ * cells.  This mirrors wr_observation_mode in winding_register.c. */
+#define RIB_LANE_KSPAN      4      /* histogram half-width in turns */
+#define RIB_LANE_KBINS      (2*RIB_LANE_KSPAN + 1)
+#define RIB_LANE_SNAP       0.30   /* |dr/pitch - k| must be under this.  A
+                                    * prediction shell is p50 1.17 vox = 0.12
+                                    * pitch and a crack is smaller still, so
+                                    * this excludes both from ever voting. */
+#define RIB_LANE_MIN_COUNT  4      /* observations before a pair may vote, the
+                                    * register's order-family threshold */
+#define RIB_LANE_MIN_AGREE  0.60   /* ... and its agreement threshold */
+#define RIB_LANE_ORDER_W    32.0   /* == WR_ORDER_BINARY_WEIGHT: this evidence
+                                    * is downstream of a possibly wrong u and
+                                    * must not outrank a continuation */
+#define RIB_LANE_CONT_SCALE 16.0   /* == WR_MRF_CONTINUATION_SCALE */
+#define RIB_LANE_TRUST_W    8.0    /* Huber trust on the carried certificate */
+#define RIB_LANE_PAIR_SLOTS (1u << 20)
+
+typedef struct {
+    uint64_t key;                    /* (min_group << 32) | max_group */
+    uint32_t hist[RIB_LANE_KBINS];   /* votes for k = bin - RIB_LANE_KSPAN */
+    uint32_t total;                  /* observations, including unsnapped */
+    int32_t  flip;                   /* 1 if the key order reverses (a,b) */
+} RibLanePair;
+
+typedef struct {
+    RibLanePair *slot;
+    size_t capacity;
+    size_t used;
+    size_t dropped;
+    size_t observations;
+} RibLanePairs;
+
+static int rib_lane_pairs_init(Arena_T arena, RibLanePairs *t)
+{
+    t->capacity = RIB_LANE_PAIR_SLOTS;
+    t->used = t->dropped = t->observations = 0;
+    t->slot = (RibLanePair *)ARENA_CALLOC(
+        arena, t->capacity, sizeof(*t->slot));
+    if (t->slot == NULL) return -1;
+    for (size_t i = 0; i < t->capacity; i++) t->slot[i].key = UINT64_MAX;
+    return 0;
+}
+
+/* Record one radial observation between two logical groups.  Groups (not
+ * lanes) are the key because the final lane id does not exist until every row
+ * has been walked; the mapping is applied once, afterwards. */
+static void rib_lane_pairs_add(RibLanePairs *t, int32_t ga, int32_t gb,
+                               double dr, double pitch)
+{
+    uint64_t lo = (uint64_t)(uint32_t)(ga < gb ? ga : gb);
+    uint64_t hi = (uint64_t)(uint32_t)(ga < gb ? gb : ga);
+    uint64_t key = (lo << 32) | hi;
+    /* splitmix64 finalizer.  A bare FNV multiply leaves the top bits of a
+     * structured key -- ours are two small consecutive group ids -- highly
+     * correlated, which clustered 85% of the observations into failed probes
+     * when this was first measured. */
+    uint64_t h = key + 0x9E3779B97F4A7C15ull;
+    size_t probe = 0, idx = 0;
+    double turns = 0.0;
+    long k = 0;
+    if (ga == gb || ga < 0 || gb < 0 || !(pitch > 1e-6)) return;
+    t->observations++;
+    h = (h ^ (h >> 30)) * 0xBF58476D1CE4E5B9ull;
+    h = (h ^ (h >> 27)) * 0x94D049BB133111EBull;
+    h ^= h >> 31;
+    idx = (size_t)h & (t->capacity - 1);
+    /* dr is unsigned; the sign of the vote comes from which group is outward,
+     * which is exactly the key's canonical order. */
+    turns = dr / pitch;
+    k = lround(turns);
+    for (probe = 0; probe < 256; probe++) {
+        RibLanePair *p = &t->slot[(idx + probe) & (t->capacity - 1)];
+        if (p->key == UINT64_MAX) {
+            if (t->used * 4 >= t->capacity * 3) { t->dropped++; return; }
+            p->key = key;
+            p->flip = ga < gb ? 0 : 1;
+            t->used++;
+        } else if (p->key != key) {
+            continue;
+        }
+        p->total++;
+        if (fabs(turns - (double)k) <= RIB_LANE_SNAP &&
+            k >= -RIB_LANE_KSPAN && k <= RIB_LANE_KSPAN)
+            p->hist[k + RIB_LANE_KSPAN]++;
+        return;
+    }
+    t->dropped++;
+}
+
+/* Record one ALREADY-SNAPPED integer vote between two sites.  Used by the
+ * co-location evidence, whose observation is exact (a phase difference in
+ * whole turns) rather than a radial ratio that must be rounded.  The key is
+ * canonical, so the vote flips sign when the caller's order does. */
+static void rib_lane_pairs_add_signed(RibLanePairs *t, int32_t a, int32_t b,
+                                      int32_t k)
+{
+    uint64_t lo = (uint64_t)(uint32_t)(a < b ? a : b);
+    uint64_t hi = (uint64_t)(uint32_t)(a < b ? b : a);
+    uint64_t key = (lo << 32) | hi;
+    uint64_t h = key + 0x9E3779B97F4A7C15ull;
+    size_t probe = 0, idx = 0;
+    int32_t vote = a < b ? k : -k;
+    if (a == b || a < 0 || b < 0) return;
+    if (vote < -RIB_LANE_KSPAN || vote > RIB_LANE_KSPAN) return;
+    t->observations++;
+    h = (h ^ (h >> 30)) * 0xBF58476D1CE4E5B9ull;
+    h = (h ^ (h >> 27)) * 0x94D049BB133111EBull;
+    h ^= h >> 31;
+    idx = (size_t)h & (t->capacity - 1);
+    for (probe = 0; probe < 256; probe++) {
+        RibLanePair *p = &t->slot[(idx + probe) & (t->capacity - 1)];
+        if (p->key == UINT64_MAX) {
+            if (t->used * 4 >= t->capacity * 3) { t->dropped++; return; }
+            p->key = key;
+            p->flip = 0;
+            t->used++;
+        } else if (p->key != key) {
+            continue;
+        }
+        p->total++;
+        p->hist[vote + RIB_LANE_KSPAN]++;
+        return;
+    }
+    t->dropped++;
+}
+
+/* In-plane radius of a claim about the scroll axis.  Same convention as
+ * Sample.r, recomputed here because a claim is an interpolation between two
+ * samples and carries only its position. */
+static double rib_claim_radius(const RibGridClaim *c, const RibbonOpts *o)
+{
+    double d[3], t = 0.0, n2 = 0.0, r2 = 0.0;
+    int i = 0;
+    for (i = 0; i < 3; i++) n2 += (double)o->axis_dir[i] * o->axis_dir[i];
+    if (!(n2 > 1e-12)) return 0.0;
+    for (i = 0; i < 3; i++) d[i] = c->p[i] - (double)o->axis_point[i];
+    for (i = 0; i < 3; i++) t += d[i] * (double)o->axis_dir[i];
+    t /= n2;
+    for (i = 0; i < 3; i++) {
+        double q = d[i] - t * (double)o->axis_dir[i];
+        r2 += q * q;
+    }
+    return sqrt(r2);
+}
+
+/* ---- co-location evidence -------------------------------------------------
+ *
+ * The co-claim evidence above only fires where two lanes want the SAME (row,
+ * u-cell).  That misses the failure that actually fragments the sheet: two
+ * lanes occupying the same physical papyrus at lifted phases a whole number of
+ * turns apart, which lands them in DISJOINT u bands that then tile the atlas
+ * with 3-D gaps of several hundred voxels between neighbours.
+ *
+ * Two samples within half a pitch in 3-D are the same piece of scroll.  Their
+ * lifted phases must therefore agree; if they differ by 2*pi*k, one lane is k
+ * turns out and the vote is exact.  This is the register's continuation
+ * observation, measured after the fit, at lane granularity.
+ *
+ * The hash is a uniform grid at the co-location radius, so a bucket plus its
+ * 26 neighbours contain every candidate. */
+#define RIB_COLOC_FRACTION  0.5    /* co-location radius in pitches */
+#define RIB_COLOC_SNAP      0.20   /* |dphi/2pi - k| must be under this */
+#define RIB_COLOC_CELL_CAP  64     /* candidates examined per bucket */
+#define RIB_COLOC_STRIDE_N  4000000u /* sample budget; larger rungs stride */
+
+typedef struct { int32_t next; int32_t sample; } RibColocNode;
+
+static void rib_collect_coloc(Arena_T arena, const SliceSet *S,
+                              const RibbonOpts *o, size_t nc,
+                              double pitch, RibLanePairs *pairs,
+                              size_t *out_pairs_seen)
+{
+    double radius = RIB_COLOC_FRACTION * pitch;
+    double cell = radius > 1e-6 ? radius : 1.0;
+    size_t nbucket = 1u << 20;
+    int32_t *head = NULL;
+    RibColocNode *node = NULL;
+    size_t stride = 1, nnode = 0, seen = 0;
+    Arena_Mark mark = Arena_save(arena);
+    double lo[3] = { 1e300, 1e300, 1e300 };
+
+    if (!(pitch > 1e-6) || S->n_smp == 0) { Arena_restore(arena, mark); return; }
+    if (S->n_smp > RIB_COLOC_STRIDE_N)
+        stride = (S->n_smp + RIB_COLOC_STRIDE_N - 1) / RIB_COLOC_STRIDE_N;
+
+    for (size_t i = 0; i < S->n_smp; i += stride) {
+        const Sample *sm = &S->smp[i];
+        if (sm->chain < 0) continue;
+        for (int d = 0; d < 3; d++) if (sm->p[d] < lo[d]) lo[d] = sm->p[d];
+    }
+    if (lo[0] > 1e299) { Arena_restore(arena, mark); return; }
+
+    head = RIB_ALLOC_ARRAY(arena, int32_t, nbucket);
+    for (size_t b = 0; b < nbucket; b++) head[b] = -1;
+    nnode = S->n_smp / stride + 1;
+    node = RIB_ALLOC_ARRAY(arena, RibColocNode, nnode);
+
+    {
+        size_t n = 0;
+        for (size_t i = 0; i < S->n_smp && n < nnode; i += stride) {
+            const Sample *sm = &S->smp[i];
+            uint64_t h;
+            size_t b;
+            int64_t g[3];
+            if (sm->chain < 0 || !isfinite(sm->phi)) continue;
+            for (int d = 0; d < 3; d++)
+                g[d] = (int64_t)floor((sm->p[d] - lo[d]) / cell);
+            h = (uint64_t)g[0] * 0x9E3779B97F4A7C15ull
+              ^ (uint64_t)g[1] * 0xBF58476D1CE4E5B9ull
+              ^ (uint64_t)g[2] * 0x94D049BB133111EBull;
+            h ^= h >> 31;
+            b = (size_t)h & (nbucket - 1);
+            node[n].sample = (int32_t)i;
+            node[n].next = head[b];
+            head[b] = (int32_t)n;
+            n++;
+        }
+        nnode = n;
+    }
+
+    for (size_t n = 0; n < nnode; n++) {
+        const Sample *a = &S->smp[node[n].sample];
+        int32_t ga, la;
+        int64_t g[3];
+        int dz = 0, dy = 0, dx = 0;
+        if (a->chain < 0 || (size_t)a->chain >= nc) continue;
+        la = S->chn[a->chain].reconstruction_component;
+        ga = S->chn[a->chain].winding_island;
+        if (la < 0) continue;
+        (void)ga;
+        for (int d = 0; d < 3; d++)
+            g[d] = (int64_t)floor((a->p[d] - lo[d]) / cell);
+        for (dz = -1; dz <= 1; dz++)
+        for (dy = -1; dy <= 1; dy++)
+        for (dx = -1; dx <= 1; dx++) {
+            uint64_t h = (uint64_t)(g[0]+dz) * 0x9E3779B97F4A7C15ull
+                       ^ (uint64_t)(g[1]+dy) * 0xBF58476D1CE4E5B9ull
+                       ^ (uint64_t)(g[2]+dx) * 0x94D049BB133111EBull;
+            size_t b;
+            int32_t it;
+            int scanned = 0;
+            h ^= h >> 31;
+            b = (size_t)h & (nbucket - 1);
+            for (it = head[b]; it >= 0 && scanned < RIB_COLOC_CELL_CAP;
+                 it = node[it].next, scanned++) {
+                const Sample *c = &S->smp[node[it].sample];
+                int32_t lb;
+                double d2 = 0.0, turns, res;
+                long k;
+                if (node[it].sample <= node[n].sample) continue;
+                if (c->chain < 0 || (size_t)c->chain >= nc) continue;
+                lb = S->chn[c->chain].reconstruction_component;
+                if (lb < 0 || lb == la) continue;
+                for (int d = 0; d < 3; d++) {
+                    double q = a->p[d] - c->p[d];
+                    d2 += q * q;
+                }
+                if (d2 > radius * radius) continue;
+                /* Same physical point: the phases must agree modulo a whole
+                 * number of turns, and that integer IS the correction. */
+                turns = (a->phi - c->phi) / (2.0 * M_PI);
+                k = lround(turns);
+                res = fabs(turns - (double)k);
+                if (res > RIB_COLOC_SNAP) continue;
+                seen++;
+                rib_lane_pairs_add_signed(pairs, la, lb, (int32_t)k);
+            }
+        }
+    }
+    if (out_pairs_seen) *out_pairs_seen = seen;
+    Arena_restore(arena, mark);
+}
+
 /* ---- branch-aware reconstruction components ------------------------------
  *
  * A material candidate may still contain a genuine branch.  The welded center
@@ -7496,9 +7833,10 @@ static int rib_assign_reconstruction_components(
 {
     const double gate2 = RIB_WRAP_GATE * RIB_WRAP_GATE;
     size_t nc = S->n_chn;
-    int32_t max_material = -1;
+    size_t nmaterial = 0;
     Arena_Mark mark;
     RibMergeSet merge;
+    int32_t *material_id = NULL, *chain_material = NULL;
     int32_t *group_slice = NULL, *group_material = NULL;
     int32_t *group_lane = NULL, *chain_lane = NULL;
     size_t *group_samples = NULL, *group_count = NULL, *group_off = NULL;
@@ -7516,18 +7854,55 @@ static int rib_assign_reconstruction_components(
     size_t relation_entries = 0, far_conflicts = 0, branch_splits = 0;
     size_t relation_cuts = 0;
     double relation_cut_support = 0.0;
+    RibLanePairs pairs_store;
+    RibLanePairs *pairs = NULL;
+    double pitch = (double)o->wrap_spacing;
     int rc = -1;
 
     for (size_t c = 0; c < nc; c++) {
         S->chn[c].reconstruction_component = S->chn[c].winding_island;
-        if (S->chn[c].winding_island > max_material)
-            max_material = S->chn[c].winding_island;
     }
-    if (nc == 0 || max_material < 0 || !o->component_global) return 0;
+    if (nc == 0 || !o->component_global) return 0;
     if (nc > (size_t)INT32_MAX) return -1;
 
     mark = Arena_save(arena);
+    /* Canonical material IDs are deliberately sparse, reversible i31 keys.
+     * Never size working arrays by max(id)+1: a perfectly ordinary two-block
+     * fit then reserves billions of slots.  Compress the IDs in sorted order
+     * for internal lane bookkeeping while leaving winding_island untouched as
+     * the published semantic material identity. */
+    material_id = RIB_ALLOC_ARRAY(arena, int32_t, nc);
+    for (size_t c = 0; c < nc; c++) {
+        int32_t id = S->chn[c].winding_island;
+        if (id >= 0) material_id[nmaterial++] = id;
+    }
+    if (nmaterial == 0) {
+        rc = 0;
+        goto done;
+    }
+    qsort(material_id, nmaterial, sizeof(*material_id), cmp_i32);
+    {
+        size_t keep = 0;
+        for (size_t i = 0; i < nmaterial; i++)
+            if (keep == 0 || material_id[i] != material_id[keep - 1])
+                material_id[keep++] = material_id[i];
+        nmaterial = keep;
+    }
+    chain_material = RIB_ALLOC_ARRAY(arena, int32_t, nc);
+    for (size_t c = 0; c < nc; c++) {
+        int32_t id = S->chn[c].winding_island;
+        int32_t *found = id >= 0
+            ? (int32_t *)bsearch(&id, material_id, nmaterial,
+                                 sizeof(*material_id), cmp_i32)
+            : NULL;
+        if (found == NULL) goto done;
+        chain_material[c] = (int32_t)(found - material_id);
+    }
     memset(&merge, 0, sizeof(merge));
+    /* Radial evidence is only meaningful against a known pitch. */
+    if (pitch > 1e-6 && isfinite(pitch) &&
+        rib_lane_pairs_init(arena, &pairs_store) == 0)
+        pairs = &pairs_store;
     if (rib_merge_build(arena, S, o, &merge) != 0 ||
         merge.n_logical == 0 || merge.n_logical > (size_t)INT32_MAX)
         goto done;
@@ -7550,9 +7925,9 @@ static int rib_assign_reconstruction_components(
         if (g < 0 || (size_t)g >= merge.n_logical) goto done;
         if (group_slice[g] < 0) {
             group_slice[g] = chain->slice;
-            group_material[g] = chain->winding_island;
+            group_material[g] = chain_material[c];
         } else if (group_slice[g] != chain->slice ||
-                   group_material[g] != chain->winding_island) {
+                   group_material[g] != chain_material[c]) {
             fprintf(stderr,
                     "ribbon: logical path %d crosses slice/material identity\n",
                     g);
@@ -7647,7 +8022,7 @@ static int rib_assign_reconstruction_components(
     group_local = RIB_ALLOC_ARRAY(arena, int32_t, merge.n_logical);
     for (size_t g = 0; g < merge.n_logical; g++) group_local[g] = -1;
     lane_count = (int32_t *)ARENA_CALLOC(
-        arena, (size_t)max_material + 1, sizeof(*lane_count));
+        arena, nmaterial, sizeof(*lane_count));
     lane_score = (double *)ARENA_CALLOC(arena, nc, sizeof(*lane_score));
     lane_stamp = (uint32_t *)ARENA_CALLOC(arena, nc, sizeof(*lane_stamp));
 
@@ -7700,14 +8075,28 @@ static int rib_assign_reconstruction_components(
                         int32_t gb = merge.logical[cb];
                         int32_t lb = group_local[gb];
                         double d2;
-                        if (ga == gb || la < 0 || lb < 0 ||
-                            group_material[ga] != group_material[gb])
+                        if (ga == gb || la < 0 || lb < 0) continue;
+                        if (pairs != NULL) {
+                            double dd = rib_claim_d2(&claims.claim[qa],
+                                                     &claims.claim[qb]);
+                            if (dd > gate2)
+                                rib_lane_pairs_add(
+                                    pairs, ga, gb,
+                                    fabs(rib_claim_radius(&claims.claim[qa], o)
+                                       - rib_claim_radius(&claims.claim[qb], o)),
+                                    pitch);
+                        }
+                        /* The lane splitter's own conflict matrix stays
+                         * material-local: joining two lineages is the global
+                         * stitcher's job, never a raster coincidence. */
+                        if (group_material[ga] != group_material[gb])
                             continue;
                         d2 = rib_claim_d2(&claims.claim[qa],
                                           &claims.claim[qb]);
                         if (d2 <= gate2) continue;
                         conflict_matrix[(size_t)la * rn + (size_t)lb] = 1;
                         conflict_matrix[(size_t)lb * rn + (size_t)la] = 1;
+                        (void)0;
                     }
                 }
             }
@@ -7752,7 +8141,7 @@ static int rib_assign_reconstruction_components(
                         int32_t other = relation_other[e];
                         int32_t lane;
                         if (S->chn[other].slice >= k ||
-                            S->chn[other].winding_island != material)
+                            chain_material[other] != material)
                             continue;
                         lane = chain_lane[other];
                         if (lane < 0) continue;
@@ -7808,15 +8197,15 @@ static int rib_assign_reconstruction_components(
     }
 
     lane_base = RIB_ALLOC_ARRAY(
-        arena, int32_t, (size_t)max_material + 2);
+        arena, int32_t, nmaterial + 1);
     lane_base[0] = 0;
-    for (int32_t material = 0; material <= max_material; material++) {
+    for (size_t material = 0; material < nmaterial; material++) {
         int64_t next = (int64_t)lane_base[material] + lane_count[material];
         if (next > INT32_MAX) goto done;
         lane_base[material + 1] = (int32_t)next;
     }
     for (size_t c = 0; c < nc; c++) {
-        int32_t material = S->chn[c].winding_island;
+        int32_t material = chain_material[c];
         if (material < 0 || chain_lane[c] < 0) goto done;
         S->chn[c].reconstruction_component =
             lane_base[material] + chain_lane[c];
@@ -7840,23 +8229,265 @@ static int rib_assign_reconstruction_components(
         }
     }
 
-    out->grid_reconstruction_components = (size_t)lane_base[max_material + 1];
+    /* ---- lane-turn MRF ---------------------------------------------------
+     *
+     * Lanes now exist and every chain carries one.  Convert the group-keyed
+     * radial evidence into lane-keyed MRF edges, solve for one integer turn
+     * offset per lane, and move the losers onto the turn the lattice says they
+     * belong to.  See lane_turn_mrf.h.  This is the ONLY thing in this file
+     * that changes a solved coordinate, and it moves whole turns or nothing. */
+    {
+        size_t nlanes = (size_t)lane_base[nmaterial];
+        int32_t *group_lane_final = NULL;
+        double *lane_support = NULL;
+        double *lane_phi_lo = NULL, *lane_phi_hi = NULL;
+        double *lane_u_lo = NULL, *lane_u_hi = NULL;
+        LaneTurnEdge *edges = NULL;
+        int32_t *shift = NULL;
+        LaneTurnStats st;
+        size_t nedge = 0, cap = 0, moved_chains = 0;
+        size_t rej_unsnapped = 0, rej_zero = 0;
+        size_t rej_count = 0, rej_agree = 0, rej_lane = 0;
+        double global_slope = 0.0, phi_lo = 1e300, phi_hi = -1e300;
+        double u_lo = 1e300, u_hi = -1e300;
+
+        memset(&st, 0, sizeof(st));
+        fprintf(stderr, "  lane-turn MRF input: pitch=%.3f lanes=%zu pairs=%zu obs=%zu dropped=%zu\n",
+                pitch, nlanes, pairs ? pairs->used : (size_t)0,
+                pairs ? pairs->observations : (size_t)0,
+                pairs ? pairs->dropped : (size_t)0);
+        /* In trust-gauge mode the carried certificate is the placement and
+         * whole-turn authority.  Re-solving integer lane turns here would
+         * silently undo that contract.  The MRF remains active for ordinary
+         * solved coordinates. */
+        if (o->reference_u != NULL && !o->solve_reference_u) {
+            fprintf(stderr,
+                    "  lane-turn MRF: skipped (authoritative trust-gauge "
+                    "certificate)\n");
+            goto lane_done;
+        }
+        if (pairs == NULL || nlanes == 0) goto lane_done;
+
+        group_lane_final = RIB_ALLOC_ARRAY(arena, int32_t, merge.n_logical);
+        for (size_t g = 0; g < merge.n_logical; g++) group_lane_final[g] = -1;
+        for (size_t c = 0; c < nc; c++) {
+            int32_t g = merge.logical[c];
+            if (g >= 0 && (size_t)g < merge.n_logical)
+                group_lane_final[g] = S->chn[c].reconstruction_component;
+        }
+
+        /* Per-lane support and the empirical u-per-radian slope.  The slope
+         * cannot be assumed to be 2*pi*r_ref: Stage C re-solves u, and on the
+         * 4x5x5 the measured turn is 1200 u against 2*pi*r_ref = 1519. */
+        lane_support = (double *)ARENA_CALLOC(arena, nlanes, sizeof(double));
+        lane_phi_lo = RIB_ALLOC_ARRAY(arena, double, nlanes);
+        lane_phi_hi = RIB_ALLOC_ARRAY(arena, double, nlanes);
+        lane_u_lo = RIB_ALLOC_ARRAY(arena, double, nlanes);
+        lane_u_hi = RIB_ALLOC_ARRAY(arena, double, nlanes);
+        for (size_t l = 0; l < nlanes; l++) {
+            lane_phi_lo[l] = lane_u_lo[l] = 1e300;
+            lane_phi_hi[l] = lane_u_hi[l] = -1e300;
+        }
+        for (size_t i = 0; i < S->n_smp; i++) {
+            const Sample *sm = &S->smp[i];
+            int32_t l;
+            if (sm->chain < 0 || (size_t)sm->chain >= nc) continue;
+            l = S->chn[sm->chain].reconstruction_component;
+            if (l < 0 || (size_t)l >= nlanes) continue;
+            if (!isfinite(sm->phi) || !isfinite(sm->u)) continue;
+            lane_support[l] += 1.0;
+            if (sm->phi < lane_phi_lo[l]) lane_phi_lo[l] = sm->phi;
+            if (sm->phi > lane_phi_hi[l]) lane_phi_hi[l] = sm->phi;
+            if (sm->u < lane_u_lo[l]) lane_u_lo[l] = sm->u;
+            if (sm->u > lane_u_hi[l]) lane_u_hi[l] = sm->u;
+            if (sm->phi < phi_lo) phi_lo = sm->phi;
+            if (sm->phi > phi_hi) phi_hi = sm->phi;
+            if (sm->u < u_lo) u_lo = sm->u;
+            if (sm->u > u_hi) u_hi = sm->u;
+        }
+        if (phi_hi - phi_lo > 1e-6)
+            global_slope = (u_hi - u_lo) / (phi_hi - phi_lo);
+        if (!(global_slope > 0.0) || !isfinite(global_slope)) goto lane_done;
+
+        /* ORDER edges from the aggregated radial histogram: mode vote, under
+         * the register's own order-family eligibility thresholds. */
+        cap = 2 * pairs->used + relation_entries + 4096;
+        edges = RIB_ALLOC_ARRAY(arena, LaneTurnEdge, cap);
+        for (size_t slot = 0; slot < pairs->capacity && nedge < cap; slot++) {
+            const RibLanePair *pr = &pairs->slot[slot];
+            int32_t ga, gb, la, lb, best_k = 0;
+            uint32_t best_n = 0, snapped = 0;
+            double agree = 0.0;
+            int b = 0;
+            if (pr->key == UINT64_MAX || pr->total == 0) continue;
+            for (b = 0; b < RIB_LANE_KBINS; b++) {
+                snapped += pr->hist[b];
+                if (pr->hist[b] > best_n) {
+                    best_n = pr->hist[b];
+                    best_k = b - RIB_LANE_KSPAN;
+                }
+            }
+            if (snapped == 0) { rej_unsnapped++; continue; }
+            if (best_k == 0) { rej_zero++; continue; }
+            if (best_n < (uint32_t)RIB_LANE_MIN_COUNT) { rej_count++; continue; }
+            agree = (double)best_n / (double)snapped;
+            if (agree < RIB_LANE_MIN_AGREE) { rej_agree++; continue; }
+            ga = (int32_t)(uint32_t)(pr->key >> 32);
+            gb = (int32_t)(uint32_t)pr->key;
+            if ((size_t)ga >= merge.n_logical ||
+                (size_t)gb >= merge.n_logical) continue;
+            la = group_lane_final[ga];
+            lb = group_lane_final[gb];
+            if (la < 0 || lb < 0 || la == lb) { rej_lane++; continue; }
+            edges[nedge].a = la;
+            edges[nedge].b = lb;
+            edges[nedge].target = best_k;
+            edges[nedge].weight =
+                RIB_LANE_ORDER_W * log1p((double)best_n) * agree;
+            nedge++;
+        }
+        /* SAME edges: a certified chain continuation that crosses a lane
+         * boundary says those two lanes are one sheet, so target 0. */
+        if (relations != NULL && relations->key != NULL) {
+            for (size_t slot = 0;
+                 slot < relations->capacity && nedge < cap; slot++) {
+                uint64_t key = relations->key[slot];
+                int32_t ca, cb, la, lb;
+                if (key == UINT64_MAX || !(relations->support[slot] > 0.0))
+                    continue;
+                ca = (int32_t)(uint32_t)(key >> 32);
+                cb = (int32_t)(uint32_t)key;
+                if (ca < 0 || cb < 0 || (size_t)ca >= nc || (size_t)cb >= nc)
+                    continue;
+                la = S->chn[ca].reconstruction_component;
+                lb = S->chn[cb].reconstruction_component;
+                if (la < 0 || lb < 0 || la == lb) continue;
+                edges[nedge].a = la;
+                edges[nedge].b = lb;
+                edges[nedge].target = 0;
+                edges[nedge].weight =
+                    RIB_LANE_CONT_SCALE * relations->support[slot];
+                nedge++;
+            }
+        }
+        fprintf(stderr, "  lane-turn MRF evidence: %zu edge(s) so far (order + continuation); rejected unsnapped=%zu k0=%zu count=%zu agree=%zu same-lane=%zu\n",
+                nedge, rej_unsnapped, rej_zero, rej_count, rej_agree,
+                rej_lane);
+        /* Co-location: two lanes on the same physical papyrus whose lifted
+         * phases differ by whole turns.  Collected only now, because it is
+         * keyed by the final lane id rather than by a logical group. */
+        {
+            RibLanePairs cl;
+            size_t coloc_obs = 0, coloc_edges = 0;
+            if (rib_lane_pairs_init(arena, &cl) == 0) {
+                rib_collect_coloc(arena, S, o, nc, pitch, &cl, &coloc_obs);
+                for (size_t slot = 0;
+                     slot < cl.capacity && nedge < cap; slot++) {
+                    const RibLanePair *pr = &cl.slot[slot];
+                    int32_t la, lb, best_k = 0;
+                    uint32_t best_n = 0, tot = 0;
+                    double agree = 0.0;
+                    int b = 0;
+                    if (pr->key == UINT64_MAX || pr->total == 0) continue;
+                    for (b = 0; b < RIB_LANE_KBINS; b++) {
+                        tot += pr->hist[b];
+                        if (pr->hist[b] > best_n) {
+                            best_n = pr->hist[b];
+                            best_k = b - RIB_LANE_KSPAN;
+                        }
+                    }
+                    if (tot == 0 || best_n < (uint32_t)RIB_LANE_MIN_COUNT)
+                        continue;
+                    agree = (double)best_n / (double)tot;
+                    if (agree < RIB_LANE_MIN_AGREE) continue;
+                    la = (int32_t)(uint32_t)(pr->key >> 32);
+                    lb = (int32_t)(uint32_t)pr->key;
+                    if (la < 0 || lb < 0 || la == lb) continue;
+                    if ((size_t)la >= nlanes || (size_t)lb >= nlanes) continue;
+                    edges[nedge].a = la;
+                    edges[nedge].b = lb;
+                    edges[nedge].target = best_k;
+                    /* Exact evidence: a shared physical point, not a rounded
+                     * radial ratio.  Priced like a continuation. */
+                    edges[nedge].weight =
+                        RIB_LANE_CONT_SCALE * log1p((double)best_n) * agree;
+                    nedge++;
+                    coloc_edges++;
+                }
+                fprintf(stderr,
+                        "  lane-turn MRF co-location: %zu observation(s) -> "
+                        "%zu pair(s), %zu edge(s) (%zu dropped)\n",
+                        coloc_obs, cl.used, coloc_edges, cl.dropped);
+            }
+        }
+        if (nedge == 0) goto lane_done;
+        if (LaneTurn_solve(arena, edges, nedge, lane_support, nlanes,
+                           RIB_LANE_TRUST_W, &shift, &st) != 0)
+            goto lane_done;
+
+        /* Apply.  phi moves by whole turns; u moves by the SAME number of
+         * turns measured in this lane's own u-per-radian, because Stage C has
+         * already re-parameterized and one global constant would tear the two
+         * coordinates apart. */
+        for (size_t c = 0; c < nc; c++) {
+            int32_t l = S->chn[c].reconstruction_component;
+            double slope = global_slope, du_shift = 0.0;
+            Chain *ch = NULL;
+            int32_t q = 0;
+            if (l < 0 || (size_t)l >= nlanes || shift[l] == 0) continue;
+            if (lane_phi_hi[l] - lane_phi_lo[l] > 1.0 &&
+                lane_u_hi[l] > lane_u_lo[l])
+                slope = (lane_u_hi[l] - lane_u_lo[l]) /
+                        (lane_phi_hi[l] - lane_phi_lo[l]);
+            du_shift = (double)shift[l] * 2.0 * M_PI * slope;
+            ch = &S->chn[c];
+            for (q = 0; q < ch->count; q++) {
+                Sample *sm = &S->smp[ch->first + q];
+                sm->phi += (double)shift[l] * 2.0 * M_PI;
+                sm->u += du_shift;
+            }
+            ch->wind += shift[l];
+            moved_chains++;
+        }
+        out->grid_lane_mrf_sites = st.sites;
+        out->grid_lane_mrf_edges = st.edges;
+        out->grid_lane_mrf_changed = st.changed;
+        out->grid_lane_mrf_moved = st.moved;
+        out->grid_lane_mrf_chains = moved_chains;
+        out->grid_lane_mrf_energy_before = st.energy_before;
+        out->grid_lane_mrf_energy_after = st.energy_after;
+        out->grid_lane_pair_observations = pairs->observations;
+        out->grid_lane_pairs = pairs->used;
+        out->grid_lane_pairs_dropped = pairs->dropped;
+        fprintf(stderr,
+                "  lane-turn MRF: %zu lanes, %zu edges from %zu pair(s) / "
+                "%zu observation(s) (%zu dropped); %zu lane(s) moved "
+                "[%d,%d], %zu chain(s) shifted; energy %.3f -> %.3f\n",
+                st.sites, st.edges, pairs->used, pairs->observations,
+                pairs->dropped, st.moved, st.shift_min, st.shift_max,
+                moved_chains, st.energy_before, st.energy_after);
+lane_done: ;
+    }
+
+    out->grid_reconstruction_components = (size_t)lane_base[nmaterial];
     out->grid_branch_conflicts = far_conflicts;
     out->grid_branch_splits = branch_splits;
     out->grid_branch_relation_cuts = relation_cuts;
     out->grid_branch_relation_cut_support = relation_cut_support;
     fprintf(stderr,
-            "  reconstruction lanes: material=%d output=%zu "
+            "  reconstruction lanes: materials=%zu output=%zu "
             "far-conflicts=%zu branch-splits=%zu relation-cuts=%zu "
             "(support=%.1f)\n",
-            max_material + 1, out->grid_reconstruction_components,
+            nmaterial, out->grid_reconstruction_components,
             far_conflicts, branch_splits, relation_cuts,
             relation_cut_support);
-    if (max_material < 32) {
-        for (int32_t material = 0; material <= max_material; material++)
+    if (nmaterial < 32) {
+        for (size_t material = 0; material < nmaterial; material++)
             if (lane_count[material] > 1)
-                fprintf(stderr, "    material %d: %d branch lane(s)\n",
-                        material, lane_count[material]);
+                fprintf(stderr,
+                        "    material %d (dense %zu): %d branch lane(s)\n",
+                        material_id[material], material,
+                        lane_count[material]);
     }
     rc = 0;
 
@@ -8080,14 +8711,24 @@ static size_t rib_grid_long_edges(const float *grid, const uint8_t *present,
     return count;
 }
 
-static void rib_grid_long_edge_directions(const float *grid,
-                                          const uint8_t *present,
-                                          size_t nk, size_t nu,
-                                          size_t *horizontal,
-                                          size_t *vertical)
+/* Complete census of grid edges above the physical wrap gate.
+ *
+ * The lattice-neighbour counts (h, v) are what every historical
+ * `long_edges_*` statistic reports.  They are NOT the edges the writer
+ * emits: a four-corner cell is serialized as (a,b,c) + (b,d,c), so the
+ * DIAGONAL b-c is an emitted edge in every such cell and was never measured.
+ * On the shipped 4x5x5 ribbon that diagonal carries 35,430 of 70,631 long
+ * edges -- half the damage, invisible in the log.  `diag_anti` is the
+ * alternate a-d diagonal, counted so an emitter that may flip a cell can be
+ * judged against the same yardstick before it chooses. */
+static void rib_grid_long_edge_census(const float *grid,
+                                      const uint8_t *present,
+                                      size_t nk, size_t nu,
+                                      size_t *horizontal, size_t *vertical,
+                                      size_t *diag_main, size_t *diag_anti)
 {
     const double gate2 = RIB_WRAP_GATE * RIB_WRAP_GATE;
-    size_t h = 0, v = 0;
+    size_t h = 0, v = 0, dm = 0, da = 0;
     for (size_t k = 0; k < nk; k++) {
         for (size_t j = 0; j < nu; j++) {
             const float *p = &grid[(k*nu+j)*3];
@@ -8100,10 +8741,23 @@ static void rib_grid_long_edge_directions(const float *grid,
                 const float *q = p + nu*3;
                 if (present[(k+1)*nu+j] && rib_grid_d2(p,q) > gate2) v++;
             }
+            /* Diagonals belong to the CELL, so they exist only where all four
+             * corners do -- exactly the writer's emission condition. */
+            if (j + 1 < nu && k + 1 < nk &&
+                present[k*nu+j+1] && present[(k+1)*nu+j] &&
+                present[(k+1)*nu+j+1]) {
+                const float *b = p + 3;
+                const float *c = p + nu*3;
+                const float *d = c + 3;
+                if (rib_grid_d2(b,c) > gate2) dm++;
+                if (rib_grid_d2(p,d) > gate2) da++;
+            }
         }
     }
     if (horizontal) *horizontal = h;
     if (vertical) *vertical = v;
+    if (diag_main) *diag_main = dm;
+    if (diag_anti) *diag_anti = da;
 }
 
 static double rib_d2f(const float *a, const float *b)
@@ -8128,6 +8782,192 @@ static int rib_grid_triangle_legal(const double a[3], const double b[3],
 
 /* Number of triangles the final adaptive emitter can retain in one cell.
  * `override_slot` substitutes one candidate claim without mutating the grid. */
+/* The triangle set one four-corner cell may emit, honouring both the physical
+ * wrap gate and any topological cut on its four lattice edges.
+ *
+ * `present` and the two cut masks are indexed by lattice slot; `p` holds the
+ * four corner positions in the a,b,c,d order the writer uses.  The MAIN
+ * diagonal wins ties, so every cell that was already legal reproduces the
+ * historical writer's two triangles byte for byte -- the A/B measures the
+ * wrap fix and nothing else. */
+static uint8_t rib_grid_cell_code(const float *p[4], const int present[4],
+                                  int cut_ab, int cut_ac,
+                                  int cut_bd, int cut_cd)
+{
+    const double gate2 = RIB_WRAP_GATE * RIB_WRAP_GATE;
+    /* edge legality: both corners present, edge not cut, length under gate */
+    int ab = present[0] && present[1] && !cut_ab &&
+             rib_grid_d2(p[0], p[1]) <= gate2;
+    int ac = present[0] && present[2] && !cut_ac &&
+             rib_grid_d2(p[0], p[2]) <= gate2;
+    int bd = present[1] && present[3] && !cut_bd &&
+             rib_grid_d2(p[1], p[3]) <= gate2;
+    int cd = present[2] && present[3] && !cut_cd &&
+             rib_grid_d2(p[2], p[3]) <= gate2;
+    /* The two diagonals are cell-interior: no lattice edge, so no cut mask. */
+    int bc = present[1] && present[2] && rib_grid_d2(p[1], p[2]) <= gate2;
+    int ad = present[0] && present[3] && rib_grid_d2(p[0], p[3]) <= gate2;
+    int abc = ab && ac && bc;
+    int bdc = bd && cd && bc;
+    int abd = ab && bd && ad;
+    int adc = ac && cd && ad;
+    int nmain = abc + bdc, nanti = abd + adc;
+    int npresent = present[0] + present[1] + present[2] + present[3];
+    uint8_t code = 0;
+    /* A three-corner cell is half a quad, and its single triangle is exactly
+     * as legal as any other: same gate, same cut masks.  Refusing it was
+     * costing real connectivity once the fills were tightened -- a cell whose
+     * fourth corner was an invented vertex now has three MEASURED ones and
+     * still tiles the sheet. */
+    if (npresent == 3) {
+        if (!present[3]) return abc ? (uint8_t)RIB_CELL_ABC : (uint8_t)0;
+        if (!present[2]) return abd ? (uint8_t)RIB_CELL_ABD : (uint8_t)0;
+        if (!present[1]) return adc ? (uint8_t)RIB_CELL_ADC : (uint8_t)0;
+        return bdc ? (uint8_t)RIB_CELL_BDC : (uint8_t)0;
+    }
+    if (npresent < 3) return 0;
+    if (nanti > nmain) {
+        if (abd) code = (uint8_t)(code | RIB_CELL_ABD);
+        if (adc) code = (uint8_t)(code | RIB_CELL_ADC);
+    } else {
+        if (abc) code = (uint8_t)(code | RIB_CELL_ABC);
+        if (bdc) code = (uint8_t)(code | RIB_CELL_BDC);
+    }
+    return code;
+}
+
+/* Material lineage is a topology invariant, not a face-quality preference.
+ * A cell can be geometrically short while straddling two independently solved
+ * material sheets; this occurred only 40 times on the first 10x10x10 run, so
+ * it escaped the 4x5x5 corpus.  Retain an otherwise-legal triangle when all of
+ * its known corners agree.  Unknown (-1) generated corners are neutral, but
+ * they may not hide a disagreement between two known endpoints. */
+static uint8_t rib_grid_filter_material(uint8_t code,
+                                        const int32_t material[4],
+                                        size_t *cut_faces)
+{
+    static const int tri[4][3] = {
+        {0,1,2}, {1,3,2}, {0,1,3}, {0,3,2}
+    };
+    int t = 0;
+    if (material == NULL) return code;
+    for (t = 0; t < 4; t++) {
+        int32_t known = -1;
+        int conflict = 0;
+        int q = 0;
+        if (!(code & (1 << t))) continue;
+        for (q = 0; q < 3; q++) {
+            int32_t m = material[tri[t][q]];
+            if (m < 0) continue;
+            if (known < 0) known = m;
+            else if (known != m) conflict = 1;
+        }
+        if (conflict) {
+            code = (uint8_t)(code & ~(1 << t));
+            if (cut_faces != NULL) (*cut_faces)++;
+        }
+    }
+    return code;
+}
+
+/* Decide every cell's emitted topology.  One pass over the lattice after all
+ * geometry is final; parallel over k because each k writes only its own cell
+ * row, so the result is bit-identical to the serial order. */
+static void rib_grid_emit_codes(const float *G, const uint8_t *GO,
+                                const uint8_t *CH, const uint8_t *CV,
+                                const int32_t *GM,
+                                size_t nk, size_t nu, uint8_t *Q,
+                                RibbonResult *out)
+{
+    size_t full = 0, e2 = 0, e1 = 0, e0 = 0, flipped = 0, faces = 0;
+    size_t material_cuts = 0;
+    int64_t pk = 0;
+    if (nk < 2 || nu < 2) return;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) \
+    reduction(+:full) reduction(+:e2) \
+    reduction(+:e1) reduction(+:e0) \
+    reduction(+:flipped) reduction(+:faces) reduction(+:material_cuts)
+#endif
+    for (pk = 0; pk < (int64_t)(nk - 1); pk++) {
+        size_t k = (size_t)pk, j = 0;
+        for (j = 0; j + 1 < nu; j++) {
+            size_t sa = k*nu + j,       sb = k*nu + j + 1;
+            size_t sc = (k+1)*nu + j,   sd = (k+1)*nu + j + 1;
+            const float *p[4];
+            int32_t material[4];
+            int present[4];
+            uint8_t code = 0;
+            present[0] = GO[sa]; present[1] = GO[sb];
+            present[2] = GO[sc]; present[3] = GO[sd];
+            if (present[0] + present[1] + present[2] + present[3] < 3)
+                continue;
+            full++;
+            p[0] = &G[sa*3]; p[1] = &G[sb*3];
+            p[2] = &G[sc*3]; p[3] = &G[sd*3];
+            code = rib_grid_cell_code(p, present,
+                                      CH[sa], CV[sa], CV[sb], CH[sc]);
+            if (GM != NULL) {
+                material[0] = GM[sa]; material[1] = GM[sb];
+                material[2] = GM[sc]; material[3] = GM[sd];
+                code = rib_grid_filter_material(code, material,
+                                                &material_cuts);
+            }
+            Q[k*(nu-1) + j] = code;
+            if (code & RIB_CELL_ANTI) flipped++;
+            if (code == 0) e0++;
+            else if (code == RIB_CELL_MAIN || code == RIB_CELL_ANTI) {
+                e2++;
+                faces += 2;
+            } else {
+                e1++;
+                faces += 1;
+            }
+        }
+    }
+    out->grid_cells_full = full;
+    out->grid_cells_emit2 = e2;
+    out->grid_cells_emit1 = e1;
+    out->grid_cells_emit0 = e0;
+    out->grid_cells_flipped = flipped;
+    out->grid_emitted_faces = faces;
+    out->grid_material_faces_cut = material_cuts;
+}
+
+/* Postcondition: walk the triangles the codes actually emit and count edges
+ * above the gate.  This must be zero.  It is a separate pass on purpose --
+ * the emitter and its audit must be able to disagree, or the audit proves
+ * nothing. */
+static size_t rib_grid_emitted_long_edges(const float *G, const uint8_t *Q,
+                                          size_t nk, size_t nu)
+{
+    const double gate2 = RIB_WRAP_GATE * RIB_WRAP_GATE;
+    size_t bad = 0;
+    size_t k = 0, j = 0;
+    if (nk < 2 || nu < 2) return 0;
+    for (k = 0; k + 1 < nk; k++) {
+        for (j = 0; j + 1 < nu; j++) {
+            uint8_t code = Q[k*(nu-1) + j];
+            const float *p[4];
+            static const int tri[4][3] = {
+                {0,1,2}, {1,3,2}, {0,1,3}, {0,3,2}
+            };
+            int t = 0;
+            if (code == 0) continue;
+            p[0] = &G[(k*nu + j)*3];       p[1] = &G[(k*nu + j + 1)*3];
+            p[2] = &G[((k+1)*nu + j)*3];   p[3] = &G[((k+1)*nu + j + 1)*3];
+            for (t = 0; t < 4; t++) {
+                int e = 0;
+                if (!(code & (1 << t))) continue;
+                for (e = 0; e < 3; e++)
+                    if (rib_grid_d2(p[tri[t][e]], p[tri[t][(e+1)%3]]) > gate2)
+                        bad++;
+            }
+        }
+    }
+    return bad;
+}
+
 static int rib_grid_cell_legal(const float *grid, size_t nu,
                                size_t k, size_t j, size_t override_slot,
                                const double override_p[3])
@@ -9827,14 +10667,52 @@ typedef struct {
     size_t horizontal_breaks;
     size_t chain_switches;
     size_t chart_switches;
+    size_t depth_hops;
     double energy;
     int32_t parent;
 } RibClaimPath;
+
+static uint64_t rib_owner_abs(int32_t value)
+{
+    return value < 0 ? (uint64_t)(-(int64_t)value) : (uint64_t)value;
+}
+
+/* A crop-independent well-order of canonical blocks.  Every block's parent
+ * has Manhattan depth one smaller, so an ancestor always wins.  Coordinates
+ * break equal-depth ties without using the crop's block enumeration order. */
+static int rib_claim_owner_compare(const RibGridClaim *a,
+                                   const RibGridClaim *b)
+{
+    uint64_t da = rib_owner_abs(a->owner_iz) +
+                  rib_owner_abs(a->owner_iy) +
+                  rib_owner_abs(a->owner_ix);
+    uint64_t db = rib_owner_abs(b->owner_iz) +
+                  rib_owner_abs(b->owner_iy) +
+                  rib_owner_abs(b->owner_ix);
+    if (da != db) return da < db ? -1 : 1;
+    if (a->owner_iz != b->owner_iz)
+        return a->owner_iz < b->owner_iz ? -1 : 1;
+    if (a->owner_iy != b->owner_iy)
+        return a->owner_iy < b->owner_iy ? -1 : 1;
+    if (a->owner_ix != b->owner_ix)
+        return a->owner_ix < b->owner_ix ? -1 : 1;
+    return 0;
+}
+
+static int rib_claim_owner_equal(const RibGridClaim *a,
+                                 const RibGridClaim *b)
+{
+    return a->owner_iz == b->owner_iz &&
+           a->owner_iy == b->owner_iy &&
+           a->owner_ix == b->owner_ix;
+}
 
 static int rib_claim_compare(const void *pa, const void *pb)
 {
     const RibGridClaim *a = (const RibGridClaim *)pa;
     const RibGridClaim *b = (const RibGridClaim *)pb;
+    int owner_order = rib_claim_owner_compare(a, b);
+    if (owner_order != 0) return owner_order;
     for (int d = 0; d < 3; d++) {
         if (a->p[d] < b->p[d]) return -1;
         if (a->p[d] > b->p[d]) return 1;
@@ -9852,22 +10730,54 @@ static int rib_claim_compare(const void *pa, const void *pb)
 
 static int rib_claim_path_better(const RibClaimPath *candidate, int32_t tie,
                                  const RibClaimPath *current,
-                                 int32_t current_tie)
+                                 int32_t current_tie,
+                                 int balanced_breaks)
 {
     double eps;
-    /* First minimize all physical discontinuities in the U/V quilt.  Among
-     * paths with the same total, prefer not to tear the measured row itself;
-     * then prefer one source curve over an A->B->A mosaic.  A switch forced by
-     * the end of a chain's support remains available because every path through
-     * that column pays it. */
-    if (candidate->breaks != current->breaks)
-        return candidate->breaks < current->breaks;
-    if (candidate->horizontal_breaks != current->horizontal_breaks)
-        return candidate->horizontal_breaks < current->horizontal_breaks;
+    /* Minimize the tear that FRAGMENTS the deliverable first.
+     *
+     * A horizontal break splits the row itself: the emitter cannot draw a quad
+     * across it, so the strip ends there and the sheet gains a component.  A
+     * vertical break only disagrees with the row above; the row stays whole and
+     * the emitter simply omits that cell's vertical edges.  Pooling the two in
+     * one count (as this did until 2026-09-01) let a path with ONE horizontal
+     * break beat a path with two vertical ones -- measured on the 4x5x5 as
+     * 8,921 of 9,263 wrap splits where a single chain claimed BOTH adjacent
+     * columns, with its own step inside the gate, and was passed over anyway.
+     *
+     * Below that, prefer not to tear at all, then retain claimant identity.
+     * This prevents an A->B->A mosaic while still permitting a handoff forced
+     * by the end of a chain's support.  Radial-face continuity breaks the
+     * remaining ties. */
+    {
+        /* Price the two tears rather than ordering them absolutely.  Strict
+         * horizontal-first was measured right on the 4x5x5 (coherence
+         * 58.5% -> 96.9%) and far too aggressive on the 10x, where 2,048
+         * competing lanes let the DP follow one lane across a whole row while
+         * disagreeing with the row above at almost every column: vertical long
+         * edges 9,557 -> 746,761 and the sheet shredded into 214k components.
+         * A horizontal break is worth several vertical ones, not infinitely
+         * many. */
+        size_t ch = candidate->horizontal_breaks;
+        size_t cu = current->horizontal_breaks;
+        size_t cv = candidate->breaks - ch;
+        size_t uv2 = current->breaks - cu;
+        /* A carried-coordinate fit with material-coherent claims counts
+         * breaks in BOTH directions equally. The legacy 32:1 row preference
+         * lets one local along-U defect exchange dozens of intact measured
+         * vertical continuations for an A-B-A strip on a different sheet. */
+        size_t weight = balanced_breaks ? 1 : RIB_CLAIM_HBREAK_WEIGHT;
+        size_t cs = weight * ch + cv;
+        size_t us = weight * cu + uv2;
+        if (cs != us) return cs < us;
+        if (ch != cu) return ch < cu;
+    }
     if (candidate->chain_switches != current->chain_switches)
         return candidate->chain_switches < current->chain_switches;
     if (candidate->chart_switches != current->chart_switches)
         return candidate->chart_switches < current->chart_switches;
+    if (candidate->depth_hops != current->depth_hops)
+        return candidate->depth_hops < current->depth_hops;
     eps = 1e-12 * (1.0 + fabs(candidate->energy) +
                    fabs(current->energy));
     if (candidate->energy + eps < current->energy) return 1;
@@ -9904,7 +10814,8 @@ static RibClaimPath rib_claim_path_unary(const RibGridClaim *candidate,
 static void rib_claim_path_add_edge(RibClaimPath *path,
                                     const RibGridClaim *left,
                                     const RibGridClaim *right,
-                                    double gate2)
+                                    double gate2,
+                                    const double *umb_yx)
 {
     double d2 = rib_claim_d2(left, right);
     if (d2 > gate2) {
@@ -9913,6 +10824,13 @@ static void rib_claim_path_add_edge(RibClaimPath *path,
     }
     if (left->chain != right->chain) path->chain_switches++;
     if (left->source_chart != right->source_chart) path->chart_switches++;
+    if (umb_yx != NULL) {
+        double rl = hypot((double)left->p[1] - umb_yx[0],
+                          (double)left->p[2] - umb_yx[1]);
+        double rr2 = hypot((double)right->p[1] - umb_yx[0],
+                           (double)right->p[2] - umb_yx[1]);
+        if (fabs(rl - rr2) >= RIB_CLAIM_DEPTH_TOL) path->depth_hops++;
+    }
     path->energy += d2;
 }
 
@@ -9925,12 +10843,24 @@ static size_t rib_claim_select_row(Arena_T arena, RibGridClaim *claim,
                                    const float *previous_row,
                                    const uint8_t *previous_present,
                                    int component_global,
+                                   int prefer_owner,
+                                   int balanced_breaks,
+                                   const double *umb_yx,
                                    int32_t *selected)
 {
     const double gate2 = RIB_WRAP_GATE * RIB_WRAP_GATE;
     RibClaimPath *state = NULL;
+    size_t *eligible_end = NULL;
     size_t replacements = 0;
 
+    /* Projective selection is a pure function of this absolute slice.  Keep
+     * this guard inside the selector, not merely at its callers: no future
+     * call site may accidentally make row k depend on which earlier rows the
+     * requested crop happened to contain. */
+    if (prefer_owner) {
+        previous_row = NULL;
+        previous_present = NULL;
+    }
     for (size_t j = 0; j < nu; j++) selected[j] = -1;
     if (!component_global) {
         for (size_t j = 0; j < nu; j++)
@@ -9944,44 +10874,63 @@ static size_t rib_claim_select_row(Arena_T arena, RibGridClaim *claim,
                   sizeof(*claim), rib_claim_compare);
     if (off[nu] == 0) return 0;
     state = RIB_ALLOC_ARRAY(arena, RibClaimPath, off[nu]);
+    eligible_end = RIB_ALLOC_ARRAY(arena, size_t, nu);
+    for (size_t j = 0; j < nu; j++) {
+        eligible_end[j] = off[j + 1];
+        if (prefer_owner && off[j] < off[j + 1]) {
+            size_t q = off[j] + 1;
+            while (q < off[j + 1] &&
+                   rib_claim_owner_equal(&claim[off[j]], &claim[q]))
+                q++;
+            eligible_end[j] = q;
+        }
+    }
 
     for (size_t first = 0; first < nu;) {
         size_t last, begin, end;
-        while (first < nu && off[first] == off[first + 1]) first++;
+        while (first < nu && off[first] == eligible_end[first]) first++;
         if (first == nu) break;
         last = first;
         begin = off[first];
-        end = off[first + 1];
-        for (size_t q = begin; q < end; q++)
+        end = eligible_end[first];
+        for (size_t q = begin; q < end; q++) {
+            const float *previous = previous_row != NULL &&
+                                    (previous_present == NULL ||
+                                     previous_present[first])
+                                  ? previous_row + first * 3 : NULL;
             state[q] = rib_claim_path_unary(
-                &claim[q], previous_row != NULL &&
-                             (previous_present == NULL || previous_present[first])
-                              ? previous_row + first * 3 : NULL,
-                gate2);
+                &claim[q], previous, gate2);
+        }
 
-        while (last + 1 < nu && off[last + 1] < off[last + 2]) {
+        while (last + 1 < nu &&
+               off[last + 1] < eligible_end[last + 1] &&
+               (!prefer_owner ||
+                rib_claim_owner_equal(&claim[off[last]],
+                                      &claim[off[last + 1]]))) {
             size_t column = last + 1;
-            size_t pbegin = off[last], pend = off[last + 1];
-            size_t qbegin = off[column], qend = off[column + 1];
+            size_t pbegin = off[last], pend = eligible_end[last];
+            size_t qbegin = off[column], qend = eligible_end[column];
             for (size_t q = qbegin; q < qend; q++) {
+                const float *previous = previous_row != NULL &&
+                                        (previous_present == NULL ||
+                                         previous_present[column])
+                                      ? previous_row + column * 3 : NULL;
                 RibClaimPath unary = rib_claim_path_unary(
-                    &claim[q], previous_row != NULL &&
-                                 (previous_present == NULL ||
-                                  previous_present[column])
-                                  ? previous_row + column * 3 : NULL,
-                    gate2);
+                    &claim[q], previous, gate2);
                 RibClaimPath best = {
-                    SIZE_MAX, SIZE_MAX, SIZE_MAX, SIZE_MAX, HUGE_VAL, -1
+                    SIZE_MAX, SIZE_MAX, SIZE_MAX, SIZE_MAX, SIZE_MAX,
+                    HUGE_VAL, -1
                 };
                 for (size_t p = pbegin; p < pend; p++) {
                     RibClaimPath next = state[p];
                     rib_claim_path_add_edge(&next, &claim[p], &claim[q],
-                                            gate2);
+                                            gate2, umb_yx);
                     next.breaks += unary.breaks;
                     next.energy += unary.energy;
                     next.parent = (int32_t)p;
                     if (rib_claim_path_better(
-                            &next, (int32_t)p, &best, best.parent))
+                            &next, (int32_t)p, &best, best.parent,
+                            balanced_breaks))
                         best = next;
                 }
                 state[q] = best;
@@ -9990,11 +10939,12 @@ static size_t rib_claim_select_row(Arena_T arena, RibGridClaim *claim,
         }
 
         begin = off[last];
-        end = off[last + 1];
+        end = eligible_end[last];
         int32_t best = (int32_t)begin;
         for (size_t q = begin + 1; q < end; q++)
             if (rib_claim_path_better(
-                    &state[q], (int32_t)q, &state[(size_t)best], best))
+                    &state[q], (int32_t)q, &state[(size_t)best], best,
+                    balanced_breaks))
                 best = (int32_t)q;
         for (size_t j = last;; j--) {
             selected[j] = best;
@@ -10287,12 +11237,129 @@ static size_t rib_grid_repair_claim_pairs(const SliceSet *S,
     return repairs;
 }
 
+/* Return the lattice columns sampled by one monotonically parameterized slice
+ * chain.  A valid chain narrower than du can fall strictly between two column
+ * isovalues (ceil(ulo/du) > floor(uhi/du)); dropping it makes thin but real
+ * source components vanish from Stage 3.  Give such a chain its nearest single
+ * column.  The representative is at most du/2 outside the measured interval,
+ * and the ordinary claim selector / wrap gate still decides ownership. */
+static int rib_grid_claim_span(double ulo, double uhi, double du, size_t nu,
+                               int32_t *out_j0, int32_t *out_j1,
+                               int *out_subcell)
+{
+    int64_t j0, j1, jmax;
+    if (out_subcell != NULL) *out_subcell = 0;
+    if (out_j0 == NULL || out_j1 == NULL || !(du > 0.0) || nu == 0 ||
+        nu > (size_t)INT32_MAX || !isfinite(ulo) || !isfinite(uhi))
+        return 0;
+    if (uhi < ulo) {
+        double swap = ulo;
+        ulo = uhi;
+        uhi = swap;
+    }
+    jmax = (int64_t)nu - 1;
+    if (uhi < 0.0 || ulo > (double)jmax * du) return 0;
+    j0 = (int64_t)ceil(ulo / du);
+    j1 = (int64_t)floor(uhi / du);
+    if (j0 < 0) j0 = 0;
+    if (j1 > jmax) j1 = jmax;
+    if (j0 > j1) {
+        int64_t nearest = (int64_t)llround((0.5 * (ulo + uhi)) / du);
+        if (nearest < 0) nearest = 0;
+        if (nearest > jmax) nearest = jmax;
+        j0 = j1 = nearest;
+        if (out_subcell != NULL) *out_subcell = 1;
+    }
+    *out_j0 = (int32_t)j0;
+    *out_j1 = (int32_t)j1;
+    return 1;
+}
+
+/* Remove one selected claimant per column, preserving the residual CSR order.
+ * Compaction never needs a second grid or a per-claim taken/noff allocation. */
+static void rib_claim_peel(RibGridClaim *claim, size_t *off, size_t width,
+                            const int32_t *selected)
+{
+    size_t first = off[0], keep = 0;
+    for (size_t j = 0; j < width; j++) {
+        size_t last = off[j + 1];
+        off[j] = keep;
+        for (size_t q = first; q < last; q++)
+            if (selected[j] < 0 || q != (size_t)selected[j])
+                claim[keep++] = claim[q];
+        first = last;
+    }
+    off[width] = keep;
+}
+
+/* Exact payload of all nine resident grid arrays. Row/claim scratch, source
+ * samples, arena alignment and export meshes are additional working memory. */
+static int rib_grid_payload_bytes(size_t nu, size_t nk, size_t *out)
+{
+    const size_t bytes_per_slot = 4 * sizeof(float) + 2 * sizeof(int32_t) +
+                                  4 * sizeof(uint8_t);
+    size_t slots = 0, cells = 0;
+    if (out == NULL) return -1;
+    *out = 0;
+    if (nu < 2 || nk < 1 || nu > SIZE_MAX / nk) return -1;
+    slots = nu * nk;
+    cells = (nk - 1) * (nu - 1);
+    if (slots > (SIZE_MAX - cells) / bytes_per_slot) return -1;
+    *out = slots * bytes_per_slot + cells;
+    return 0;
+}
+
+/* A short fill is not permission to cut through measured material. Project
+ * the common slice plane along its dominant normal; proper segment crossings
+ * are invariant under that projection. Bounds are built once per source
+ * chain/row, so a fill scans nearby segments, not the complete source mesh.
+ * This only vetoes invented chords; it never adjudicates measured claims. */
+static int rib_fill_crosses_slice(const SliceSet *S, const int32_t *chains,
+                                  size_t n, const double *bounds, int d0, int d1,
+                                  const double *a, const double *b)
+{
+    double ax=a[d0], ay=a[d1], bx=b[d0], by=b[d1];
+    double lo0=fmin(ax,bx), hi0=fmax(ax,bx);
+    double lo1=fmin(ay,by), hi1=fmax(ay,by);
+    double rx=bx-ax, ry=by-ay;
+    for (size_t i=0;i<n;i++) {
+        const double *box=bounds+4*i;
+        if (box[0]>hi0 || box[1]<lo0 || box[2]>hi1 || box[3]<lo1) continue;
+        const Chain *ch=S->chn+chains[i];
+        for (int q=1;q<ch->count;q++) {
+            const double *c=S->smp[ch->first+q-1].p;
+            const double *d=S->smp[ch->first+q].p;
+            double cx=c[d0],cy=c[d1],dx=d[d0],dy=d[d1];
+            if (fmin(cx,dx)>hi0 || fmax(cx,dx)<lo0 ||
+                fmin(cy,dy)>hi1 || fmax(cy,dy)<lo1) continue;
+            double sx=dx-cx,sy=dy-cy,den=rx*sy-ry*sx;
+            if (fabs(den)<=128*DBL_EPSILON*(fabs(rx*sy)+fabs(ry*sx)+1)) continue;
+            double t=((cx-ax)*sy-(cy-ay)*sx)/den;
+            double u=((cx-ax)*ry-(cy-ay)*rx)/den;
+            /* Shared endpoints and collinear overlaps are not proper
+             * crossings. The final whole-mesh proper-contact audit is still
+             * required; a slice predicate is not a 3-D embedding proof. */
+            if (t>1e-7 && t<1-1e-7 && u>1e-7 && u<1-1e-7) return 1;
+        }
+    }
+    return 0;
+}
+
 static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
                        const RibbonOpts *o,
                        const ChainRelationGraph *relations,
                        RibbonResult *out)
 {
     double du = (double)o->grid_u;
+    int np = S->nplanes;
+    if (np < 1 || o->peel_layer < -1 ||
+        o->peel_layer >= RIB_PEEL_LAYERS_MAX ||
+        (o->peel_layer >= 0 && (!o->component_global ||
+         o->ownership_construction || !o->projective_grid ||
+         (o->reference_owner_block == NULL && !o->coherent_claims)))) {
+        fprintf(stderr, "ERROR: selected peel requires carried-frame owner or coherent claims\n");
+        return;
+    }
     if (du < 1e-6) du = 1.0;
     double atlas_umax = -1e300, cover_umax = -1e300;
     for (size_t i = 0; i < S->n_smp; i++) {
@@ -10307,33 +11374,67 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
     if (umax <= 0.0) return;
     size_t active_nu = (size_t)(atlas_umax / du) + 2;
     size_t nu = (size_t)(umax / du) + 2;
-    size_t nk = (size_t)S->nplanes;
+    /* Peeling is a CLAIMS-mode policy.  Construction mode consumes a frozen
+     * fusion decision in which each cell already has exactly one claimant, so
+     * a second pass has nothing to take and would only break the handoff. */
+    int npeel = (o->component_global && !o->ownership_construction)
+                    ? (o->peel_layers > 0
+                           ? o->peel_layers : RIB_PEEL_LAYERS)
+                    : 1;
+    /* umbilicus (y,x) for the claim DP's depth-hop criterion; valid only
+     * when the caller supplied a real scroll axis */
+    double umb_yx[2] = { (double)o->axis_point[1], (double)o->axis_point[2] };
+    int have_umb = o->axis_point[1] != 0.0f || o->axis_point[2] != 0.0f;
+    /* Backward-compatible A/B override for the peel depth (claims mode only).
+     * An explicit RibbonOpts/--peel-layers value is authoritative.  The 10x weld
+     * certificate stacks ~3.4 wraps per lifted turn (65% fused zero-steps,
+     * 2026-09-01), so RIB_PEEL_LAYERS=2 keeps ~2 of every 3.4 stacked wraps
+     * and coverage caps at 77%.  Depth is REGIME-BOUND (rule 26): sweep it
+     * per rung with eyes on the verdict before promoting a new default. */
+    if (npeel > 1 && o->peel_layers == 0) {
+        const char *env_peel = getenv("VES_PEEL_LAYERS");
+        if (env_peel != NULL && env_peel[0] != 0) {
+            int v = atoi(env_peel);
+            if (v >= 1 && v <= RIB_PEEL_LAYERS_MAX) npeel = v;
+        }
+    }
+    int first_peel = o->peel_layer >= 0 ? o->peel_layer : 0;
+    int select_peels = o->peel_layer >= 0 ? o->peel_layer + 1 : npeel;
+    int stored_peels = o->peel_layer >= 0 ? 1 : npeel;
+    if (first_peel >= npeel) {
+        fprintf(stderr,
+                "ERROR: requested peel layer %d but this fit has %d layer(s)\n",
+                first_peel, npeel);
+        return;
+    }
+    size_t nk = (size_t)np * (size_t)stored_peels;
     if (nu < 2 || nk < 1) return;
     {
-        /* A CARRIED registered field legitimately spans the whole unrolled
-         * scroll (~1.2M vox u on PHerc0139 -> ~600k columns at du=2), so the
-         * old fixed 500k-column runaway guard rejected every correct
-         * whole-scroll fit (silently, before 2026-08-11).  Guard on the
-         * actual allocation instead: the grid is
-         * nk*nu*(12B G + 1B GV + 4B lifted phase) plus
-         * ~nu*100B of row scratch. */
-        double grid_bytes = (double)nk * (double)nu * 17.0
-                          + (double)nu * 100.0;
-        const double grid_cap = 48.0e9;
-        if (grid_bytes > grid_cap) {
+        size_t grid_bytes = 0;
+        if (rib_grid_payload_bytes(nu, nk, &grid_bytes) != 0) {
+            fprintf(stderr, "ERROR: fitted grid payload size overflow\n");
+            return;
+        }
+        if (grid_bytes > RIBBON_OBSERVATION_GRID_BYTES) {
             fprintf(stderr,
-                "ERROR: fitted grid %zu cols x %zu rows needs %.1f GB "
-                "(cap %.0f GB; du=%.3g, u span %.6g, atlas_umax=%.6g, "
-                "cover_umax=%.6g). Raise du, tighten island packing/--gap, "
-                "or check the u-tail winsorization.\n",
-                nu, nk, grid_bytes / 1e9, grid_cap / 1e9, du, umax,
+                "ERROR: fitted grid %zu cols x %zu rows needs %zu payload bytes "
+                "(cap %llu; du=%.3g, u span %.6g, atlas_umax=%.6g, "
+                "cover_umax=%.6g). Use bounded peel storage for projective "
+                "owner claims; geometry and coordinates are not rescaled.\n",
+                nu, nk, grid_bytes,
+                (unsigned long long)RIBBON_OBSERVATION_GRID_BYTES, du, umax,
                 atlas_umax, cover_umax);
             return;
         }
         if (nu > 500000)
             fprintf(stderr,
                 "  fitted grid is whole-scroll scale: %zu cols x %zu rows "
-                "(%.1f GB)\n", nu, nk, grid_bytes / 1e9);
+                "(%zu payload bytes, excluding scratch)\n", nu, nk, grid_bytes);
+        if (o->peel_layer >= 0)
+            fprintf(stderr,
+                "  fitted grid bounded peel: storing layer %d/%d after "
+                "deterministically consuming %d preceding layer(s)\n",
+                first_peel, npeel, first_peel);
     }
 
     float   *G  = (float *)ARENA_CALLOC(arena, nk * nu * 3, sizeof(float));
@@ -10342,6 +11443,16 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
     float   *GP = (float *)ARENA_CALLOC(arena, nk * nu, sizeof(float));
     int32_t *GI = RIB_ALLOC_ARRAY(arena, int32_t, nk * nu);
     int32_t *GM = RIB_ALLOC_ARRAY(arena, int32_t, nk * nu);
+    /* Topological cuts.  A fill that STOPS leaves a gap the emitter may
+     * later bridge from the other side; a CUT is a standing statement that
+     * these two lattice slots are not the same sheet.  The row scan already
+     * detected 12,452 wrap jumps on the 4x5x5 and then let the writer draw
+     * across every one of them, because the split only ended a fill run. */
+    uint8_t *CH = (uint8_t *)ARENA_CALLOC(arena, nk * nu, 1);
+    uint8_t *CV = (uint8_t *)ARENA_CALLOC(arena, nk * nu, 1);
+    uint8_t *Q  = (nk >= 2 && nu >= 2)
+                ? (uint8_t *)ARENA_CALLOC(arena, (nk - 1) * (nu - 1), 1)
+                : NULL;
     for (size_t i = 0; i < nk * nu; i++) {
         GI[i] = -1;
         GM[i] = -1;
@@ -10381,10 +11492,10 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
     }
 
     Arena_Mark mark = Arena_save(arena);
-    int np = S->nplanes;
     int32_t *choff = NULL;
     int32_t *chids = chains_by_slice(arena, S, &choff);
     RibClaimLabelRow *claim_labels = NULL;
+    RibClaimLabelRow *emitted_claim_labels = NULL;
     const double *expected_phi = NULL;
 
     if (o->component_global && o->ownership_construction) {
@@ -10405,14 +11516,33 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
                 out->grid_fuse_alternate, out->grid_fuse_violations);
         fit_t0 = ves_clock_sec();
     } else if (o->component_global) {
-        /* Claims mode: the component-wide phi consensus is a soft unary for
-         * an exact whole-row claimant path. */
-        expected_phi = component_phi_consensus(arena, S, U0, du, nu,
-                                               o->winding_sense);
+        /* A crop-wide phi consensus is a useful legacy fitting heuristic, but
+         * it is not a projective input: observations added arbitrarily far
+         * away can move the isotonic consensus at an existing absolute U and
+         * thereby replace an otherwise unchanged claimant.  Certified
+         * projective mode therefore ranks only the claims present in the
+         * canonical owner domain; their carried phase remains output payload,
+         * never an extent-dependent selection unary. */
+        if (!(o->projective_grid && o->reference_owner_block != NULL))
+            expected_phi = component_phi_consensus(arena, S, U0, du, nu,
+                                                   o->winding_sense);
         if (o->verify_fit_width && expected_phi != NULL)
             rib_expect_digest(o->fit_cover_width ? "cover" : "compact",
                               expected_phi, active_nu < nu ? active_nu : nu);
         fit_t0 = ves_clock_sec();
+    }
+    if (o->component_global) {
+        /* Preserve the actual selected source chain for every measured output
+         * cell in BOTH ownership modes.  Construction already retained its
+         * pre-fit decision; claims mode used to drop this information even
+         * though the writer has an authoritative claimant-chart sidecar. */
+        emitted_claim_labels = (RibClaimLabelRow *)calloc(
+            nk ? nk : 1, sizeof(*emitted_claim_labels));
+        if (emitted_claim_labels == NULL) {
+            rib_claim_label_rows_dispose(claim_labels, nk);
+            Arena_restore(arena, mark);
+            return;
+        }
     }
 
     /* ---- v-strips: partition the slice planes into axial strips.  Every
@@ -10420,9 +11550,9 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
      * pick-last), so strips own disjoint fitted rows and are semantically
      * invisible; they exist only for thread parallelism. */
     int strip_h = np;
-    if (!o->direct_ribbon && o->v_strip_planes > 0) {
+    if (!o->coherent_claims && !o->direct_ribbon && o->v_strip_planes > 0) {
         strip_h = o->v_strip_planes;
-    } else if (!o->direct_ribbon && o->v_strip_planes < 0) {
+    } else if (!o->coherent_claims && !o->direct_ribbon && o->v_strip_planes < 0) {
         /* Target up to 2 strips per thread but never more than 64 strips
          * total, with a 16-plane floor. */
         int nthreads = 1;
@@ -10447,15 +11577,31 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
     {
     size_t tot_conflicts = 0, tot_conflict_cells = 0;
     size_t tot_discarded = 0, tot_replaced = 0;
+    size_t tot_candidates = 0, required_peels = 0;
+    size_t tot_overflow = 0, tot_stored = 0;
+    size_t tot_subcell = 0;
     size_t tot_ws = 0, tot_wsm = 0, tot_wss = 0, tot_wsi = 0;
+    size_t tot_ur_steps = 0, tot_ur_stretch = 0, tot_ur_crossing = 0;
+    size_t tot_break_avoidable = 0, tot_break_forced = 0;
+    size_t tot_break_adjacent = 0;
+    /* Distinct reconstruction lanes per occupied lattice cell.  Shared rather
+     * than reduced: MSVC's OpenMP 2.0 has no array reduction, and integer
+     * increments commute exactly, so atomics keep the result deterministic. */
+    size_t lane_hist[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
     int claim_handoff_failed = 0;
     int si = 0;
 #ifdef _OPENMP
 #pragma omp parallel for schedule(dynamic, 1) \
     reduction(+:tot_conflicts) reduction(+:tot_conflict_cells) \
     reduction(+:tot_discarded) reduction(+:tot_replaced) \
+    reduction(+:tot_candidates) reduction(+:tot_overflow) reduction(+:tot_stored) \
+    reduction(+:tot_subcell) \
     reduction(+:tot_ws) reduction(+:tot_wsm) \
     reduction(+:tot_wss) reduction(+:tot_wsi) \
+    reduction(+:tot_ur_steps) reduction(+:tot_ur_stretch) \
+    reduction(+:tot_ur_crossing) \
+    reduction(+:tot_break_avoidable) reduction(+:tot_break_forced) \
+    reduction(+:tot_break_adjacent) \
     reduction(|:claim_handoff_failed)
 #endif
     for (si = 0; si < n_strips; si++) {
@@ -10463,6 +11609,26 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
     double *P   = RIB_ALLOC_ARRAY(sarena, double, nu * 3);
     uint8_t *V  = RIB_ALLOC_ARRAY(sarena, uint8_t, nu);
     int32_t *claim_chain = RIB_ALLOC_ARRAY(sarena, int32_t, nu);
+    int prefer_owner = !o->coherent_claims && o->projective_grid &&
+                       o->reference_owner_block != NULL;
+    /* Each peel owns its previous MEASURED row, not a previously emitted
+     * surface or an invented fill. One rolling row per peel also serves
+     * unexported peels in bounded-storage mode. */
+    float *coherent_previous = o->coherent_claims
+        ? (float *)ARENA_CALLOC(sarena, (size_t)select_peels * nu * 3, sizeof(float))
+        : NULL;
+    uint8_t *coherent_present = o->coherent_claims
+        ? (uint8_t *)ARENA_CALLOC(sarena, (size_t)select_peels * nu, 1) : NULL;
+    int32_t *coherent_row = o->coherent_claims
+        ? RIB_ALLOC_ARRAY(sarena, int32_t, (size_t)select_peels) : NULL;
+    if (coherent_row != NULL)
+        for (int l = 0; l < select_peels; l++) coherent_row[l] = -2;
+    int32_t *prior_owner = prefer_owner
+        ? RIB_ALLOC_ARRAY(sarena, int32_t, (size_t)stored_peels * nu * 3)
+        : NULL;
+    uint8_t *prior_owner_present = prefer_owner
+        ? (uint8_t *)ARENA_CALLOC(sarena, (size_t)stored_peels * nu, 1)
+        : NULL;
     int k0 = si * strip_h;
     int k1 = k0 + strip_h < np ? k0 + strip_h : np;
     /* Empty columns are absent observations, represented only by V.  Keep
@@ -10471,7 +11637,7 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
 
     for (int k = k0; k < k1; k++) {
         Arena_Mark row_mark = Arena_save(sarena);
-        float *gpos_row = &G[(size_t)k * nu * 3];
+        /* gpos_row is rebound per peel layer below. */
         /* The row's chains occupy a narrow u WINDOW of the whole-scroll grid
          * (a 21x21x21 grid is ~900k columns; one slice plane's chains span a
          * few percent of it).  Every per-row structure and scan below works
@@ -10484,10 +11650,9 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
             int32_t f = ch->first, cn = ch->count;
             if (cn < 2) continue;
             double ulo = S->smp[f].u - U0, uhi = S->smp[f+cn-1].u - U0;
-            int32_t j0 = (int32_t)ceil(ulo / du), j1 = (int32_t)floor(uhi / du);
-            if (j0 < 0) j0 = 0;
-            if (j1 > (int32_t)nu - 1) j1 = (int32_t)nu - 1;
-            if (j0 > j1) continue;
+            int32_t j0, j1;
+            if (!rib_grid_claim_span(ulo, uhi, du, nu, &j0, &j1, NULL))
+                continue;
             if ((size_t)j0 < rjmin) rjmin = (size_t)j0;
             if ((size_t)j1 > rjmax) rjmax = (size_t)j1;
         }
@@ -10508,9 +11673,12 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
             int32_t f = ch->first, cn = ch->count;
             if (cn < 2) continue;
             double ulo = S->smp[f].u - U0, uhi = S->smp[f+cn-1].u - U0;
-            int32_t j0 = (int32_t)ceil(ulo / du), j1 = (int32_t)floor(uhi / du);
-            if (j0 < 0) j0 = 0;
-            if (j1 > (int32_t)nu - 1) j1 = (int32_t)nu - 1;
+            int32_t j0, j1;
+            int subcell = 0;
+            if (!rib_grid_claim_span(
+                    ulo, uhi, du, nu, &j0, &j1, &subcell))
+                continue;
+            if (subcell) tot_subcell++;
             for (int32_t j = j0; j <= j1; j++)
                 off[(size_t)j - rjmin + 1]++;
         }
@@ -10521,9 +11689,48 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
             continue;
         }
 
+        /* Census BEFORE peeling: the old histogram counted the shrinking
+         * residual on every pass and saturated at eight. It could not prove
+         * completeness. Every nonempty cell consumes exactly one claim per
+         * peel, so its initial multiplicity is the required storage depth.
+         * This counts observations, not a claim of distinct physical sheets. */
+        {
+            size_t row_depth = 0;
+            tot_candidates += nclaim;
+            for (size_t j = 0; j < rw; j++) {
+                size_t count = off[j + 1] - off[j];
+                if (count > row_depth) row_depth = count;
+                if (count > (size_t)npeel) tot_overflow += count - (size_t)npeel;
+            }
+#ifdef _OPENMP
+#pragma omp critical(ribbon_claim_capacity)
+#endif
+            { if (row_depth > required_peels) required_peels = row_depth; }
+        }
+
         RibGridClaim *claim = RIB_ALLOC_ARRAY(sarena, RibGridClaim, nclaim);
         size_t *cursor = RIB_ALLOC_ARRAY(sarena, size_t, rw);
         memcpy(cursor, off, rw * sizeof(size_t));
+        double *fill_bounds=NULL;
+        int fill_dominant=0;
+        for (int d=1;d<3;d++)
+            if (fabs((double)o->axis_dir[d])>fabs((double)o->axis_dir[fill_dominant]))
+                fill_dominant=d;
+        int fill_d0=(fill_dominant+1)%3, fill_d1=(fill_dominant+2)%3;
+        size_t fill_nc=(size_t)(choff[k+1]-choff[k]);
+        if (o->coherent_claims) {
+            fill_bounds=RIB_ALLOC_ARRAY(sarena,double,4*fill_nc);
+            for (size_t i=0;i<fill_nc;i++) {
+                const Chain *ch=S->chn+chids[choff[k]+i];
+                double *box=fill_bounds+4*i;
+                box[0]=box[2]=HUGE_VAL;box[1]=box[3]=-HUGE_VAL;
+                for (int q=0;q<ch->count;q++) {
+                    const double *p=S->smp[ch->first+q].p;
+                    box[0]=fmin(box[0],p[fill_d0]);box[1]=fmax(box[1],p[fill_d0]);
+                    box[2]=fmin(box[2],p[fill_d1]);box[3]=fmax(box[3],p[fill_d1]);
+                }
+            }
+        }
 
         /* Pass 2: interpolate each chain at the column isovalue. */
         for (int32_t x = choff[k]; x < choff[k+1]; x++) {
@@ -10531,9 +11738,9 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
             int32_t f = ch->first, cn = ch->count;
             if (cn < 2) continue;
             double ulo = S->smp[f].u - U0, uhi = S->smp[f+cn-1].u - U0;
-            int32_t j0 = (int32_t)ceil(ulo / du), j1 = (int32_t)floor(uhi / du);
-            if (j0 < 0) j0 = 0;
-            if (j1 > (int32_t)nu - 1) j1 = (int32_t)nu - 1;
+            int32_t j0, j1;
+            if (!rib_grid_claim_span(ulo, uhi, du, nu, &j0, &j1, NULL))
+                continue;
             int32_t seg = 1;
             for (int32_t j = j0; j <= j1; j++) {
                 double uq = (double)j * du + U0;
@@ -10560,9 +11767,41 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
                 dst->mesh_comp = ch->mesh_comp;
                 dst->chain = chids[x];
                 dst->source_chart = ch->source_chart;
+                dst->owner_iz = ch->owner_iz;
+                dst->owner_iy = ch->owner_iy;
+                dst->owner_ix = ch->owner_ix;
             }
         }
 
+        /* ---- claim peeling ------------------------------------------------
+         * One lattice cell used to admit ONE claimant and DISCARD the rest.
+         * On the 4x5x5 that threw away 238,791 claims in 211,164 cells, and
+         * the cost is visible in the deliverable: source coverage inside
+         * r=150 sits at 45-47% because the losing wrap is simply absent, its
+         * material a median 13.9 vox (1.5 pitches) from anything the ribbon
+         * drew.  The winner is not more correct than the loser -- it is just
+         * the one the row DP reached first.
+         *
+         * So peel instead of discard: run the SAME selection again over the
+         * claims the previous layer did not take, and write it to its own
+         * band of lattice rows.  Every layer keeps the true gauge (u is
+         * untouched), single cover holds within a layer, and the layer
+         * boundary needs no gutter because the two bands geometry is
+         * unrelated and the wrap gate refuses to join them. */
+        for (int layer = 0; layer < select_peels; layer++) {
+        int retain = layer >= first_peel;
+        size_t stored_layer = retain ? (size_t)(layer - first_peel) : 0;
+        size_t krow = stored_layer * (size_t)np + (size_t)k;
+        /* Check before forming a grid pointer: selected-peel storage must
+         * never index the resident buffer with an absolute peel number. */
+        if (krow >= nk) {
+            claim_handoff_failed = 1;
+            break;
+        }
+        float *gpos_row = &G[krow * nu * 3];
+        memset(V + rjmin, 0, rw);
+        for (size_t j = 0; j < rw; j++) claim_chain[rjmin + j] = -1;
+        if (off[rw] == 0) break;
         int32_t *selected = RIB_ALLOC_ARRAY(sarena, int32_t, rw);
         size_t row_replaced = 0;
         if (o->component_global && o->ownership_construction) {
@@ -10577,15 +11816,28 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
                 for (size_t jw = 0; jw < rw; jw++) selected[jw] = -1;
             }
         } else if (o->component_global) {
-            /* Claims mode: solve each contiguous row interval as one exact
-             * claimant path against the fitted row above. */
-            const float *previous_row = k > k0
-                ? &G[(((size_t)k - 1) * nu + rjmin) * 3] : NULL;
-            const uint8_t *previous_present = k > k0
-                ? &GO[((size_t)k - 1) * nu + rjmin] : NULL;
+            /* A carried coordinate frame and a claimant choice are different
+             * contracts. Coherent mode aggregates previous measured-row
+             * evidence over each complete U interval. Only the explicit old
+             * owner policy partitions by owner and ignores predecessor rows.
+             * Crops may choose different peels; material XYZ/UV/phase/lineage
+             * is still retained, never replaced by a coordinate certificate. */
+            const float *previous_row = !prefer_owner &&
+                    krow > (size_t)(layer * np + k0)
+                ? &G[((krow - 1) * nu + rjmin) * 3] : NULL;
+            const uint8_t *previous_present = !prefer_owner &&
+                    krow > (size_t)(layer * np + k0)
+                ? &GO[(krow - 1) * nu + rjmin] : NULL;
+            if (o->coherent_claims) {
+                size_t base = (size_t)layer * nu + rjmin;
+                previous_row = coherent_row[layer] == k - 1
+                    ? coherent_previous + base * 3 : NULL;
+                previous_present = coherent_present + base;
+            }
             row_replaced = rib_claim_select_row(
                 sarena, claim, off, rw, previous_row, previous_present,
-                1, selected);
+                1, prefer_owner, o->coherent_claims,
+                have_umb ? umb_yx : NULL, selected);
         } else {
             /* Legacy single-mesh path: the historical last-claim-per-column
              * rule (chain enumeration order), unchanged. */
@@ -10593,10 +11845,40 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
                 selected[jw] = off[jw + 1] > off[jw]
                              ? (int32_t)(off[jw + 1] - 1) : -1;
         }
+        if (o->coherent_claims) {
+            memset(coherent_present + (size_t)layer * nu, 0, nu);
+            coherent_row[layer] = k;
+        }
         int rowvalid = 0;
+        if (prefer_owner && retain)
+            memset(prior_owner_present + stored_layer * nu + rjmin,
+                   0, rw);
         for (size_t jw = 0; jw < rw; jw++) {
             size_t j = rjmin + jw;
             size_t nc = off[jw + 1] - off[jw];
+            if (nc > 0) {
+                /* How many physically distinct lanes want this cell.  A cell
+                 * with n lanes needs n slots to keep every wrap; measuring the
+                 * distribution is what sizes that decision from data instead
+                 * of a guess.  nc is ~1 in the common case, so the quadratic
+                 * scan never leaves L1. */
+                size_t distinct = 0;
+                for (size_t q = off[jw]; q < off[jw + 1]; q++) {
+                    int32_t lq = S->chn[claim[q].chain].reconstruction_component;
+                    int seen = 0;
+                    for (size_t r = off[jw]; r < q; r++)
+                        if (S->chn[claim[r].chain].reconstruction_component
+                                == lq) { seen = 1; break; }
+                    if (!seen) distinct++;
+                }
+                if (distinct > 8) distinct = 8;
+                if (distinct > 0) {
+#ifdef _OPENMP
+#pragma omp atomic
+#endif
+                    lane_hist[distinct - 1]++;
+                }
+            }
             if (nc > 1) {
                 tot_conflicts += nc - 1;
                 tot_conflict_cells++;
@@ -10610,22 +11892,53 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
                 }
             }
             if (selected[jw] < 0) continue;
+            rowvalid++;
+            if (o->coherent_claims) {
+                const RibGridClaim *kept = &claim[(size_t)selected[jw]];
+                size_t previous_slot = (size_t)layer * nu + j;
+                for (int d = 0; d < 3; d++)
+                    coherent_previous[previous_slot * 3 + (size_t)d] = (float)kept->p[d];
+                coherent_present[previous_slot] = 1;
+            }
+            if (!retain) continue;
+            tot_stored++;
             const RibGridClaim *src = &claim[(size_t)selected[jw]];
             for (int d = 0; d < 3; d++)
                 P[j*3 + (size_t)d] = src->p[d];
             V[j] = 1;
             claim_chain[j] = src->chain;
-            GP[(size_t)k*nu + j] = (float)src->phi;
-            GI[(size_t)k*nu + j] =
+            if (prefer_owner) {
+                int32_t *owner = prior_owner +
+                    (stored_layer * nu + j) * 3;
+                owner[0] = src->owner_iz;
+                owner[1] = src->owner_iy;
+                owner[2] = src->owner_ix;
+                prior_owner_present[stored_layer * nu + j] = 1;
+            }
+            GP[krow*nu + j] = (float)src->phi;
+            GI[krow*nu + j] =
                 S->chn[src->chain].reconstruction_component;
-            GM[(size_t)k*nu + j] = S->chn[src->chain].winding_island;
-            if (GI[(size_t)k*nu + j] < 0)
+            GM[krow*nu + j] = S->chn[src->chain].winding_island;
+            if (GI[krow*nu + j] < 0)
                 claim_handoff_failed = 1;
-            rowvalid++;
         }
+        if (retain && emitted_claim_labels != NULL &&
+            rib_claim_label_set(&emitted_claim_labels[krow], claim, selected,
+                                rjmin, rw) != 0)
+            claim_handoff_failed = 1;
         if (!o->discard_conflicting_claims) tot_replaced += row_replaced;
         if (rowvalid == 0) {
-            Arena_restore(sarena, row_mark);
+            /* No claim survived in this layer.  BREAK, never continue: the
+             * k-loop tail owns the arena mark, and restoring it here would
+             * free off/claim out from under the next peel layer -- which is
+             * exactly the arena-aliasing bug cdb caught, with `selected`
+             * handed back the same address as `off`. */
+            break;
+        }
+        if (!retain) {
+            /* Earlier peels need their exact residual claims and, in coherent
+             * mode, a rolling measured row; never their full output grids. */
+            rib_claim_peel(claim, off, rw, selected);
             continue;
         }
 
@@ -10668,6 +11981,46 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
                                     a->reconstruction_component ==
                                         b->reconstruction_component) tot_wsi++;
                             }
+                            /* THE cut, and the ONLY one.  Until
+                             * 2026-09-01 this merely ended a fill run: both
+                             * columns kept GO=1 and the writer drew a quad
+                             * straight across the wrap.
+                             *
+                             * A refused FILL is deliberately not a cut.  It
+                             * says "I will not invent geometry here", not
+                             * "these are different sheets" -- and the column
+                             * it would have cut can still be populated later
+                             * by the V continuation, at which point a stale
+                             * cut blocks a perfectly short measured edge.
+                             * That cost 945 avoidable component breaks when
+                             * measured. */
+                            /* Could a single chain have covered BOTH
+                             * columns?  If so the break was a selection
+                             * failure; if not, one lattice slot per cell
+                             * cannot represent this row and only a
+                             * multi-slot lattice can. */
+                            {
+                                size_t wa = jl - rjmin, wb = scan - rjmin;
+                                int shared = 0, shared_short = 0;
+                                for (size_t x = off[wa]; x < off[wa+1]; x++)
+                                    for (size_t y = off[wb]; y < off[wb+1]; y++)
+                                        if (claim[x].chain == claim[y].chain) {
+                                            shared = 1;
+                                            if (rib_claim_d2(&claim[x],
+                                                             &claim[y]) <= gate2)
+                                                shared_short = 1;
+                                        }
+                                /* A break is only a SELECTION failure if the
+                                 * shared chain's own step is short.  If even
+                                 * one chain's two adjacent-column samples are
+                                 * over the gate, the u lattice is undersampling
+                                 * real arclength there and no choice of
+                                 * claimant can help. */
+                                if (shared_short) tot_break_avoidable++;
+                                else if (shared) tot_break_adjacent++;
+                                else tot_break_forced++;
+                            }
+                            CH[krow*nu + jl] = 1;
                             physical_break = 1;
                             break;
                         }
@@ -10679,16 +12032,38 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
                         double d2 = 0.0;
                         double steps;
                         while (scan < jend && !V[scan]) scan++;
-                        if (scan >= jend ||
-                            scan - gap_first > (size_t)RIB_UFILL_MAX)
+                        if (scan >= jend) break;
+                        if (scan - gap_first > (size_t)RIB_UFILL_MAX) {
+                            tot_ur_steps++;
                             break;
+                        }
                         steps = (double)(scan - jl);
                         for (int d = 0; d < 3; d++) {
                             double delta = P[jl*3 + (size_t)d]
                                          - P[scan*3 + (size_t)d];
                             d2 += delta * delta;
                         }
-                        if (d2 > gate2 * steps * steps) break;
+                        /* Gate the chord against the ARCLENGTH it replaces,
+                         * not against `steps` copies of the wrap gate: a step
+                         * is du vox of material, so `gate2*steps*steps` let a
+                         * bridge run three times longer than the sheet it
+                         * stands in for while every interpolated edge stayed
+                         * comfortably under the gate. */
+                        {
+                            double reach = RIB_FILL_STRETCH * steps * du;
+                            if (reach > RIB_FILL_CHORD_ABS)
+                                reach = RIB_FILL_CHORD_ABS;
+                            if (d2 > reach * reach) {
+                                tot_ur_stretch++;
+                                break;
+                            }
+                        }
+                        if (fill_bounds && rib_fill_crosses_slice(
+                                S,chids+choff[k],fill_nc,fill_bounds,fill_d0,fill_d1,
+                                P+jl*3,P+scan*3)) {
+                            tot_ur_crossing++;
+                            break;
+                        }
                     }
                     jl = scan++;
                 }
@@ -10699,8 +12074,8 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
                     for (int d = 0; d < 3; d++)
                         gpos_row[j*3 + (size_t)d] =
                             (float)P[j*3 + (size_t)d];
-                    GO[(size_t)k*nu + j] = 1;
-                    GV[(size_t)k*nu + j] = 1;
+                    GO[krow*nu + j] = 1;
+                    GV[krow*nu + j] = 1;
                 }
                 for (size_t gap = jf; gap <= jl;) {
                     size_t first_gap, right, left;
@@ -10717,24 +12092,47 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
                             gpos_row[q*3 + (size_t)d] =
                                 (float)((1.0 - w) * P[left*3 + (size_t)d] +
                                              w  * P[right*3 + (size_t)d]);
-                        GP[(size_t)k*nu + q] =
-                            (float)((1.0 - w) * GP[(size_t)k*nu + left] +
-                                         w  * GP[(size_t)k*nu + right]);
-                        if (GI[(size_t)k*nu + left] >= 0 &&
-                            GI[(size_t)k*nu + left] ==
-                                GI[(size_t)k*nu + right])
-                            GI[(size_t)k*nu + q] =
-                                GI[(size_t)k*nu + left];
-                        if (GM[(size_t)k*nu + left] >= 0 &&
-                            GM[(size_t)k*nu + left] ==
-                                GM[(size_t)k*nu + right])
-                            GM[(size_t)k*nu + q] =
-                                GM[(size_t)k*nu + left];
-                        GO[(size_t)k*nu + q] = 1;
+                        GP[krow*nu + q] =
+                            (float)((1.0 - w) * GP[krow*nu + left] +
+                                         w  * GP[krow*nu + right]);
+                        if (GI[krow*nu + left] >= 0 &&
+                            GI[krow*nu + left] ==
+                                GI[krow*nu + right])
+                            GI[krow*nu + q] =
+                                GI[krow*nu + left];
+                        if (GM[krow*nu + left] >= 0 &&
+                            GM[krow*nu + left] ==
+                                GM[krow*nu + right])
+                            GM[krow*nu + q] =
+                                GM[krow*nu + left];
+                        if (prefer_owner) {
+                            size_t owner_base = stored_layer * nu;
+                            const int32_t *left_owner = prior_owner +
+                                (owner_base + left) * 3;
+                            const int32_t *right_owner = prior_owner +
+                                (owner_base + right) * 3;
+                            if (prior_owner_present[owner_base + left] &&
+                                prior_owner_present[owner_base + right] &&
+                                left_owner[0] == right_owner[0] &&
+                                left_owner[1] == right_owner[1] &&
+                                left_owner[2] == right_owner[2]) {
+                                int32_t *fill_owner = prior_owner +
+                                    (owner_base + q) * 3;
+                                fill_owner[0] = left_owner[0];
+                                fill_owner[1] = left_owner[1];
+                                fill_owner[2] = left_owner[2];
+                                prior_owner_present[owner_base + q] = 1;
+                            }
+                        }
+                        GO[krow*nu + q] = 1;
                     }
                 }
             }
         }
+        /* Remove what this layer took, so the next one sees the residual. */
+        if (layer + 1 < select_peels && off[rw] > 0)
+            rib_claim_peel(claim, off, rw, selected);
+        }   /* peel layer */
         Arena_restore(sarena, row_mark);
     }
     Arena_dispose(&sarena);
@@ -10745,6 +12143,8 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
                 "slice; refusing a raster fallback\n");
         rib_claim_label_rows_dispose(claim_labels, nk);
         claim_labels = NULL;
+        rib_claim_label_rows_dispose(emitted_claim_labels, nk);
+        emitted_claim_labels = NULL;
         Arena_restore(arena, mark);
         return;
     }
@@ -10752,6 +12152,27 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
     out->grid_claim_conflict_cells += tot_conflict_cells;
     out->grid_claim_discarded_cells += tot_discarded;
     out->grid_claim_replaced += tot_replaced;
+    out->grid_claim_candidates += tot_candidates;
+    out->grid_claim_required_peels = required_peels;
+    out->grid_claim_overflow += tot_overflow;
+    out->grid_claim_stored += tot_stored;
+    fprintf(stderr, "  claim capacity: %zu candidates, depth %zu, requested %d, "
+            "%zu beyond capacity, %zu selected for %d resident peel(s)\n",
+            tot_candidates, required_peels, npeel, tot_overflow, tot_stored,
+            stored_peels);
+    out->grid_subcell_claim_chains += tot_subcell;
+    for (size_t b = 0; b < 8; b++) out->grid_cell_lane_hist[b] += lane_hist[b];
+    fprintf(stderr, "  fitted-grid break analysis: %zu selection-avoidable, "
+            "%zu shared-chain-but-long-step, %zu forced; %zu sub-cell "
+            "chain representatives\n",
+            tot_break_avoidable, tot_break_adjacent, tot_break_forced,
+            tot_subcell);
+    out->grid_ufill_reject_steps += tot_ur_steps;
+    out->grid_ufill_reject_stretch += tot_ur_stretch;
+    out->grid_ufill_reject_crossing += tot_ur_crossing;
+    if (o->coherent_claims)
+        fprintf(stderr, "  coherent fill guard: %zu proposed U chords cross measured material\n",
+                tot_ur_crossing);
     out->grid_row_wrap_splits += tot_ws;
     out->grid_row_wrap_same_mesh += tot_wsm;
     out->grid_row_wrap_same_solve += tot_wss;
@@ -10784,6 +12205,22 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
         /* v-fill touches exactly one column per iteration: parallel over j is
          * race-free and bit-identical to the serial order. */
         int64_t pj = 0;
+        /* Measure what the V continuation actually generates.  Unlike the
+         * u-fill it has no RIB_UFILL_MAX analogue, so a single convex chord
+         * may replace an arbitrary number of missing rows; nothing had ever
+         * counted them. */
+        size_t vfill_runs = 0, vfill_rows = 0;
+        size_t vfill_rej_rows = 0, vfill_rej_stretch = 0, vfill_rej_crossing = 0;
+        size_t vfill_hist[6] = { 0, 0, 0, 0, 0, 0 };
+        Arena_Mark guard_mark=Arena_save(arena);
+        RibFillGuard guard;
+        int use_guard=o->coherent_claims && S->source_nf>0;
+        if (use_guard && rib_fill_guard_build(arena,S->source_verts,S->source_nv,
+                S->source_faces,S->source_nf,&guard)!=0) {
+            fprintf(stderr,"ERROR: cannot validate invented V chords against source mesh\n");
+            Arena_restore(arena,mark);
+            return;
+        }
 #ifdef _OPENMP
 #pragma omp parallel for schedule(dynamic, 1024)
 #endif
@@ -10791,6 +12228,8 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
         size_t j = (size_t)pj;
         long ka = -1;
         for (size_t k = 0; k < nk; k++) {
+            /* Stacked bands share storage, never a physical V continuation. */
+            if (k % (size_t)np == 0) ka = -1;
             if (!GO[k*nu + j]) continue;
             long kb = (long)k;
             if (ka >= 0 && kb > ka + 1) {
@@ -10807,10 +12246,65 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
                     d2 += delta * delta;
                 }
                 /* A V continuation is either one convex interpolation between
-                 * local anchors or it is not made at all. */
-                if (d2 > RIB_WRAP_GATE * RIB_WRAP_GATE * steps * steps) {
+                 * local anchors or it is not made at all.  Two bounds, both
+                 * missing before 2026-09-01: an explicit ROW cap (the u-fill
+                 * has had RIB_UFILL_MAX all along, the v-fill had nothing, and
+                 * 61 measured runs spanned 64+ rows) and a chord gated on the
+                 * arclength it replaces rather than on `steps` copies of the
+                 * wrap gate. */
+                if (kb - ka > RIB_VFILL_MAX_ROWS) {
+#ifdef _OPENMP
+#pragma omp atomic
+#endif
+                    vfill_rej_rows++;
                     ka = kb;
                     continue;
+                }
+                {
+                    double reach = RIB_FILL_STRETCH * steps * (double)o->slice_h;
+                    if (reach > RIB_FILL_CHORD_ABS)
+                        reach = RIB_FILL_CHORD_ABS;
+                    if (d2 > reach * reach) {
+#ifdef _OPENMP
+#pragma omp atomic
+#endif
+                        vfill_rej_stretch++;
+                        ka = kb;
+                        continue;
+                    }
+                }
+                if (use_guard) {
+                    double a[3], b[3];
+                    for (int d=0; d<3; d++) {
+                        a[d]=G[((size_t)ka*nu+j)*3+d];
+                        b[d]=G[((size_t)kb*nu+j)*3+d];
+                    }
+                    if (rib_fill_guard_crosses(&guard,a,b)) {
+#ifdef _OPENMP
+#pragma omp atomic
+#endif
+                        vfill_rej_crossing++;
+                        ka=kb;
+                        continue;
+                    }
+                }
+                {
+                    long span = kb - ka;
+                    size_t b = span < 2 ? 0 : (span < 4 ? 1 :
+                               (span < 8 ? 2 : (span < 16 ? 3 :
+                               (span < 64 ? 4 : 5))));
+#ifdef _OPENMP
+#pragma omp atomic
+#endif
+                    vfill_runs++;
+#ifdef _OPENMP
+#pragma omp atomic
+#endif
+                    vfill_rows += (size_t)(span - 1);
+#ifdef _OPENMP
+#pragma omp atomic
+#endif
+                    vfill_hist[b]++;
                 }
                 for (long q = ka + 1; q < kb; q++) {
                     double w = (double)(q - ka) / (double)(kb - ka);
@@ -10833,6 +12327,16 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
             ka = kb;
         }
     }
+        out->grid_vfill_runs = vfill_runs;
+        out->grid_vfill_rows = vfill_rows;
+        out->grid_vfill_reject_rows = vfill_rej_rows;
+        out->grid_vfill_reject_stretch = vfill_rej_stretch;
+        out->grid_vfill_reject_crossing = vfill_rej_crossing;
+        for (size_t b = 0; b < 6; b++) out->grid_vfill_run_hist[b] = vfill_hist[b];
+        Arena_restore(arena,guard_mark);
+        if (use_guard) fprintf(stderr,
+            "  coherent fill guard: %zu proposed V chords cross source triangles\n",
+            vfill_rej_crossing);
     }
     out->grid_long_edges_vfill = rib_grid_long_edges(G, GO, nk, nu);
     fprintf(stderr, "    [fit] v-fill: %.2fs\n", ves_clock_sec() - fit_t0);
@@ -10848,15 +12352,35 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
         rib_grid_digest(o->fit_cover_width ? "cover" : "compact", "v-fill",
                         G, GO, nk, nu, active_nu < nu ? active_nu : nu);
     /* No post-fit XYZ smoothing: measured cross-sections remain exact. */
+    /* Geometry is final: decide what each cell may emit, then AUDIT it.  The
+     * audit is a separate walk of the emitted triangles on purpose -- an
+     * emitter that grades its own work proves nothing. */
+    if (Q != NULL) {
+        rib_grid_emit_codes(G, GO, CH, CV, GM, nk, nu, Q, out);
+        out->grid_emitted_long_edges =
+            rib_grid_emitted_long_edges(G, Q, nk, nu);
+        if (out->grid_emitted_long_edges != 0)
+            fprintf(stderr,
+                    "BUG: %zu emitted ribbon edge(s) exceed the %.1f-vox wrap "
+                    "gate; the cell emitter and its gate disagree\n",
+                    out->grid_emitted_long_edges, RIB_WRAP_GATE);
+    }
+    for (size_t i = 0; i < nk * nu; i++) {
+        out->grid_edge_cuts_h += CH[i] ? 1u : 0u;
+        out->grid_edge_cuts_v += CV[i] ? 1u : 0u;
+    }
     out->grid_long_edges_smooth = rib_grid_long_edges(G, GO, nk, nu);
     out->grid_both_diagonals_long =
         rib_grid_both_diagonals_long(G, GO, nk, nu);
     {
         size_t long_h=0, long_v=0;
-        rib_grid_long_edge_directions(G,GO,nk,nu,&long_h,&long_v);
+        rib_grid_long_edge_census(G,GO,nk,nu,&long_h,&long_v,
+                                  &out->grid_long_edges_diag_main,
+                                  &out->grid_long_edges_diag_anti);
         fprintf(stderr,
                 "  fitted-grid diagnostics: long edges row=%zu repaired=%zu "
-                "vfill=%zu diagnostic=%zu final=%zu (h=%zu v=%zu) "
+                "vfill=%zu diagnostic=%zu final=%zu "
+                "(h=%zu v=%zu diag-main=%zu diag-anti=%zu) "
                 "both-diagonals=%zu claim-updates=%zu "
                 "local-repairs=%zu+%zu-pair/%zu-slot+%zu-run/%zu-slot+"
                 "%zu-patch/%zu-slot "
@@ -10867,7 +12391,10 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
                 out->grid_long_edges_rowfit,out->grid_long_edges_repaired,
                 out->grid_long_edges_vfill,out->grid_long_edges_local,
                 out->grid_long_edges_smooth,
-                long_h,long_v,out->grid_both_diagonals_long,
+                long_h,long_v,
+                out->grid_long_edges_diag_main,
+                out->grid_long_edges_diag_anti,
+                out->grid_both_diagonals_long,
                 out->grid_claim_repairs,out->grid_local_outlier_repairs,
                 out->grid_local_pair_repairs,out->grid_local_pair_slots,
                 out->grid_local_run_repairs,out->grid_local_run_slots,
@@ -10879,6 +12406,37 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
                 out->grid_row_wrap_splits,
                 out->grid_row_wrap_same_mesh,out->grid_row_wrap_same_solve,
                 out->grid_row_wrap_same_island);
+        fprintf(stderr,
+                "  fitted-grid v-fill: runs=%zu rows=%zu "
+                "run-rows [1,2)=%zu [2,4)=%zu [4,8)=%zu [8,16)=%zu "
+                "[16,64)=%zu [64+)=%zu\n",
+                out->grid_vfill_runs, out->grid_vfill_rows,
+                out->grid_vfill_run_hist[0], out->grid_vfill_run_hist[1],
+                out->grid_vfill_run_hist[2], out->grid_vfill_run_hist[3],
+                out->grid_vfill_run_hist[4], out->grid_vfill_run_hist[5]);
+        fprintf(stderr,
+                "  fitted-grid emitted topology: faces=%zu long=%zu "
+                "cells full=%zu (quad=%zu tri=%zu cut=%zu flipped=%zu) "
+                "material-face-cuts=%zu "
+                "edge-cuts h=%zu v=%zu\n",
+                out->grid_emitted_faces, out->grid_emitted_long_edges,
+                out->grid_cells_full, out->grid_cells_emit2,
+                out->grid_cells_emit1, out->grid_cells_emit0,
+                out->grid_cells_flipped,
+                out->grid_material_faces_cut,
+                out->grid_edge_cuts_h, out->grid_edge_cuts_v);
+        fprintf(stderr,
+                "  fitted-grid fill refusals: u steps=%zu stretch=%zu  "
+                "v rows=%zu stretch=%zu\n",
+                out->grid_ufill_reject_steps, out->grid_ufill_reject_stretch,
+                out->grid_vfill_reject_rows, out->grid_vfill_reject_stretch);
+        fprintf(stderr,
+                "  fitted-grid cell lanes: 1=%zu 2=%zu 3=%zu 4=%zu "
+                "5=%zu 6=%zu 7=%zu 8+=%zu\n",
+                out->grid_cell_lane_hist[0], out->grid_cell_lane_hist[1],
+                out->grid_cell_lane_hist[2], out->grid_cell_lane_hist[3],
+                out->grid_cell_lane_hist[4], out->grid_cell_lane_hist[5],
+                out->grid_cell_lane_hist[6], out->grid_cell_lane_hist[7]);
     }
     if (o->verify_fit_width)
         rib_grid_digest(o->fit_cover_width ? "cover" : "compact", "smooth",
@@ -10890,15 +12448,17 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
      * reclaimed arena memory -- a measured use-after-restore.)  The export
      * reads only S (pre-mark) and the heap-allocated labels. */
     Arena_restore(arena, mark);
-    if (o->component_global && o->ownership_construction &&
+    if (o->component_global &&
         (rib_claim_export_chart_runs(
-             arena, S, claim_labels, nk, &out->grid_chart_row_offsets,
-             &out->grid_chart_runs, &out->grid_chart_run_count) != 0 ||
-         rib_fuse_audit_runs(o, out, nk) != 0)) {
+             arena, S, emitted_claim_labels, nk, &out->grid_chart_row_offsets,
+              &out->grid_chart_runs, &out->grid_chart_run_count) != 0 ||
+         (o->ownership_construction && rib_fuse_audit_runs(o, out, nk) != 0))) {
         fprintf(stderr,
                 "ERROR: could not freeze fitted-grid claimant provenance\n");
         rib_claim_label_rows_dispose(claim_labels, nk);
         claim_labels = NULL;
+        rib_claim_label_rows_dispose(emitted_claim_labels, nk);
+        emitted_claim_labels = NULL;
         out->grid_chart_row_offsets = NULL;
         out->grid_chart_runs = NULL;
         out->grid_chart_run_count = 0;
@@ -10906,16 +12466,31 @@ static void fit_ribbon(Arena_T arena, const SliceSet *S, double U0,
     }
     rib_claim_label_rows_dispose(claim_labels, nk);
     claim_labels = NULL;
+    rib_claim_label_rows_dispose(emitted_claim_labels, nk);
+    emitted_claim_labels = NULL;
     out->grid_pos   = G;
     out->grid_present = GO;
     out->grid_valid = GV;
     out->grid_phi = GP;
-    out->grid_island = GI;
+    /* Reconstruction lanes are fit-local branch labels, NOT stable material
+     * identity. Export both concepts separately. Only the explicit legacy
+     * projective policy retains its old alias for bitwise control runs.
+     * Cross-crop material comparisons must use geometry/phase/lineage, never
+     * compare these fit-local lane integers as semantic identities. */
+    out->grid_island = o->projective_grid && !o->coherent_claims ? GM : GI;
     out->grid_material = GM;
+    out->grid_quad = Q;
+    out->grid_cut_h = CH;
+    out->grid_cut_v = CV;
     out->nu = nu;
     out->nk = nk;
+    out->grid_layers = (size_t)stored_peels;
+    out->grid_layer_base = (size_t)first_peel;
+    out->grid_source_layers = (size_t)npeel;
     out->grid_du = (float)du;
     out->grid_dv = o->slice_h;
+    out->grid_u_origin = U0;
+    out->grid_projective = o->projective_grid != 0;
 }
 
 /* Turn one completed robust solve round into the same fitted quad-ribbon used
@@ -13268,6 +14843,29 @@ int Ribbon_run(Arena_T arena,
             opts->reference_material_island_count;
         opts = &resolved;
     }
+    const int sparse_reference_ids = opts->projective_grid &&
+                                     opts->reference_owner_block != NULL;
+    if (opts->coarse_chain_seed &&
+        (opts->reference_u == NULL || !opts->solve_reference_u ||
+         opts->metric_project_only)) {
+        fprintf(stderr, "ribbon: coarse chain seed requires a carried-U metric solve\n");
+        return -1;
+    }
+    if (opts->peel_layers < 0 ||
+        opts->peel_layers > RIB_PEEL_LAYERS_MAX) {
+        fprintf(stderr,
+                "ribbon: peel_layers must be 0 (auto) or in [1,%d]\n",
+                RIB_PEEL_LAYERS_MAX);
+        return -1;
+    }
+    if (opts->peel_layer < -1 || opts->peel_layer >= RIB_PEEL_LAYERS_MAX ||
+        (opts->peel_layer >= 0 && (!opts->fit_ribbon ||
+         !opts->component_global || opts->ownership_construction ||
+         !sparse_reference_ids ||
+         (opts->peel_layers > 0 && opts->peel_layer >= opts->peel_layers)))) {
+        fprintf(stderr, "ribbon: selected peel requires a valid projective-owner claims layer\n");
+        return -1;
+    }
     if (opts->solve_level_prefix != NULL &&
         (!opts->solve_amg || !opts->fit_ribbon ||
          (opts->reference_u != NULL && !opts->solve_reference_u))) {
@@ -13334,9 +14932,13 @@ int Ribbon_run(Arena_T arena,
         arena, int32_t, n_mesh_comp ? n_mesh_comp : 1);
     int32_t *mesh_comp_chart = RIB_ALLOC_ARRAY(
         arena, int32_t, n_mesh_comp ? n_mesh_comp : 1);
+    int32_t *mesh_comp_owner = RIB_ALLOC_ARRAY(
+        arena, int32_t, (n_mesh_comp ? n_mesh_comp : 1) * 3);
+    uint8_t *mesh_comp_owner_set = (uint8_t *)ARENA_CALLOC(
+        arena, n_mesh_comp ? n_mesh_comp : 1, 1);
     size_t reference_island_count = opts->reference_island != NULL
                                   ? opts->reference_island_count : 1;
-    if (reference_island_count == 0) {
+    if (reference_island_count == 0 && !sparse_reference_ids) {
         fprintf(stderr,
                 "ribbon: reference_island_count is required with "
                 "reference_island\n");
@@ -13352,7 +14954,21 @@ int Ribbon_run(Arena_T arena,
                        ? opts->reference_island[i] : 0;
         int32_t source_chart = opts->reference_chart != NULL
                              ? opts->reference_chart[i] : mc;
-        if (island < 0 || (size_t)island >= reference_island_count) {
+        int32_t owner[3] = { 0, 0, 0 };
+        if (opts->reference_owner_block != NULL) {
+            owner[0] = opts->reference_owner_block[i * 3];
+            owner[1] = opts->reference_owner_block[i * 3 + 1];
+            owner[2] = opts->reference_owner_block[i * 3 + 2];
+            if (owner[0] == INT32_MIN || owner[1] == INT32_MIN ||
+                owner[2] == INT32_MIN) {
+                fprintf(stderr,
+                        "ribbon: invalid canonical owner at vertex %zu\n", i);
+                return -1;
+            }
+        }
+        if (island < 0 ||
+            (!sparse_reference_ids &&
+             (size_t)island >= reference_island_count)) {
             fprintf(stderr,
                     "ribbon: invalid material-island identity %d at vertex %zu "
                     "(%zu material islands)\n",
@@ -13360,7 +14976,7 @@ int Ribbon_run(Arena_T arena,
             return -1;
         }
         if (source_chart < 0 ||
-            (opts->reference_chart != NULL &&
+            (!sparse_reference_ids && opts->reference_chart != NULL &&
              (size_t)source_chart >= opts->reference_chart_count)) {
             fprintf(stderr,
                     "ribbon: invalid source-chart identity %d at vertex %zu\n",
@@ -13383,8 +14999,25 @@ int Ribbon_run(Arena_T arena,
                     mc, mesh_comp_chart[mc], source_chart);
             return -1;
         }
+        if (!mesh_comp_owner_set[mc]) {
+            mesh_comp_owner[(size_t)mc * 3] = owner[0];
+            mesh_comp_owner[(size_t)mc * 3 + 1] = owner[1];
+            mesh_comp_owner[(size_t)mc * 3 + 2] = owner[2];
+            mesh_comp_owner_set[mc] = 1;
+        } else if (mesh_comp_owner[(size_t)mc * 3] != owner[0] ||
+                   mesh_comp_owner[(size_t)mc * 3 + 1] != owner[1] ||
+                   mesh_comp_owner[(size_t)mc * 3 + 2] != owner[2]) {
+            fprintf(stderr,
+                    "ribbon: input component %d spans canonical owners "
+                    "(%d,%d,%d)/(%d,%d,%d)\n", mc,
+                    mesh_comp_owner[(size_t)mc * 3],
+                    mesh_comp_owner[(size_t)mc * 3 + 1],
+                    mesh_comp_owner[(size_t)mc * 3 + 2],
+                    owner[0], owner[1], owner[2]);
+            return -1;
+        }
     }
-    if (opts->reference_chart != NULL) {
+    if (opts->reference_chart != NULL && !sparse_reference_ids) {
         out->source_chart_island = RIB_ALLOC_ARRAY(
             arena, int32_t, opts->reference_chart_count);
         out->source_chart_island_count = opts->reference_chart_count;
@@ -13408,6 +15041,8 @@ int Ribbon_run(Arena_T arena,
     stage_t0 = ves_clock_sec();
     double *t = RIB_ALLOC_ARRAY(arena, double, nv);
     double tmin = 1e300, tmax = -1e300;
+    double slice_tmin = 0.0;
+    double projective_v_offset = 0.0;
     for (size_t i = 0; i < nv; i++) {
         double d0 = (double)verts[i*3+0] - (double)opts->axis_point[0];
         double d1 = (double)verts[i*3+1] - (double)opts->axis_point[1];
@@ -13415,6 +15050,55 @@ int Ribbon_run(Arena_T arena,
         t[i] = d0*ad[0] + d1*ad[1] + d2*ad[2];
         if (t[i] < tmin) tmin = t[i];
         if (t[i] > tmax) tmax = t[i];
+    }
+    slice_tmin = tmin;
+    if (opts->projective_grid) {
+        Arena_Mark vmark;
+        double *offset;
+        double max_residual = 0.0;
+        double h = (double)opts->slice_h;
+        if (opts->reference_u == NULL || opts->reference_v == NULL ||
+            !(h > 1e-6) || !isfinite(h)) {
+            fprintf(stderr,
+                    "ribbon: projective_grid requires finite reference U/V "
+                    "and positive slice_h\n");
+            return -1;
+        }
+        vmark = Arena_save(arena);
+        offset = RIB_ALLOC_ARRAY(arena, double, nv);
+        for (size_t i = 0; i < nv; i++) {
+            offset[i] = opts->reference_v[i] - t[i];
+            if (!isfinite(offset[i])) {
+                fprintf(stderr,
+                        "ribbon: non-finite projective V at vertex %zu\n", i);
+                Arena_restore(arena, vmark);
+                return -1;
+            }
+        }
+        projective_v_offset = select_median_dbl(offset, nv);
+        for (size_t i = 0; i < nv; i++) {
+            double residual = fabs(offset[i] - projective_v_offset);
+            if (residual > max_residual) max_residual = residual;
+        }
+        Arena_restore(arena, vmark);
+        /* Certificate V is axial by contract. Failing closed here prevents a
+         * nominally stable atlas from inheriting a warped crop-local field. */
+        if (max_residual > 1e-4) {
+            fprintf(stderr,
+                    "ribbon: projective V is not axial (max offset residual "
+                    "%.6g vox)\n", max_residual);
+            return -1;
+        }
+        /* Local storage may start anywhere, but its boundary is an integer
+         * multiple of h in certificate V. A larger crop can prepend rows;
+         * every old plane then retains the same signed V and geometry. */
+        slice_tmin = floor((tmin + projective_v_offset) / h) * h
+                   - projective_v_offset;
+        fprintf(stderr,
+                "  projective lattice: V offset=%+.6f, local V0=%.6f "
+                "(world t0=%.6f)\n",
+                projective_v_offset, slice_tmin + projective_v_offset,
+                slice_tmin);
     }
 
     /* A: slice (+ bridge cut).  A topology-preserving quadribbon solve uses
@@ -13441,10 +15125,25 @@ int Ribbon_run(Arena_T arena,
         S.tmax = tmax;
     } else if (slice_mesh(arena, verts, nv, faces, nf, vertex_mesh_comp,
                    mesh_comp_island, mesh_comp_chart,
-                   t, tmin, tmax,
+                   t, slice_tmin, tmax,
                    e1, e2, opts->axis_point, opts, &S) != 0) {
         memset(out, 0, sizeof(*out));
         return -1;
+    }
+    S.source_verts=verts; S.source_nv=nv;
+    S.source_faces=faces; S.source_nf=nf;
+    for (size_t c = 0; c < S.n_chn; c++) {
+        int32_t mc = S.chn[c].mesh_comp;
+        if (mc < 0 || (size_t)mc >= n_mesh_comp ||
+            !mesh_comp_owner_set[mc]) {
+            fprintf(stderr,
+                    "ribbon: slice chain %zu has no canonical owner\n", c);
+            memset(out, 0, sizeof(*out));
+            return -1;
+        }
+        S.chn[c].owner_iz = mesh_comp_owner[(size_t)mc * 3];
+        S.chn[c].owner_iy = mesh_comp_owner[(size_t)mc * 3 + 1];
+        S.chn[c].owner_ix = mesh_comp_owner[(size_t)mc * 3 + 2];
     }
     fprintf(stderr, "  ribbon stage slice: %.2fs\n",
             ves_clock_sec() - stage_t0);
@@ -13619,49 +15318,39 @@ int Ribbon_run(Arena_T arena,
                     "carried frame\n", reversed);
     }
 
-    /* A caller-provided material coordinate makes Stages B--D redundant.
-     * The slice intersections already carry both measured geometry and the
-     * authoritative U/phase fields.  Project each slice chain onto exact
-     * measured arclength around its robust graph-derived gauge, reconcile those
-     * gauges with the anchored chain graph above, then run the same claimant
-     * selection and fitted-ribbon Stage E used by the full StrokeStrip solve. */
+    /* A caller-provided solved material coordinate makes Stages B--D
+     * redundant.  The slice intersections already carry measured geometry and
+     * the authoritative U/phase fields.  Retain every interpolated U sample
+     * exactly as supplied; projecting a whole chain to median(U-s)+s discards
+     * the cross-V structure that the winding certificate was built to carry.
+     * The pair graph is still constructed for correspondence-gated ownership,
+     * then the normal claimant selection and fitted-ribbon Stage E run. */
     if (opts->reference_u != NULL && !opts->solve_reference_u) {
         Arena_Mark fast_mark = Arena_save(arena);
-        int32_t max_chain = 2;
         double umin = 1e300, umax = -1e300;
         double pmin = 1e300, pmax = -1e300;
-        size_t moved = 0;
         for (size_t c = 0; c < S.n_chn; c++) {
-            if (S.chn[c].count > max_chain) max_chain = S.chn[c].count;
             S.chn[c].solve_comp = S.chn[c].mesh_comp;
             S.chn[c].group = S.chn[c].mesh_comp;
-        }
-        double *work = RIB_ALLOC_ARRAY(arena, double, (size_t)max_chain);
-        for (size_t c = 0; c < S.n_chn; c++) {
-            int32_t f = S.chn[c].first, n = S.chn[c].count;
-            if (n < 2) continue;
-            /* reference_u supplies the additive material gauge, while the
-             * measured slice chain supplies the metric.  Projecting each row
-             * to gauge+s is the closed-form no-pair version of Stage C: it
-             * removes chart-seam jumps without a global sparse solve and makes
-             * each fitted claim interval equal the physical chain length. */
-            for (int32_t i = 0; i < n; i++)
-                work[i] = S.smp[f+i].u - S.smp[f+i].s;
-            double gauge = select_median_dbl(work, (size_t)n);
-            for (int32_t i = 0; i < n; i++) {
-                double next = gauge + S.smp[f+i].s;
-                if (fabs(next - S.smp[f+i].u) > 1e-9) moved++;
-                S.smp[f+i].u = next;
-            }
         }
         stage_t0 = ves_clock_sec();
         PairSet fast_pairs;
         ChainRelationGraph fast_relations;
         memset(&fast_relations, 0, sizeof(fast_relations));
-        if (build_pairs(arena, &S, opts, &fast_pairs) != 0 ||
-            solve_reference_chain_gauges(
-                arena, &S, &fast_pairs, opts, NULL,
-                &fast_relations, out) != 0) {
+        if (build_pairs(arena, &S, opts, &fast_pairs) != 0) {
+            chain_relation_graph_dispose(&fast_relations);
+            Arena_restore(arena, fast_mark);
+            memset(out, 0, sizeof(*out));
+            return -1;
+        }
+        out->n_qp_comps = (int)n_mesh_comp;
+        /* Reconstruction ownership is a geometric/topological decision, not
+         * an IRLS-inlier decision.  The full Stage-C path gives the lane
+         * resolver the complete correspondence graph; doing otherwise here
+         * split the same 4x5x5 certificate into roughly twice as many lanes
+         * solely because gauge-fit outliers had been omitted. */
+        if (chain_relation_graph_from_pairs(
+                &S, &fast_pairs, &fast_relations) != 0) {
             chain_relation_graph_dispose(&fast_relations);
             Arena_restore(arena, fast_mark);
             memset(out, 0, sizeof(*out));
@@ -13675,18 +15364,24 @@ int Ribbon_run(Arena_T arena,
             return -1;
         }
         if (opts->component_global && !opts->emit_global)
-            pack_metric_islands(arena, &S, (double)opts->grid_u,
-                                NULL, NULL, NULL, NULL, NULL, NULL, 0,
-                                NULL, out);
+            fprintf(stderr,
+                    "  ribbon certificate contract: retained fast-path U "
+                    "gauge (metric-island packing disabled)\n");
         out->n_pairs = fast_pairs.n_cross;
         out->n_cont_pairs = fast_pairs.n_cont;
         out->match_cover = fast_pairs.candidates_a
                          ? (double)fast_pairs.matched_a /
                            (double)fast_pairs.candidates_a
                          : 0.0;
-        fprintf(stderr, "  ribbon fast chain alignment: %.2fs\n",
+        fprintf(stderr,
+                "  quadribbon U correspondence gate: rejected=%zu "
+                "candidate contacts with |delta U| > %.3g\n",
+                fast_pairs.seed_u_rejects,
+                fmax((double)opts->match_r,
+                     3.0 * (double)opts->sample_h));
+        fprintf(stderr, "  ribbon fast carried-U alignment: %.2fs\n",
                 ves_clock_sec() - stage_t0);
-        out->mono_repairs = moved;
+        out->mono_repairs = 0;
         out->w_groups = (int)n_mesh_comp;
         out->w_prior_groups = (int)n_mesh_comp;
         out->pitch_source = opts->wrap_spacing > 0.0f
@@ -13738,15 +15433,32 @@ int Ribbon_run(Arena_T arena,
         }
         Arena_restore(arena, fast_mark);
         stage_t0 = ves_clock_sec();
-        if (opts->fit_ribbon)
-            fit_ribbon(arena, &S, umin, opts, &fast_relations, out);
-        else
+        if (opts->fit_ribbon) {
+            double fit_u0 = umin;
+            if (opts->projective_grid) {
+                double du = (double)opts->grid_u;
+                if (!(du > 1e-6) || !isfinite(du)) du = 1.0;
+                fit_u0 = floor(umin / du) * du;
+                fprintf(stderr,
+                        "  projective lattice: local U0=%.6f "
+                        "(sample min=%.6f)\n", fit_u0, umin);
+            }
+            fit_ribbon(arena, &S, fit_u0, opts, &fast_relations, out);
+            if (opts->projective_grid) {
+                /* Legacy integer-grid convention: geometry is sampled at
+                 * the bin center, but exported V indexes its lower boundary.
+                 * Source V = exported V + slice_h/2. Changing just this origin
+                 * makes the current dyadic coarsener reject every quad for
+                 * h=2. Any migration must change both ends together. */
+                out->grid_v_origin = slice_tmin + projective_v_offset;
+            }
+        } else
             out->grid_dv = opts->slice_h;
         chain_relation_graph_dispose(&fast_relations);
         fprintf(stderr,
-                "  ribbon fast reference-U fit: span=%.1f, metric-projected=%zu, "
+                "  ribbon fast reference-U fit: span=%.1f, retained=%zu, "
                 "grid=%zux%zu (%.2fs)\n",
-                out->u_span, out->mono_repairs, out->nu, out->nk,
+                out->u_span, S.n_smp, out->nu, out->nk,
                 ves_clock_sec() - stage_t0);
         return opts->fit_ribbon && out->grid_pos == NULL ? -1 : 0;
     }
@@ -13776,7 +15488,7 @@ int Ribbon_run(Arena_T arena,
     out->match_cover  = P.candidates_a ? (double)P.matched_a / (double)P.candidates_a : 0.0;
     fprintf(stderr, "  ribbon stage pairs: %.2fs\n",
             ves_clock_sec() - stage_t0);
-    if (opts->reference_u != NULL && opts->solve_reference_u)
+    if (opts->reference_u != NULL)
         fprintf(stderr,
                 "  quadribbon U correspondence gate: rejected=%zu "
                 "candidate contacts with |delta U| > %.3g\n",
@@ -13806,7 +15518,7 @@ int Ribbon_run(Arena_T arena,
      * variables to rediscover a few hundred gauges was both ill-conditioned and
      * the source of the diagonal wedge artifacts. */
     if (opts->reference_u != NULL && opts->solve_reference_u &&
-        opts->metric_project_only) {
+        (opts->metric_project_only || opts->coarse_chain_seed)) {
         stage_t0 = ves_clock_sec();
         int32_t max_chain = 2;
         for (size_t c = 0; c < S.n_chn; c++)
@@ -14046,7 +15758,19 @@ int Ribbon_run(Arena_T arena,
                 rib_gmg_snapshots_dispose(level_capture_ptr);
                 return -1;
             }
-            fit_ribbon(arena, &S, U0, opts, NULL, out);
+            /* Refining U releases metric coordinates, not the lattice origin
+             * convention. The fast path already did both of these steps;
+             * omitting them here shifted a prepended domain's V and placed U
+             * between the dyadic coarsener's lattice sites. */
+            double fit_u0 = U0;
+            if (opts->projective_grid) {
+                double du = (double)opts->grid_u;
+                if (!(du > 1e-6) || !isfinite(du)) du = 1.0;
+                fit_u0 = floor(U0 / du) * du;
+            }
+            fit_ribbon(arena, &S, fit_u0, opts, NULL, out);
+            if (opts->projective_grid)
+                out->grid_v_origin = slice_tmin + projective_v_offset;
         } else {
             out->grid_dv = opts->slice_h;
         }
@@ -14514,6 +16238,105 @@ int Ribbon_selftest(void)
 {
     int fails = 0;
     Arena_T arena = Arena_new();
+
+    /* Freeze the CURRENT source-to-grid gauge convention explicitly. This is
+     * not an assertion that exported V equals source V: the historical grid
+     * labels bin centers with their lower-boundary coordinates. The measured
+     * half-slice offset must be included in source/observation comparisons.
+     * Moving this origin alone disables the current dyadic quad coarsener. */
+    for (int example = 0; example < 3; example++) {
+        const float v[12] = {
+            10.25f, 100.0f, 0.0f, 10.25f, 100.0f, 16.0f,
+            26.25f, 100.0f, 0.0f, 26.25f, 100.0f, 16.0f
+        };
+        const int32_t f[6] = {0, 1, 2, 1, 3, 2};
+        const double ref_u[4] = {0.0, 16.0, 0.0, 16.0};
+        const double ref_v[4] = {-2.0, -2.0, 14.0, 14.0};
+        const float ref_phi[4] = {0.0f, .16f, 0.0f, .16f};
+        RibbonOpts o;
+        RibbonResult R = {0};
+        size_t checked = 0;
+        double max_error = 0.0;
+        int rc = 0;
+        RibbonOpts_default(&o);
+        o.fit_ribbon = 1;
+        o.projective_grid = 1;
+        o.grid_u = 2.0f;
+        o.slice_h = (float)(1 << example);
+        o.sample_h = 2.0f;
+        o.reference_u = ref_u;
+        o.reference_v = ref_v;
+        o.reference_phi = ref_phi;
+        o.axis_point[0] = 7.0f;
+        o.axis_point[1] = 0.0f;
+        o.axis_point[2] = 0.0f;
+        o.axis_dir[0] = 1.0f;
+        o.axis_dir[1] = 0.0f;
+        o.axis_dir[2] = 0.0f;
+        rc = Ribbon_run(arena, v, 4, f, 2, &o, &R);
+        if (rc == 0 && R.grid_valid != NULL && R.grid_pos != NULL) {
+            for (size_t k = 0; k < R.nk; k++) {
+                double exported_v = R.grid_v_origin +
+                                     (double)k * (double)R.grid_dv;
+                for (size_t j = 0; j < R.nu; j++) {
+                    size_t slot = k * R.nu + j;
+                    double error = 0.0;
+                    if (!R.grid_valid[slot]) continue;
+                    error = fabs(exported_v + .5 * (double)R.grid_dv -
+                                 ((double)R.grid_pos[slot * 3] - 12.25));
+                    if (error > max_error) max_error = error;
+                    checked++;
+                }
+            }
+        }
+        fprintf(stderr, "[ribbon selftest] legacy source-to-grid V offset: "
+                "h=%.1f checked=%zu max_error=%.9g\n",
+                (double)o.slice_h, checked, max_error);
+        st_check(rc == 0 && checked > 0 && max_error < 1e-6,
+                 "source V equals grid V plus the documented half slice",
+                 &fails);
+    }
+
+    {
+        int32_t j0 = -1, j1 = -1;
+        int subcell = -1;
+        int regular = rib_grid_claim_span(
+            4.0, 8.0, 2.0, 10, &j0, &j1, &subcell) &&
+            j0 == 2 && j1 == 4 && subcell == 0;
+        int narrow = rib_grid_claim_span(
+            4.2, 5.4, 2.0, 10, &j0, &j1, &subcell) &&
+            j0 == 2 && j1 == 2 && subcell == 1;
+        int reversed = rib_grid_claim_span(
+            5.4, 4.2, 2.0, 10, &j0, &j1, &subcell) &&
+            j0 == 2 && j1 == 2 && subcell == 1;
+        int outside = !rib_grid_claim_span(
+            20.1, 21.0, 2.0, 10, &j0, &j1, &subcell);
+        int ok = regular && narrow && reversed && outside;
+        st_check(ok, "sub-cell slice chain gets one grid claim", &fails);
+        fprintf(stderr, "[ribbon selftest] (sub-cell claim) %s\n",
+                 ok ? "ok" : "FAIL");
+    }
+
+    {
+        int32_t split[4] = { 4, 4, 4, 9 };
+        int32_t hidden[4] = { 4, 4, -1, 9 };
+        int32_t same[4] = { 4, 4, 4, 4 };
+        size_t split_cuts = 0, hidden_cuts = 0, same_cuts = 0;
+        uint8_t split_code = rib_grid_filter_material(
+            (uint8_t)RIB_CELL_MAIN, split, &split_cuts);
+        uint8_t hidden_code = rib_grid_filter_material(
+            (uint8_t)RIB_CELL_MAIN, hidden, &hidden_cuts);
+        uint8_t same_code = rib_grid_filter_material(
+            (uint8_t)RIB_CELL_MAIN, same, &same_cuts);
+        int ok = split_code == (uint8_t)RIB_CELL_ABC &&
+                 split_cuts == 1 &&
+                 hidden_code == (uint8_t)RIB_CELL_ABC &&
+                 hidden_cuts == 1 &&
+                 same_code == (uint8_t)RIB_CELL_MAIN && same_cuts == 0;
+        st_check(ok, "emitted faces never cross known materials", &fails);
+        fprintf(stderr, "[ribbon selftest] (material face cut) %s\n",
+                ok ? "ok" : "FAIL");
+    }
 
     /* Pair-only coarsening leaves a contracted star almost unchanged.  The
      * unmatched-attachment pass must consume a bounded one-ring while retaining
@@ -15425,6 +17248,7 @@ int Ribbon_selftest(void)
         o.slice_h = 2.0f;
         o.component_global = 1;
         o.ownership_construction = 0;
+        o.peel_layers = 3;
 
         for (int c = 0; c < 3; c++) {
             chn[c].first = 2 * c;
@@ -15446,7 +17270,44 @@ int Ribbon_selftest(void)
         S.chn = chn; S.n_chn = 3;
         S.nplanes = 2;
         fit_ribbon(arena, &S, 0.0, &o, NULL, &R);
-        int continuous = R.grid_pos != NULL && R.nk == 2 && R.nu >= 5;
+        int continuous = R.grid_pos != NULL && R.grid_layers == 3 &&
+                         R.nk == 2 * R.grid_layers && R.nu >= 5;
+        int provenance = R.grid_chart_row_offsets != NULL &&
+                         R.grid_chart_runs != NULL &&
+                         R.grid_valid != NULL &&
+                         R.grid_chart_row_offsets[R.nk] ==
+                             R.grid_chart_run_count;
+        /* Claims mode may emit collision-peel rows in addition to the two
+         * primary rows.  Validate the provenance contract over every emitted
+         * layer instead of assuming a primary-only run count: each measured
+         * cell belongs to exactly one ordered source-chart run, while derived
+         * cells belong to none. */
+        for (size_t k = 0; provenance && k < R.nk; k++) {
+            size_t r0 = R.grid_chart_row_offsets[k];
+            size_t r1 = R.grid_chart_row_offsets[k + 1];
+            if (r0 > r1 || r1 > R.grid_chart_run_count) {
+                provenance = 0;
+                break;
+            }
+            for (size_t r = r0; provenance && r < r1; r++) {
+                const RibbonChartRun *run = &R.grid_chart_runs[r];
+                if (run->source_chart != 0 ||
+                    run->first_col > run->last_col ||
+                    run->last_col >= R.nu ||
+                    (r > r0 &&
+                     R.grid_chart_runs[r - 1].last_col >= run->first_col))
+                    provenance = 0;
+            }
+            for (size_t j = 0; provenance && j < R.nu; j++) {
+                int covered = 0;
+                for (size_t r = r0; r < r1; r++) {
+                    const RibbonChartRun *run = &R.grid_chart_runs[r];
+                    if (j >= run->first_col && j <= run->last_col) covered++;
+                }
+                if (covered != (R.grid_valid[k * R.nu + j] ? 1 : 0))
+                    provenance = 0;
+            }
+        }
         for (size_t j = 0; continuous && j < 5; j++) {
             double y = (double)R.grid_pos[(R.nu + j) * 3 + 1];
             if (!isfinite(y) || fabs(y) > 0.25) continuous = 0;
@@ -15458,6 +17319,143 @@ int Ribbon_selftest(void)
                  "claims continuity exercised all claims", &fails);
         st_check(continuous,
                  "claims path selector does not hop wraps", &fails);
+        st_check(provenance,
+                 "claims path exports exact claimant-chart provenance", &fails);
+    }
+
+    {
+        size_t bytes = 0;
+        st_check(rib_grid_payload_bytes(9, 4, &bytes) == 0 && bytes == 1032,
+                 "grid payload includes all nine arrays", &fails);
+        st_check(rib_grid_payload_bytes(789886, 5376, &bytes) == 0 &&
+                 bytes == UINT64_C(123145591683),
+                 "whole-scroll grid payload uses 64-bit arithmetic", &fails);
+        st_check(rib_grid_payload_bytes(789886, 1344, &bytes) == 0 &&
+                 bytes == UINT64_C(30785805507),
+                 "one whole-scroll peel bounds resident grid payload", &fails);
+        st_check(rib_grid_payload_bytes(SIZE_MAX, 2, &bytes) != 0 && bytes == 0 &&
+                 rib_grid_payload_bytes(2, SIZE_MAX / 2, &bytes) != 0 && bytes == 0,
+                 "grid payload rejects multiplication and addition overflow", &fails);
+    }
+
+    /* One resident peel must be exactly the corresponding independent band
+     * of a full fit, including source-chart runs and unsupported tail rows.
+     * The short fixture also exposes accidental V-fill across band borders. */
+    for (int coherent = 0; coherent < 2; coherent++) {
+        enum { NP = 4, NL = 9, NS = 3, NC = NP * NL };
+        Sample smp[NC * NS] = {0};
+        Chain chn[NC] = {0};
+        SliceSet S = {0};
+        RibbonOpts o;
+        RibbonResult all = {0};
+        const int32_t owner[3] = {0, 0, 0};
+        RibbonOpts_default(&o);
+        o.grid_u = 1.0f; o.slice_h = 2.0f;
+        o.component_global = 1; o.ownership_construction = 0;
+        o.projective_grid = 1; o.reference_owner_block = owner;
+        o.coherent_claims = coherent;
+        /* The continuity policy overrides strip partitioning; a predecessor
+         * must never disappear merely because a worker starts a new strip. */
+        if (coherent) o.v_strip_planes = 1;
+        o.peel_layers = NL;
+        for (int k = 0; k < NP; k++) for (int layer = 0; layer < NL; layer++) {
+            int c = k * NL + layer;
+            chn[c].first = c * NS;
+            chn[c].count = k == NP - 1 ? 0 : NS;
+            chn[c].slice = k;
+            chn[c].source_chart = 100 + layer;
+            chn[c].mesh_comp = layer;
+            chn[c].reconstruction_component = 10 + layer;
+            chn[c].winding_island = 20 + layer;
+            chn[c].owner_iz = layer;
+            for (int q = 0; q < NS; q++) {
+                Sample *p = smp + c * NS + q;
+                p->u = 4.0 * q; p->phi = layer + .125 * q;
+                p->p[0] = 2.0 * k; p->p[1] = 3.0 * layer;
+                p->p[2] = p->u; p->tau[2] = 1.0;
+                p->chain = c; p->slice = k;
+            }
+        }
+        S.smp = smp; S.n_smp = NC * NS;
+        S.chn = chn; S.n_chn = NC; S.nplanes = NP;
+        fit_ribbon(arena, &S, 0, &o, NULL, &all);
+        int full = all.grid_pos != NULL && all.nk == NP * NL &&
+                   all.grid_layers == NL && all.nu >= 9;
+        st_check(full, "selected-peel reference fit exists", &fails);
+        st_check(full && all.grid_claim_candidates == (NP-1)*NL*9 &&
+                 all.grid_claim_required_peels == NL && all.grid_claim_overflow == 0 &&
+                 all.grid_claim_stored == all.grid_claim_candidates,
+                 "claim census proves complete nine-peel storage", &fails);
+        {
+            RibbonResult truncated = {0};
+            o.peel_layers = NL-1;
+            fit_ribbon(arena, &S, 0, &o, NULL, &truncated);
+            st_check(truncated.grid_claim_required_peels == NL &&
+                     truncated.grid_claim_overflow == (NP-1)*9 &&
+                     truncated.grid_claim_stored + truncated.grid_claim_overflow ==
+                     truncated.grid_claim_candidates,
+                     "eight-peel output explicitly counts omitted ninth claims", &fails);
+            o.peel_layers = NL;
+        }
+        st_check(full && !all.grid_present[(NP - 1) * all.nu],
+                 "V-fill cannot cross a peel storage boundary", &fails);
+        if (coherent && full)
+            st_check(all.grid_island[0] == 10 && all.grid_material[0] == 20,
+                     "carried lattice exports reconstruction lane, not lineage alias",
+                     &fails);
+        for (int layer = 0; layer < NL; layer++) {
+            RibbonResult part = {0};
+            o.peel_layer = layer;
+            fit_ribbon(arena, &S, 0, &o, NULL, &part);
+            int same = full && part.grid_pos != NULL && part.nu == all.nu &&
+                       part.nk == NP && part.grid_layers == 1;
+            st_check(part.grid_claim_candidates == all.grid_claim_candidates &&
+                     part.grid_claim_required_peels == NL && part.grid_claim_overflow == 0 &&
+                     part.grid_claim_stored == (NP-1)*9,
+                     "bounded claim census distinguishes source capacity from resident storage", &fails);
+            size_t n = NP * all.nu, base = (size_t)layer * n;
+            if (same) {
+                same = memcmp(part.grid_pos, all.grid_pos + 3 * base,
+                              3 * n * sizeof(float)) == 0 &&
+                       memcmp(part.grid_present, all.grid_present + base, n) == 0 &&
+                       memcmp(part.grid_valid, all.grid_valid + base, n) == 0 &&
+                       memcmp(part.grid_phi, all.grid_phi + base, n * sizeof(float)) == 0 &&
+                       memcmp(part.grid_island, all.grid_island + base, n * sizeof(int32_t)) == 0 &&
+                       memcmp(part.grid_material, all.grid_material + base, n * sizeof(int32_t)) == 0 &&
+                       memcmp(part.grid_cut_h, all.grid_cut_h + base, n) == 0 &&
+                       memcmp(part.grid_cut_v, all.grid_cut_v + base, (NP - 1) * all.nu) == 0 &&
+                       memcmp(part.grid_quad, all.grid_quad + (size_t)layer * NP * (all.nu - 1),
+                              (NP - 1) * (all.nu - 1)) == 0;
+            }
+            for (size_t k = 0; same && k < NP; k++) {
+                size_t a = all.grid_chart_row_offsets[(size_t)layer * NP + k];
+                size_t b = part.grid_chart_row_offsets[k];
+                size_t na = all.grid_chart_row_offsets[(size_t)layer * NP + k + 1] - a;
+                size_t nb = part.grid_chart_row_offsets[k + 1] - b;
+                if (na != nb) { same = 0; break; }
+                for (size_t r = 0; r < na; r++) {
+                    const RibbonChartRun *x = all.grid_chart_runs + a + r;
+                    const RibbonChartRun *y = part.grid_chart_runs + b + r;
+                    if (x->first_col != y->first_col || x->last_col != y->last_col ||
+                        x->source_chart != y->source_chart) same = 0;
+                }
+            }
+            fprintf(stderr, "[ribbon selftest] selected peel %d (%s): %s\n",
+                    layer, coherent ? "coherent" : "owner",
+                    same ? "bit-identical" : "FAIL");
+            st_check(same, "one resident peel preserves geometry and provenance", &fails);
+        }
+        {
+            RibbonResult refused = {0};
+            o.peel_layer = NL;
+            fit_ribbon(arena, &S, 0, &o, NULL, &refused);
+            st_check(refused.grid_pos == NULL, "selected peel rejects an absent layer", &fails);
+            o.peel_layer = 0; o.reference_owner_block = NULL;
+            fit_ribbon(arena, &S, 0, &o, NULL, &refused);
+            st_check(coherent ? refused.grid_pos != NULL : refused.grid_pos == NULL,
+                     "selected peel supports rolling continuity without owner priority",
+                     &fails);
+        }
     }
 
     /* (c0ba) A long source curve and a shorter competing curve can both be
@@ -15503,10 +17501,11 @@ int Ribbon_selftest(void)
             forced_off[j + 1] = (size_t)j + 1;
         }
         rib_claim_select_row(
-            arena, claim, off, NCOL, previous, NULL, 1, selected);
+            arena, claim, off, NCOL, previous, NULL,
+            1, 0, 0, NULL, selected);
         rib_claim_select_row(
-            arena, forced, forced_off, NCOL, previous, NULL, 1,
-            forced_selected);
+            arena, forced, forced_off, NCOL, previous, NULL,
+            1, 0, 0, NULL, forced_selected);
         for (int j = 0; j < NCOL; j++) {
             if (selected[j] < 0 ||
                 claim[(size_t)selected[j]].chain != 101)
@@ -15525,6 +17524,185 @@ int Ribbon_selftest(void)
                  "contained claimant cannot create an A-B-A mosaic", &fails);
         st_check(forced_handoff,
                  "claimant path permits support-forced handoff", &fails);
+    }
+
+    /* (c0bb) Certified projective ownership cannot consume a previous-row
+     * unary, even if a caller supplies one.  Two opposite predecessor rows
+     * must therefore select the same intrinsic claimant. */
+    {
+        RibGridClaim a[2], b[2];
+        size_t off[2] = { 0, 2 };
+        float previous_a[3] = { 0.0f, 10.0f, 0.0f };
+        float previous_b[3] = { 0.0f, -10.0f, 0.0f };
+        int32_t selected_a[1], selected_b[1];
+        int independent = 0;
+        memset(a, 0, sizeof(a));
+        a[0].p[1] = 10.0;
+        a[0].source_chart = 7;
+        a[1].p[1] = -10.0;
+        a[1].source_chart = 2;
+        memcpy(b, a, sizeof(a));
+        rib_claim_select_row(
+            arena, a, off, 1, previous_a, NULL,
+            1, 1, 0, NULL, selected_a);
+        rib_claim_select_row(
+            arena, b, off, 1, previous_b, NULL,
+            1, 1, 0, NULL, selected_b);
+        independent = selected_a[0] >= 0 && selected_b[0] >= 0 &&
+            a[(size_t)selected_a[0]].source_chart ==
+                b[(size_t)selected_b[0]].source_chart &&
+            a[(size_t)selected_a[0]].source_chart == 2;
+        fprintf(stderr,
+                "[ribbon selftest] (c0bb) projective row independence: %s\n",
+                independent ? "yes" : "NO");
+        st_check(independent,
+                 "projective claimant selection ignores previous-row state",
+                 &fails);
+    }
+
+    {
+        Sample samples[2] = {0};
+        Chain chain = {0};
+        SliceSet slice = {0};
+        int32_t id = 0;
+        double bounds[4] = {0,0,-1,1};
+        double a[3] = {0,-1,0}, b[3] = {0,1,0};
+        double c[3] = {0,-1,2}, d[3] = {0,1,2};
+        double endpoint[3] = {0,0,0};
+        samples[0].p[2] = -1; samples[1].p[2] = 1;
+        chain.count=2;slice.smp=samples;slice.chn=&chain;
+        st_check(rib_fill_crosses_slice(&slice,&id,1,bounds,1,2,a,b) &&
+                 !rib_fill_crosses_slice(&slice,&id,1,bounds,1,2,c,d) &&
+                 !rib_fill_crosses_slice(&slice,&id,1,bounds,1,2,a,endpoint),
+                 "invented chord guard rejects crossings, permits clear gaps and endpoints",
+                 &fails);
+    }
+
+    {
+        /* Exact pre-fit PHerc0139 witness: U=28502 invents a V chord through
+         * the source at U~25459. Same material ID did not make it safe. */
+        float p[9]={10156.2177734375f,2978.46142578125f,2813.879638671875f,
+            10163.3671875f,2975.298583984375f,2808.835205078125f,
+            10155.0732421875f,2979.2939453125f,2805.77783203125f};
+        int32_t f[3]={0,1,2};
+        double a[3]={10155.0009765625,2978.773681640625,2809.091064453125};
+        double b[3]={10167.0009765625,2974.04931640625,2808.36328125};
+        RibFillGuard guard;
+        int built=rib_fill_guard_build(arena,p,3,f,1,&guard)==0;
+        st_check(built && rib_fill_guard_crosses(&guard,a,b),
+            "C3 invented V chord stabs original source triangle",&fails);
+        a[2]+=100; b[2]+=100;
+        st_check(built && !rib_fill_guard_crosses(&guard,a,b),
+            "V chord guard permits a geometrically clear continuation",&fails);
+        for (int d=0; d<3; d++) {
+            a[d]=p[d]; b[d]=a[d]+10;
+        }
+        st_check(built && !rib_fill_guard_crosses(&guard,a,b),
+            "V chord guard permits shared source endpoints",&fails);
+    }
+    {
+        enum { NF=129, NV=3*NF };
+        float p[3*NV]; int32_t f[3*NF];
+        RibFillGuard guard;
+        for (int i=0;i<NF;i++) {
+            float z=(float)((i*19)%11), y=(float)(4*((i*7)%13));
+            float x=(float)(4*((i*11)%17));
+            float tri[9]={z,y,x,z,y+2,x,z+1,y,x+2};
+            memcpy(p+9*i,tri,sizeof(tri));
+            for (int j=0;j<3;j++) f[3*i+j]=3*i+j;
+        }
+        int exact=rib_fill_guard_build(arena,p,NV,f,NF,&guard)==0;
+        for (int i=0;i<2*NF && exact;i++) {
+            int at=i%NF;
+            double a[3]={p[9*at]-10,p[9*at+1]+0.5,p[9*at+2]+(i<NF?0.5:2.5)};
+            double b[3]={a[0]+20,a[1],a[2]};
+            int brute=0;
+            for (int j=0;j<NF;j++)
+                brute |= rib_fill_segment_triangle(a,b,p+9*j,p+9*j+3,p+9*j+6);
+            exact &= rib_fill_guard_crosses(&guard,a,b)==brute;
+        }
+        st_check(exact,"V chord BVH equals exhaustive triangle tests",&fails);
+    }
+    {
+        /* A wall between the anchors must prevent invention, not erase the
+         * anchors or mark them unsupported. A translated clear wall is a
+         * control with exactly the old interpolation bytes. */
+        Sample samples[4]={0}; Chain chains[2]={0}; SliceSet slice={0};
+        RibbonOpts options; RibbonResult hit={0}, clear={0}, baseline={0};
+        float wall[9]={2,-10,-10,2,10,-10,2,0,20}; int32_t faces[3]={0,1,2};
+        RibbonOpts_default(&options);
+        options.grid_u=2; options.slice_h=2; options.coherent_claims=1;
+        for (int c=0;c<2;c++) {
+            chains[c].first=2*c; chains[c].count=2; chains[c].slice=2*c;
+            for (int j=0;j<2;j++) {
+                Sample *s=samples+2*c+j;
+                s->p[0]=4*c; s->p[2]=4*j; s->u=4*j; s->phi=0.1*j;
+                s->tau[2]=1; s->r=10; s->chain=c; s->slice=2*c;
+            }
+        }
+        slice.smp=samples; slice.n_smp=4; slice.chn=chains; slice.n_chn=2;
+        slice.nplanes=3;
+        fit_ribbon(arena,&slice,0,&options,NULL,&baseline);
+        slice.source_verts=wall; slice.source_nv=3;
+        slice.source_faces=faces; slice.source_nf=1;
+        fit_ribbon(arena,&slice,0,&options,NULL,&hit);
+        for (int v=0;v<3;v++) wall[3*v+1]+=100;
+        fit_ribbon(arena,&slice,0,&options,NULL,&clear);
+        int safe=hit.grid_pos && clear.grid_pos && baseline.grid_pos &&
+                 hit.grid_vfill_reject_crossing==3 && hit.grid_vfill_rows==0 &&
+                 clear.grid_vfill_rows==3 && clear.grid_vfill_reject_crossing==0 &&
+                 clear.nk==baseline.nk && clear.nu==baseline.nu;
+        for (size_t j=0;j<3 && safe;j++) {
+            for (size_t k=0;k<3;k+=2) {
+                size_t slot=k*hit.nu+j;
+                safe &= hit.grid_valid[slot] && baseline.grid_valid[slot] &&
+                    memcmp(hit.grid_pos+3*slot,baseline.grid_pos+3*slot,3*sizeof(float))==0;
+            }
+        }
+        if (safe) safe &= memcmp(clear.grid_pos,baseline.grid_pos,
+                                clear.nk*clear.nu*3*sizeof(float))==0 &&
+                          memcmp(clear.grid_valid,baseline.grid_valid,clear.nk*clear.nu)==0;
+        st_check(safe,"V guard refuses invention only; clear fills and measured anchors stay exact",&fails);
+    }
+
+    /* One defective sample on an otherwise intact measured strip must stay a
+     * local defect. With 32:1 edge prices the old DP exchanged all 17 good
+     * vertical continuations for a different sheet to avoid two horizontal
+     * breaks. Balanced evidence keeps the correct strip, leaving its actual
+     * bad sample to the unchanged geometric face gate. */
+    {
+        enum { N = 17 };
+        RibGridClaim legacy[2*N] = {0}, balanced[2*N];
+        size_t off[N+1];
+        float previous[N*3] = {0};
+        int32_t old_selected[N], new_selected[N];
+        for (int j = 0; j < N; j++) {
+            off[j] = 2*(size_t)j;
+            previous[3*j+2] = (float)j;
+            for (int l = 0; l < 2; l++) {
+                RibGridClaim *c = legacy + 2*j+l;
+                c->p[0] = 2.0; c->p[1] = 16.0*l; c->p[2] = (double)j;
+                c->chain = 100+l; c->source_chart = 200+l;
+            }
+        }
+        off[N] = 2*N;
+        legacy[2*8].p[2] += 8.0;
+        memcpy(balanced, legacy, sizeof(legacy));
+        rib_claim_select_row(arena, legacy, off, N, previous, NULL,
+                             1, 0, 0, NULL, old_selected);
+        rib_claim_select_row(arena, balanced, off, N, previous, NULL,
+                             1, 0, 1, NULL, new_selected);
+        int old_hops = 0, new_hops = 0;
+        for (int j = 0; j < N; j++) {
+            old_hops += legacy[old_selected[j]].source_chart != 200;
+            new_hops += balanced[new_selected[j]].source_chart != 200;
+        }
+        fprintf(stderr,
+                "[ribbon selftest] isolated defect: sheet hops %d -> %d\n",
+                old_hops, new_hops);
+        st_check(old_hops == N && new_hops == 0,
+                 "one bad sample cannot outweigh significant intact material",
+                 &fails);
     }
 
     /* (c0c) Conflict erasure: a doubly claimed middle row contributes no
@@ -15570,7 +17748,7 @@ int Ribbon_selftest(void)
         S.nplanes = 3;
         fit_ribbon(arena, &S, 0.0, &o, NULL, &R);
         int generated = R.grid_pos != NULL && R.grid_valid != NULL &&
-                        R.nk == 3 && R.nu >= 5;
+                        R.nk == 3 * R.grid_layers && R.nu >= 5;
         for (size_t j = 0; generated && j < 5; j++) {
             size_t s = R.nu + j;
             double y = (double)R.grid_pos[s * 3 + 1];
@@ -15625,8 +17803,8 @@ int Ribbon_selftest(void)
                 chn[c].slice = row;
                 chn[c].mesh_comp = 0;
                 chn[c].source_chart = 0;
-                chn[c].winding_island = 0;
-                chn[c].reconstruction_component = 0;
+                chn[c].winding_island = 1100000000;
+                chn[c].reconstruction_component = 1100000000;
                 for (int q = 0; q < 2; q++) {
                     int i = 2 * c + q;
                     smp[i].u = q ? 4.0 : 0.0;
@@ -15667,8 +17845,10 @@ int Ribbon_selftest(void)
                     stable_ok = 0;
             }
         }
+        if (chn[0].winding_island != 1100000000)
+            split_ok = stable_ok = 0;
         fprintf(stderr,
-                "[ribbon selftest] (c0bb) branch components: "
+                "[ribbon selftest] (c0bc) sparse-material branch components: "
                 "split=%s stable=%s components=%zu conflicts=%zu\n",
                 split_ok ? "yes" : "NO", stable_ok ? "yes" : "NO",
                 R.grid_reconstruction_components,
@@ -15722,7 +17902,8 @@ int Ribbon_selftest(void)
         S.chn = chn; S.n_chn = 3;
         S.nplanes = 2;
         fit_ribbon(arena, &S, 0.0, &o, NULL, &R);
-        int continuous = R.grid_pos != NULL && R.nk == 2 && R.nu >= 5;
+        int continuous = R.grid_pos != NULL &&
+                         R.nk == 2 * R.grid_layers && R.nu >= 5;
         for (size_t j = 0; continuous && j < 5; j++) {
             double y = (double)R.grid_pos[(R.nu + j) * 3 + 1];
             if (!isfinite(y) || fabs(y) > 0.25) continuous = 0;
@@ -15914,6 +18095,79 @@ int Ribbon_selftest(void)
         st_check(okuv, "strip vt |du| == x spacing", &fails);
     }
 
+    /* (1b) TRUST-GAUGE means literal carried-U retention.  A deliberately
+     * half-speed coordinate on the same flat strip must remain half-speed;
+     * the former median(U-s)+s projection silently expanded it back to unit
+     * speed and therefore did not actually trust the certificate. */
+    {
+        enum { NX = 6 };
+        float v[NX*2*3];
+        int32_t f[(NX-1)*2*3];
+        double uref[NX*2];
+        for (int i = 0; i < NX; i++) {
+            v[i*3+0] = 0.0f;
+            v[i*3+1] = 0.0f;
+            v[i*3+2] = (float)i;
+            v[(NX+i)*3+0] = 4.0f;
+            v[(NX+i)*3+1] = 0.0f;
+            v[(NX+i)*3+2] = (float)i;
+            uref[i] = uref[NX+i] = 0.5 * (double)i;
+        }
+        size_t nfc = 0;
+        for (int i = 0; i < NX-1; i++) {
+            f[nfc*3+0] = i;
+            f[nfc*3+1] = i+1;
+            f[nfc*3+2] = NX+i;
+            nfc++;
+            f[nfc*3+0] = i+1;
+            f[nfc*3+1] = NX+i+1;
+            f[nfc*3+2] = NX+i;
+            nfc++;
+        }
+        RibbonOpts o;
+        RibbonOpts_default(&o);
+        o.axis_point[1] = -60.0f;
+        o.reference_u = uref;
+        o.solve_reference_u = 0;
+        o.fit_ribbon = 0;
+        o.component_global = 1;
+        o.wrap_spacing = 9.5f;
+        RibbonResult R;
+        int rc = Ribbon_run(arena, v, NX*2, f, nfc, &o, &R);
+        int retained = rc == 0 && R.mono_repairs == 0 &&
+                       fabs(R.duds_err_mean - 0.5) < 0.03 &&
+                       fabs(R.u_span - 2.5) < 0.05;
+        fprintf(stderr,
+                "[ribbon selftest] (1b) trust-gauge carried U: rc=%d "
+                "duds_mean=%.4f span=%.3f repairs=%zu: %s\n",
+                rc, R.duds_err_mean, R.u_span, R.mono_repairs,
+                retained ? "ok" : "FAIL");
+        st_check(retained,
+                 "trust-gauge retains carried U without chain projection",
+                 &fails);
+        /* The separate metric mode must actually repair the half-speed U,
+         * including its coarse initializer, without forgetting signed V. */
+        double vref[NX*2];
+        for (int i = 0; i < NX*2; i++) vref[i] = (double)v[i*3] - 100.0;
+        o.reference_v = vref;
+        o.solve_reference_u = 1;
+        o.coarse_chain_seed = 1;
+        o.projective_grid = 1;
+        o.direct_ribbon = 1;
+        o.fit_ribbon = 1;
+        o.grid_u = 1.0f;
+        o.metric_iters = 2;
+        rc = Ribbon_run(arena, v, NX*2, f, nfc, &o, &R);
+        st_check(rc == 0 && fabs(R.u_span - 5.0) < 0.05 &&
+                 R.duds_err_mean < 0.003,
+                 "coarse chain initializer releases half-speed U to the metric solve",
+                 &fails);
+        st_check(rc == 0 && fabs(R.grid_v_origin + 100.0) < 1e-9 &&
+                 fabs(R.grid_u_origin - floor(R.grid_u_origin)) < 1e-9,
+                 "metric solve retains signed V and integer U sampling origins",
+                 &fails);
+    }
+
     /* (2) analytic spiral: u == true arc length within 2%; isolines vertical. */
     {
         double r0 = 15.0, g = 2.0, turns = 3.0, Hgt = 40.0, cy = 100.0, cx = 50.0;
@@ -16080,7 +18334,7 @@ int Ribbon_selftest(void)
         if (rcB == 0 && B.phi != NULL) {
             double ref_shift = 8.0 * M_PI;
             float *ref_phi = (float *)ARENA_ALLOC(
-                arena, (long)(nvv * sizeof(float)));
+                arena, (size_t)(nvv * sizeof(float)));
             for (size_t i = 0; i < nvv; i++)
                 ref_phi[i] = (float)((double)B.phi[i] + ref_shift);
             RibbonOpts oE = oB;
@@ -16278,7 +18532,7 @@ int Ribbon_selftest(void)
         size_t nvv = 2*nring + nflap;
         float *v = RIB_ALLOC_ARRAY(arena, float, nvv * 3);
         int32_t *f = (int32_t *)ARENA_ALLOC(arena,
-            (long)(((size_t)(NU-1)*(NH-1)*2*2 + (size_t)(FN-1)*(FH-1)*2) * 3 * sizeof(int32_t)));
+            (size_t)(((size_t)(NU-1)*(NH-1)*2*2 + (size_t)(FN-1)*(FH-1)*2) * 3 * sizeof(int32_t)));
         size_t nfc = 0;
         double Rr[2] = { Rp, Ro };
         for (int w = 0; w < 2; w++) {

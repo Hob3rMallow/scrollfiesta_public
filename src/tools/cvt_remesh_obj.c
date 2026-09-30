@@ -18,8 +18,8 @@ static int graded_selftest(void) {
     Arena_T a = Arena_new();
     int G = 40, side = G+1;
     size_t nv = (size_t)side*side, nf = (size_t)G*G*2;
-    float   *V = (float *)ARENA_ALLOC(a, (long)(nv*3*sizeof(float)));
-    int32_t *F = (int32_t *)ARENA_ALLOC(a, (long)(nf*3*sizeof(int32_t)));
+    float   *V = (float *)ARENA_ALLOC(a, (size_t)(nv*3*sizeof(float)));
+    int32_t *F = (int32_t *)ARENA_ALLOC(a, (size_t)(nf*3*sizeof(int32_t)));
     for (int i=0;i<side;i++) for (int j=0;j<side;j++) {
         size_t idx=(size_t)i*side+j;
         V[idx*3+0]=20.0f;            /* z = 20, well inside the owned box */
@@ -69,8 +69,8 @@ static int selftest(void) {
     Arena_T a = Arena_new();
     int M = 16, side = M+1;
     size_t nv = (size_t)side*side, nf = (size_t)M*M*2;
-    float   *V = (float *)ARENA_ALLOC(a, (long)(nv*3*sizeof(float)));
-    int32_t *F = (int32_t *)ARENA_ALLOC(a, (long)(nf*3*sizeof(int32_t)));
+    float   *V = (float *)ARENA_ALLOC(a, (size_t)(nv*3*sizeof(float)));
+    int32_t *F = (int32_t *)ARENA_ALLOC(a, (size_t)(nf*3*sizeof(int32_t)));
     for (int i=0;i<side;i++) for (int j=0;j<side;j++) {
         size_t idx=(size_t)i*side+j;
         V[idx*3+0]=0.0f; V[idx*3+1]=(float)i/M; V[idx*3+2]=(float)j/M;

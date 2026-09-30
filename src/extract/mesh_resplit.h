@@ -34,6 +34,10 @@ typedef struct {
  *     ORIGINAL points IN ISOLATION, so the merged-LOP artifacts are gone and the
  *     sheets enter Step 2 as clean single surfaces.
  *
+ * A connected component can still contain a stack. If its original triangles
+ * overlap in the separator's projection, defer re-LOP and preserve its geometry
+ * for the downstream sheet separator. Connectivity alone is insufficient.
+ *
  * A "real" component has >= RESPLIT_MIN_COMP_VERTS vertices; smaller fragments
  * are dropped. If a component's re-LOP/re-BPA fails, its original geometry is
  * emitted unchanged (never lose a sheet).
@@ -61,7 +65,8 @@ int MeshResplit_run(Arena_T arena,
  * cloud and the sub-meshes it was just split into (`pieces`, e.g. bridge-cut /
  * overlap output), label each original point to its nearest piece (by the LOP
  * image), then re-LOP + re-BPA each piece from ITS original points in isolation
- * (fall back to the piece unchanged if re-LOP/BPA fails). This is the same clean
+ * (keep the piece unchanged if it still has projected overlaps or re-LOP/BPA
+ * fails). This is the same clean
  * re-mesh MeshResplit_run applies after the connectivity split, reused for step 4.
  *
  * cloud: the parent's MeshResplitCloud (may be NULL/empty -> pieces pass through).
@@ -82,8 +87,9 @@ int MeshResplit_remesh_pieces(Arena_T arena,
  * R = MLS_PROJECT_RADIUS_VOX, `iters` passes), then re-triangulate via Ball
  * Pivoting. Unlike MeshResplit_remesh_pieces this does NOT re-label the parent's
  * original cloud onto the piece -- it uses ONLY the piece's own verts, which the
- * split already assigned correctly. So it cannot vacuum in an adjacent close-wrap
- * and fold (the step7_cc_bpa_003 regression), yet it still re-meshes cleanly
+ * split already assigned. A piece that still has projected overlaps is retained
+ * unchanged; its own points can still represent multiple close layers. Once
+ * separated, it cannot vacuum in a sibling's cloud, yet it re-meshes cleanly
  * (no sliver/flipped micro-triangles, unlike topology-preserving in-place
  * smoothing, so CVT can remesh). `*m` is REPLACED with the re-surfaced mesh
  * (comp_id kept; pin_mask/vert_normals reset since the vertex set is fresh); on

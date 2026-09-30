@@ -52,18 +52,20 @@
       <WarningLevel>Level4</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>_DEBUG;VESUVIUS_DEBUG;_CRT_SECURE_NO_WARNINGS;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)docs\research\gco-v3.0;$(SolutionDir)deps\include;$(SolutionDir)deps\src\tiff-4.7.1\libtiff;$(SolutionDir)deps\src\tiff-4.7.1\bld\libtiff;$(SolutionDir)deps\src\graph\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <CompileAs>CompileAsC</CompileAs>
+      <CompileAs>Default</CompileAs>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(SolutionDir)deps\lib\win64\Debug;$(SolutionDir)deps\lib\win64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>tiff.lib;zs.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -73,18 +75,20 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>NDEBUG;_CRT_SECURE_NO_WARNINGS;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)docs\research\gco-v3.0;$(SolutionDir)deps\include;$(SolutionDir)deps\src\tiff-4.7.1\libtiff;$(SolutionDir)deps\src\tiff-4.7.1\bld\libtiff;$(SolutionDir)deps\src\graph\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <CompileAs>CompileAsC</CompileAs>
+      <CompileAs>Default</CompileAs>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(SolutionDir)deps\lib\win64\Release;$(SolutionDir)deps\lib\win64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>tiff.lib;zs.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -106,6 +110,67 @@
     <ClCompile Include="src\common\obj_io.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\arena.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\except.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\split\overlap_sep.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\split\overlap_merge.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\split\overlap_quality.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\flatten\surface_snap.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\snap_darkcut.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\snap_quilt.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\snap_solve.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\recto_refine.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\raw_sample.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\mesh_normals.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\gco_wrap.cpp"><CompileAs>CompileAsCpp</CompileAs></ClCompile>
+    <ClCompile Include="docs\research\gco-v3.0\GCoptimization.cpp"><CompileAs>CompileAsCpp</CompileAs></ClCompile>
+    <ClCompile Include="docs\research\gco-v3.0\LinkedBlockList.cpp"><CompileAs>CompileAsCpp</CompileAs></ClCompile>
+    <ClCompile Include="src\split\oracle.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\split\multicut_wrap.cpp">
+      <CompileAs>CompileAsCpp</CompileAs>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level3</WarningLevel>
+      <PreprocessorDefinitions>NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="src\common\csr.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\bfs.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\tiff_io.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\ply_io.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\ves_platform.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\mesh_manifold.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\raw_snapback.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\snap_cg.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\closest_tri.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\remesh\rvd_clip.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\remesh\cvt_remesh.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\attene_predicates_wrap.cpp">
+      <CompileAs>CompileAsCpp</CompileAs>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>$(SolutionDir)deps\src\attene-predicates;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="deps\src\attene-predicates\uinteger.cpp">
+      <CompileAs>CompileAsCpp</CompileAs>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>$(SolutionDir)deps\src\attene-predicates;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="deps\src\attene-predicates\ieee_binary.cpp">
+      <CompileAs>CompileAsCpp</CompileAs>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>$(SolutionDir)deps\src\attene-predicates;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="deps\src\triangle\triangle.c">
+      <CompileAs>CompileAsC</CompileAs>
+      <PreprocessorDefinitions>TRILIBRARY;ANSI_DECLARATORS;NO_TIMER;REAL=double;VOID=int;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level1</WarningLevel>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\extract\mesh_resplit.h" />

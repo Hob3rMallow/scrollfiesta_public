@@ -1598,6 +1598,20 @@ static int certify_source_charts(Arena_T arena,
                 q->bbox_max[0], q->bbox_max[1], q->bbox_max[2]);
         if (mixed_source_cubes)
             fprintf(stderr, "  source chart %zu spans multiple input cubes\n", c);
+        if (getenv("GW_DROP_NONDISK_CHARTS") != NULL) {
+            /* Explicit opt-in for grids whose mesh generation let a handle
+             * through (2026-09-01: 4x21x21 rim cube z04608_y02048_x01920,
+             * chart of 157k faces with chi=-1).  The chart is QUARANTINED --
+             * dropped whole, with the provenance above on record -- rather
+             * than welded with a tunnel that would corrupt the seam BPA and
+             * every downstream winding certificate.  Default stays
+             * fail-closed. */
+            fprintf(stderr,
+                    "  GW_DROP_NONDISK_CHARTS: quarantining chart %zu "
+                    "(%zu faces)\n", c, q->faces);
+            drop[c] = 1;
+            continue;
+        }
         goto done;
     }
 
@@ -3941,8 +3955,8 @@ int main(int argc, char **argv)
     int64_t sg_z0 = 0, sg_z1 = 0, sg_y0 = 0, sg_y1 = 0, sg_x0 = 0, sg_x1 = 0;
     /* --vert-cap/--face-cap: override the node-count-derived capacity. The
      * default estimate (1.5M vert / 2M face per input node) is calibrated for
-     * leaf-sized cubes; an UNDECIMATED upper-level weld (hierarchical_weld
-     * --no-decimate) folds the whole scroll into a handful of huge nodes, so a
+     * leaf-sized cubes; an UNDECIMATED upper-level weld of already-welded
+     * blocks folds the whole scroll into a handful of huge nodes, so a
      * 4-node terminal weld needs far more than 4*2M faces. The caller passes
      * the real budget here; 0 = use the estimate. Still clamped to the 32-bit
      * alloc ceilings (150M vert / 80M face). */
@@ -4165,8 +4179,8 @@ int main(int argc, char **argv)
         /* Output vert array. Plain concatenation of every cube's verts (the
          * bitwise hash-join weld is gone), so size for the no-reuse worst
          * case. Per-cube dumps are ~30K-180K verts, but grid_weld is also used
-         * to stitch already-welded *block* meshes: for hierarchical_weld LOD
-         * tiers the boundary-pinned decimated blocks stay large (300K-700K+
+         * to stitch already-welded *block* meshes: in the LOD tiers of a
+         * hierarchical weld the boundary-pinned decimated blocks stay large (300K-700K+
          * verts each at upper levels), so a weld of just 2 such tiles blew the
          * old 2*500K=1M cap. 1.5M/input covers 2-input upper-level welds with
          * margin, plus hole-fill Steiner verts. The 150M ceiling still bounds a
@@ -4223,7 +4237,7 @@ int main(int argc, char **argv)
         }
 
         /* Face accumulator. ~400K/cube for per-cube dumps; raised to 2M to also
-         * cover the large boundary-pinned LOD tiles hierarchical_weld welds at
+         * cover the large boundary-pinned LOD tiles of a hierarchical weld's
          * upper levels (~300-700K each, matching the vert bump above) plus the
          * bridge + hole-fill faces the weld adds. The 80M ceiling still bounds a
          * grid. */
@@ -4275,7 +4289,7 @@ int main(int argc, char **argv)
                     "%s/%s/%s_%s/%s_%s_all.obj",
                     grid_dir, cube_id, cube_id, stage, cube_id, stage);
                 if (!gw_file_exists(obj_path)) {
-                    /* Flat hierarchical-LOD layout (hierarchical_weld):
+                    /* Flat hierarchical-LOD layout (block welds):
                      * <dir>/<id>/<id>_<stage>_all.obj */
                     snprintf(obj_path, sizeof(obj_path),
                         "%s/%s/%s_%s_all.obj",
@@ -6352,7 +6366,7 @@ int main(int argc, char **argv)
          * recoarsening cannot reopen it: collapses contract existing edges
          * only, boundary loops exit bit-identical (weld_cleanup.h) -- which
          * also leaves unbridged holes and a hierarchical level's outer faces
-         * untouched, letting hierarchical_weld stack this per level. The final
+         * untouched, letting a hierarchical weld stack this per level. The final
          * winding repair + manifold audits below re-verify the result.
          * SEAM_NO_RECOARSEN=1 skips; SEAM_RECOARSEN_BELOW/_BAND tune. */
         if (legacy_bpa && !no_bridge && !no_cleanup &&

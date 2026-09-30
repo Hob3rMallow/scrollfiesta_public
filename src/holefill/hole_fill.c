@@ -16,6 +16,7 @@
 
 #include "../common/arena.h"
 #include "../common/csr.h"
+#include "../common/intrinsic_angle.h"
 #include "../common/mesh_types.h"
 #include "../common/pca.h"
 #include "../common/pipeline_constants.h"
@@ -1464,6 +1465,71 @@ typedef struct {
     size_t   n_merge;       /* number of merge pairs */
 } HoleFillResult;
 
+/* Original source corner bounds, accumulated once per pass. Only chart mode
+ * uses this certificate: all generated interior fans must be capable of
+ * mapping around a full planar turn within the chart stretch contract. */
+typedef struct {
+    size_t nv;
+    double *lower,*upper;
+    int32_t *boundary_degree;
+} HFChartMetric;
+
+static void hf_chart_metric_sum(const float *verts,const int32_t *faces,size_t nf,
+                                 HFChartMetric *metric)
+{
+    memset(metric->lower,0,metric->nv*sizeof(double));
+    memset(metric->upper,0,metric->nv*sizeof(double));
+    for(size_t f=0;f<nf;f++) for(int k=0;k<3;k++) {
+        const int32_t *t=&faces[f*3];
+        double lo,hi;
+        int32_t v=t[k];
+        if(metric->boundary_degree[v]!=2)continue;
+        if(!IntrinsicAngle_corner_bounds(&verts[(size_t)v*3],
+                &verts[(size_t)t[(k+1)%3]*3],&verts[(size_t)t[(k+2)%3]*3],
+                HOLEFILL_CHART_MAX_CONDITION,&lo,&hi)) {
+            metric->lower[v]=metric->upper[v]=NAN;
+        } else {
+            metric->lower[v]+=lo; metric->upper[v]+=hi;
+        }
+    }
+}
+
+static int hf_chart_fill_possible(Arena_T arena,const HFChartMetric *metric,
+                                   const HoleFillResult *fill)
+{
+    if(!metric)return 1;
+    /* A boundary merge changes the source stars being certified. Let the
+     * source-preserving ear proposal try the exact cycle instead. */
+    if(fill->n_merge||fill->n_boundary>fill->nv)return 0;
+    Arena_Mark mark=Arena_save(arena);
+    double *lo=ARENA_CALLOC(arena,fill->nv,sizeof(double));
+    double *hi=ARENA_CALLOC(arena,fill->nv,sizeof(double));
+    int ok=1;
+    for(size_t v=0;v<fill->n_boundary;v++) {
+        int32_t source=fill->boundary_map[v];
+        if(source<0||(size_t)source>=metric->nv||metric->boundary_degree[source]!=2){ok=0;break;}
+        lo[v]=metric->lower[source];hi[v]=metric->upper[source];
+    }
+    for(size_t f=0;ok&&f<fill->nf;f++) {
+        const int32_t *t=&fill->faces[f*3];
+        for(int k=0;k<3;k++)
+            if(t[k]<0||(size_t)t[k]>=fill->nv)ok=0;
+        if(!ok)break;
+        for(int k=0;k<3;k++) {
+        double a,b;
+        int32_t v=t[k];
+        if(!IntrinsicAngle_corner_bounds(&fill->verts[(size_t)v*3],
+                &fill->verts[(size_t)t[(k+1)%3]*3],&fill->verts[(size_t)t[(k+2)%3]*3],
+                HOLEFILL_CHART_MAX_CONDITION,&a,&b)){ok=0;break;}
+        lo[v]+=a;hi[v]+=b;
+        }
+    }
+    for(size_t v=0;ok&&v<fill->nv;v++)
+        if(!IntrinsicAngle_closed_fan_possible(lo[v],hi[v]))ok=0;
+    Arena_restore(arena,mark);
+    return ok;
+}
+
 /* A hole patch is admissible only when its sole boundary is EXACTLY the chart
  * cycle supplied by the caller.  The old Clipper2 fallback could retain only
  * the largest projected lobe, silently omit original loop vertices, and still
@@ -2362,17 +2428,32 @@ static int fill_micro_hole(Arena_T arena,
  * that projection changes the cycle.  Triangulate the ORIGINAL combinatorial
  * cycle instead, greedily clipping the shortest well-shaped 3-D ears.  This
  * retains every chart vertex/edge, introduces no source-vertex weld or split,
- * and checks each new diagonal against the live mesh before committing it. */
+ * and checks each new diagonal against the live mesh before committing it.
+ * In bounded chart mode an ear must also leave a feasible closed angle fan
+ * at its tip; clipping a short ear on the wrong side creates a sharp cone. */
+static int hf_ear_angles(const float *verts,int32_t a,int32_t b,int32_t c,
+                          double lo[3],double hi[3])
+{
+    const int32_t ids[3]={a,b,c};
+    for(int k=0;k<3;k++)
+        if(!IntrinsicAngle_corner_bounds(&verts[(size_t)ids[k]*3],
+               &verts[(size_t)ids[(k+1)%3]*3],&verts[(size_t)ids[(k+2)%3]*3],
+               HOLEFILL_CHART_MAX_CONDITION,&lo[k],&hi[k]))return 0;
+    return 1;
+}
+
 static int fill_chart_cycle_3d(Arena_T arena,
                                const float *mesh_verts,
                                const HFEdgeIndex *eidx,
                                const int32_t *loop_verts, size_t n_loop,
+                               const HFChartMetric *metric,
                                HoleFillResult *result)
 {
     Arena_Mark mark = Arena_save(arena);
     int32_t *prev, *next, *fill_faces, *bmap;
     uint8_t *alive;
     float *fill_verts;
+    double *lower=NULL,*upper=NULL;
     size_t remaining, ntri = 0;
 
     if (!mesh_verts || !loop_verts || !result || n_loop < 3 ||
@@ -2388,6 +2469,10 @@ static int fill_chart_cycle_3d(Arena_T arena,
                 (n_loop * 3 * sizeof(*fill_verts)));
     bmap = (int32_t *)ARENA_ALLOC(arena,
                 (n_loop * sizeof(*bmap)));
+    if(metric){
+        lower=ARENA_ALLOC(arena,n_loop*sizeof(double));
+        upper=ARENA_ALLOC(arena,n_loop*sizeof(double));
+    }
     for (size_t i = 0; i < n_loop; i++) {
         int32_t mv = loop_verts[i];
         if (mv < 0) { Arena_restore(arena, mark); return -1; }
@@ -2397,6 +2482,12 @@ static int fill_chart_cycle_3d(Arena_T arena,
         bmap[i] = mv;
         memcpy(&fill_verts[i*3], &mesh_verts[(size_t)mv*3],
                3*sizeof(float));
+        if(metric){
+            if((size_t)mv>=metric->nv||metric->boundary_degree[mv]!=2){
+                Arena_restore(arena,mark);return -2;
+            }
+            lower[i]=metric->lower[mv];upper[i]=metric->upper[mv];
+        }
     }
 
     remaining = n_loop;
@@ -2429,6 +2520,23 @@ static int fill_chart_cycle_3d(Arena_T arena,
             cross2=c0*c0+c1*c1+c2*c2;
             scale=lab2+lbc2+lac2;
             if (scale <= 0.0 || cross2 <= 1e-12*scale*scale) continue;
+            if(metric){
+                double lo[3],hi[3];
+                if(!hf_ear_angles(fill_verts,ia,(int32_t)ib,ic,lo,hi)||
+                   !IntrinsicAngle_closed_fan_possible(lower[ib]+lo[1],upper[ib]+hi[1])||
+                   !(lower[ia]+lo[0]<=INTRINSIC_ANGLE_TAU+INTRINSIC_ANGLE_TOL)||
+                   !(lower[ic]+lo[2]<=INTRINSIC_ANGLE_TAU+INTRINSIC_ANGLE_TOL))continue;
+                /* Evaluate BOTH final triangles while choosing a quadrilateral
+                 * diagonal, so a bad greedy terminal triangle cannot hide an
+                 * available feasible alternative. */
+                if(remaining==4){
+                    int32_t id=next[ic];double last_lo[3],last_hi[3];
+                    if(!hf_ear_angles(fill_verts,ia,ic,id,last_lo,last_hi)||
+                       !IntrinsicAngle_closed_fan_possible(lower[ia]+lo[0]+last_lo[0],upper[ia]+hi[0]+last_hi[0])||
+                       !IntrinsicAngle_closed_fan_possible(lower[ic]+lo[2]+last_lo[1],upper[ic]+hi[2]+last_hi[1])||
+                       !IntrinsicAngle_closed_fan_possible(lower[id]+last_lo[2],upper[id]+last_hi[2]))continue;
+                }
+            }
             shape=scale*scale/cross2;
             score=lac2*(1.0+0.01*shape);
             if (score < best_score) { best_score=score; best=(int32_t)ib; }
@@ -2440,6 +2548,13 @@ static int fill_chart_cycle_3d(Arena_T arena,
             fill_faces[ntri*3+1]=best;
             fill_faces[ntri*3+2]=c;
             ntri++;
+            if(metric){
+                double lo[3],hi[3];const int32_t ids[3]={a,best,c};
+                if(!hf_ear_angles(fill_verts,a,best,c,lo,hi)){
+                    Arena_restore(arena,mark);return -2;
+                }
+                for(int k=0;k<3;k++){lower[ids[k]]+=lo[k];upper[ids[k]]+=hi[k];}
+            }
             next[a]=c; prev[c]=a; alive[best]=0; remaining--;
         }
     }
@@ -2470,6 +2585,9 @@ static int fill_chart_cycle_3d(Arena_T arena,
     result->merge_src=NULL;
     result->merge_dst=NULL;
     result->n_merge=0;
+    if(!hf_chart_fill_possible(arena,metric,result)){
+        Arena_restore(arena,mark);memset(result,0,sizeof(*result));return -2;
+    }
     return 0;
 }
 
@@ -3002,92 +3120,7 @@ static void log_loop_geom(const char *tag, size_t loop_idx,
 #define MAX_SUBLOOPS 32
 #define PINCH_EPS    0.05f   /* verts within this (vox) are the same pinch pt */
 
-/* In chart-topology mode a boundary loop is a simple topological cycle even
- * when two distinct boundary vertices occupy the same 3-D position.  Peeling
- * that cycle into geometric lobes loses the original chart boundary: the two
- * fill patches close onto different vertex indices and leave the annulus alive.
- * Instead, gently separate each non-adjacent coincident pair along the
- * difference of its two local boundary bisectors.  This edits the surrounding
- * chart geometry by a tiny fraction of one edge, keeps every vertex/face and
- * makes the original cycle directly triangulable as one disk. */
-static size_t spread_chart_loop_pinches(float *verts,
-                                        const int32_t *loop_verts,
-                                        size_t n, float eps)
-{
-    size_t moved = 0;
-    float eps2 = eps * eps;
-    if (!verts || !loop_verts || n < 4) return 0;
-    for (size_t i = 0; i < n; i++) {
-        for (size_t j = i + 2; j < n; j++) {
-            int32_t vi, vj, vip, vin, vjp, vjn;
-            float *pi, *pj;
-            double dz, dy, dx, d2;
-            double si[3], sj[3], sep[3], norm;
-            double local = 1e30, step;
-            if (i == 0 && j == n - 1) continue;
-            vi = loop_verts[i]; vj = loop_verts[j];
-            if (vi == vj) continue; /* an actual repeated index is not movable */
-            pi = &verts[(size_t)vi * 3];
-            pj = &verts[(size_t)vj * 3];
-            dz = (double)pi[0] - pj[0];
-            dy = (double)pi[1] - pj[1];
-            dx = (double)pi[2] - pj[2];
-            d2 = dz*dz + dy*dy + dx*dx;
-            if (d2 > (double)eps2) continue;
 
-            vip = loop_verts[(i + n - 1) % n];
-            vin = loop_verts[(i + 1) % n];
-            vjp = loop_verts[(j + n - 1) % n];
-            vjn = loop_verts[(j + 1) % n];
-            for (int k = 0; k < 3; k++) {
-                si[k] = 0.5 * ((double)verts[(size_t)vip*3+(size_t)k] +
-                               (double)verts[(size_t)vin*3+(size_t)k]) - pi[k];
-                sj[k] = 0.5 * ((double)verts[(size_t)vjp*3+(size_t)k] +
-                               (double)verts[(size_t)vjn*3+(size_t)k]) - pj[k];
-                sep[k] = si[k] - sj[k];
-            }
-            norm = sqrt(sep[0]*sep[0] + sep[1]*sep[1] + sep[2]*sep[2]);
-            if (norm < 1e-9) {
-                for (int k = 0; k < 3; k++)
-                    sep[k] = ((double)verts[(size_t)vin*3+(size_t)k] -
-                              (double)verts[(size_t)vip*3+(size_t)k]) -
-                             ((double)verts[(size_t)vjn*3+(size_t)k] -
-                              (double)verts[(size_t)vjp*3+(size_t)k]);
-                norm = sqrt(sep[0]*sep[0] + sep[1]*sep[1] + sep[2]*sep[2]);
-            }
-            if (norm < 1e-9) {
-                /* Deterministic last resort for exactly coincident, locally
-                 * identical samples.  This case is vanishingly rare and the
-                 * displacement remains sub-voxel. */
-                sep[0] = 0.0; sep[1] = 1.0; sep[2] = 0.0; norm = 1.0;
-            }
-            for (int k = 0; k < 3; k++) sep[k] /= norm;
-            {
-                const int32_t around[4] = {vip, vin, vjp, vjn};
-                const float *base[2] = {pi, pj};
-                for (int side = 0; side < 2; side++)
-                    for (int q = side*2; q < side*2+2; q++) {
-                        const float *pn = &verts[(size_t)around[q]*3];
-                        double ez=(double)base[side][0]-pn[0];
-                        double ey=(double)base[side][1]-pn[1];
-                        double ex=(double)base[side][2]-pn[2];
-                        double len=sqrt(ez*ez+ey*ey+ex*ex);
-                        if (len < local) local = len;
-                    }
-            }
-            step = 0.04 * local;
-            if (step < 0.75 * eps) step = 0.75 * eps;
-            if (step > (double)HOLEFILL_CHART_PINCH_MAX_STEP_VOX)
-                step = (double)HOLEFILL_CHART_PINCH_MAX_STEP_VOX;
-            for (int k = 0; k < 3; k++) {
-                pi[k] = (float)((double)pi[k] + step * sep[k]);
-                pj[k] = (float)((double)pj[k] - step * sep[k]);
-            }
-            moved++;
-        }
-    }
-    return moved;
-}
 
 /* Non-static so the unit test (holefill_interior_test, gate G4) can drive it
  * directly with hand-built figure-8 loops -- there is no public prototype. */
@@ -3263,9 +3296,11 @@ int HoleFill_process_ex(Arena_T arena,
     /* 0. Collapse duplicate vertices (same 3D position).
      * Poisson output can have co-located vertices that produce zero-length
      * boundary edges, crashing CDT.  We merge them in the face array and
-     * remove any resulting degenerate and duplicate faces. */
+     * remove any resulting degenerate and duplicate faces. Chart mode keeps
+     * the original indexed surface: geometric coincidence alone is not a
+     * source-topology weld certificate. */
     size_t n_loops_pre_dedup = 0;
-    {
+    if(interior_only!=2) {
         const float *v = *verts;
         int32_t *f = *faces;
         size_t fnv = *nv;
@@ -3492,6 +3527,19 @@ int HoleFill_process_ex(Arena_T arena,
     HFEdgeIndex eidx;
     hf_eidx_build(arena, *faces, *nf, *nv, bdry_edges, n_bdry, &eidx);
 
+    HFChartMetric metric_storage,*metric=NULL;
+    if(interior_only==2){
+        metric=&metric_storage;metric->nv=*nv;
+        metric->lower=ARENA_ALLOC(arena,*nv*sizeof(double));
+        metric->upper=ARENA_ALLOC(arena,*nv*sizeof(double));
+        metric->boundary_degree=ARENA_CALLOC(arena,*nv,sizeof(int32_t));
+        for(size_t e=0;e<n_bdry;e++){
+            metric->boundary_degree[bdry_edges[e].v0]++;
+            metric->boundary_degree[bdry_edges[e].v1]++;
+        }
+        hf_chart_metric_sum(*verts,*faces,*nf,metric);
+    }
+
     /* 3. Classify and fill interior holes. A pinched loop splits into several
      * sub-loops, each its own fill, so size for more than n_loops (guarded
      * below as a hard backstop against overflow). */
@@ -3522,14 +3570,13 @@ int HoleFill_process_ex(Arena_T arena,
     HFFLUSH();
 
     for (size_t i = 0; i < n_loops; i++) {
-        /* Never fill the single largest loop: it is an outer perimeter, not a
-         * hole (the giant loop is "most likely the outer one"). This applies in
-         * BOTH modes. In interior_only mode the signed-area winding test (below)
-         * does the heavy lifting -- it rejects EVERY component's perimeter and
-         * every open bay, which is essential for a multi-component mesh where
-         * only ONE of the N perimeters is the global largest -- and this
-         * single-largest skip is a cheap belt-and-suspenders guard on top. */
-        if (i == largest_idx || (chart_perimeter && chart_perimeter[i]))
+        /* Vertex count cannot identify the outer perimeter: a small hole can
+         * have a denser boundary than the exterior. Chart mode already chose
+         * a perimeter per component by physical length; geometric mode uses
+         * the signed winding test below. Only the legacy unclassified mode
+         * retains the global loop-size heuristic. */
+        if ((!interior_only && i == largest_idx) ||
+            (chart_perimeter && chart_perimeter[i]))
             continue;
 
         size_t parent_n = loops[i].len - 1; /* exclude closing vertex */
@@ -3548,15 +3595,21 @@ int HoleFill_process_ex(Arena_T arena,
                 break;
             }
             n_interior++;
+            Arena_Mark trial_mark=Arena_save(arena);
             memset(&res, 0, sizeof(res));
             rc = fill_micro_hole(arena, *verts, &eidx,
                                  loops[i].verts, parent_n, &res);
+            if(rc==0&&!hf_chart_fill_possible(arena,metric,&res)){
+                HFLOG("  [hole_fill] loop %zu: chart triangle violates angle bound; retained opening\n",i);
+                rc=-2;
+            }
             if (rc == 0) {
                 fills[n_fills++] = res;
                 n_micro++;
                 HFLOG("  [hole_fill] loop %zu: exact chart triangle filled\n",
                       i);
             } else {
+                Arena_restore(arena,trial_mark);
                 HFLOG("  [hole_fill] loop %zu: exact chart triangle FAILED "
                       "(rc=%d)\n", i, rc);
             }
@@ -3574,17 +3627,14 @@ int HoleFill_process_ex(Arena_T arena,
          * original (no copy), so the common case is unchanged. */
         int32_t *subs[MAX_SUBLOOPS];
         size_t   sublen[MAX_SUBLOOPS];
-        size_t n_spread = 0;
         size_t n_subs;
-        if (interior_only == 2)
-            n_spread = spread_chart_loop_pinches(*verts, loops[i].verts,
-                                                 parent_n, PINCH_EPS);
-        if (n_spread > 0) {
+        if (interior_only == 2) {
+            /* A chart loop is an indexed cycle even if distinct vertices are
+             * coincident in 3-D. Propose a fill on that original cycle; do not
+             * move source points or split its geometry into unpaired lobes. */
             subs[0] = loops[i].verts;
             sublen[0] = parent_n;
             n_subs = 1;
-            HFLOG("  [hole_fill] loop %zu: separated %zu geometric pinch "
-                  "pair(s), preserving one chart cycle\n", i, n_spread);
         } else {
             n_subs = split_pinched_loop(arena, loops[i].verts, parent_n,
                                         *verts, PINCH_EPS,
@@ -3668,13 +3718,19 @@ int HoleFill_process_ex(Arena_T arena,
                           *verts, lv, NULL /* PRE: input boundary */);
             log_loop_geom("geom", i, *verts, lv, loop_n);
             double t_hole0 = ves_clock_sec();
+            Arena_Mark trial_mark=Arena_save(arena);
             HoleFillResult res;
             memset(&res, 0, sizeof(res));
             int rc = fill_one_hole(arena, *verts, &eidx, lv, loop_n, &res);
+            if(rc==0&&!hf_chart_fill_possible(arena,metric,&res)){
+                HFLOG("  [hole_fill] loop %zu.%zu: CDT violates chart angle bound; trying original-cycle ears\n",i,s);
+                rc=-2;
+            }
             if (rc != 0) {
+                Arena_restore(arena,trial_mark);
                 memset(&res, 0, sizeof(res));
                 rc = fill_chart_cycle_3d(arena, *verts, &eidx,
-                                         lv, loop_n, &res);
+                                         lv, loop_n, metric, &res);
                 if (rc == 0) {
                     n_cycle_fallback++;
                     HFLOG("  [hole_fill] loop %zu.%zu: projection-free "
@@ -3691,6 +3747,7 @@ int HoleFill_process_ex(Arena_T arena,
                 fills[n_fills] = res;
                 n_fills++;
             } else {
+                Arena_restore(arena,trial_mark);
                 HFLOG("  [hole_fill] loop %zu.%zu: fill FAILED (%zu verts) [%.1f ms]\n",
                         i, s, loop_n, t_hole_ms);
                 HFFLUSH();

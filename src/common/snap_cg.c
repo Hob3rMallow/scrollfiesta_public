@@ -31,11 +31,11 @@ static void build_system_csr(Arena_T arena, const CSR_T adj,
     size_t total_nnz = (size_t)adj_nnz + nv;
 
     int32_t *off = (int32_t *)ARENA_ALLOC(arena,
-                    (long)(nv + 1) * (long)sizeof(int32_t));
+                    (size_t)(nv + 1) * sizeof(int32_t));
     int32_t *col = (int32_t *)ARENA_ALLOC(arena,
-                    (long)total_nnz * (long)sizeof(int32_t));
+                    (size_t)total_nnz * sizeof(int32_t));
     double  *val = (double *)ARENA_ALLOC(arena,
-                    (long)total_nnz * (long)sizeof(double));
+                    (size_t)total_nnz * sizeof(double));
 
     size_t wp = 0;
     for (size_t i = 0; i < nv; i++) {
@@ -258,7 +258,7 @@ int SnapCG_solve(Arena_T arena, const CSR_T adj,
     Arena_Mark mark = Arena_save(arena);
 
     /* Convert weights to double */
-    double *dw = (double *)ARENA_ALLOC(arena, (long)nv * (long)sizeof(double));
+    double *dw = (double *)ARENA_ALLOC(arena, (size_t)nv * sizeof(double));
     for (size_t i = 0; i < nv; i++) dw[i] = (double)w[i];
 
     /* Build explicit system CSR: M = L_graph + diag(w) */
@@ -270,25 +270,25 @@ int SnapCG_solve(Arena_T arena, const CSR_T adj,
 
     /* Copy values for ILU (original sys_val preserved for matvec) */
     double *ilu_val = (double *)ARENA_ALLOC(arena,
-                       (long)sys_nnz * (long)sizeof(double));
+                       (size_t)sys_nnz * sizeof(double));
     memcpy(ilu_val, sys_val, sys_nnz * sizeof(double));
 
     /* ILU(0) factorize */
     int32_t *diag_pos = (int32_t *)ARENA_ALLOC(arena,
-                          (long)nv * (long)sizeof(int32_t));
+                          (size_t)nv * sizeof(int32_t));
     int32_t *merge_buf = (int32_t *)ARENA_ALLOC(arena,
-                           (long)nv * (long)sizeof(int32_t));
+                           (size_t)nv * sizeof(int32_t));
     for (size_t i = 0; i < nv; i++) merge_buf[i] = -1;
 
     ilu0_factorize(sys_off, sys_col, ilu_val, nv, diag_pos, merge_buf);
 
     /* Work vectors: r, z, p, Ap  +  b, x */
     double *work = (double *)ARENA_ALLOC(arena,
-                    (long)(4 * nv) * (long)sizeof(double));
+                    (size_t)(4 * nv) * sizeof(double));
     double *b_vec = (double *)ARENA_ALLOC(arena,
-                     (long)nv * (long)sizeof(double));
+                     (size_t)nv * sizeof(double));
     double *x_vec = (double *)ARENA_ALLOC(arena,
-                     (long)nv * (long)sizeof(double));
+                     (size_t)nv * sizeof(double));
 
     static const char *ch_name[3] = { "z", "y", "x" };
 

@@ -80,8 +80,8 @@ static FlowNet build_flow_net(Arena_T arena,
     fn.T = 2 * N + 1;
 
     /* Pass 1: count out-degree for each flow node */
-    int32_t *deg = (int32_t *)ARENA_CALLOC(arena, (long)fn.n_nodes,
-                                            (long)sizeof(int32_t));
+    int32_t *deg = (int32_t *)ARENA_CALLOC(arena, (size_t)fn.n_nodes,
+                                            sizeof(int32_t));
 
     /* Internal edges: v_in->v_out (fwd), v_out->v_in (rev) */
     for (int32_t v = 0; v < N; v++) {
@@ -113,7 +113,7 @@ static FlowNet build_flow_net(Arena_T arena,
 
     /* Pass 2: prefix sum -> offsets */
     fn.offset = (int32_t *)ARENA_ALLOC(arena,
-                    (long)((size_t)fn.n_nodes + 1) * (long)sizeof(int32_t));
+                    (size_t)((size_t)fn.n_nodes + 1) * sizeof(int32_t));
     fn.offset[0] = 0;
     for (int32_t i = 0; i < fn.n_nodes; i++) {
         fn.offset[i + 1] = fn.offset[i] + deg[i];
@@ -122,17 +122,17 @@ static FlowNet build_flow_net(Arena_T arena,
 
     /* Allocate edge arrays */
     fn.target   = (int32_t *)ARENA_ALLOC(arena,
-                      (long)fn.n_edges * (long)sizeof(int32_t));
+                      (size_t)fn.n_edges * sizeof(int32_t));
     fn.cap      = (int32_t *)ARENA_ALLOC(arena,
-                      (long)fn.n_edges * (long)sizeof(int32_t));
+                      (size_t)fn.n_edges * sizeof(int32_t));
     fn.flow_arr = (int32_t *)ARENA_CALLOC(arena,
-                      (long)fn.n_edges, (long)sizeof(int32_t));
+                      (size_t)fn.n_edges, sizeof(int32_t));
     fn.rev      = (int32_t *)ARENA_ALLOC(arena,
-                      (long)fn.n_edges * (long)sizeof(int32_t));
+                      (size_t)fn.n_edges * sizeof(int32_t));
 
     /* Pass 3: fill edges using write cursors */
     int32_t *cursor = (int32_t *)ARENA_ALLOC(arena,
-                          (long)fn.n_nodes * (long)sizeof(int32_t));
+                          (size_t)fn.n_nodes * sizeof(int32_t));
     memcpy(cursor, fn.offset, (size_t)fn.n_nodes * sizeof(int32_t));
 
     /* Internal edges */
@@ -287,7 +287,7 @@ static int detect_bridge(Arena_T arena, const ComponentMesh *mesh,
     PCA_normal(mesh->verts, mesh->nv, normal, centroid);
 
     float *proj = (float *)ARENA_ALLOC(arena,
-                      (long)(mesh->nv * sizeof(float)));
+                      (size_t)(mesh->nv * sizeof(float)));
     float proj_min = 0.0f, proj_max = 0.0f;
     PCA_project(mesh->verts, mesh->nv, normal, proj,
                 &proj_min, &proj_max);
@@ -309,14 +309,14 @@ static int detect_bridge(Arena_T arena, const ComponentMesh *mesh,
 
     /* 4. k-ring BFS expansion */
     uint32_t *dist = (uint32_t *)ARENA_ALLOC(arena,
-                         (long)(mesh->nv * sizeof(uint32_t)));
+                         (size_t)(mesh->nv * sizeof(uint32_t)));
     int32_t *ring_buf = (int32_t *)ARENA_ALLOC(arena,
-                         (long)(mesh->nv * sizeof(int32_t)));
+                         (size_t)(mesh->nv * sizeof(int32_t)));
 
     size_t n_src = BFS_kring(adj, source_seed, SEED_RING,
                               ring_buf, mesh->nv, dist);
 
-    uint8_t *is_source = (uint8_t *)ARENA_CALLOC(arena, (long)mesh->nv, 1L);
+    uint8_t *is_source = (uint8_t *)ARENA_CALLOC(arena, (size_t)mesh->nv, 1L);
     for (size_t i = 0; i < n_src; i++) {
         is_source[ring_buf[i]] = 1;
     }
@@ -324,7 +324,7 @@ static int detect_bridge(Arena_T arena, const ComponentMesh *mesh,
     size_t n_snk = BFS_kring(adj, sink_seed, SEED_RING,
                               ring_buf, mesh->nv, dist);
 
-    uint8_t *is_sink = (uint8_t *)ARENA_CALLOC(arena, (long)mesh->nv, 1L);
+    uint8_t *is_sink = (uint8_t *)ARENA_CALLOC(arena, (size_t)mesh->nv, 1L);
     for (size_t i = 0; i < n_snk; i++) {
         is_sink[ring_buf[i]] = 1;
     }
@@ -344,7 +344,7 @@ static int detect_bridge(Arena_T arena, const ComponentMesh *mesh,
 
     /* Protected = source OR sink */
     uint8_t *is_protected = (uint8_t *)ARENA_CALLOC(arena,
-                                (long)mesh->nv, 1L);
+                                (size_t)mesh->nv, 1L);
     for (int32_t v = 0; v < N; v++) {
         is_protected[v] = (is_source[v] || is_sink[v]) ? (uint8_t)1
                                                         : (uint8_t)0;
@@ -365,9 +365,9 @@ static int detect_bridge(Arena_T arena, const ComponentMesh *mesh,
 
     /* BFS workspace (reused across all augmenting path iterations) */
     int32_t *parent_edge = (int32_t *)ARENA_ALLOC(arena,
-                               (long)fn.n_nodes * (long)sizeof(int32_t));
+                               (size_t)fn.n_nodes * sizeof(int32_t));
     int32_t *queue = (int32_t *)ARENA_ALLOC(arena,
-                         (long)fn.n_nodes * (long)sizeof(int32_t));
+                         (size_t)fn.n_nodes * sizeof(int32_t));
 
     /* 6. Edmonds-Karp max-flow */
     int32_t flow_val = edmonds_karp(&fn, parent_edge, queue);
@@ -383,7 +383,7 @@ static int detect_bridge(Arena_T arena, const ComponentMesh *mesh,
 
     /* 7. Extract reachable set via full BFS on residual graph */
     /* Reuse parent_edge as visited array, queue as BFS queue */
-    uint8_t *reachable = (uint8_t *)ARENA_ALLOC(arena, (long)mesh->nv);
+    uint8_t *reachable = (uint8_t *)ARENA_ALLOC(arena, (size_t)mesh->nv);
     extract_reachable(&fn, N, parent_edge, queue, reachable);
 
     /* 8. Compute split_ratio */
@@ -427,7 +427,7 @@ static int split_mesh(Arena_T arena, const ComponentMesh *mesh,
 
     /* 2. Find boundary vertices */
     size_t n_boundary = 0;
-    uint8_t *is_boundary = (uint8_t *)ARENA_CALLOC(arena, (long)N, 1L);
+    uint8_t *is_boundary = (uint8_t *)ARENA_CALLOC(arena, (size_t)N, 1L);
 
     for (size_t v = 0; v < N; v++) {
         for (int32_t e = off[v]; e < off[v + 1]; e++) {
@@ -440,11 +440,11 @@ static int split_mesh(Arena_T arena, const ComponentMesh *mesh,
     }
 
     /* 3. Build KD-tree on boundary, compute exclusion zone */
-    uint8_t *excluded = (uint8_t *)ARENA_CALLOC(arena, (long)N, 1L);
+    uint8_t *excluded = (uint8_t *)ARENA_CALLOC(arena, (size_t)N, 1L);
 
     if (n_boundary > 0) {
         float *boundary_pts = (float *)ARENA_ALLOC(arena,
-                                  (long)(n_boundary * 3 * sizeof(float)));
+                                  (size_t)(n_boundary * 3 * sizeof(float)));
         size_t bi = 0;
         for (size_t v = 0; v < N; v++) {
             if (is_boundary[v]) {
@@ -501,7 +501,7 @@ static int split_mesh(Arena_T arena, const ComponentMesh *mesh,
     /* 6. Extract side A (source/reachable) */
     {
         int32_t *old_to_new = (int32_t *)ARENA_ALLOC(arena,
-                                   (long)(N * sizeof(int32_t)));
+                                   (size_t)(N * sizeof(int32_t)));
         memset(old_to_new, 0xFF, N * sizeof(int32_t)); /* -1 */
 
         /* Mark vertices used by source faces */
@@ -529,13 +529,13 @@ static int split_mesh(Arena_T arena, const ComponentMesh *mesh,
 
         if (new_nv > 0) {
             out_a->verts = (float *)ARENA_ALLOC(arena,
-                               (long)new_nv * 3L * (long)sizeof(float));
+                               (size_t)new_nv * 3L * sizeof(float));
         } else {
             out_a->verts = NULL;
         }
         if (n_src_f > 0) {
             out_a->faces = (int32_t *)ARENA_ALLOC(arena,
-                               (long)n_src_f * 3L * (long)sizeof(int32_t));
+                               (size_t)n_src_f * 3L * sizeof(int32_t));
         } else {
             out_a->faces = NULL;
         }
@@ -578,7 +578,7 @@ static int split_mesh(Arena_T arena, const ComponentMesh *mesh,
     /* 7. Extract side B (sink/unreachable) */
     {
         int32_t *old_to_new = (int32_t *)ARENA_ALLOC(arena,
-                                   (long)(N * sizeof(int32_t)));
+                                   (size_t)(N * sizeof(int32_t)));
         memset(old_to_new, 0xFF, N * sizeof(int32_t));
 
         for (size_t fi = 0; fi < nf; fi++) {
@@ -605,13 +605,13 @@ static int split_mesh(Arena_T arena, const ComponentMesh *mesh,
 
         if (new_nv > 0) {
             out_b->verts = (float *)ARENA_ALLOC(arena,
-                               (long)new_nv * 3L * (long)sizeof(float));
+                               (size_t)new_nv * 3L * sizeof(float));
         } else {
             out_b->verts = NULL;
         }
         if (n_snk_f > 0) {
             out_b->faces = (int32_t *)ARENA_ALLOC(arena,
-                               (long)n_snk_f * 3L * (long)sizeof(int32_t));
+                               (size_t)n_snk_f * 3L * sizeof(int32_t));
         } else {
             out_b->faces = NULL;
         }
@@ -701,11 +701,11 @@ static int32_t extract_mesh_components(Arena_T arena,
 
     /* Map root IDs to sequential 0-based component IDs */
     int32_t *root_to_comp = (int32_t *)ARENA_ALLOC(arena,
-                                 (long)N * (long)sizeof(int32_t));
+                                 (size_t)N * sizeof(int32_t));
     memset(root_to_comp, 0xFF, (size_t)N * sizeof(int32_t)); /* -1 */
 
     int32_t *vert_comp = (int32_t *)ARENA_ALLOC(arena,
-                              (long)N * (long)sizeof(int32_t));
+                              (size_t)N * sizeof(int32_t));
     int32_t comp_id = 0;
     for (int32_t v = 0; v < N; v++) {
         int32_t r = uf_find(&uf, v);
@@ -717,9 +717,9 @@ static int32_t extract_mesh_components(Arena_T arena,
 
     /* Count vertices and faces per component */
     int32_t *comp_nv = (int32_t *)ARENA_CALLOC(arena,
-                            (long)n_comps, (long)sizeof(int32_t));
+                            (size_t)n_comps, sizeof(int32_t));
     int32_t *comp_nf = (int32_t *)ARENA_CALLOC(arena,
-                            (long)n_comps, (long)sizeof(int32_t));
+                            (size_t)n_comps, sizeof(int32_t));
 
     for (int32_t v = 0; v < N; v++) {
         comp_nv[vert_comp[v]]++;
@@ -731,13 +731,13 @@ static int32_t extract_mesh_components(Arena_T arena,
     /* Allocate component meshes (zero-init so pin_mask = NULL unless
      * explicitly set; downstream raw_snap reads pin_mask defensively). */
     ComponentMesh *comps = (ComponentMesh *)ARENA_CALLOC(arena,
-                               (long)n_comps, (long)sizeof(ComponentMesh));
+                               (size_t)n_comps, sizeof(ComponentMesh));
 
     /* Vertex reindex: old vertex -> new index within its component */
     int32_t *old_to_new = (int32_t *)ARENA_ALLOC(arena,
-                               (long)N * (long)sizeof(int32_t));
+                               (size_t)N * sizeof(int32_t));
     int32_t *vert_counter = (int32_t *)ARENA_CALLOC(arena,
-                                 (long)n_comps, (long)sizeof(int32_t));
+                                 (size_t)n_comps, sizeof(int32_t));
 
     for (int32_t v = 0; v < N; v++) {
         old_to_new[v] = vert_counter[vert_comp[v]]++;
@@ -748,13 +748,13 @@ static int32_t extract_mesh_components(Arena_T arena,
         comps[c].nf = (size_t)comp_nf[c];
         if (comp_nv[c] > 0) {
             comps[c].verts = (float *)ARENA_ALLOC(arena,
-                                 (long)comp_nv[c] * 3L * (long)sizeof(float));
+                                 (size_t)comp_nv[c] * 3L * sizeof(float));
         } else {
             comps[c].verts = NULL;
         }
         if (comp_nf[c] > 0) {
             comps[c].faces = (int32_t *)ARENA_ALLOC(arena,
-                                 (long)comp_nf[c] * 3L * (long)sizeof(int32_t));
+                                 (size_t)comp_nf[c] * 3L * sizeof(int32_t));
         } else {
             comps[c].faces = NULL;
         }
@@ -773,7 +773,7 @@ static int32_t extract_mesh_components(Arena_T arena,
 
     /* Fill faces */
     int32_t *face_counter = (int32_t *)ARENA_CALLOC(arena,
-                                 (long)n_comps, (long)sizeof(int32_t));
+                                 (size_t)n_comps, sizeof(int32_t));
     for (size_t fi = 0; fi < nf; fi++) {
         int32_t v0 = mesh->faces[fi * 3 + 0];
         int32_t c = vert_comp[v0];
@@ -968,8 +968,8 @@ int BridgeCut_process(Arena_T               arena,
     results.capacity = MAX_RESULT_PIECES;
     results.count = 0;
     results.meshes = (ComponentMesh *)ARENA_ALLOC(arena,
-                         (long)(results.capacity *
-                                (long)sizeof(ComponentMesh)));
+                         (size_t)(results.capacity *
+                                sizeof(ComponentMesh)));
 
     /* Run recursive bridge detection */
     process_recursive(arena, mesh, 0, grid_size,

@@ -1,6 +1,11 @@
 \section{Results}
 \label{sec:results}
 
+The results in this section retain their August 2026 experimental scope.
+The September public-configuration audit and CT preview are reported
+separately in Section~\ref{sec:public-release}; the coverage measures and
+input lineages should not be combined.
+
 \plain{In brief: we report the stages separately --- sheet coverage, reading order, winding energy, metric distortion, collision state, and raster quality --- because they fail in different ways, and a single aggregate would hide the one failure that matters. The experiments that did not work are reported alongside those that did.}
 
 A single aggregate score is the wrong instrument for this problem, for the reason Section~\ref{sec:gp} makes concrete: the decisive failure --- a surface that has stepped onto the neighbouring turn --- is invisible to every geometric quality measure, so any score computed from geometry can be improved by committing it. Each stage below is therefore measured against a quantity it could have failed, and where a stage is judged against CT, the fit being judged never saw that CT.

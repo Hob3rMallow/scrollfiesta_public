@@ -2,7 +2,7 @@
 \label{app:developments}
 
 \begin{revision}
-This is the only part of the paper organized by date. The body of the paper (Sections~\ref{sec:background}--\ref{sec:conclusions}) describes the current system as one continuous account, without distinguishing which parts of it are recent; this appendix records what changed, module by module, between August 1 and August 31, 2026, relative to public commit \texttt{4f43cfc}. It is intended for a reader who has the July 31 paper and wants the delta rather than the whole story. A complete pre-edit copy of the July paper is retained beside the working repository, and the retired methods referenced below remain documented in Appendix~\ref{app:terms}. Prediction-domain work from the same period --- cross-resolution distillation, connection mining, and additive bridge filling --- has moved to the companion \emph{Socratic Method} repository and is recorded there instead.
+This is the only part of the paper organized by date. The August research account describes the methods and experiments from that period; Section~\ref{sec:public-release} separately records the September public release. This appendix records what changed, module by module, between August 1 and August 31, 2026, relative to public commit \texttt{4f43cfc}. It is intended for a reader who has the July 31 paper and wants the delta rather than the whole story. A complete pre-edit copy of the July paper is retained beside the working repository, and the retired methods referenced below remain documented in Appendix~\ref{app:terms}. Prediction-domain work from the same period --- cross-resolution distillation, connection mining, and additive bridge filling --- has moved to the companion \emph{Socratic Method} repository and is recorded there instead.
 
 {\small
 \begin{itemize}
@@ -38,7 +38,7 @@ This is the only part of the paper organized by date. The body of the paper (Sec
 
   \item \textbf{One quadribbon command.} \texttt{quadribbon} takes a mesh directory and an output directory, replacing the experimental driver stack and enforcing one order: concatenate the pre-weld per-cube pile, fit and optimize metric coordinates, untangle, re-optimize, bake layer sheets, and composite. It resumes by stage, uses one production configuration, and retains stage-local tools only for diagnosis. The canonical $4\times5\times5$ full run now completes end-to-end. The $21\times21\times21$ run has completed the maintained pre-fit boundary through stage-1 concat; global fit remains unrun.
 
-  \item \textbf{Measured retirements.} The current lane no longer uses global geometric welding as a mandatory precondition, the July tabu atlas as winding authority, the matrix-free consistency solver, or the geometric slab splitter. Each remains reproducible where useful, and Section~\ref{sec:deadends} gives the measurement that retired it.
+  \item \textbf{Measured retirements.} The current lane no longer uses global geometric welding as a mandatory precondition, the July tabu atlas as winding authority, the matrix-free consistency solver, or the geometric slab splitter. Their recorded results remain documented, and Section~\ref{sec:deadends} gives the measurement that retired each method. The September release does not ship the experiment drivers.
 \end{itemize}
 }
 \end{revision}

@@ -99,7 +99,7 @@ static void build_submesh(Arena_T arena, const float *V, size_t gnv,
                           const int32_t *F, const int32_t *gfaces, size_t nfc,
                           SubMesh *out)
 {
-    int32_t *remap = (int32_t *)ARENA_ALLOC(arena, (long)(gnv * sizeof(int32_t)));
+    int32_t *remap = (int32_t *)ARENA_ALLOC(arena, (size_t)(gnv * sizeof(int32_t)));
     for (size_t i = 0; i < gnv; i++) remap[i] = -1;
 
     size_t lnv = 0;
@@ -111,8 +111,8 @@ static void build_submesh(Arena_T arena, const float *V, size_t gnv,
                 remap[gv] = (int32_t)lnv++;
         }
     }
-    float   *verts = (float *)  ARENA_ALLOC(arena, (long)(lnv * 3 * sizeof(float)));
-    int32_t *gvert = (int32_t *)ARENA_ALLOC(arena, (long)(lnv * sizeof(int32_t)));
+    float   *verts = (float *)  ARENA_ALLOC(arena, (size_t)(lnv * 3 * sizeof(float)));
+    int32_t *gvert = (int32_t *)ARENA_ALLOC(arena, (size_t)(lnv * sizeof(int32_t)));
     for (size_t gv = 0; gv < gnv; gv++)
         if (remap[gv] >= 0) {
             size_t lv = (size_t)remap[gv];
@@ -121,8 +121,8 @@ static void build_submesh(Arena_T arena, const float *V, size_t gnv,
             verts[lv * 3 + 2] = V[gv * 3 + 2];
             gvert[lv] = (int32_t)gv;
         }
-    int32_t *faces = (int32_t *)ARENA_ALLOC(arena, (long)(nfc * 3 * sizeof(int32_t)));
-    int32_t *gface = (int32_t *)ARENA_ALLOC(arena, (long)(nfc * sizeof(int32_t)));
+    int32_t *faces = (int32_t *)ARENA_ALLOC(arena, (size_t)(nfc * 3 * sizeof(int32_t)));
+    int32_t *gface = (int32_t *)ARENA_ALLOC(arena, (size_t)(nfc * sizeof(int32_t)));
     for (size_t i = 0; i < nfc; i++) {
         int32_t gf = gfaces[i];
         for (int k = 0; k < 3; k++)
@@ -145,7 +145,7 @@ static double genus_without(Arena_T arena, const float *V, size_t nv,
                             int *out_C)
 {
     Arena_Mark m = Arena_save(arena);
-    int32_t *FF = (int32_t *)ARENA_ALLOC(arena, (long)(nf * 3 * sizeof(int32_t)));
+    int32_t *FF = (int32_t *)ARENA_ALLOC(arena, (size_t)(nf * 3 * sizeof(int32_t)));
     size_t k = 0;
     for (size_t fi = 0; fi < nf; fi++) {
         if (drop[fi]) continue;
@@ -161,13 +161,13 @@ static double genus_without(Arena_T arena, const float *V, size_t nv,
         if (MeshTopo_analyze(arena, V, nv, FF, k, &t) == 0) {
             /* connected components over the remaining faces' vertices */
             UnionFind uf = UF_new(arena, (int32_t)nv);
-            uint8_t *ref = (uint8_t *)ARENA_CALLOC(arena, (long)nv, 1L);
+            uint8_t *ref = (uint8_t *)ARENA_CALLOC(arena, (size_t)nv, 1L);
             for (size_t i = 0; i < k; i++) {
                 int32_t a = FF[i * 3 + 0], b = FF[i * 3 + 1], c = FF[i * 3 + 2];
                 uf_union(&uf, a, b); uf_union(&uf, a, c);
                 ref[a] = 1; ref[b] = 1; ref[c] = 1;
             }
-            uint8_t *seen = (uint8_t *)ARENA_CALLOC(arena, (long)nv, 1L);
+            uint8_t *seen = (uint8_t *)ARENA_CALLOC(arena, (size_t)nv, 1L);
             for (size_t v = 0; v < nv; v++)
                 if (ref[v]) { int32_t r = uf_find(&uf, (int32_t)v); if (!seen[r]) { seen[r] = 1; C++; } }
             double euler_ref = (double)t.euler - (double)t.n_unref_verts;
@@ -210,7 +210,7 @@ static void analyze_sub(Arena_T arena, const SubMesh *s, const int32_t *Fglobal,
                 /* Mark each loop's verts with its palette index (1-based), then
                  * dilate a few rings over the faces so a thin loop becomes a
                  * visible patch on the big mesh. */
-                uint8_t *lcidx = (uint8_t *)ARENA_CALLOC(arena, (long)s->nv, 1L);
+                uint8_t *lcidx = (uint8_t *)ARENA_CALLOC(arena, (size_t)s->nv, 1L);
                 for (size_t li = 0; li < nl; li++) {
                     if (verbose)
                         printf("           handle loop %zu: length=%.1f vox, %zu verts\n",
@@ -272,13 +272,13 @@ static void analyze_sub(Arena_T arena, const SubMesh *s, const int32_t *Fglobal,
     const uint8_t *rk = (rrc == 0) ? rr.face_flag : NULL;
 
     /* Cluster the side-facing triangles (union faces sharing a vertex). */
-    uint8_t *bridgeface = (uint8_t *)ARENA_CALLOC(arena, (long)s->nf, 1L);
+    uint8_t *bridgeface = (uint8_t *)ARENA_CALLOC(arena, (size_t)s->nf, 1L);
     size_t n_clusters = 0, n_bridges = 0, n_bridge_faces = 0;
     double genus_cut = rep->genus;
 
     if (sd && rep->genus >= 1.0) {
         UnionFind cuf = UF_new(arena, (int32_t)s->nf);
-        int32_t *firstf = (int32_t *)ARENA_ALLOC(arena, (long)(s->nv * sizeof(int32_t)));
+        int32_t *firstf = (int32_t *)ARENA_ALLOC(arena, (size_t)(s->nv * sizeof(int32_t)));
         for (size_t v = 0; v < s->nv; v++) firstf[v] = -1;
         for (size_t lf = 0; lf < s->nf; lf++) {
             if (!sd[lf]) continue;
@@ -290,19 +290,19 @@ static void analyze_sub(Arena_T arena, const SubMesh *s, const int32_t *Fglobal,
             }
         }
         /* Index clusters by root; bucket their faces (CSR). */
-        int32_t *clidx = (int32_t *)ARENA_ALLOC(arena, (long)(s->nf * sizeof(int32_t)));
+        int32_t *clidx = (int32_t *)ARENA_ALLOC(arena, (size_t)(s->nf * sizeof(int32_t)));
         for (size_t lf = 0; lf < s->nf; lf++) clidx[lf] = -1;
         for (size_t lf = 0; lf < s->nf; lf++) {
             if (!sd[lf]) continue;
             int32_t r = uf_find(&cuf, (int32_t)lf);
             if (clidx[r] < 0) clidx[r] = (int32_t)n_clusters++;
         }
-        int32_t *cloff = (int32_t *)ARENA_CALLOC(arena, (long)(n_clusters + 1), (long)sizeof(int32_t));
+        int32_t *cloff = (int32_t *)ARENA_CALLOC(arena, (size_t)(n_clusters + 1), sizeof(int32_t));
         for (size_t lf = 0; lf < s->nf; lf++)
             if (sd[lf]) cloff[clidx[uf_find(&cuf, (int32_t)lf)] + 1]++;
         for (size_t c = 1; c <= n_clusters; c++) cloff[c] += cloff[c - 1];
-        int32_t *clf = (int32_t *)ARENA_ALLOC(arena, (long)(((size_t)np.n_sidefacing ? np.n_sidefacing : 1) * sizeof(int32_t)));
-        int32_t *clcur = (int32_t *)ARENA_ALLOC(arena, (long)(n_clusters * sizeof(int32_t)));
+        int32_t *clf = (int32_t *)ARENA_ALLOC(arena, (size_t)(((size_t)np.n_sidefacing ? np.n_sidefacing : 1) * sizeof(int32_t)));
+        int32_t *clcur = (int32_t *)ARENA_ALLOC(arena, (size_t)(n_clusters * sizeof(int32_t)));
         for (size_t c = 0; c < n_clusters; c++) clcur[c] = cloff[c];
         for (size_t lf = 0; lf < s->nf; lf++)
             if (sd[lf]) { int32_t c = clidx[uf_find(&cuf, (int32_t)lf)]; clf[clcur[c]++] = (int32_t)lf; }
@@ -310,8 +310,8 @@ static void analyze_sub(Arena_T arena, const SubMesh *s, const int32_t *Fglobal,
         /* Test each cluster: removing it must DROP the genus while keeping the
          * component connected (C==1) -- that is a handle (inter-wrap bridge) cut,
          * not a separating cut that merely lops off a fin. */
-        uint8_t *drop = (uint8_t *)ARENA_CALLOC(arena, (long)s->nf, 1L);
-        uint8_t *alldrop = (uint8_t *)ARENA_CALLOC(arena, (long)s->nf, 1L);
+        uint8_t *drop = (uint8_t *)ARENA_CALLOC(arena, (size_t)s->nf, 1L);
+        uint8_t *alldrop = (uint8_t *)ARENA_CALLOC(arena, (size_t)s->nf, 1L);
         for (size_t c = 0; c < n_clusters; c++) {
             size_t a = (size_t)cloff[c], b = (size_t)cloff[c + 1];
             for (size_t t = a; t < b; t++) drop[clf[t]] = 1;
@@ -464,7 +464,7 @@ int main(int argc, char **argv)
         if (a >= 0 && c >= 0 && (size_t)a < nv && (size_t)c < nv) uf_union(&uf, a, c);
     }
     /* faces per root */
-    int32_t *facecnt = (int32_t *)ARENA_CALLOC(arena, (long)nv, (long)sizeof(int32_t));
+    int32_t *facecnt = (int32_t *)ARENA_CALLOC(arena, (size_t)nv, sizeof(int32_t));
     for (size_t fi = 0; fi < nf; fi++) {
         int32_t a = F[fi * 3 + 0];
         if (a >= 0 && (size_t)a < nv) facecnt[uf_find(&uf, a)]++;
@@ -472,7 +472,7 @@ int main(int argc, char **argv)
     /* collect roots with faces, sort by descending count */
     size_t ncomp = 0;
     for (size_t v = 0; v < nv; v++) if (facecnt[v] > 0) ncomp++;
-    int32_t *roots = (int32_t *)ARENA_ALLOC(arena, (long)((ncomp ? ncomp : 1) * sizeof(int32_t)));
+    int32_t *roots = (int32_t *)ARENA_ALLOC(arena, (size_t)((ncomp ? ncomp : 1) * sizeof(int32_t)));
     size_t ci = 0;
     for (size_t v = 0; v < nv; v++) if (facecnt[v] > 0) roots[ci++] = (int32_t)v;
     /* simple insertion sort by facecnt desc (ncomp is small in practice) */
@@ -482,19 +482,19 @@ int main(int argc, char **argv)
         roots[j] = key;
     }
     /* root -> component index */
-    int32_t *root2idx = (int32_t *)ARENA_ALLOC(arena, (long)(nv * sizeof(int32_t)));
+    int32_t *root2idx = (int32_t *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(int32_t)));
     for (size_t v = 0; v < nv; v++) root2idx[v] = -1;
     for (size_t k = 0; k < ncomp; k++) root2idx[roots[k]] = (int32_t)k;
     /* bucket global faces by component (CSR) */
-    int32_t *coff = (int32_t *)ARENA_CALLOC(arena, (long)(ncomp + 1), (long)sizeof(int32_t));
+    int32_t *coff = (int32_t *)ARENA_CALLOC(arena, (size_t)(ncomp + 1), sizeof(int32_t));
     for (size_t fi = 0; fi < nf; fi++) {
         int32_t a = F[fi * 3 + 0];
         if (a < 0 || (size_t)a >= nv) continue;
         coff[root2idx[uf_find(&uf, a)] + 1]++;
     }
     for (size_t k = 1; k <= ncomp; k++) coff[k] += coff[k - 1];
-    int32_t *cfaces = (int32_t *)ARENA_ALLOC(arena, (long)(((size_t)coff[ncomp] ? (size_t)coff[ncomp] : 1) * sizeof(int32_t)));
-    int32_t *cur = (int32_t *)ARENA_ALLOC(arena, (long)(ncomp * sizeof(int32_t)));
+    int32_t *cfaces = (int32_t *)ARENA_ALLOC(arena, (size_t)(((size_t)coff[ncomp] ? (size_t)coff[ncomp] : 1) * sizeof(int32_t)));
+    int32_t *cur = (int32_t *)ARENA_ALLOC(arena, (size_t)(ncomp * sizeof(int32_t)));
     for (size_t k = 0; k < ncomp; k++) cur[k] = coff[k];
     for (size_t fi = 0; fi < nf; fi++) {
         int32_t a = F[fi * 3 + 0];
@@ -508,8 +508,8 @@ int main(int argc, char **argv)
     /* dump buffers (whole mesh, gray base) */
     uint8_t *prio = NULL; float *col = NULL;
     if (dump) {
-        prio = (uint8_t *)ARENA_CALLOC(arena, (long)nv, 1L);
-        col  = (float *)  ARENA_ALLOC(arena, (long)(nv * 3 * sizeof(float)));
+        prio = (uint8_t *)ARENA_CALLOC(arena, (size_t)nv, 1L);
+        col  = (float *)  ARENA_ALLOC(arena, (size_t)(nv * 3 * sizeof(float)));
         for (size_t i = 0; i < nv; i++) {
             col[i * 3 + 0] = CAT_COL[CAT_NONE][0];
             col[i * 3 + 1] = CAT_COL[CAT_NONE][1];

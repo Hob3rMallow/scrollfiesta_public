@@ -98,6 +98,7 @@
     <ClCompile Include="deps\taucs\build\taucs_stubs.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\whole\monotone_qp.c" />
     <ClCompile Include="src\whole\atlas_solution.c" />
+    <ClCompile Include="src\whole\shaft_warp.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\whole\axis_warp.c" />
     <ClCompile Include="src\unroll\piece_set.c" />
     <ClCompile Include="src\unroll\scaffold.c" />

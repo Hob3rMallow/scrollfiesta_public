@@ -5,6 +5,10 @@
 #include <stddef.h>
 #include "../common/arena.h"
 
+/* Dense storage is limited by the checked byte budget. Bounded export keeps
+ * one grid resident, so collision depth need not share the old eight-grid cap. */
+#define RIBBON_MAX_PEEL_LAYERS 64
+
 /* ============================================================================
  * ribbon.h -- slice / arc-length / joint "StrokeStrip" parameterization of a
  * scroll-surface mesh, plus a clean fitted ribbon surface.
@@ -147,6 +151,10 @@ typedef struct {
                              * the fast path carries phi == u and the junction
                              * phase gate is skipped.
                                * The array must stay alive for Ribbon_run. */
+    const double *reference_v; /* optional [nv] authoritative axial coordinate
+                             * accompanying reference_u. projective_grid uses
+                             * reference_v - dot(vertex-axis_point, axis_dir)
+                             * to anchor one crop-independent slice lattice. */
     const float *reference_u_confidence; /* optional [nv] posterior confidence
                                * for the ORDER carried by reference_u, in [0,1].
                                * It weights robust per-chain gauge votes; it
@@ -157,6 +165,18 @@ typedef struct {
                               * initial-gauge evidence for the full Stage-C
                               * StrokeStrip solve, rather than the solved-U fast
                               * path. Geometry still determines the output U. */
+    int coarse_chain_seed;    /* Opt-in carried-U initializer: first solve one
+                              * offset per physical slice chain, then release
+                              * every sample to the unchanged Stage-C solve.
+                              * No source topology or observations are removed. */
+    int projective_grid;      /* nonzero: reference_u/reference_v define an
+                              * immutable signed atlas frame. Quantize the
+                              * internal dense grid to that frame, restore its
+                              * origins on emitted UV, retain empty U columns,
+                              * and never promote peel claims into primary U. */
+    int coherent_claims;      /* Carried UV lattice with independent measured
+                              * cross-row continuity per peel. Preserve actual
+                              * reconstruction lanes separately from lineage. */
     int metric_project_only;  /* nonzero (with reference_u + solve_reference_u):
                               * the parameterization is the direct metric
                               * projection u = s + median(reference_u - s) per
@@ -190,7 +210,10 @@ typedef struct {
                              * must never merge these labels. Different labels
                              * are gated before claimant selection and packed
                              * into disjoint atlas intervals. */
-    size_t reference_material_island_count;
+    size_t reference_material_island_count; /* dense label upper bound for
+                              * ordinary fits. Ignored for a projective fit
+                              * carrying canonical owner provenance, whose
+                              * reversible i31 identities are sparse. */
     const int32_t *reference_island; /* legacy alias for
                              * reference_material_island. New callers should
                              * use the explicit material field; supplying both
@@ -203,7 +226,17 @@ typedef struct {
                               * component.  When direct relations are supplied,
                               * cross-chart geometric correspondences are legal
                               * only for an explicitly serialized graph edge. */
-    size_t reference_chart_count;
+    size_t reference_chart_count; /* dense label upper bound; ignored for the
+                              * sparse canonical-owner contract above */
+    const int32_t *reference_owner_block; /* optional [nv*3] canonical block
+                              * coordinate (iz,iy,ix) for every source vertex.
+                              * It must be constant on each connected input
+                              * component.  In projective-grid claims mode the
+                              * closest ancestor block owns an overlap before
+                              * any crop-wide geometric path objective is
+                              * considered; later-block alternatives remain in
+                              * peel layers.  This is the finite-domain
+                              * certificate which makes a nested fit immutable. */
     const int32_t *reference_relation_a; /* optional direct graph endpoints */
     const int32_t *reference_relation_b;
     const double *reference_relation_support; /* optional positive evidence */
@@ -212,6 +245,19 @@ typedef struct {
                              * slice-chain enumeration order must not choose a
                              * different wrap in each row.  HOW ownership is
                              * decided is ownership_construction below. */
+    int    peel_layers; /* claims-mode collision depth.  0 selects the
+                              * production default; 1 disables collision
+                              * peeling; 2..8 retain that many independently
+                              * selected claimants per UV cell in stacked
+                              * temporary bands.  Substantial recovered runs
+                              * can then be packed beside the primary atlas. */
+    int    peel_layer;  /* -1 (default): retain every requested peel in one
+                              * resident grid.  >=0: deterministically consume
+                              * and discard every preceding claimant layer but
+                              * retain only this layer.  This is the bounded-
+                              * memory serialization path for projective owner
+                              * certificates; it changes storage, never UV or
+                              * claimant selection. */
     int    ownership_construction; /* component_global mode switch.
                              * 0 (DEFAULT): exact whole-row claimant paths.
                              * Physical continuity is lexicographic, followed
@@ -279,6 +325,28 @@ typedef struct {
     int32_t source_chart;
 } RibbonChartRun;
 
+/* Triangles ONE fitted-grid cell emits.  Corners are
+ *     a = (k,j)      b = (k,j+1)
+ *     c = (k+1,j)    d = (k+1,j+1)
+ * A cell commits to ONE diagonal -- MAIN (b-c) or ANTI (a-d) -- never a
+ * mixture, so the emitted surface stays a valid quad ribbon.
+ *
+ * This exists because the writer used to emit two fixed-diagonal triangles
+ * whenever all four corners were PRESENT, with no other test.  On the 4x5x5
+ * that drew 35,447 edges across the dark gap between physical wraps: the
+ * radial spokes and staircase jogs visible in every cross-section.  The
+ * parameterizer owns topology, so it now decides which triangles are legal
+ * and the writer serializes that decision. */
+enum RibbonCellCode {
+    RIB_CELL_NONE = 0,
+    RIB_CELL_ABC  = 1,   /* main diagonal, upper triangle (a,b,c) */
+    RIB_CELL_BDC  = 2,   /* main diagonal, lower triangle (b,d,c) */
+    RIB_CELL_MAIN = 3,   /* both -- byte-identical to the historical writer */
+    RIB_CELL_ABD  = 4,   /* anti diagonal, upper triangle (a,b,d) */
+    RIB_CELL_ADC  = 8,   /* anti diagonal, lower triangle (a,d,c) */
+    RIB_CELL_ANTI = 12
+};
+
 typedef struct {
     /* --- per original mesh vertex (arena-allocated) --- */
     float   *uv;        /* [nv*2]: u = slice arc length (vox), v = axial (vox);
@@ -327,9 +395,36 @@ typedef struct {
                                    * material-domain identity for each
                                    * source chart; NULL without graph input */
     size_t   source_chart_island_count;
-    size_t   nu, nk;     /* grid columns (u) and rows (v = slices) */
+    uint8_t *grid_quad;  /* [(nk-1)*(nu-1)]: RIB_CELL_* triangle set this cell
+                          * emits.  The writer serializes it verbatim and
+                          * validates the corner ids; it applies no geometry
+                          * policy of its own. */
+    uint8_t *grid_cut_h; /* [nk*nu]: 1 = the lattice edge (k,j)-(k,j+1) is a
+                          * topological CUT, not merely an unfilled gap.  A cut
+                          * edge can never be crossed by a face, even if a
+                          * later pass moves geometry back under the gate. */
+    uint8_t *grid_cut_v; /* [nk*nu]: same for (k,j)-(k+1,j) */
+    size_t   nu, nk;     /* grid columns (u) and rows.  nk is
+                          * slices * grid_layers: the row axis carries one
+                          * BAND per peel layer, so a cell that several wraps
+                          * claim keeps them all instead of admitting one and
+                          * discarding the rest. */
+    size_t   grid_layers;/* peel layers stacked along the row axis */
+    size_t   grid_layer_base;/* semantic peel index represented by row band 0.
+                              * Zero for an ordinary/all-layer result; nonzero
+                              * only for bounded single-peel serialization. */
+    size_t   grid_source_layers;/* requested peel depth before selecting a
+                                 * resident subset; zero means grid_layers */
     float    grid_du;    /* u spacing (== opts->grid_u) */
     float    grid_dv;    /* v spacing (== opts->slice_h) */
+    double   grid_u_origin;/* signed U of internal grid column zero */
+    double   grid_v_origin;/* signed V of internal grid row zero. In the
+                            * legacy projective sampler this labels a bin's
+                            * lower boundary, while XYZ is sampled at its
+                            * center: source reference V = exported V + dv/2.
+                            * Keep this gauge conversion explicit in audits. */
+    int      grid_projective;/* writer preserves both origins and every
+                              * intervening column; no crop-local compaction */
 
     /* --- diagnostics --- */
     int     n_slices;        /* slicing planes with any crossing */
@@ -398,6 +493,12 @@ typedef struct {
                                          * unsupported constraints */
     size_t  grid_claim_replaced;  /* conflicts where component-global winding
                                    * consensus selected the later candidate */
+    size_t  grid_claim_candidates; /* all interpolated claims, counted once */
+    size_t  grid_claim_required_peels; /* maximum pre-selection cell depth */
+    size_t  grid_claim_overflow;   /* claims beyond requested total capacity */
+    size_t  grid_claim_stored;     /* measured claims selected for resident grids */
+    size_t  grid_subcell_claim_chains;/* slice chains narrower than grid_du
+                                       * retained by one nearest-column claim */
     size_t  grid_reconstruction_components;/* independently packed output
                                              * components after branch split */
     size_t  grid_branch_conflicts;/* same-row logical path pairs which overlap
@@ -462,6 +563,66 @@ typedef struct {
     size_t  grid_long_edges_smooth;/* same count after guarded V smoothing */
     size_t  grid_both_diagonals_long;/* four-corner cells whose two possible
                                       * diagonals both exceed the gate */
+    /* --- emitted-topology census (2026-09-01) -----------------------------
+     * The counters above measure only the (k,j+1) and (k+1,j) lattice
+     * neighbours.  The writer's fixed-diagonal quad also emits the diagonal
+     * (k,j+1)-(k+1,j) in EVERY four-corner cell, and that edge had never been
+     * measured: on the shipped 4x5x5 ribbon it carries 35,430 of the 70,631
+     * long edges, so the fitted-grid line under-reported the damage by 2x. */
+    size_t  grid_long_edges_diag_main;/* emitted b-c diagonal above the gate */
+    size_t  grid_long_edges_diag_anti;/* the alternate a-d diagonal, measured
+                                       * so an emitter that may flip a cell has
+                                       * both numbers before it chooses */
+    size_t  grid_cell_lane_hist[8];  /* distinct reconstruction lanes claiming
+                                      * one lattice cell, bucketed 1..8+.  With
+                                      * metric-island packing disabled for a
+                                      * carried certificate, lanes legitimately
+                                      * share cells; this is how many. */
+    size_t  grid_vfill_runs;         /* bounded V continuations actually made */
+    size_t  grid_vfill_rows;         /* lattice rows those continuations
+                                      * generated (never measured, never
+                                      * capped: the u-fill has RIB_UFILL_MAX,
+                                      * the v-fill had no row bound at all) */
+    /* --- lane-turn MRF (see lane_turn_mrf.h) --- */
+    size_t  grid_lane_mrf_sites;     /* reconstruction lanes = MRF sites */
+    size_t  grid_lane_mrf_edges;     /* accepted order + continuation factors */
+    size_t  grid_lane_mrf_changed;   /* labels the solver changed */
+    size_t  grid_lane_mrf_moved;     /* lanes left on a nonzero turn offset */
+    size_t  grid_lane_mrf_chains;    /* chains those lanes carried */
+    double  grid_lane_mrf_energy_before;
+    double  grid_lane_mrf_energy_after;
+    size_t  grid_lane_pair_observations;/* raw co-claim observations seen */
+    size_t  grid_lane_pairs;         /* distinct lane pairs they fell into */
+    size_t  grid_lane_pairs_dropped; /* observations the table could not hold */
+    size_t  grid_emitted_faces;      /* faces the cell codes actually emit */
+    size_t  grid_material_faces_cut; /* otherwise-legal triangles suppressed
+                                      * because two known corners belong to
+                                      * different material lineages */
+    size_t  grid_emitted_long_edges; /* emitted edges above the wrap gate.
+                                      * POSTCONDITION: must be 0.  Nonzero
+                                      * means the emitter and the gate
+                                      * disagree, which is a bug, not a
+                                      * tuning outcome. */
+    size_t  grid_cells_full;         /* four-corner cells considered */
+    size_t  grid_cells_emit2;        /* ... emitting a complete quad */
+    size_t  grid_cells_emit1;        /* ... emitting one triangle */
+    size_t  grid_cells_emit0;        /* ... emitting nothing (the cut) */
+    size_t  grid_cells_flipped;      /* ... where ANTI beat MAIN */
+    size_t  grid_edge_cuts_h;        /* lattice edges cut horizontally */
+    size_t  grid_edge_cuts_v;        /* ... and vertically */
+    size_t  grid_ufill_reject_stretch;/* u chords refused: too long for the
+                                       * arclength they replace */
+    size_t  grid_ufill_reject_steps; /* ... refused: hole wider than
+                                      * RIB_UFILL_MAX columns */
+    size_t  grid_ufill_reject_crossing; /* invented chord crosses measured slice */
+    size_t  grid_vfill_reject_rows;  /* v chords refused: run over
+                                      * RIB_VFILL_MAX_ROWS */
+    size_t  grid_vfill_reject_stretch;/* ... refused by the same stretch rule */
+    size_t  grid_vfill_reject_crossing;/* invented chord stabs an input triangle */
+    size_t  grid_vfill_run_hist[6];  /* their lengths in rows, bucketed
+                                      * [1,2) [2,4) [4,8) [8,16) [16,64)
+                                      * [64,inf) -- a deterministic stand-in
+                                      * for a percentile */
     double  chain_gauge_pair_median_before;/* absolute cross-row constraint
                                              * residual before anchored solve */
     double  chain_gauge_pair_p95_before;
@@ -485,19 +646,47 @@ typedef struct {
     size_t vertices, faces;
     size_t supported_vertices, generated_vertices;
     size_t atlas_columns, atlas_runs, empty_columns_removed;
+    size_t primary_peel_vertices, peel_promotion_threshold;
+    size_t promoted_peel_runs, promoted_peel_vertices;
+    size_t extra_peel_runs, extra_peel_vertices;
 } RibbonWriteStats;
 
 /* Write the fitted regular grid: the authoritative UV'd VMESH companion of
  * `path` always, plus (when write_obj != 0) the compact one-vt-per-vertex text
- * OBJ at `path` itself for viewers.  Every defined four-corner grid cell emits
- * two fixed-diagonal triangles; the writer applies no geometric or identity
- * policy.  Empty U-column runs are atlas-compacted.  v_rebase != 0 drops each
+ * OBJ at `path` itself for viewers.  The parameterizer's RIB_CELL_* decision is
+ * serialized verbatim; the writer applies no geometric or identity policy.
+ * Empty U-column runs are atlas-compacted.  v_rebase != 0 drops each
  * occupied column run to its own v minimum (atlas height = tallest run, not
  * the global z span -- the 21x21x21 atlas was 80% reserved-but-empty rows)
  * and records u-range -> v_offset in the <path base>_runs.json sidecar so
  * world z stays recoverable; note vt.v is then no longer globally z-zmin. */
 int Ribbon_write_obj(const char *path, const RibbonResult *result,
                      int write_obj, int v_rebase, RibbonWriteStats *stats);
+
+/* As above, but publish substantial collision-peel runs beside the primary
+ * sheet in U instead of dropping every non-winning claim from the deliverable.
+ * A peel run is a maximal contiguous set of occupied source-grid U columns.
+ * Runs which satisfy either positive promotion criterion are promoted as
+ * disjoint horizontal atlas panels: at least
+ * `min_primary_share * primary_vertices`, or at least `min_vertices`.
+ * Equivalently, the smaller positive threshold wins.  This lets a relative
+ * rule scale down on small inputs without making a physically substantial run
+ * harder to publish merely because a larger block contains more total sheet.
+ * Smaller runs remain in the sibling <path base>_extras VMESH.  No geometry,
+ * face, confidence, phase, or identity value is changed.  When both criteria
+ * are zero this is exactly the legacy Ribbon_write_obj geometry policy.
+ * Projective multi-layer output also atomically publishes <path base>_layers.json
+ * with actual surface counts and explicitly non-surface/point-only layers.
+ * Its previous completion record is invalidated before replacing any layer. */
+int Ribbon_write_obj_promote_peels(const char *path,
+                                   const RibbonResult *result,
+                                   int write_obj, int v_rebase,
+                                   double min_primary_share,
+                                   size_t min_vertices,
+                                   RibbonWriteStats *stats);
+
+/* Deterministic in-memory coverage for the peel atlas partition/repack. */
+int RibbonGridIO_selftest(void);
 
 /* Flag faces the parameterization reveals as WRONG inter-wrap links. A genuine
  * bad weld link is PHYSICALLY LONG: it bridges the >=7-vox inter-wrap gap, so a

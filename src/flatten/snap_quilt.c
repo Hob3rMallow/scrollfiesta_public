@@ -156,7 +156,7 @@ static void sq_propagate_boundary_reference(
     double *ref, uint8_t *has_ref)
 {
     int32_t *queue = (int32_t *)ARENA_ALLOC(
-        arena, (long)(nsite * sizeof(int32_t)));
+        arena, (size_t)(nsite * sizeof(int32_t)));
     size_t head = 0, tail = 0, si = 0;
 
     (void)nv;
@@ -260,7 +260,7 @@ int SnapQuilt_select(Arena_T arena,
     depth_step = 2.0 * reach / (double)(bins - 1);
 
     site_of = (int32_t *)ARENA_ALLOC(
-        arena, (long)(nv * sizeof(int32_t)));
+        arena, (size_t)(nv * sizeof(int32_t)));
     for (si = 0; si < nv; si++) site_of[si] = -1;
     for (si = 0; si < nv; si++) {
         if (dark[si] && has[si] && off[si] < off[si + 1]) {
@@ -280,18 +280,18 @@ int SnapQuilt_select(Arena_T arena,
     }
     ncost = nsite * (size_t)bins;
     vert_of = (int32_t *)ARENA_ALLOC(
-        arena, (long)(nsite * sizeof(int32_t)));
+        arena, (size_t)(nsite * sizeof(int32_t)));
     for (si = 0; si < nv; si++)
         if (site_of[si] >= 0) vert_of[site_of[si]] = (int32_t)si;
 
-    ref = (double *)ARENA_ALLOC(arena, (long)(nsite * sizeof(double)));
-    has_ref = (uint8_t *)ARENA_CALLOC(arena, (long)nsite, 1);
-    dirs = (float *)ARENA_CALLOC(arena, (long)nsite, 3 * sizeof(float));
-    energy = (float *)ARENA_ALLOC(arena, (long)(ncost * sizeof(float)));
-    valid = (uint8_t *)ARENA_CALLOC(arena, (long)ncost, 1);
-    labels = (int *)ARENA_ALLOC(arena, (long)(nsite * sizeof(int)));
-    best_label = (int *)ARENA_ALLOC(arena, (long)(nsite * sizeof(int)));
-    close_label = (int *)ARENA_ALLOC(arena, (long)(nsite * sizeof(int)));
+    ref = (double *)ARENA_ALLOC(arena, (size_t)(nsite * sizeof(double)));
+    has_ref = (uint8_t *)ARENA_CALLOC(arena, (size_t)nsite, 1);
+    dirs = (float *)ARENA_CALLOC(arena, (size_t)nsite, 3 * sizeof(float));
+    energy = (float *)ARENA_ALLOC(arena, (size_t)(ncost * sizeof(float)));
+    valid = (uint8_t *)ARENA_CALLOC(arena, (size_t)ncost, 1);
+    labels = (int *)ARENA_ALLOC(arena, (size_t)(nsite * sizeof(int)));
+    best_label = (int *)ARENA_ALLOC(arena, (size_t)(nsite * sizeof(int)));
+    close_label = (int *)ARENA_ALLOC(arena, (size_t)(nsite * sizeof(int)));
     sq_propagate_boundary_reference(arena, nv, nsite, site_of, vert_of,
                                     off, tgt, cv, has, dark, opts->band,
                                     ref, has_ref);
@@ -393,9 +393,9 @@ int SnapQuilt_select(Arena_T arena,
     scale = sq_clamp(scale, 1e-6, 64.0);
 
     data = (int32_t *)ARENA_ALLOC(
-        arena, (long)(ncost * sizeof(int32_t)));
+        arena, (size_t)(ncost * sizeof(int32_t)));
     smooth = (int32_t *)ARENA_ALLOC(
-        arena, (long)((size_t)bins * (size_t)bins * sizeof(int32_t)));
+        arena, (size_t)((size_t)bins * (size_t)bins * sizeof(int32_t)));
     for (si = 0; si < ncost; si++) {
         if (!valid[si]) {
             data[si] = SQ_INVALID_COST;

@@ -50,14 +50,14 @@ int SheetReweld_label(Arena_T arena, const int32_t *faces, size_t nf, size_t nv,
         uf_union(&uf, b, c);
     }
     /* mark used verts (a component is only meaningful if it has faces) */
-    uint8_t *used = (uint8_t *)ARENA_CALLOC(arena, (long)nv, 1L);
+    uint8_t *used = (uint8_t *)ARENA_CALLOC(arena, (size_t)nv, 1L);
     for (size_t f = 0; f < nf; f++) {
         used[faces[f*3+0]] = 1; used[faces[f*3+1]] = 1; used[faces[f*3+2]] = 1;
     }
     /* compact root -> dense sheet id */
-    int32_t *root2sheet = (int32_t *)ARENA_ALLOC(arena, (long)(nv*sizeof(int32_t)));
+    int32_t *root2sheet = (int32_t *)ARENA_ALLOC(arena, (size_t)(nv*sizeof(int32_t)));
     for (size_t v = 0; v < nv; v++) root2sheet[v] = -1;
-    int32_t *vert_sheet = (int32_t *)ARENA_ALLOC(arena, (long)(nv*sizeof(int32_t)));
+    int32_t *vert_sheet = (int32_t *)ARENA_ALLOC(arena, (size_t)(nv*sizeof(int32_t)));
     size_t n_sheets = 0;
     for (size_t v = 0; v < nv; v++) {
         if (!used[v]) { vert_sheet[v] = -1; continue; }
@@ -137,7 +137,7 @@ int SheetReweld_process(Arena_T arena,
     /* default: passthrough (own copy so grid_weld may free the input). */
     {
         size_t cap = (nf ? nf : 1) * 3;
-        int32_t *out0 = (int32_t *)ARENA_ALLOC(arena, (long)(cap*sizeof(int32_t)));
+        int32_t *out0 = (int32_t *)ARENA_ALLOC(arena, (size_t)(cap*sizeof(int32_t)));
         memcpy(out0, faces, nf*3*sizeof(int32_t));
         *out_faces = out0; *out_nf = nf;
     }
@@ -151,10 +151,10 @@ int SheetReweld_process(Arena_T arena,
     Arena_Mark scratch = Arena_save(arena);
 
     /* ---- 1) boundary verts: verts touching an open (run-1) edge. -------- */
-    uint8_t *is_bnd = (uint8_t *)ARENA_CALLOC(arena, (long)nv, 1L);
+    uint8_t *is_bnd = (uint8_t *)ARENA_CALLOC(arena, (size_t)nv, 1L);
     {
         size_t ne = nf * 3;
-        uint64_t *keys = (uint64_t *)ARENA_ALLOC(arena, (long)(ne*sizeof(uint64_t)));
+        uint64_t *keys = (uint64_t *)ARENA_ALLOC(arena, (size_t)(ne*sizeof(uint64_t)));
         for (size_t f = 0; f < nf; f++)
             for (int e = 0; e < 3; e++) {
                 int32_t a = faces[f*3+(size_t)e], b = faces[f*3+(size_t)((e+1)%3)];
@@ -181,8 +181,8 @@ int SheetReweld_process(Arena_T arena,
     size_t nbf = (n_phase1_bridge <= nf) ? n_phase1_bridge : nf;
 
     /* near-seam boundary vert subset (for the geometric overlap KD-tree). */
-    int32_t *sub = (int32_t *)ARENA_ALLOC(arena, (long)((nv?nv:1)*sizeof(int32_t)));
-    float   *subpts = (float *)ARENA_ALLOC(arena, (long)((nv?nv:1)*3*sizeof(float)));
+    int32_t *sub = (int32_t *)ARENA_ALLOC(arena, (size_t)((nv?nv:1)*sizeof(int32_t)));
+    float   *subpts = (float *)ARENA_ALLOC(arena, (size_t)((nv?nv:1)*3*sizeof(float)));
     size_t   m = 0;
     for (size_t v = 0; v < nv; v++) {
         if (!is_bnd[v] || vert_sheet[v] < 0) continue;
@@ -196,7 +196,7 @@ int SheetReweld_process(Arena_T arena,
 
     /* raw evidence rows */
     size_t cap_raw = nbf + m * 16 + 1;
-    PairW *raw = (PairW *)ARENA_ALLOC(arena, (long)(cap_raw*sizeof(PairW)));
+    PairW *raw = (PairW *)ARENA_ALLOC(arena, (size_t)(cap_raw*sizeof(PairW)));
     size_t nraw = 0;
 
     for (size_t k = 0; k < nbf; k++) {
@@ -251,9 +251,9 @@ int SheetReweld_process(Arena_T arena,
     }
 
     /* per-sheet best + runner-up partner by score (mutual-best + margin). */
-    int32_t *best_j   = (int32_t *)ARENA_ALLOC(arena, (long)(n_sheets*sizeof(int32_t)));
-    double  *best_s   = (double  *)ARENA_ALLOC(arena, (long)(n_sheets*sizeof(double)));
-    double  *second_s = (double  *)ARENA_ALLOC(arena, (long)(n_sheets*sizeof(double)));
+    int32_t *best_j   = (int32_t *)ARENA_ALLOC(arena, (size_t)(n_sheets*sizeof(int32_t)));
+    double  *best_s   = (double  *)ARENA_ALLOC(arena, (size_t)(n_sheets*sizeof(double)));
+    double  *second_s = (double  *)ARENA_ALLOC(arena, (size_t)(n_sheets*sizeof(double)));
     for (size_t s = 0; s < n_sheets; s++) { best_j[s] = -1; best_s[s] = -1.0; second_s[s] = -1.0; }
 
     for (size_t i = 0; i < nraw; i++) {
@@ -268,7 +268,7 @@ int SheetReweld_process(Arena_T arena,
     }
 
     /* confirmed pairs: mutual-best, above min_score, runner-up under margin. */
-    PairW *conf = (PairW *)ARENA_ALLOC(arena, (long)(nraw*sizeof(PairW)));
+    PairW *conf = (PairW *)ARENA_ALLOC(arena, (size_t)(nraw*sizeof(PairW)));
     size_t nconf = 0;
     for (size_t i = 0; i < nraw; i++) {
         int32_t a = raw[i].a, b = raw[i].b; double sc = raw[i].w;
@@ -286,7 +286,7 @@ int SheetReweld_process(Arena_T arena,
      * that reclaims each pair's SeamWeld_bridge scratch, so peak memory is one
      * pair's output, not all nconf together). */
     int32_t *acc = NULL; size_t nacc = 0, cap_acc = 0;
-    uint8_t *want = (uint8_t *)ARENA_ALLOC(arena, (long)(nv*sizeof(uint8_t)));
+    uint8_t *want = (uint8_t *)ARENA_ALLOC(arena, (size_t)(nv*sizeof(uint8_t)));
 
     for (size_t i = 0; i < nconf; i++) {
         int32_t sa = conf[i].a, sb = conf[i].b;
@@ -319,7 +319,7 @@ int SheetReweld_process(Arena_T arena,
     Arena_restore(arena, scratch);  /* reclaim ALL analysis scratch */
     if (nacc > 0) {
         size_t tot = nf + nacc;
-        int32_t *out = (int32_t *)ARENA_ALLOC(arena, (long)(tot*3*sizeof(int32_t)));
+        int32_t *out = (int32_t *)ARENA_ALLOC(arena, (size_t)(tot*3*sizeof(int32_t)));
         memcpy(out, faces, nf*3*sizeof(int32_t));
         memcpy(out + nf*3, acc, nacc*3*sizeof(int32_t));
         *out_faces = out; *out_nf = tot;
@@ -401,9 +401,9 @@ int SheetReweld_selftest(void)
 
     /* -- test B1: one clear cross-seam pair is confirmed -- */
     {
-        float *V = (float*)ARENA_ALLOC(A,(long)(64*3*sizeof(float)));
-        float *N = (float*)ARENA_ALLOC(A,(long)(64*3*sizeof(float)));
-        int32_t *F=(int32_t*)ARENA_ALLOC(A,(long)(64*3*sizeof(int32_t)));
+        float *V = (float*)ARENA_ALLOC(A,(size_t)(64*3*sizeof(float)));
+        float *N = (float*)ARENA_ALLOC(A,(size_t)(64*3*sizeof(float)));
+        int32_t *F=(int32_t*)ARENA_ALLOC(A,(size_t)(64*3*sizeof(int32_t)));
         size_t nv=0,nf=0;
         sr_add_ribbon(V,N,F,&nv,&nf, 0.0f, 9, 124.0f, 127.0f, 0);   /* L */
         sr_add_ribbon(V,N,F,&nv,&nf, 0.0f, 9, 129.0f, 132.0f, 0);   /* R aligned */
@@ -417,9 +417,9 @@ int SheetReweld_selftest(void)
 
     /* -- test B2: an ambiguous sheet (splits overlap two ways) is rejected -- */
     {
-        float *V=(float*)ARENA_ALLOC(A,(long)(64*3*sizeof(float)));
-        float *N=(float*)ARENA_ALLOC(A,(long)(64*3*sizeof(float)));
-        int32_t *F=(int32_t*)ARENA_ALLOC(A,(long)(64*3*sizeof(int32_t)));
+        float *V=(float*)ARENA_ALLOC(A,(size_t)(64*3*sizeof(float)));
+        float *N=(float*)ARENA_ALLOC(A,(size_t)(64*3*sizeof(float)));
+        int32_t *F=(int32_t*)ARENA_ALLOC(A,(size_t)(64*3*sizeof(int32_t)));
         size_t nv=0,nf=0;
         sr_add_ribbon(V,N,F,&nv,&nf, 0.0f, 9, 124.0f, 127.0f, 0);   /* L wide */
         sr_add_ribbon(V,N,F,&nv,&nf, 0.0f, 3, 129.0f, 132.0f, 0);   /* Ra left  */
@@ -440,9 +440,9 @@ int SheetReweld_selftest(void)
     {
         const int NR = 5, NC = 3;                        /* rows(y), cols(z) */
         int nvC = 2 /*sheets*/ * NR * NC;
-        float *V=(float*)ARENA_ALLOC(A,(long)((size_t)nvC*3*sizeof(float)));
-        float *N=(float*)ARENA_ALLOC(A,(long)((size_t)nvC*3*sizeof(float)));
-        int32_t *F=(int32_t*)ARENA_ALLOC(A,(long)((size_t)nvC*4*sizeof(int32_t)));
+        float *V=(float*)ARENA_ALLOC(A,(size_t)((size_t)nvC*3*sizeof(float)));
+        float *N=(float*)ARENA_ALLOC(A,(size_t)((size_t)nvC*3*sizeof(float)));
+        int32_t *F=(int32_t*)ARENA_ALLOC(A,(size_t)((size_t)nvC*4*sizeof(int32_t)));
         size_t nv=0,nf=0;
         /* z per (sheet,col): L={124.5,126,127.5}, R={128.5,130,131.5}. The two
          * facing cols (127.5|128.5) are 1 vox apart and STRADDLE the seam plane

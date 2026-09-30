@@ -21,9 +21,23 @@ An optional atlas branch continues through `atlas_overlap_fix` and
 `atlas_ribbon_fit`. The default path runs on CPU; the per-cube MLS projection
 also has an optional CubeCL CUDA/HIP backend.
 
+Since September 2026 the per-cube meshes can also be assembled directly into
+flattened, CT-textured sheets by the native sheet assembler:
+
+```text
+grid_pipeline -> sheet_assemble -> sheet_strip / sheet_layers / vmesh_tifxyz
+```
+
+`sheet_assemble` flattens every chart, joins charts across cube seams, places
+them in one winding-aware parameter domain, repairs overlap and distortion,
+audits the result against the source meshes, and bakes and scores the sheet.
+See [docs/SHEET_ASSEMBLY.md](docs/SHEET_ASSEMBLY.md).
+
 This repository is under active development. The public C API is versioned,
 but pipeline outputs and experimental command-line options may still change.
-For the current research write-up, see [submission.pdf](submission.pdf). For
+For the updated research write-up, see [submission.pdf](submission.pdf).
+The [September release check](submission_update/release/README.md) includes
+the PHerc0139 4×5×5 CT sheet, audit, and commands. For
 curated example results, start with
 [output/canonical_best/README.md](output/canonical_best/README.md). The August 2026 exhibit and its claim ledger are indexed in [submission_update/gallery/README.md](submission_update/gallery/README.md).
 
@@ -86,12 +100,13 @@ cmake --build build --parallel 4
 ctest --test-dir build --output-on-failure
 ```
 
-`scroll_whole` needs a BLAS/LAPACK, which backs the TAUCS Cholesky in its
-ribbon and metric solves. The build takes the first it finds: libraries staged
-by `build-deps`, then a system LAPACK, then the vendored CLAPACK source under
-`deps/clapack/` (correct anywhere, but roughly a minute of extra compilation).
-If none is available, `scroll_whole` is skipped and the rest of the toolchain
-still builds. Library-only and embedded builds never look for one.
+`scroll_whole` and `sheet_assemble` need a BLAS/LAPACK, which backs the TAUCS
+Cholesky in their ribbon, metric and repair solves. The build takes the first
+it finds: libraries staged by `build-deps`, then a system LAPACK, then the
+vendored CLAPACK source under `deps/clapack/` (correct anywhere, but roughly a
+minute of extra compilation). If none is available, `scroll_whole` and
+`sheet_assemble` are skipped and the rest of the toolchain still builds.
+Library-only and embedded builds never look for one.
 
 The low-level [`src/Makefile`](src/Makefile) remains available for the core
 GCC per-cube/grid build. CMake is the build of record for the full supported
@@ -108,6 +123,15 @@ toolchain and is what CI exercises.
 | `scroll_unroll` | Unroll, snap, relax, and bake textures and diagnostics. |
 | `atlas_overlap_fix` | Repair and audit winding ownership in a registered atlas. |
 | `atlas_ribbon_fit` | Fit the terminal collision-free ribbon through a solved atlas. |
+| `sheet_assemble` | Assemble a per-cube mesh pile into audited, flattened sheets (September 2026). |
+| `obj_bake_raw` | Bake RAW CT texture through a flattened mesh (used by `sheet_assemble`). |
+| `ribbon_verdict` | Score a flattened sheet against its acceptance gates (used by `sheet_assemble`). |
+| `sheet_strip` | Flow a sheet review's bake into strip pages in spiral order, small pieces in a tray. |
+| `sheet_reading` | Flip mirror-imaged pieces of a sheet image or strip page into reading handedness. |
+| `sheet_layers` | Render the surface-volume layers along the inward normal on the sheet grid, for ink detection. |
+| `vmesh_tifxyz` | Export flattened pieces as VC3D tifxyz segments. |
+| `scroll_axis_track` | Derive the scroll axis (umbilicus) table from a mesh pile. |
+| `swirl_slim` | Cut radius-gated bridges in a marbled VMESH region and SLIM-refine each freed piece. |
 
 Small diagnostic tools are also built when `SCROLLFIESTA_BUILD_TOOLS=ON`.
 Run a tool with no arguments for usage, or with `--selftest` where supported.
@@ -147,8 +171,23 @@ snap, and final relaxation. Large generated data belongs under `output/` and is
 ignored unless deliberately curated into `output/canonical_best/`.
 
 The detailed stages, expected artifacts, overlap repair, ribbon fitting, and
-canonical-run contract are documented in
+review requirements are documented in
 [docs/PIPELINE.md](docs/PIPELINE.md).
+
+## Public configuration
+
+[`configs/default.json`](configs/default.json) is the single configuration for
+the native sheet assembler and optional quadribbon tool. It uses PHerc0139
+4×5×5 calibration and the supporting [`configs/axis.csv`](configs/axis.csv).
+Set `raw_source.path`, `bake.exe`, and `verdict.exe` for your local data and
+build; replace the geometry calibration and axis table for other datasets.
+Paths are relative to the working directory.
+
+The staged sheet workflow and its reference commands are documented in
+[docs/SHEET_ASSEMBLY.md](docs/SHEET_ASSEMBLY.md). On the saved 100-cube fixture,
+this configuration completes through audit but is **not geometry-qualified**
+(47.4% area coverage, 171 overlapping triangle pairs). It is a starting
+configuration, not a validated reproduction of the curated atlas result.
 
 ## C library
 
@@ -197,8 +236,9 @@ internally through `sf_common_opts.n_threads`.
 |---|---|
 | `include/` | Versioned public C API. |
 | `src/` | Core algorithms and command-line front ends. |
+| `configs/` | One public configuration and its PHerc0139 reference axis. |
 | `tests/` | Direct-link, runtime-load, and embedding smoke tests. |
-| `scripts/` | Diagnostics, experiments, and canonical-run automation. |
+| `scripts/` | Build helpers, data conversion, diagnostics, and module tests. |
 | `python/` | Optional data preparation and ROI interoperability tools. |
 | `sample_outputs/` | Small public examples. |
 | `output/canonical_best/` | Curated Git LFS result bundle and checksums. |

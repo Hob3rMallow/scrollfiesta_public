@@ -5,9 +5,8 @@
  * grid, then invokes grid_weld.exe to assemble the per-cube VMESH containers
  * into one mesh. The default assembly preserves the BPA-produced cube
  * boundaries verbatim and does not synthesize seam geometry; --seam-bridge
- * explicitly selects the historical BPA seam weld. Replaces
- * scripts/run_grid_halo.ps1 with portable C and
- * eliminates the serial PowerShell foreach.
+ * explicitly selects the historical BPA seam weld. Cube scheduling and
+ * resuming are handled directly by this portable executable.
  *
  * Usage:
  *   grid_pipeline <grid_dir> <output_dir>
@@ -87,6 +86,8 @@ typedef struct {
     int         skip_existing;  /* resume: skip cubes whose authoritative VMESH is complete */
     int         dry_run;        /* report skip/run decisions and exit; spawn nothing */
     int         reject_garbage; /* gate garbage (solid-slab) cubes pre-spawn (default 1) */
+    long        subgrid[6];     /* --subgrid z0 z1 y0 y1 x0 x1: half-open box of cube ORIGINS to mesh
+                                 * (the halo still reads every neighbour in cubes_PRED); armed when z1 > z0 */
     const char *reject_list;    /* optional: skip cube_ids listed in this file (else detect inline) */
     int         full_dumps;     /* pass NO --dump-final-only to children: every cube
                                  * writes all intermediate stage OBJs (~300 MB/dense
@@ -257,6 +258,8 @@ static void usage(const char *prog)
         "  --cvt-ratio F             override pitch-aware CVT site density\n"
         "  --no-simplify             Dense diagnostic mode; skip CVT remeshing\n"
         "  --no-reject-garbage       Process all cubes (do not skip solid-slab garbage)\n"
+        "  --subgrid z0 z1 y0 y1 x0 x1  Mesh only cubes whose origin lies in this\n"
+        "                            half-open box (context cubes feed the halo only)\n"
         "  --reject-list FILE        Skip cube_ids listed in FILE (one per line);\n"
         "                            default detects garbage inline from each TIFF\n"
         "  --trim-inset F            Owned-box inset passthrough to cube_mesh\n"
@@ -309,7 +312,10 @@ static int parse_args(int argc, char *argv[], GpOptions *o)
     o->output_dir = argv[2];
 
     for (int i = 3; i < argc; i++) {
-        if (!strcmp(argv[i], "--halo") && i + 1 < argc) {
+        if (!strcmp(argv[i], "--subgrid") && i + 6 < argc) {
+            for (int k = 0; k < 6; k++) o->subgrid[k] = atol(argv[i + 1 + k]);
+            i += 6;
+        } else if (!strcmp(argv[i], "--halo") && i + 1 < argc) {
             o->halo = atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--threads-per-cube") && i + 1 < argc) {
             o->threads_per_cube = atoi(argv[++i]);
@@ -532,7 +538,7 @@ static int run_one_cube(const char *exe_path,
         argv[argc++] = cvt_ratio_str;
     }
     if (cull_oracle_tangles) argv[argc++] = "--cull-oracle-tangles";
-    if (trim_inset >= 0.0f) {
+    if (trim_inset > -999.0f) {   /* negative = overlap ring (2026-09-01) */
         argv[argc++] = "--trim-inset";
         argv[argc++] = trim_str;
     }
@@ -945,6 +951,19 @@ int main(int argc, char *argv[])
         fprintf(stderr, "ERROR: failed to scan %s/cubes_PRED\n",
                 opts.grid_dir);
         return 1;
+    }
+    if (opts.subgrid[1] > opts.subgrid[0]) {
+        size_t kept = 0;
+        for (size_t k = 0; k < n_jobs; k++) {
+            long oz = 0, oy = 0, ox = 0;
+            if (sscanf(jobs[k].cube_id, "z%ld_y%ld_x%ld", &oz, &oy, &ox) == 3 &&
+                oz >= opts.subgrid[0] && oz < opts.subgrid[1] && oy >= opts.subgrid[2] && oy < opts.subgrid[3] &&
+                ox >= opts.subgrid[4] && ox < opts.subgrid[5])
+                jobs[kept++] = jobs[k];
+        }
+        fprintf(stderr, "subgrid [%ld,%ld)x[%ld,%ld)x[%ld,%ld): %zu of %zu cubes meshed (the rest feed the halo)\n",
+                opts.subgrid[0], opts.subgrid[1], opts.subgrid[2], opts.subgrid[3], opts.subgrid[4], opts.subgrid[5], kept, n_jobs);
+        n_jobs = kept;
     }
     if (opts.max_cubes > 0 && (size_t)opts.max_cubes < n_jobs) {
         n_jobs = (size_t)opts.max_cubes;

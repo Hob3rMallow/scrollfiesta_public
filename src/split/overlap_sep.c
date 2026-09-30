@@ -360,7 +360,7 @@ static void build_face_adjacency(Arena_T arena,
     (void)nv;
     size_t n_records = nf * 3;
     EdgeRecord *records = (EdgeRecord *)ARENA_ALLOC(arena,
-        (long)(n_records * sizeof(EdgeRecord)));
+        (size_t)(n_records * sizeof(EdgeRecord)));
 
     /* Build edge records: 3 edges per face */
     for (size_t fi = 0; fi < nf; fi++) {
@@ -386,11 +386,11 @@ static void build_face_adjacency(Arena_T arena,
     /* Scan for adjacent face pairs (consecutive records with same key) */
     size_t adj_cap = nf * 3 / 2 + 1;
     int32_t *adj_fa = (int32_t *)ARENA_ALLOC(arena,
-        (long)(adj_cap * sizeof(int32_t)));
+        (size_t)(adj_cap * sizeof(int32_t)));
     int32_t *adj_fb = (int32_t *)ARENA_ALLOC(arena,
-        (long)(adj_cap * sizeof(int32_t)));
+        (size_t)(adj_cap * sizeof(int32_t)));
     double *adj_len = (double *)ARENA_ALLOC(arena,
-        (long)(adj_cap * sizeof(double)));
+        (size_t)(adj_cap * sizeof(double)));
     size_t n_adj = 0;
     double total_edge_len = 0.0;
     size_t total_edges = 0;
@@ -444,7 +444,7 @@ static void detect_overlaps(Arena_T arena,
     (void)nv;
 
     /* Compute triangle areas in 2D and find median */
-    float *areas = (float *)ARENA_ALLOC(arena, (long)(nf * sizeof(float)));
+    float *areas = (float *)ARENA_ALLOC(arena, (size_t)(nf * sizeof(float)));
     for (size_t fi = 0; fi < nf; fi++) {
         int32_t va = faces[fi * 3 + 0];
         int32_t vb = faces[fi * 3 + 1];
@@ -486,8 +486,8 @@ static void detect_overlaps(Arena_T arena,
     int32_t n_cells = nx * ny;
 
     /* Count faces per cell */
-    int32_t *cell_count = (int32_t *)ARENA_CALLOC(arena, (long)n_cells,
-                                                   (long)sizeof(int32_t));
+    int32_t *cell_count = (int32_t *)ARENA_CALLOC(arena, (size_t)n_cells,
+                                                   sizeof(int32_t));
     for (size_t fi = 0; fi < nf; fi++) {
         float fminx = 1e30f, fmaxx = -1e30f;
         float fminy = 1e30f, fmaxy = -1e30f;
@@ -510,16 +510,16 @@ static void detect_overlaps(Arena_T arena,
 
     /* Prefix sum -> offsets */
     int32_t *cell_off = (int32_t *)ARENA_ALLOC(arena,
-        (long)((n_cells + 1) * (long)sizeof(int32_t)));
+        (size_t)((n_cells + 1) * sizeof(int32_t)));
     cell_off[0] = 0;
     for (int32_t ci = 0; ci < n_cells; ci++)
         cell_off[ci + 1] = cell_off[ci] + cell_count[ci];
     int32_t total_entries = cell_off[n_cells];
 
     int32_t *cell_faces = (int32_t *)ARENA_ALLOC(arena,
-        (long)(total_entries * (long)sizeof(int32_t)));
-    int32_t *cell_cursor = (int32_t *)ARENA_CALLOC(arena, (long)n_cells,
-                                                    (long)sizeof(int32_t));
+        (size_t)(total_entries * sizeof(int32_t)));
+    int32_t *cell_cursor = (int32_t *)ARENA_CALLOC(arena, (size_t)n_cells,
+                                                    sizeof(int32_t));
 
     /* Fill grid */
     for (size_t fi = 0; fi < nf; fi++) {
@@ -563,7 +563,7 @@ static void detect_overlaps(Arena_T arena,
 
     /* Collect overlap pairs (as packed uint64 keys, will dedup) */
     uint64_t *ovl_keys = (uint64_t *)ARENA_ALLOC(arena,
-        (long)(max_pairs * sizeof(uint64_t)));
+        (size_t)(max_pairs * sizeof(uint64_t)));
     size_t n_raw = 0;
 
     for (int32_t ci = 0; ci < n_cells; ci++) {
@@ -606,9 +606,9 @@ static void detect_overlaps(Arena_T arena,
 
     /* Extract face pairs */
     int32_t *ofa = (int32_t *)ARENA_ALLOC(arena,
-        (long)(n_unique * sizeof(int32_t)));
+        (size_t)(n_unique * sizeof(int32_t)));
     int32_t *ofb = (int32_t *)ARENA_ALLOC(arena,
-        (long)(n_unique * sizeof(int32_t)));
+        (size_t)(n_unique * sizeof(int32_t)));
     for (size_t idx = 0; idx < n_unique; idx++) {
         ofa[idx] = (int32_t)(ovl_keys[idx] >> 32);
         ofb[idx] = (int32_t)(ovl_keys[idx] & 0xFFFFFFFF);
@@ -2823,7 +2823,7 @@ int OverlapSep_detect_pairs(Arena_T arena, const ComponentMesh *mesh,
     float u_axis[3], v_axis[3];
     PCA_orthonormal_basis(mesh->pca_normal, u_axis, v_axis);
     float *proj = (float *)ARENA_ALLOC(
-        arena, (long)(mesh->nv * 2 * sizeof(float)));
+        arena, (size_t)(mesh->nv * 2 * sizeof(float)));
     for (size_t i = 0; i < mesh->nv; i++) {
         const float *p = &mesh->verts[i * 3];
         proj[i * 2 + 0] = p[0] * u_axis[0] + p[1] * u_axis[1] +
@@ -2888,7 +2888,7 @@ int OverlapSep_process_ex(Arena_T                 arena,
     PCA_orthonormal_basis(mesh->pca_normal, u_axis, v_axis);
 
     float *proj = (float *)ARENA_ALLOC(arena,
-        (long)(nv * 2 * sizeof(float)));
+        (size_t)(nv * 2 * sizeof(float)));
     const float *verts = mesh->verts;
     for (size_t i = 0; i < nv; i++) {
         float px = verts[i * 3 + 0];
@@ -2909,7 +2909,7 @@ int OverlapSep_process_ex(Arena_T                 arena,
 
         /* Write 2D projection as flat mesh (z=0) */
         float *proj_verts = (float *)ARENA_ALLOC(arena,
-            (long)(nv * 3 * sizeof(float)));
+            (size_t)(nv * 3 * sizeof(float)));
         for (size_t vi = 0; vi < nv; vi++) {
             proj_verts[vi * 3 + 0] = proj[vi * 2 + 0];
             proj_verts[vi * 3 + 1] = proj[vi * 2 + 1];
@@ -2964,11 +2964,11 @@ int OverlapSep_process_ex(Arena_T                 arena,
     /* ---- Phase 4: Build solver input + solve multicut ---- */
     size_t num_lifted = n_adj + n_ovl;
     int32_t *lifted_from = (int32_t *)ARENA_ALLOC(arena,
-        (long)(num_lifted * sizeof(int32_t)));
+        (size_t)(num_lifted * sizeof(int32_t)));
     int32_t *lifted_to = (int32_t *)ARENA_ALLOC(arena,
-        (long)(num_lifted * sizeof(int32_t)));
+        (size_t)(num_lifted * sizeof(int32_t)));
     double *lifted_weights = (double *)ARENA_ALLOC(arena,
-        (long)(num_lifted * sizeof(double)));
+        (size_t)(num_lifted * sizeof(double)));
 
     /* Adjacency edges: positive weight = prefer merge */
     for (size_t i = 0; i < n_adj; i++) {
@@ -2985,7 +2985,7 @@ int OverlapSep_process_ex(Arena_T                 arena,
     }
 
     int32_t *face_labels = (int32_t *)ARENA_ALLOC(arena,
-        (long)(nf * sizeof(int32_t)));
+        (size_t)(nf * sizeof(int32_t)));
     int32_t num_clusters = 0;
     int32_t min_k = (sheet_count > 1) ? (int32_t)sheet_count : 2;
 
@@ -3004,7 +3004,7 @@ int OverlapSep_process_ex(Arena_T                 arena,
      * slivers" (one huge, rest tiny -> multicut under-separated). */
     if (rc == 0 && num_clusters > 0) {
         int32_t *dbg_fc = (int32_t *)ARENA_CALLOC(arena,
-            (long)num_clusters, (long)sizeof(int32_t));
+            (size_t)num_clusters, sizeof(int32_t));
         for (size_t fi = 0; fi < nf; fi++) {
             int32_t l = face_labels[fi];
             if (l >= 0 && l < num_clusters) dbg_fc[l]++;
@@ -3042,7 +3042,7 @@ int OverlapSep_process_ex(Arena_T                 arena,
     /* Debug: dump face-label-colored mesh */
     if (g_debug_dir) {
         float *fcolors = (float *)ARENA_ALLOC(arena,
-            (long)(nv * 3 * sizeof(float)));
+            (size_t)(nv * 3 * sizeof(float)));
         /* Default: gray for unassigned */
         for (size_t vi = 0; vi < nv; vi++) {
             fcolors[vi * 3 + 0] = 0.5f;
@@ -3093,7 +3093,7 @@ int OverlapSep_process_ex(Arena_T                 arena,
         if (words == 0) words = 1;
 
         int32_t *label_fcount = (int32_t *)ARENA_CALLOC(arena,
-            (long)nc, (long)sizeof(int32_t));
+            (size_t)nc, sizeof(int32_t));
         for (size_t fi = 0; fi < nf; fi++) {
             int32_t l = face_labels[fi];
             if (l >= 0 && l < nc) label_fcount[l]++;
@@ -3106,9 +3106,9 @@ int OverlapSep_process_ex(Arena_T                 arena,
             /* members[g]: which clusters are in group g. inc[g]: which clusters
              * group g has an overlap edge to. Both at the group-ROOT index. */
             uint64_t *members = (uint64_t *)ARENA_CALLOC(arena,
-                (long)((size_t)nc * words), (long)sizeof(uint64_t));
+                (size_t)((size_t)nc * words), sizeof(uint64_t));
             uint64_t *inc = (uint64_t *)ARENA_CALLOC(arena,
-                (long)((size_t)nc * words), (long)sizeof(uint64_t));
+                (size_t)((size_t)nc * words), sizeof(uint64_t));
             for (int32_t l = 0; l < nc; l++)
                 members[(size_t)l * words + (size_t)l / 64] |=
                     (uint64_t)1 << ((size_t)l % 64);
@@ -3120,15 +3120,15 @@ int OverlapSep_process_ex(Arena_T                 arena,
                 }
             }
 
-            int32_t *par = (int32_t *)ARENA_ALLOC(arena, (long)((size_t)nc * sizeof(int32_t)));
-            int32_t *gsz = (int32_t *)ARENA_ALLOC(arena, (long)((size_t)nc * sizeof(int32_t)));
+            int32_t *par = (int32_t *)ARENA_ALLOC(arena, (size_t)((size_t)nc * sizeof(int32_t)));
+            int32_t *gsz = (int32_t *)ARENA_ALLOC(arena, (size_t)((size_t)nc * sizeof(int32_t)));
             for (int32_t l = 0; l < nc; l++) { par[l] = l; gsz[l] = label_fcount[l]; }
             #define OVL_FIND(R, X) do { (R) = (X); \
                 while (par[(R)] != (R)) { par[(R)] = par[par[(R)]]; (R) = par[(R)]; } } while (0)
 
             /* Unique cross-cluster adjacency pairs (small set). */
             uint64_t *adjpairs = (n_adj > 0) ? (uint64_t *)ARENA_ALLOC(arena,
-                (long)(n_adj * sizeof(uint64_t))) : NULL;
+                (size_t)(n_adj * sizeof(uint64_t))) : NULL;
             size_t n_ap = 0;
             for (size_t i = 0; i < n_adj; i++) {
                 int32_t la = face_labels[adj_fa[i]], lb = face_labels[adj_fb[i]];
@@ -3218,7 +3218,7 @@ int OverlapSep_process_ex(Arena_T                 arena,
 
     /* Count distinct labels */
     int32_t *label_fcount = (int32_t *)ARENA_CALLOC(arena,
-        (long)num_clusters, (long)sizeof(int32_t));
+        (size_t)num_clusters, sizeof(int32_t));
     for (size_t fi = 0; fi < nf; fi++) {
         int32_t l = face_labels[fi];
         if (l >= 0 && l < num_clusters) label_fcount[l]++;
@@ -3594,7 +3594,7 @@ int OverlapSep_process_ex(Arena_T                 arena,
     /* Debug: dump vertex-label-colored mesh (from face labels) */
     if (g_debug_dir) {
         float *vcolors = (float *)ARENA_ALLOC(arena,
-            (long)(nv * 3 * sizeof(float)));
+            (size_t)(nv * 3 * sizeof(float)));
         for (size_t vi = 0; vi < nv; vi++) {
             vcolors[vi * 3 + 0] = 0.3f;
             vcolors[vi * 3 + 1] = 0.3f;
@@ -3618,16 +3618,16 @@ int OverlapSep_process_ex(Arena_T                 arena,
 
     /* Build per-label face lists (CSR-style) */
     int32_t *lf_offset = (int32_t *)ARENA_ALLOC(arena,
-        (long)((num_clusters + 1) * (long)sizeof(int32_t)));
+        (size_t)((num_clusters + 1) * sizeof(int32_t)));
     lf_offset[0] = 0;
     for (int32_t l = 0; l < num_clusters; l++)
         lf_offset[l + 1] = lf_offset[l] + label_fcount[l];
 
     int32_t total_kept = lf_offset[num_clusters];
     int32_t *lf_idx = (int32_t *)ARENA_ALLOC(arena,
-        (long)(total_kept * (long)sizeof(int32_t)));
+        (size_t)(total_kept * sizeof(int32_t)));
     int32_t *lf_cursor = (int32_t *)ARENA_CALLOC(arena,
-        (long)num_clusters, (long)sizeof(int32_t));
+        (size_t)num_clusters, sizeof(int32_t));
     for (size_t fi = 0; fi < nf; fi++) {
         int32_t l = face_labels[fi];
         if (l >= 0 && l < num_clusters) {
@@ -3639,9 +3639,9 @@ int OverlapSep_process_ex(Arena_T                 arena,
     /* Extract sub-meshes: each label gets its own vertex remap.
      * Zero-init so pin_mask = NULL unless explicitly set later. */
     ComponentMesh *out = (ComponentMesh *)ARENA_CALLOC(arena,
-        (long)n_output, (long)sizeof(ComponentMesh));
+        (size_t)n_output, sizeof(ComponentMesh));
     int32_t *remap = (int32_t *)ARENA_ALLOC(arena,
-        (long)(nv * sizeof(int32_t)));
+        (size_t)(nv * sizeof(int32_t)));
 
     int32_t out_idx = 0;
     for (int32_t l = 0; l < num_clusters; l++) {
@@ -3667,9 +3667,9 @@ int OverlapSep_process_ex(Arena_T                 arena,
         int32_t new_nf = label_fcount[l];
 
         float *new_verts = (float *)ARENA_ALLOC(arena,
-            (long)((long)new_nv * 3L * (long)sizeof(float)));
+            (size_t)((size_t)new_nv * 3L * sizeof(float)));
         int32_t *new_faces = (int32_t *)ARENA_ALLOC(arena,
-            (long)((long)new_nf * 3L * (long)sizeof(int32_t)));
+            (size_t)((size_t)new_nf * 3L * sizeof(int32_t)));
 
         for (size_t v = 0; v < nv; v++) {
             if (remap[v] >= 0) {

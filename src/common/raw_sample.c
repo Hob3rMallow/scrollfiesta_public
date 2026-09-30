@@ -150,8 +150,8 @@ int cubetable_init(CubeTable *ct, Arena_T arena, const char *dir,
         return -1;
     }
     ct->n_outside = requested - total;
-    ct->slot = (uint8_t **)ARENA_CALLOC(arena, (long)total,
-                                        (long)sizeof(uint8_t *));
+    ct->slot = (uint8_t **)ARENA_CALLOC(arena, (size_t)total,
+                                        sizeof(uint8_t *));
     return 0;
 }
 
@@ -193,7 +193,7 @@ int cube_fetch(CubeTable *ct, long iz, long iy, long ix)
             ct->n_missing++;
         } else {
             if (ct->is_zarr) {
-                vol = (uint8_t *)ARENA_ALLOC(ct->arena, (long)chunk_bytes);
+                vol = (uint8_t *)ARENA_ALLOC(ct->arena, (size_t)chunk_bytes);
                 size_t got = fread(vol, 1, chunk_bytes, probe);
                 fclose(probe);
                 if (got == chunk_bytes) {
@@ -274,6 +274,75 @@ int cubetable_is_complete(const CubeTable *ct)
     size_t expected = cubetable_expected_chunks(ct);
     return ct != NULL && ct->n_missing == 0 &&
            (size_t)ct->n_loaded == expected;
+}
+
+/* The table range [lo, hi] (slot coordinates, clamped) of chunks a face can
+ * sample: its bbox padded by pad and the trilinear +-1, as in cubetable_init.
+ * Returns 0 when the range misses the table. */
+static int face_chunk_range(const CubeTable *ct, const float *verts, const int32_t *face,
+                            double pad, long lo[3], long hi[3])
+{
+    double mn[3] = { 1e30, 1e30, 1e30 }, mx[3] = { -1e30, -1e30, -1e30 };
+    const long c0[3] = { ct->cz0, ct->cy0, ct->cx0 }, n[3] = { ct->nz, ct->ny, ct->nx };
+    for (int k = 0; k < 3; k++) {
+        const float *p = verts + 3 * (size_t)face[k];
+        for (int a = 0; a < 3; a++) {
+            if ((double)p[a] < mn[a]) mn[a] = (double)p[a];
+            if ((double)p[a] > mx[a]) mx[a] = (double)p[a];
+        }
+    }
+    for (int a = 0; a < 3; a++) {
+        lo[a] = floor_div((long)floor(mn[a] - pad) - 1, ct->chunk) - c0[a];
+        hi[a] = floor_div((long)ceil(mx[a] + pad) + 1, ct->chunk) - c0[a];
+        if (lo[a] < 0) lo[a] = 0;
+        if (hi[a] > n[a] - 1) hi[a] = n[a] - 1;
+        if (hi[a] < lo[a]) return 0;
+    }
+    return 1;
+}
+
+size_t cubetable_faces_reaching(const CubeTable *ct, const float *verts,
+                                const int32_t *faces, size_t nf, double pad,
+                                const uint8_t *slots, uint8_t *face_mask)
+{
+    size_t count = 0;
+    if (face_mask != NULL && nf > 0) memset(face_mask, 0, nf);
+    if (ct == NULL || slots == NULL || face_mask == NULL || verts == NULL || faces == NULL ||
+        cubetable_expected_chunks(ct) == 0) return 0;
+    for (size_t t = 0; t < nf; t++) {
+        long lo[3], hi[3];
+        int hit = 0;
+        if (!face_chunk_range(ct, verts, faces + 3 * t, pad, lo, hi)) continue;
+        for (long z = lo[0]; z <= hi[0] && !hit; z++)
+            for (long y = lo[1]; y <= hi[1] && !hit; y++)
+                for (long x = lo[2]; x <= hi[2] && !hit; x++)
+                    hit = slots[((size_t)z * (size_t)ct->ny + (size_t)y) * (size_t)ct->nx + (size_t)x] != 0;
+        if (hit) { face_mask[t] = 1; count++; }
+    }
+    return count;
+}
+
+size_t cubetable_missing_reached(const CubeTable *ct, const float *verts,
+                                 const int32_t *faces, size_t nf, double pad,
+                                 uint8_t *reached_out)
+{
+    size_t total = cubetable_expected_chunks(ct), count = 0;
+    if (reached_out != NULL && total > 0) memset(reached_out, 0, total);
+    if (ct == NULL || ct->slot == NULL || total == 0 || ct->n_missing == 0 ||
+        verts == NULL || faces == NULL) return 0;
+    uint8_t *reached = reached_out != NULL ? reached_out
+                     : (uint8_t *)ARENA_CALLOC(ct->arena, (size_t)total, 1);
+    for (size_t t = 0; t < nf; t++) {
+        long lo[3], hi[3];
+        if (!face_chunk_range(ct, verts, faces + 3 * t, pad, lo, hi)) continue;
+        for (long z = lo[0]; z <= hi[0]; z++)
+            for (long y = lo[1]; y <= hi[1]; y++)
+                for (long x = lo[2]; x <= hi[2]; x++) {
+                    size_t si = ((size_t)z * (size_t)ct->ny + (size_t)y) * (size_t)ct->nx + (size_t)x;
+                    if (ct->slot[si] == CUBE_ABSENT && !reached[si]) { reached[si] = 1; count++; }
+                }
+    }
+    return count;
 }
 
 double sample_trilinear(CubeTable *ct, double z, double y, double x)

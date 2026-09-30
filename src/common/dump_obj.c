@@ -168,9 +168,9 @@ void DumpObj_write_meshes(Arena_T arena, const char *dir,
     /* Accumulate the combined (world-shifted) mesh in one pass for the CC dump. */
     size_t tot_nv = 0, tot_nf = 0;
     for (size_t i = 0; i < count; i++) { tot_nv += meshes[i].nv; tot_nf += meshes[i].nf; }
-    float   *comb_v = (float *)ARENA_ALLOC(arena, (long)(tot_nv * 3 * sizeof(float)));
-    int32_t *comb_f = (int32_t *)ARENA_ALLOC(arena, (long)(tot_nf * 3 * sizeof(int32_t)));
-    float   *comb_c = (float *)ARENA_ALLOC(arena, (long)(tot_nv * 3 * sizeof(float)));
+    float   *comb_v = (float *)ARENA_ALLOC(arena, (size_t)(tot_nv * 3 * sizeof(float)));
+    int32_t *comb_f = (int32_t *)ARENA_ALLOC(arena, (size_t)(tot_nf * 3 * sizeof(int32_t)));
+    float   *comb_c = (float *)ARENA_ALLOC(arena, (size_t)(tot_nv * 3 * sizeof(float)));
     size_t vo = 0, fo = 0;
     char comp_path[COMP_PATH_LEN];
 
@@ -229,7 +229,7 @@ void DumpObj_write_one_world(Arena_T arena, const char *path,
 
     Arena_Mark mark = Arena_save(arena);
     float *shifted = (float *)ARENA_ALLOC(arena,
-        (long)(nv * 3 * sizeof(float)));
+        (size_t)(nv * 3 * sizeof(float)));
     offset_verts(verts, shifted, nv, origin);
     ObjIO_write_colored(path, shifted, nv, faces, nf, color);
     Arena_restore(arena, mark);
@@ -247,7 +247,7 @@ void DumpObj_write_points_world(Arena_T arena, const char *path,
 
     Arena_Mark mark = Arena_save(arena);
     float *shifted = (float *)ARENA_ALLOC(arena,
-        (long)(nv * 3 * sizeof(float)));
+        (size_t)(nv * 3 * sizeof(float)));
     offset_verts(verts, shifted, nv, origin);
 
     FILE *fp = fopen(path, "w");
@@ -288,9 +288,9 @@ void DumpObj_write_mesh_ptrs(Arena_T arena, const char *dir,
 
     size_t tot_nv = 0, tot_nf = 0;
     for (size_t i = 0; i < count; i++) { tot_nv += meshes[i]->nv; tot_nf += meshes[i]->nf; }
-    float   *comb_v = (float *)ARENA_ALLOC(arena, (long)(tot_nv * 3 * sizeof(float)));
-    int32_t *comb_f = (int32_t *)ARENA_ALLOC(arena, (long)(tot_nf * 3 * sizeof(int32_t)));
-    float   *comb_c = (float *)ARENA_ALLOC(arena, (long)(tot_nv * 3 * sizeof(float)));
+    float   *comb_v = (float *)ARENA_ALLOC(arena, (size_t)(tot_nv * 3 * sizeof(float)));
+    int32_t *comb_f = (int32_t *)ARENA_ALLOC(arena, (size_t)(tot_nf * 3 * sizeof(int32_t)));
+    float   *comb_c = (float *)ARENA_ALLOC(arena, (size_t)(tot_nv * 3 * sizeof(float)));
     size_t vo = 0, fo = 0;
     char comp_path[COMP_PATH_LEN];
 

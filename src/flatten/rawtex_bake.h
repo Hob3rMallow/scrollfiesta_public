@@ -16,6 +16,13 @@
 
 #include "../common/raw_sample.h"   /* CubeTable, sample_vertex */
 
+/* Exactly one pointer is set. Rasterization never narrows scientific UVs. */
+typedef struct RawtexUv { const float *f32; const double *f64; } RawtexUv;
+static inline double Rawtex_uv(RawtexUv uv, size_t value)
+{ return uv.f64 ? uv.f64[value] : (double)uv.f32[value]; }
+static inline int Rawtex_has_uv(RawtexUv uv)
+{ return (uv.f32 != NULL) != (uv.f64 != NULL); }
+
 /* Optional diagnostics rasterized in the SAME pass (diag != NULL):
  *   <prefix>_diagclass.tif   0 bg | 1 ok | 2 skip-uv | 3 skip-3d | 4 multi | 5 dark
  *   <prefix>_diagstretch.tif 128 + 42.5*log2(sigma_max)  (UV->3D compression)
@@ -44,10 +51,27 @@ typedef struct RawtexPlan {
     int    ok;                      /* 1 = requested (du,dv) fits the caps */
 } RawtexPlan;
 
+/* Optional absolute UV raster window.  Unlike the default mesh-bbox plan,
+ * this fixes both the canvas origin and its extent, so two nested meshes paint
+ * a shared surface point into the same pixel.  Bounds are pixel-edge
+ * coordinates: pixel (x,y) samples
+ *   (umin + (x + 0.5) * du, vmin + (y + 0.5) * dv).
+ */
+typedef struct RawtexWindow {
+    double umin, umax, vmin, vmax;
+} RawtexWindow;
+
 /* max_px = 0 selects the default cap (1<<28 px). Returns 0 with *out filled
  * (out->ok says whether it fits), -1 on invalid input (no verts / bad steps). */
 int Rawtex_plan(const float *uv, size_t nv, double du, double dv,
                 size_t max_px, RawtexPlan *out);
+
+/* Same preflight, but use `window` rather than the mesh UV bbox when non-NULL.
+ * The UV array is still validated: a fixed canvas must not hide invalid mesh
+ * coordinates. */
+int Rawtex_plan_window(const float *uv, size_t nv, double du, double dv,
+                       size_t max_px, const RawtexWindow *window,
+                       RawtexPlan *out);
 
 /* Rasterize the (u,v) texture at (du,dv) vox/px and write `path` (+ a .png
  * sibling). Face gates skip UV-stretched (streak) and long-3D-edge (hole-fill
@@ -71,11 +95,51 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
                      double *out_fill, size_t *out_multi,
                      size_t *out_skip_uv, size_t *out_skip_3d);
 
+/* Fixed-origin variant.  `window == NULL` is exactly Rawtex_write_tif.
+ * Keeping the legacy entry point prevents accidental coordinate changes in
+ * existing callers while comparison/pipeline code opts into the explicit
+ * absolute frame. */
+int Rawtex_write_tif_window(const char *path, CubeTable *ct,
+                            const float *verts, const float *uv, size_t nv,
+                            const int32_t *faces, size_t nf,
+                            const float *normals,
+                            const uint8_t *face_skip,
+                            double range, int nsteps,
+                            double du, double dv, double lo, double hi,
+                            double stretch_ratio, double stretch_floor,
+                            double max_edge3d, size_t max_px,
+                            const RawtexWindow *window,
+                            const DiagOpts *diag,
+                            size_t *out_W, size_t *out_H,
+                            double *out_fill, size_t *out_multi,
+                            size_t *out_skip_uv, size_t *out_skip_3d);
+
 /* Percentile contrast window (256-bin histogram) over the sampled population;
  * val[i]/has[i] as returned by sample_vertex, pct_lo/pct_hi e.g. 1/99. The
  * lo/hi it yields feed Rawtex_write_tif so papyrus is contrast-stretched. */
 void Rawtex_stretch_window(const double *val, const uint8_t *has, size_t nv,
                            double pct_lo, double pct_hi,
                            double *out_lo, double *out_hi);
+
+int Rawtex_plan_field(RawtexUv uv, size_t nv, double du, double dv,
+                       size_t max_px, const RawtexWindow *window,
+                       RawtexPlan *out);
+
+int Rawtex_write_tif_field(const char *path, CubeTable *ct,
+                            const float *verts, RawtexUv uv, size_t nv,
+                            const int32_t *faces, size_t nf,
+                            const float *normals,
+                            const uint8_t *face_skip,
+                            double range, int nsteps,
+                            double du, double dv, double lo, double hi,
+                            double stretch_ratio, double stretch_floor,
+                            double max_edge3d, size_t max_px,
+                            const RawtexWindow *window,
+                            const DiagOpts *diag,
+                            size_t *out_W, size_t *out_H,
+                            double *out_fill, size_t *out_multi,
+                            size_t *out_skip_uv, size_t *out_skip_3d);
+
+int Rawtex_selftest(void);
 
 #endif /* RAWTEX_BAKE_H */

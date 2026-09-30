@@ -253,12 +253,13 @@ static void remove_small_regions(uint8_t *mask, size_t W, size_t H,
     if (out_cells != NULL) *out_cells = kept;
 }
 
-int MarbleDiag_write(const char *prefix, const char *rawtex_path,
+int MarbleDiag_write_field(const char *prefix, const char *rawtex_path,
                      CubeTable *ct,
-                     const float *verts, const float *uv, size_t nv,
+                     const float *verts, RawtexUv uv, size_t nv,
                      const int32_t *faces, size_t nf,
                      const float *vertex_normals,
                      double raster_du, double raster_dv, size_t raster_max_px,
+                     const RawtexWindow *window,
                      const MarbleDiagOpts *input_opts, MarbleDiagStats *stats)
 {
     MarbleDiagOpts opts;
@@ -286,14 +287,14 @@ int MarbleDiag_write(const char *prefix, const char *rawtex_path,
     memset(&result, 0, sizeof result);
     if (input_opts != NULL) opts = *input_opts; else MarbleDiag_defaults(&opts);
     if (prefix == NULL || rawtex_path == NULL || ct == NULL || verts == NULL ||
-        uv == NULL || faces == NULL || nv == 0 || nf == 0 ||
+        !Rawtex_has_uv(uv) || faces == NULL || nv == 0 || nf == 0 ||
         opts.stride_pixels < 2 || opts.depth_range <= 0.0 ||
         opts.depth_step <= 0.0 || opts.tensor_radius <= 0.0 ||
         opts.score_threshold < 0.0 || opts.score_threshold > 1.0 ||
         opts.minimum_region_cells < 1)
         return -1;
-    if (Rawtex_plan(uv, nv, raster_du, raster_dv, raster_max_px, &plan) != 0 ||
-        !plan.ok)
+    if (Rawtex_plan_field(uv, nv, raster_du, raster_dv, raster_max_px,
+                           window, &plan) != 0 || !plan.ok)
         return -1;
     W = plan.W; H = plan.H;
     MW = (W + (size_t)opts.stride_pixels - 1) / (size_t)opts.stride_pixels;
@@ -335,12 +336,12 @@ int MarbleDiag_write(const char *prefix, const char *rawtex_path,
         double ua, va, ub, vb, uc, vc, A2, lox, hix, loy, hiy;
         long mx0, mx1, my0, my1, mx, my;
         if (a >= nv || b >= nv || c >= nv) continue;
-        ua = ((double)uv[a * 2] - plan.umin) / raster_du;
-        va = ((double)uv[a * 2 + 1] - plan.vmin) / raster_dv;
-        ub = ((double)uv[b * 2] - plan.umin) / raster_du;
-        vb = ((double)uv[b * 2 + 1] - plan.vmin) / raster_dv;
-        uc = ((double)uv[c * 2] - plan.umin) / raster_du;
-        vc = ((double)uv[c * 2 + 1] - plan.vmin) / raster_dv;
+        ua = ((double)Rawtex_uv(uv,a * 2) - plan.umin) / raster_du;
+        va = ((double)Rawtex_uv(uv,a * 2 + 1) - plan.vmin) / raster_dv;
+        ub = ((double)Rawtex_uv(uv,b * 2) - plan.umin) / raster_du;
+        vb = ((double)Rawtex_uv(uv,b * 2 + 1) - plan.vmin) / raster_dv;
+        uc = ((double)Rawtex_uv(uv,c * 2) - plan.umin) / raster_du;
+        vc = ((double)Rawtex_uv(uv,c * 2 + 1) - plan.vmin) / raster_dv;
         A2 = (ub - ua) * (vc - va) - (vb - va) * (uc - ua);
         if (fabs(A2) < 1e-12) continue;
         lox = fmin(ua, fmin(ub, uc)); hix = fmax(ua, fmax(ub, uc));
@@ -700,4 +701,16 @@ cleanup:
     free(raw_score); free(score); free(valid); free(mask);
     free(full_mask); free(rgb);
     return rc;
+}
+
+int MarbleDiag_write(const char *prefix, const char *rawtex_path,
+                     CubeTable *ct,
+                     const float *verts, const float *uv, size_t nv,
+                     const int32_t *faces, size_t nf,
+                     const float *vertex_normals,
+                     double raster_du, double raster_dv, size_t raster_max_px,
+                     const RawtexWindow *window,
+                     const MarbleDiagOpts *opts, MarbleDiagStats *stats)
+{
+    return MarbleDiag_write_field(prefix,rawtex_path,ct,verts,(RawtexUv){uv,NULL},nv,faces,nf,vertex_normals,raster_du,raster_dv,raster_max_px,window,opts,stats);
 }

@@ -261,6 +261,13 @@ static void bucket_sort_pos(float *bz, float *by, float *bx, int32_t *bidx,
     }
 }
 
+static const float *g_mls_point_weight = NULL;
+
+void MLS_set_point_weights(const float *weights)
+{
+    g_mls_point_weight = weights;
+}
+
 void MLS_project_verts(Arena_T arena,
                        const float *verts, size_t nv,
                        float radius_vox,
@@ -330,15 +337,15 @@ void MLS_project_verts(Arena_T arena,
     while (T < nv * 2) T <<= 1;
 
     uint64_t *tab_key  = (uint64_t *)ARENA_ALLOC(arena,
-                            (long)T * (long)sizeof(uint64_t));
+                            (size_t)T * sizeof(uint64_t));
     int32_t *tab_cnt   = (int32_t *)ARENA_ALLOC(arena,
-                            (long)T * (long)sizeof(int32_t));
+                            (size_t)T * sizeof(int32_t));
     int32_t *tab_start = (int32_t *)ARENA_ALLOC(arena,
-                            (long)T * (long)sizeof(int32_t));
+                            (size_t)T * sizeof(int32_t));
     uint32_t *slot_of  = (uint32_t *)ARENA_ALLOC(arena,
-                            (long)nv * (long)sizeof(uint32_t));
+                            (size_t)nv * sizeof(uint32_t));
     uint32_t *uniq     = (uint32_t *)ARENA_ALLOC(arena,
-                            (long)nv * (long)sizeof(uint32_t));
+                            (size_t)nv * sizeof(uint32_t));
     size_t n_uniq = 0;
 
     memset(tab_key, 0xFF, T * sizeof(uint64_t));   /* all MLS_HASH_EMPTY */
@@ -382,19 +389,19 @@ void MLS_project_verts(Arena_T arena,
      * reads ONLY these (never `verts`), so out_verts may alias verts
      * safely. */
     float   *bz   = (float *)ARENA_ALLOC(arena,
-                        (long)(nv + 3) * (long)sizeof(float));
+                        (size_t)(nv + 3) * sizeof(float));
     float   *by   = (float *)ARENA_ALLOC(arena,
-                        (long)(nv + 3) * (long)sizeof(float));
+                        (size_t)(nv + 3) * sizeof(float));
     float   *bx   = (float *)ARENA_ALLOC(arena,
-                        (long)(nv + 3) * (long)sizeof(float));
+                        (size_t)(nv + 3) * sizeof(float));
     int32_t *bidx = (int32_t *)ARENA_ALLOC(arena,
-                        (long)nv * (long)sizeof(int32_t));
+                        (size_t)nv * sizeof(int32_t));
     bz[nv] = 0.0f; bz[nv+1] = 0.0f; bz[nv+2] = 0.0f;
     by[nv] = 0.0f; by[nv+1] = 0.0f; by[nv+2] = 0.0f;
     bx[nv] = 0.0f; bx[nv+1] = 0.0f; bx[nv+2] = 0.0f;
     {
         int32_t *cur = (int32_t *)ARENA_ALLOC(arena,
-                            (long)T * (long)sizeof(int32_t));
+                            (size_t)T * sizeof(int32_t));
         memcpy(cur, tab_start, T * sizeof(int32_t));
         for (size_t i = 0; i < nv; i++) {
             size_t s = (size_t)slot_of[i];
@@ -505,6 +512,35 @@ void MLS_project_verts(Arena_T arena,
 
                     int32_t k0 = tab_start[h];
                     int32_t k1 = k0 + tab_cnt[h];
+                    if (g_mls_point_weight != NULL) {
+                    /* CT-weighted kernel (scalar path on every build): the
+                     * Wendland weight is scaled by the neighbour's brightness
+                     * weight, indexed through bidx (bucket -> original). */
+                    for (int32_t k = k0; k < k1; k++) {
+                        double dvz = (double)bz[k] - vzd;
+                        double dvy = (double)by[k] - vyd;
+                        double dvx = (double)bx[k] - vxd;
+                        double r2 = dvz*dvz + dvy*dvy + dvx*dvx;
+                        if (r2 >= R2) continue;
+                        double r = sqrt(r2);
+                        double w = wendland(r, R) *
+                                   (double)g_mls_point_weight[bidx[k]];
+                        if (w <= 0.0) continue;
+                        w_sum += w;
+                        double wdz = w * dvz;
+                        double wdy = w * dvy;
+                        double wdx = w * dvx;
+                        sdz += wdz; sdy += wdy; sdx += wdx;
+                        mzz += wdz * dvz;
+                        mzy += wdz * dvy;
+                        mzx += wdz * dvx;
+                        myy += wdy * dvy;
+                        myx += wdy * dvx;
+                        mxx += wdx * dvx;
+                        n_used++;
+                    }
+                    } else {
+
 #if defined(__AVX2__)
                     for (int32_t k = k0; k < k1; k += 4) {
                         int32_t rem = k1 - k;
@@ -578,13 +614,16 @@ void MLS_project_verts(Arena_T arena,
                         n_used++;
                     }
 #endif
+                    }   /* weighted vs plain kernel */
                 }
             }
         }
 
 #if defined(__AVX2__)
-        /* Fixed left-assoc lane reduce: ((l0+l1)+l2)+l3. */
-        {
+        /* Fixed left-assoc lane reduce: ((l0+l1)+l2)+l3.  Skipped when the
+         * CT-weighted scalar kernel ran: its sums live in the scalar
+         * accumulators (the lanes are zero and would erase them). */
+        if (g_mls_point_weight == NULL) {
             double l[4];
             _mm256_storeu_pd(l, aw);  w_sum = ((l[0]+l[1])+l[2])+l[3];
             _mm256_storeu_pd(l, az);  sdz   = ((l[0]+l[1])+l[2])+l[3];

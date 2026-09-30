@@ -65,7 +65,7 @@ static int report(const char *name, const float *V, size_t nv,
                   const int32_t *F, size_t nf, Arena_T arena) {
     if (nf == 0) { printf("=== mesh_quality: %s ===\n  (no faces)\n", name); return 0; }
 
-    double *mins = (double *)ARENA_ALLOC(arena, (long)(nf*sizeof(double)));
+    double *mins = (double *)ARENA_ALLOC(arena, (size_t)(nf*sizeof(double)));
     int hist[6] = {0,0,0,0,0,0};   /* [0,10)[10,20)[20,30)[30,40)[40,50)[50,60] */
     int n_degen = 0;
     double worst = 180.0, sum_min = 0.0, sum_q = 0.0;
@@ -93,12 +93,12 @@ static int report(const char *name, const float *V, size_t nv,
      * Build undirected edge multiplicity: an edge used by exactly 1 triangle is
      * a boundary edge; its endpoints are boundary vertices. Valence = # distinct
      * neighbours; we approximate with incident undirected-edge count via a hash. */
-    size_t *val = (size_t *)ARENA_CALLOC(arena, (long)nv, (long)sizeof(size_t));
-    unsigned char *is_bnd = (unsigned char *)ARENA_CALLOC(arena, (long)nv, (long)sizeof(unsigned char));
+    size_t *val = (size_t *)ARENA_CALLOC(arena, (size_t)nv, sizeof(size_t));
+    unsigned char *is_bnd = (unsigned char *)ARENA_CALLOC(arena, (size_t)nv, sizeof(unsigned char));
     /* edge hash: open-addressing on (min<<32|max) -> use count table sized 2*3*nf */
     size_t ecap = 1; while (ecap < nf*6 + 16) ecap <<= 1;
-    int64_t *ekey = (int64_t *)ARENA_ALLOC(arena, (long)(ecap*sizeof(int64_t)));
-    int32_t *ecnt = (int32_t *)ARENA_CALLOC(arena, (long)ecap, (long)sizeof(int32_t));
+    int64_t *ekey = (int64_t *)ARENA_ALLOC(arena, (size_t)(ecap*sizeof(int64_t)));
+    int32_t *ecnt = (int32_t *)ARENA_CALLOC(arena, (size_t)ecap, sizeof(int32_t));
     for (size_t i = 0; i < ecap; i++) ekey[i] = -1;
     for (size_t t = 0; t < nf; t++) {
         int32_t v[3] = { F[t*3+0], F[t*3+1], F[t*3+2] };

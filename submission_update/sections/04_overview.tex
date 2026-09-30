@@ -1,6 +1,12 @@
 \section{System Overview and Data Flow}
 \label{sec:overview}
 
+\paragraph{Scope of this account.} The two research lanes below describe the
+August 2026 system and its recorded experiments. The September public release
+adds a native chart assembler, removes the tuning and hierarchical runner
+frameworks, and ships one shared configuration. Section~\ref{sec:public-release}
+documents that interface and its separate measured $4\times5\times5$ result.
+
 \subsection{Inputs and Outputs}
 \label{sec:problem}
 ScrollFiesta consumes a \emph{completed} coarse surface-probability volume and the matching CT, their world-space transforms, a cube grid, and an estimate of the scroll axis and umbilicus. The prediction volume is taken as given. It is the output of the companion \emph{Socratic Method} pipeline~\cite{socraticmethod}, which distills fine-resolution evidence into the coarse predictor and closes short dropouts in the traced sheet before any geometry exists; nothing described below writes back into it.

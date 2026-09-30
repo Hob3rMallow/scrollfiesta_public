@@ -278,13 +278,13 @@ static int wf_build_bvh(Arena_T arena, WindingField_T field,
         field->nfaces > (size_t)LONG_MAX / sizeof(WfMortonFace))
         return -1;
     field->face_order = (int32_t *)ARENA_ALLOC(
-        arena, (long)(field->nfaces * sizeof(int32_t)));
+        arena, (size_t)(field->nfaces * sizeof(int32_t)));
     field->node = (WfNode *)ARENA_CALLOC(
-        arena, (long)capacity, (long)sizeof(WfNode));
+        arena, (size_t)capacity, sizeof(WfNode));
     field->nleaves = nleaves;
     Arena_Mark mark = Arena_save(arena);
     WfMortonFace *order = (WfMortonFace *)ARENA_ALLOC(
-        arena, (long)(field->nfaces * sizeof(WfMortonFace)));
+        arena, (size_t)(field->nfaces * sizeof(WfMortonFace)));
     for (size_t f = 0; f < field->nfaces; f++) {
         double centroid[3], area_normal[3], area = 0.0;
         wf_face_geometry(field, f, centroid, area_normal, &area);
@@ -388,7 +388,7 @@ static int wf_build_boundaries(Arena_T arena, WindingField_T field)
     {
         Arena_Mark mark = Arena_save(arena);
         WfHalfEdge *edge = (WfHalfEdge *)ARENA_ALLOC(
-            arena, (long)(nedges * sizeof(WfHalfEdge)));
+            arena, (size_t)(nedges * sizeof(WfHalfEdge)));
         wf_make_half_edges(field, edge);
         qsort(edge, nedges, sizeof(WfHalfEdge), wf_compare_half_edge);
         if (wf_count_boundaries(edge, nedges, &count, &multiplicity) != 0) {
@@ -399,14 +399,14 @@ static int wf_build_boundaries(Arena_T arena, WindingField_T field)
     }
     if (count > (size_t)LONG_MAX / sizeof(WfBoundaryEdge)) return -1;
     field->boundary = count > 0 ? (WfBoundaryEdge *)ARENA_ALLOC(
-        arena, (long)(count * sizeof(WfBoundaryEdge))) : NULL;
+        arena, (size_t)(count * sizeof(WfBoundaryEdge))) : NULL;
     field->nboundary = count;
     field->boundary_multiplicity = multiplicity;
     if (count == 0) return 0;
     {
         Arena_Mark mark = Arena_save(arena);
         WfHalfEdge *edge = (WfHalfEdge *)ARENA_ALLOC(
-            arena, (long)(nedges * sizeof(WfHalfEdge)));
+            arena, (size_t)(nedges * sizeof(WfHalfEdge)));
         size_t out = 0;
         wf_make_half_edges(field, edge);
         qsort(edge, nedges, sizeof(WfHalfEdge), wf_compare_half_edge);

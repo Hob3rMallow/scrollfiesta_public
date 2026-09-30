@@ -110,7 +110,9 @@ C            -------------------------------------------------
 C            USE VALUE OF DELTA TO SET UP MDLMT, WHICH GOVERNS
 C            WHEN A DEGREE UPDATE IS TO BE PERFORMED.
 C            -------------------------------------------------
-             MDLMT = MDEG + DELTA
+C            DHEAD HAS NEQNS ENTRIES, INCLUDING THE NODE ITSELF.
+             MDLMT = NEQNS
+             IF (DELTA .LE. NEQNS-MDEG) MDLMT = MDEG + DELTA
              EHEAD = 0
 C
   500        CONTINUE

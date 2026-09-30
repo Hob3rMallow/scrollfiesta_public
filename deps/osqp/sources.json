@@ -1,0 +1,240 @@
+{
+  "core_version": "1.0.0",
+  "python_package": "1.1.3",
+  "qdldl_version": "0.1.8",
+  "upstream_zip_sha256": "3580d10d4def0bd758a526200981c79995596dd3237edfcf696263249975b714",
+  "files": {
+    "inc/private/algebra_impl.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/builtin/algebra_impl.h",
+      "sha256": "99564076cfb3fc7ad53c975473f169265e002158a2be670ffc2080ce2efa3310"
+    },
+    "inc/private/algebra_matrix.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/include/private/algebra_matrix.h",
+      "sha256": "b1b4ec679c970c98bf90357a970bd3c43ecb7d84722afe08f407652ec8975ccd"
+    },
+    "inc/private/algebra_vector.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/include/private/algebra_vector.h",
+      "sha256": "dd2feba7b43788c0bbfd96efe9e007935a734d7010f1672cebc783fb9cf57e10"
+    },
+    "inc/private/auxil.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/include/private/auxil.h",
+      "sha256": "26fef26efc842bddad2680df4d163611a80eb8146a9610c0eef55a27a3994d72"
+    },
+    "inc/private/csc_math.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/csc_math.h",
+      "sha256": "59dc9657784c87f97e7b5b033394ec5605e72f1f2d0da21e6ffdfeef31081b4e"
+    },
+    "inc/private/csc_utils.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/csc_utils.h",
+      "sha256": "b80a5c904786f3538e4b4bf42afc50644e1698024a702671d82cbad51fbd436e"
+    },
+    "inc/private/error.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/include/private/error.h",
+      "sha256": "08e697eb6532288cfaf7d3c578e107164834cdb6f4e8d3867f6808d56e535e7d"
+    },
+    "inc/private/glob_opts.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/include/private/glob_opts.h",
+      "sha256": "1b218caf0d3749804019682e8f1fbb402563a2037c7fbc11514b4c72d3b796c7"
+    },
+    "inc/private/kkt.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/kkt.h",
+      "sha256": "8c50a0ba6c1a9e077e6e9d94f522d965b756f6d4b229b0ac896030f1f9c5e485"
+    },
+    "inc/private/lin_alg.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/include/private/lin_alg.h",
+      "sha256": "fd89ea6cc4bffbc5d1cbb144264faea4139b3de77634f9c15e3c6152d59a157e"
+    },
+    "inc/private/printing.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/include/private/printing.h",
+      "sha256": "bafed5b8349cb219636ee09bfc6a66b5119ef1a3f71dd348ca6f51eb64d5ba4e"
+    },
+    "inc/private/profilers.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/include/private/profilers.h",
+      "sha256": "7bbe85f35a8dff4e83c9e71fbf721a8790de824623fc2831c9ce052b0c4f7388"
+    },
+    "inc/private/qdldl.h": {
+      "origin": "osqp Python 1.1.3 codegen source: inc/private/qdldl.h",
+      "sha256": "ba6a569c47e4d951ceb3eed7b9c0344b8ccb0e4913f535da2c86372ed654823d"
+    },
+    "inc/private/qdldl_interface.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/lin_sys/qdldl/qdldl_interface.h",
+      "sha256": "3406fef071315e6b11738333e8c23fa9299189f77fb0c94306d505aae6034396"
+    },
+    "inc/private/qdldl_types.h": {
+      "origin": "osqp Python 1.1.3 codegen source: inc/private/qdldl_types.h",
+      "sha256": "dc21275dfb431c4712646d8c229ef9ce21ff7f08086aa721e8ff68596d7ab458"
+    },
+    "inc/private/qdldl_version.h": {
+      "origin": "osqp Python 1.1.3 codegen source: inc/private/qdldl_version.h",
+      "sha256": "144db8f98b3e5f5214ade27b7d1491c196620ff9e41d4af6a0a4b443f872c9f4"
+    },
+    "inc/private/scaling.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/include/private/scaling.h",
+      "sha256": "71e71583838e05d126b1e0464ef7169ac2d19e10c2460b99e7e17526eeb699ee"
+    },
+    "inc/private/timing.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/include/private/timing.h",
+      "sha256": "2abbefcd3a973a0dfc611cea6daf62fc1475d4be42056263f6154b78f38f546e"
+    },
+    "inc/private/types.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/include/private/types.h",
+      "sha256": "8d76c2cfda30e92b4a531c0be53384e85f446a6c9901f1979109e60d7c079dec"
+    },
+    "inc/private/util.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/include/private/util.h",
+      "sha256": "9075aba00d7d0ec196df467f49d42eff3c791e064595d735f7a8baaea1d47527"
+    },
+    "inc/private/version.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/include/private/version.h",
+      "sha256": "e12e7feb0ddb26c5b670bb184c9caaf870bc710afb561c5c454043d7561d2aed"
+    },
+    "inc/public/osqp.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/include/public/osqp.h",
+      "sha256": "05a25a8f1cb7cfec3cbae83313714c53fef58b8ceeb0adf2c22884e75c1ab834"
+    },
+    "inc/public/osqp_api_constants.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/include/public/osqp_api_constants.h",
+      "sha256": "b10318c4284d08e9c4ad1cd078bb7d0a152b08e07878a1b098bb2a73a652a4d9"
+    },
+    "inc/public/osqp_api_functions.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/include/public/osqp_api_functions.h",
+      "sha256": "748c9ae5f31ff576bbabd9b57cf99cbf21f5ab50587fcba1738896fe67092ed7"
+    },
+    "inc/public/osqp_api_types.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/include/public/osqp_api_types.h",
+      "sha256": "c65577b9c9682aa611f0b5beed009d52f1b45cbddcfb1d4daf5379860ac7be9b"
+    },
+    "inc/public/osqp_export_define.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/include/public/osqp_export_define.h",
+      "sha256": "a391987ba62dd0cf753f7241c089b2b78685cb9b92210a5d14bf378f9cc8e0f3"
+    },
+    "src/algebra_libs.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/builtin/algebra_libs.c",
+      "sha256": "fffc067763bf613538dfb1a528ee480baf0dd13545ca980d6d0211f33bf663ac"
+    },
+    "src/auxil.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/src/auxil.c",
+      "sha256": "b682e3fba83dc2aba7d39d08c1a0f3059d538d74814e464cffbefa6a35cc5591"
+    },
+    "src/csc_math.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/csc_math.c",
+      "sha256": "7a81ef139e5b3df5a14e142cd7f17570c423f7e747defe9b03df56f69d347f84"
+    },
+    "src/csc_utils.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/csc_utils.c",
+      "sha256": "0389f1951f2f536c98abae1e281334cdf577d69114b5c2a90a86ab3d34ef6a71"
+    },
+    "src/error.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/src/error.c",
+      "sha256": "cdf034c6004eecfcde842221637b220b5a42b824c45344a73eaa4924fcbb1718"
+    },
+    "src/kkt.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/kkt.c",
+      "sha256": "87bd0d3503da4df3b9c8b40227ee0ee1dee749d77a4adfc484f189e08a50e338"
+    },
+    "src/matrix.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/builtin/matrix.c",
+      "sha256": "9de2c33cae4822b4f3f9dd8356397eea07781e8efeb8679a4939c5276645744a"
+    },
+    "src/osqp_api.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/src/osqp_api.c",
+      "sha256": "f5921f7941581335f44622902ed21b9b6813db69d19c6879484d08a509b8d143"
+    },
+    "src/qdldl.c": {
+      "origin": "osqp Python 1.1.3 codegen source: src/qdldl.c",
+      "sha256": "259f1d86fe7358962d4f5e8a6505486ed01dbf8dcfad0b0d8e9e9fe6d8893f47"
+    },
+    "src/qdldl_interface.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/lin_sys/qdldl/qdldl_interface.c",
+      "sha256": "419cbf3f84e1d5ae3d2d23df2d2c5800d0e6575d3663fa3ba3cc00a9cd1a11aa"
+    },
+    "src/scaling.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/src/scaling.c",
+      "sha256": "64153c5e106de10ada67a277bd02ea4fcb19f764bc4ae61826b133fe5adfae02"
+    },
+    "src/util.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/src/util.c",
+      "sha256": "9115443be3b8cae3d65f65b65228bd3d1786be091e52c5519cbfea393104cce3"
+    },
+    "src/vector.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/builtin/vector.c",
+      "sha256": "830a1785a174f15c5322d7fc0db70123d021d2f645cc49c4d469c3b2d8912b63"
+    },
+    "src/polish.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/src/polish.c",
+      "sha256": "999f34dc02dcb91a3ea0cd941d18af6bec6c4a90bba82bfd7bea458b99bbfae8"
+    },
+    "inc/private/polish.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/include/private/polish.h",
+      "sha256": "72cf953dc18645a53ad2bbe46de1bcd2e66ad3d21eae275da9ea2d3b61bbf1ae"
+    },
+    "LICENSE": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/LICENSE",
+      "sha256": "ae5e69b1fea4c316b80e4bc2cb49ac82c0e9b34785415e128e00c975bd10f687"
+    },
+    "amd/LICENSE": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/lin_sys/qdldl/amd/LICENSE",
+      "sha256": "09d5c2e5ee64fd5fd338ca8d0fce940385ef61bb0d36b855531a675a46176f00"
+    },
+    "amd/include/SuiteSparse_config.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/lin_sys/qdldl/amd/include/SuiteSparse_config.h",
+      "sha256": "1a1b2e03082f624cbf1664763b584b9a450befa4e944d72455072adacd023acb"
+    },
+    "amd/include/amd.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/lin_sys/qdldl/amd/include/amd.h",
+      "sha256": "1827e1b5cb989e6dda7869b8425e54c5a61b8579a92dc0dcc6386a9b6fd51113"
+    },
+    "amd/include/amd_internal.h": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/lin_sys/qdldl/amd/include/amd_internal.h",
+      "sha256": "8a1a5353b07b7ba4243ad9a85d86c2d7c2f75c0c2a9c6ce70d7e2675fc983cd2"
+    },
+    "amd/src/SuiteSparse_config.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/lin_sys/qdldl/amd/src/SuiteSparse_config.c",
+      "sha256": "c877594d2af178b8541d93e41d76e4584dc4a8e32d6a6df5ee7d3cef66509f04"
+    },
+    "amd/src/amd_1.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/lin_sys/qdldl/amd/src/amd_1.c",
+      "sha256": "246798ba429d0b5474cf98e7104e1d77b4cf671d55c5e09255b1c30b04b39dcc"
+    },
+    "amd/src/amd_2.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/lin_sys/qdldl/amd/src/amd_2.c",
+      "sha256": "1ddcbf2540171b669caf8af08b51ab0675f67db4844e654d906da2e7ee78cb65"
+    },
+    "amd/src/amd_aat.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/lin_sys/qdldl/amd/src/amd_aat.c",
+      "sha256": "823b15833e913af293c0b059f7bf5174b387f77699253ce0a0ff92a281e4fb2c"
+    },
+    "amd/src/amd_control.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/lin_sys/qdldl/amd/src/amd_control.c",
+      "sha256": "28332db3a647186f4002b1e4f45bb13eb01dc863036243b1510cd0ffcc2981d1"
+    },
+    "amd/src/amd_defaults.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/lin_sys/qdldl/amd/src/amd_defaults.c",
+      "sha256": "0c8c7acfddaaa6a1c1bfc1a50e6b79fce07be1fbb6269e3de181d55fa51ee008"
+    },
+    "amd/src/amd_info.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/lin_sys/qdldl/amd/src/amd_info.c",
+      "sha256": "1ef5b3f8faa0d2d297ee192c449a002ec5c9db768307d97319d3ddafe1b1a763"
+    },
+    "amd/src/amd_order.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/lin_sys/qdldl/amd/src/amd_order.c",
+      "sha256": "c8e733de701400d4afbf610cc17247fa3144249c4a0d7511d05c4333c5380918"
+    },
+    "amd/src/amd_post_tree.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/lin_sys/qdldl/amd/src/amd_post_tree.c",
+      "sha256": "f97d516d22e20ea6e81d3a1a4dfd04f8ad38a5e434657620a1b2ff89c34ebb87"
+    },
+    "amd/src/amd_postorder.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/lin_sys/qdldl/amd/src/amd_postorder.c",
+      "sha256": "49e2ec4776e8638a07c3504fcafac8b28cf4b6773d80ffe198f0976ce14e93d6"
+    },
+    "amd/src/amd_preprocess.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/lin_sys/qdldl/amd/src/amd_preprocess.c",
+      "sha256": "e7022d7a1ff673e8d7e0c8325a916f1c8205653e9b1b8ecc79112c27bf44ff75"
+    },
+    "amd/src/amd_valid.c": {
+      "origin": "https://github.com/osqp/osqp/blob/v1.0.0/algebra/_common/lin_sys/qdldl/amd/src/amd_valid.c",
+      "sha256": "45bb926b9fbdffd3bf6712d48be030c3fad160d58cf15b25fc63f4b8806a739c"
+    }
+  }
+}

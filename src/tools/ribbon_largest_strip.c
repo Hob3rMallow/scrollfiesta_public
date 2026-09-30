@@ -98,8 +98,8 @@ static int rls_components(Arena_T arena,
         uf_union(&uf, faces[f*3+1], faces[f*3+2]);
     }
 
-    label = (int32_t *)ARENA_ALLOC(arena, (long)(nv * sizeof(int32_t)));
-    dense = (int32_t *)ARENA_ALLOC(arena, (long)(nv * sizeof(int32_t)));
+    label = (int32_t *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(int32_t)));
+    dense = (int32_t *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(int32_t)));
     for (i = 0; i < nv; i++) dense[i] = -1;
     for (i = 0; i < nv; i++) {
         int32_t r = uf_find(&uf, (int32_t)i);
@@ -107,7 +107,7 @@ static int rls_components(Arena_T arena,
         label[i] = dense[r];
     }
 
-    st = (StripStat *)ARENA_ALLOC(arena, (long)(ncomp * sizeof(StripStat)));
+    st = (StripStat *)ARENA_ALLOC(arena, (size_t)(ncomp * sizeof(StripStat)));
     for (g = 0; g < ncomp; g++) {
         st[g].root = -1; st[g].nv = 0; st[g].nf = 0; st[g].ncell = 0;
         st[g].u_lo = 1e300; st[g].u_hi = -1e300;
@@ -128,7 +128,7 @@ static int rls_components(Arena_T arena,
 
     /* One sort plus a linear scan dedups every component's cells at once: the
      * cells of a component are contiguous once the key is (comp, col, row). */
-    key = (CellKey *)ARENA_ALLOC(arena, (long)(nv * sizeof(CellKey)));
+    key = (CellKey *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(CellKey)));
     dus = du > 1e-9 ? du : 1.0;
     dvs = dv > 1e-9 ? dv : 1.0;
     for (i = 0; i < nv; i++) {
@@ -194,12 +194,12 @@ static int rls_run(const char *in_path, const char *out_path,
 
     keep = label[st[0].root];   /* st is sorted; recover the winner's label */
 
-    remap = (int32_t *)ARENA_ALLOC(arena, (long)(mesh.nv * sizeof(int32_t)));
+    remap = (int32_t *)ARENA_ALLOC(arena, (size_t)(mesh.nv * sizeof(int32_t)));
     for (i = 0; i < mesh.nv; i++)
         remap[i] = label[i] == keep ? (int32_t)onv++ : -1;
 
-    ov  = (float *)ARENA_ALLOC(arena, (long)(onv * 3 * sizeof(float)));
-    ouv = (float *)ARENA_ALLOC(arena, (long)(onv * 2 * sizeof(float)));
+    ov  = (float *)ARENA_ALLOC(arena, (size_t)(onv * 3 * sizeof(float)));
+    ouv = (float *)ARENA_ALLOC(arena, (size_t)(onv * 2 * sizeof(float)));
     for (i = 0; i < mesh.nv; i++) {
         size_t o = 0;
         int d = 0;
@@ -209,7 +209,7 @@ static int rls_run(const char *in_path, const char *out_path,
         ouv[o*2+0] = mesh.uv[i*2+0];
         ouv[o*2+1] = mesh.uv[i*2+1];
     }
-    of = (int32_t *)ARENA_ALLOC(arena, (long)(mesh.nf * 3 * sizeof(int32_t)));
+    of = (int32_t *)ARENA_ALLOC(arena, (size_t)(mesh.nf * 3 * sizeof(int32_t)));
     for (f = 0; f < mesh.nf; f++) {
         int d = 0;
         if (label[mesh.faces[f*3+0]] != keep) continue;

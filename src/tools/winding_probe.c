@@ -77,9 +77,9 @@ static int wp_load_list(Arena_T arena, const char *list_path, WpSoup *soup)
         return -1;
     }
     soup->verts = (float *)ARENA_ALLOC(arena,
-                                       (long)(nv * 3 * sizeof(float)));
+                                       (size_t)(nv * 3 * sizeof(float)));
     soup->faces = (int32_t *)ARENA_ALLOC(arena,
-                                         (long)(nf * 3 * sizeof(int32_t)));
+                                         (size_t)(nf * 3 * sizeof(int32_t)));
     soup->nv = nv;
     soup->nf = nf;
     {
@@ -111,8 +111,8 @@ static void wp_orient_radially(Arena_T arena, WpSoup *soup,
         uf_union(&graph, soup->faces[f*3], soup->faces[f*3+1]);
         uf_union(&graph, soup->faces[f*3], soup->faces[f*3+2]);
     }
-    vote = (double *)ARENA_CALLOC(arena, (long)soup->nv,
-                                  (long)sizeof(double));
+    vote = (double *)ARENA_CALLOC(arena, (size_t)soup->nv,
+                                  sizeof(double));
     for (size_t f = 0; f < soup->nf; f++) {
         const float *a = &soup->verts[(size_t)soup->faces[f*3] * 3];
         const float *b = &soup->verts[(size_t)soup->faces[f*3+1] * 3];
@@ -214,8 +214,8 @@ static int wp_run(const char *list_path, const char *field_list_path,
     } else {
         field_soup = &soup;
     }
-    normal = (float *)ARENA_CALLOC(arena, (long)(soup.nv * 3),
-                                   (long)sizeof(float));
+    normal = (float *)ARENA_CALLOC(arena, (size_t)(soup.nv * 3),
+                                   sizeof(float));
     for (size_t f = 0; f < soup.nf; f++) {
         const float *a = &soup.verts[(size_t)soup.faces[f*3] * 3];
         const float *b = &soup.verts[(size_t)soup.faces[f*3+1] * 3];
@@ -231,9 +231,9 @@ static int wp_run(const char *list_path, const char *field_list_path,
             normal[(size_t)soup.faces[f*3+2] * 3 + (size_t)k] += (float)n[k];
         }
     }
-    w_out = (float *)ARENA_ALLOC(arena, (long)(soup.nv * sizeof(float)));
-    jump_out = (float *)ARENA_ALLOC(arena, (long)(soup.nv * sizeof(float)));
-    uv = (float *)ARENA_ALLOC(arena, (long)(soup.nv * 2 * sizeof(float)));
+    w_out = (float *)ARENA_ALLOC(arena, (size_t)(soup.nv * sizeof(float)));
+    jump_out = (float *)ARENA_ALLOC(arena, (size_t)(soup.nv * sizeof(float)));
+    uv = (float *)ARENA_ALLOC(arena, (size_t)(soup.nv * 2 * sizeof(float)));
     for (size_t v = 0; v < soup.nv; v++)
         if (soup.verts[v*3] < zmin) zmin = soup.verts[v*3];
     WindingField_default_options(&field_options);

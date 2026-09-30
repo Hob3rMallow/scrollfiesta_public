@@ -113,6 +113,7 @@
     <ClCompile Include="src\flatten\winding_register.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\flatten\winding_field.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\flatten\winding_mrf.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\lane_turn_mrf.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\gco_wrap.cpp"><CompileAs>CompileAsCpp</CompileAs></ClCompile>
     <ClCompile Include="docs\research\gco-v3.0\GCoptimization.cpp"><CompileAs>CompileAsCpp</CompileAs></ClCompile>
     <ClCompile Include="docs\research\gco-v3.0\LinkedBlockList.cpp"><CompileAs>CompileAsCpp</CompileAs></ClCompile>

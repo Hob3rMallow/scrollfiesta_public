@@ -70,8 +70,8 @@ int Reeb_analyze(Arena_T arena,
     const int32_t *tgt = CSR_target(g);
 
     /* Always-present outputs. */
-    uint32_t *morse     = (uint32_t *)ARENA_CALLOC(arena, (long)nv, (long)sizeof(uint32_t));
-    uint8_t  *face_flag = (uint8_t  *)ARENA_CALLOC(arena, (long)nf, 1L);
+    uint32_t *morse     = (uint32_t *)ARENA_CALLOC(arena, (size_t)nv, sizeof(uint32_t));
+    uint8_t  *face_flag = (uint8_t  *)ARENA_CALLOC(arena, (size_t)nf, 1L);
     out->morse      = morse;
     out->face_flag  = face_flag;
     out->bottleneck = -1;
@@ -81,13 +81,13 @@ int Reeb_analyze(Arena_T arena,
     for (int32_t v = 0; v < n; v++)
         if (off[v + 1] > off[v]) { v0 = v; break; }
     if (v0 < 0) {                                   /* no edges -> nothing to do */
-        out->cut_profile = (int32_t *)ARENA_CALLOC(arena, 1L, (long)sizeof(int32_t));
+        out->cut_profile = (int32_t *)ARENA_CALLOC(arena, 1L, sizeof(int32_t));
         out->morse_max = 0;
         return 0;
     }
 
     /* Two-sweep diameter endpoint, then the Morse field from it. */
-    uint32_t *dist = (uint32_t *)ARENA_ALLOC(arena, (long)((size_t)nv * sizeof(uint32_t)));
+    uint32_t *dist = (uint32_t *)ARENA_ALLOC(arena, (size_t)((size_t)nv * sizeof(uint32_t)));
     int32_t a = bfs_farthest(g, v0, dist, n);
     (void)bfs_farthest(g, a, dist, n);              /* dist now = field from a */
 
@@ -100,7 +100,7 @@ int Reeb_analyze(Arena_T arena,
     out->morse_max = mmax;
 
     size_t L = (size_t)mmax + 1;
-    int32_t *cut = (int32_t *)ARENA_CALLOC(arena, (long)(L + 1), (long)sizeof(int32_t));
+    int32_t *cut = (int32_t *)ARENA_CALLOC(arena, (size_t)(L + 1), sizeof(int32_t));
 
     /* Difference array over deduped undirected edges (count each once, u>v). */
     for (int32_t v = 0; v < n; v++) {
@@ -120,8 +120,8 @@ int Reeb_analyze(Arena_T arena,
     if (mmax < 2) return 0;                          /* no interior level */
 
     /* Prefix / suffix maxima of the cut profile. */
-    int32_t *Lmax = (int32_t *)ARENA_ALLOC(arena, (long)(L * sizeof(int32_t)));
-    int32_t *Rmax = (int32_t *)ARENA_ALLOC(arena, (long)(L * sizeof(int32_t)));
+    int32_t *Lmax = (int32_t *)ARENA_ALLOC(arena, (size_t)(L * sizeof(int32_t)));
+    int32_t *Rmax = (int32_t *)ARENA_ALLOC(arena, (size_t)(L * sizeof(int32_t)));
     Lmax[0] = cut[0];
     for (size_t l = 1; l < L; l++) Lmax[l] = (cut[l] > Lmax[l - 1]) ? cut[l] : Lmax[l - 1];
     Rmax[L - 1] = cut[L - 1];
@@ -145,8 +145,8 @@ int Reeb_analyze(Arena_T arena,
     }
     if (n_necks == 0) return 0;
 
-    ReebNeck *necks = (ReebNeck *)ARENA_CALLOC(arena, (long)n_necks,
-                                               (long)sizeof(ReebNeck));
+    ReebNeck *necks = (ReebNeck *)ARENA_CALLOC(arena, (size_t)n_necks,
+                                               sizeof(ReebNeck));
     /* Pass 2: emit one neck per group, taking the deepest level in the group. */
     {
         size_t k = 0, l = 1;
@@ -216,8 +216,8 @@ static void rb_build_grid(Arena_T arena, int nu, int nh, int wrap,
     size_t nvv = (size_t)nu * (size_t)nh;
     int ucols = wrap ? nu : nu - 1;
     size_t nff = (size_t)ucols * (size_t)(nh - 1) * 2;
-    float   *v = (float *)  ARENA_ALLOC(arena, (long)(nvv * 3 * sizeof(float)));
-    int32_t *f = (int32_t *)ARENA_ALLOC(arena, (long)(nff * 3 * sizeof(int32_t)));
+    float   *v = (float *)  ARENA_ALLOC(arena, (size_t)(nvv * 3 * sizeof(float)));
+    int32_t *f = (int32_t *)ARENA_ALLOC(arena, (size_t)(nff * 3 * sizeof(int32_t)));
     for (int j = 0; j < nh; j++)
         for (int i = 0; i < nu; i++) {
             size_t idx = (size_t)j * (size_t)nu + (size_t)i;
@@ -282,8 +282,8 @@ int Reeb_selftest(void)
 
         size_t nv = nvA + nvB;
         size_t nf = nfA + nfB + 1;                 /* + one bridge triangle */
-        float   *v = (float *)  ARENA_ALLOC(arena, (long)(nv * 3 * sizeof(float)));
-        int32_t *f = (int32_t *)ARENA_ALLOC(arena, (long)(nf * 3 * sizeof(int32_t)));
+        float   *v = (float *)  ARENA_ALLOC(arena, (size_t)(nv * 3 * sizeof(float)));
+        int32_t *f = (int32_t *)ARENA_ALLOC(arena, (size_t)(nf * 3 * sizeof(int32_t)));
         for (size_t i = 0; i < nvA * 3; i++) v[i] = vA[i];
         for (size_t i = 0; i < nvB; i++) {          /* offset B far from A in space */
             v[(nvA + i) * 3 + 0] = vB[i * 3 + 0] + 100.0f;

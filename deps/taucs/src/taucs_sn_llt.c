@@ -639,7 +639,16 @@ static int compare_ints(void* vx, void* vy)
 }
 */
 
-static int* compare_indirect_map;
+/* vesuvius-c: sheet_assemble factors several matrices at once; these
+ * two work variables of the symbolic phase are per thread. */
+#if defined(_MSC_VER)
+#define TAUCS_SN_THREAD_LOCAL __declspec(thread)
+#elif defined(__GNUC__)
+#define TAUCS_SN_THREAD_LOCAL __thread
+#else
+#define TAUCS_SN_THREAD_LOCAL
+#endif
+static TAUCS_SN_THREAD_LOCAL int* compare_indirect_map;
 static int compare_indirect_ints( const void* vx, const void* vy)
 {
   int* ix = (int*)vx;
@@ -659,7 +668,7 @@ static int compare_indirect_ints( const void* vx, const void* vy)
 #define RADIX_SORT_LOGRADIX 4
 #define RADIX_SORT_NCOUNTS  16
 
-static unsigned int counts[RADIX_SORT_NCOUNTS];
+static TAUCS_SN_THREAD_LOCAL unsigned int counts[RADIX_SORT_NCOUNTS];
 
 static int
 radix_sort(unsigned int* x, int n)
@@ -1094,7 +1103,7 @@ multifrontal_supernodal_front_factor(int sn,
   int i,j;
   int* ind;
   taucs_datatype* re;
-  int INFO;
+  int INFO = 0;
 
   /* creating transform for real indices */
   for(i=0;i<mtr->sn_size;i++) bitmap[mtr->sn_vertices[i]] = i;
@@ -1140,7 +1149,7 @@ multifrontal_supernodal_front_factor(int sn,
     taucs_printf("sivan %d %d\n",sn,sn_size);
     taucs_printf("\t\tLL^T Factorization: Matrix is not positive definite.\n");
     taucs_printf("\t\t                    nonpositive pivot in column %d\n",
-		 mtr->sn_vertices[INFO-1]);
+		 (INFO > 0 && INFO <= mtr->sn_size) ? mtr->sn_vertices[INFO-1] : -1);
     return -1;
   }
 
@@ -1536,14 +1545,14 @@ recursive_amalgamate_supernodes(int           sn,
 				int            column_to_sn_map[],
 				int            map[],
 				int            do_order,
-				int            ipostorder[]
+				int            ipostorder[],
+				double         zcount_buf[]
 				)
 {
   int  i,ip,c_sn,gc_sn;
   /*int  i,ip,c,c_sn,gc_sn;*/
   int  nnz;
   int  nchildren /*, ichild*/; /* number of children, child index */
-  znz* c_znz = NULL;
   znz  sn_znz, merged_znz;
   /*int zero_count = 0;*/
   int new_sn_size, new_sn_up_size;
@@ -1560,17 +1569,15 @@ recursive_amalgamate_supernodes(int           sn,
   for (c_sn=sn_first_child[sn]; c_sn != -1; c_sn = sn_next_child[c_sn])
     nchildren++;
 
-  /*  c_znz = (znz*) alloca(nchildren * sizeof(znz));*/
-  c_znz = (znz*) taucs_malloc(nchildren * sizeof(znz));
-  assert(c_znz);
+  /* vesuvius-c: each child's counts are added as its recursion returns, in
+   * the same order as the former per-supernode array summed them, so the
+   * result is bit-identical; that array's malloc/free per supernode made
+   * concurrent symbolic factorizations queue on the process heap lock. */
+  merged_znz.nonzeros = sn_znz.nonzeros;
+  merged_znz.zeros    = sn_znz.zeros;
 
-  /*printf("supernode %d out of %d\n",sn,*n_sn);*/
-
-  /* merge the supernode with its children! */
-
-  i = 0;
   for (c_sn=sn_first_child[sn]; c_sn != -1; c_sn = sn_next_child[c_sn]) {
-    c_znz[i] = 
+    znz child_znz =
       recursive_amalgamate_supernodes(c_sn,
 				      n_sn,
 				      sn_size,sn_up_size,sn_rowind,
@@ -1578,23 +1585,14 @@ recursive_amalgamate_supernodes(int           sn,
 				      rowind, /* temporary */
 				      column_to_sn_map,
 				      map,
-				      do_order,ipostorder
+				      do_order,ipostorder,zcount_buf
 				      );
-    assert(c_znz[i].zeros + c_znz[i].nonzeros ==
+    assert(child_znz.zeros + child_znz.nonzeros ==
 	   (double) (((sn_up_size[c_sn] - sn_size[c_sn]) * sn_size[c_sn]) 
 		     + (sn_size[c_sn] * (sn_size[c_sn] + 1))/2 ));
-    i++;
+    merged_znz.nonzeros += child_znz.nonzeros;
+    merged_znz.zeros    += child_znz.zeros;
   }
-
-  merged_znz.nonzeros = sn_znz.nonzeros;
-  merged_znz.zeros    = sn_znz.zeros;
-                   
-  for (i=0; i<nchildren; i++) {
-    merged_znz.nonzeros += (c_znz[i]).nonzeros;
-    merged_znz.zeros    += (c_znz[i]).zeros;
-  }
-
-  taucs_free(c_znz);
 
   /*  printf("supernode %d out of %d (continuing)\n",sn,*n_sn);*/
 
@@ -1660,9 +1658,12 @@ recursive_amalgamate_supernodes(int           sn,
       if (i >= n) n = i+1;
     }
 
-    /*zcount = (double*) alloca(n * sizeof(double));*/
-    zcount = (double*) taucs_malloc(n * sizeof(double));
-    assert(zcount);
+    /* vesuvius-c: one buffer of the matrix dimension serves every
+     * supernode (n <= A->n); every entry read below is first assigned from
+     * rowind, so the result is bit-identical to a fresh array. A heap
+     * allocation of up to n doubles per supernode made concurrent symbolic
+     * factorizations queue on the process heap lock. */
+    zcount = zcount_buf;
     
     for (ip=0; ip<new_sn_size; ip++) {
       i = rowind[ip]; assert(i<n);
@@ -1733,11 +1734,9 @@ recursive_amalgamate_supernodes(int           sn,
 		   sn,merged_znz.zeros,merged_znz.nonzeros);
       printf("returning without merging\n");
       */
-      taucs_free(zcount);
       return sn_znz;
     }
 
-    taucs_free(zcount);
   }
 
   /* now merge the children lists */
@@ -1807,6 +1806,7 @@ static void extend_add_wrapper(supernodal_frontal_matrix * child_matrix,
   if (*fail) {
     if (*my_matrix_ptr)
       supernodal_frontal_free(*my_matrix_ptr);
+    *my_matrix_ptr = NULL;  /* the caller frees it again on *fail: double free / use-after-free (ASAN, 2026-09-15) */
     return;
   }
   
@@ -2366,7 +2366,7 @@ leftlooking_supernodal_front_factor(int sn,
   int ip,jp;
   int*    ind;
   taucs_datatype* re;
-  int INFO;
+  int INFO = 0;
 
   int sn_size = (L->sn_size)[sn];
   int up_size = (L->sn_up_size)[sn] - (L->sn_size)[sn];
@@ -2402,7 +2402,7 @@ leftlooking_supernodal_front_factor(int sn,
   if (INFO) {
     taucs_printf("\t\tLL^T Factorization: Matrix is not positive definite.\n");
     taucs_printf("\t\t                    nonpositive pivot in column %d\n",
-		 (L->sn_struct)[INFO-1]);
+		 (INFO > 0 && INFO <= sn_size) ? (L->sn_struct)[sn][INFO-1] : -1);
     return -1;
   }
 
@@ -3923,7 +3923,9 @@ taucs_ccs_symbolic_elimination(taucs_ccs_matrix* A,
   }
 
   for (j=0; j < (A->n); j++) map[j] = -1;
-  if (1)
+  {
+  double* zcount_buf = (double*) taucs_malloc(((A->n) > 0 ? (A->n) : 1) * sizeof(double));
+  assert(zcount_buf);
   (void) recursive_amalgamate_supernodes((L->n_sn) - 1,
 					 &(L->n_sn),
 					 L->sn_size,L->sn_up_size,L->sn_struct,
@@ -3931,8 +3933,10 @@ taucs_ccs_symbolic_elimination(taucs_ccs_matrix* A,
 					 rowind,
 					 column_to_sn_map,
 					 map,
-					 do_order,ipostorder
+					 do_order,ipostorder,zcount_buf
 					 );
+  taucs_free(zcount_buf);
+  }
 
 
   {

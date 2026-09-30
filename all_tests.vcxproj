@@ -122,30 +122,6 @@
     <ClCompile Include="scripts\common\cc_color_test.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
-    <ClCompile Include="scripts\fixup\fixup_test.c">
-      <CompileAs>CompileAsC</CompileAs>
-    </ClCompile>
-    <ClCompile Include="src\fixup\slice_trace.c">
-      <CompileAs>CompileAsC</CompileAs>
-    </ClCompile>
-    <ClCompile Include="src\fixup\slice_match.c">
-      <CompileAs>CompileAsC</CompileAs>
-    </ClCompile>
-    <ClCompile Include="src\fixup\join_tracks.c">
-      <CompileAs>CompileAsC</CompileAs>
-    </ClCompile>
-    <ClCompile Include="src\fixup\join_paint.c">
-      <CompileAs>CompileAsC</CompileAs>
-    </ClCompile>
-    <ClCompile Include="src\fixup\bridge_scan.c">
-      <CompileAs>CompileAsC</CompileAs>
-    </ClCompile>
-    <ClCompile Include="src\fixup\slab_split.c">
-      <CompileAs>CompileAsC</CompileAs>
-    </ClCompile>
-    <ClCompile Include="src\fixup\fixup_viz.c">
-      <CompileAs>CompileAsC</CompileAs>
-    </ClCompile>
     <ClCompile Include="src\common\ves_png.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>

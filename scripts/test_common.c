@@ -127,6 +127,39 @@ static void test_arena_save_restore(void)
     PASS();
 }
 
+/* Arena_new_sized: small chunks for small long-lived arenas.  Allocations
+ * that fit share chunks of the requested size; a larger one gets a chunk of
+ * its own; save/restore and reuse behave as in a default arena. */
+static void test_arena_sized(void)
+{
+    TEST(arena_sized);
+
+    Arena_T arena = Arena_new_sized(8192);
+    uint8_t *a = (uint8_t *)ARENA_ALLOC(arena, 3000);
+    uint8_t *b = (uint8_t *)ARENA_ALLOC(arena, 3000);
+    /* both fit one 8 KiB chunk: consecutive */
+    assert(b == a + 3008 || b == a + 3000);
+    memset(a, 1, 3000); memset(b, 2, 3000);
+    Arena_Mark mark = Arena_save(arena);
+    uint8_t *big = (uint8_t *)ARENA_ALLOC(arena, 1 << 20);   /* its own 1 MiB chunk */
+    big[0] = 3; big[(1 << 20) - 1] = 4;
+    uint8_t *c = (uint8_t *)ARENA_ALLOC(arena, 6000);        /* a new 8 KiB chunk */
+    memset(c, 5, 6000);
+    Arena_restore(arena, mark);
+    uint8_t *d = (uint8_t *)ARENA_CALLOC(arena, 100, 1);
+    for (int i = 0; i < 100; i++) assert(d[i] == 0);
+    assert(a[0] == 1 && a[2999] == 1 && b[0] == 2 && b[2999] == 2);
+    Arena_dispose(&arena);
+    assert(arena == NULL);
+
+    /* a request below the minimum still yields a usable arena */
+    Arena_T tiny = Arena_new_sized(1);
+    uint8_t *t = (uint8_t *)ARENA_ALLOC(tiny, 5000);
+    t[4999] = 7;
+    Arena_dispose(&tiny);
+    PASS();
+}
+
 static void test_arena_large_alloc(void)
 {
     TEST(arena_large_alloc);
@@ -806,6 +839,7 @@ int main(void)
     printf("[Arena]\n");
     test_arena_basic();
     test_arena_save_restore();
+    test_arena_sized();
     test_arena_large_alloc();
     test_arena_free_reuse();
     test_arena_huge_alloc();

@@ -250,8 +250,8 @@ static int audit_run(Arena_T arena,
         uf_union(&ufv, faces[f * 3 + 0], faces[f * 3 + 1]);
         uf_union(&ufv, faces[f * 3 + 0], faces[f * 3 + 2]);
     }
-    root2dense = (int32_t *)ARENA_ALLOC(arena, (long)(nv * sizeof(int32_t)));
-    comp_of_vert = (int32_t *)ARENA_ALLOC(arena, (long)(nv * sizeof(int32_t)));
+    root2dense = (int32_t *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(int32_t)));
+    comp_of_vert = (int32_t *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(int32_t)));
     for (i = 0; i < nv; i++) root2dense[i] = -1;
     /* count components that actually own faces */
     for (f = 0; f < nf; f++) {
@@ -259,7 +259,7 @@ static int audit_run(Arena_T arena,
         if (root2dense[r] < 0) root2dense[r] = (int32_t)ncomp++;
     }
     if (ncomp == 0) return -1;
-    cs = (CompStat *)ARENA_CALLOC(arena, (long)ncomp, (long)sizeof(CompStat));
+    cs = (CompStat *)ARENA_CALLOC(arena, (size_t)ncomp, sizeof(CompStat));
     for (i = 0; i < ncomp; i++) {
         cs[i].umin = 1e30; cs[i].umax = -1e30;
         cs[i].vmin = 1e30; cs[i].vmax = -1e30;
@@ -270,9 +270,9 @@ static int audit_run(Arena_T arena,
         if (root2dense[r] >= 0) cs[root2dense[r]].root = r;
     }
 
-    R->face_comp = (int32_t *)ARENA_ALLOC(arena, (long)(nf * sizeof(int32_t)));
-    R->face_rad = (int8_t *)ARENA_CALLOC(arena, (long)nf, 1);
-    R->face_kap = (int8_t *)ARENA_CALLOC(arena, (long)nf, 1);
+    R->face_comp = (int32_t *)ARENA_ALLOC(arena, (size_t)(nf * sizeof(int32_t)));
+    R->face_rad = (int8_t *)ARENA_CALLOC(arena, (size_t)nf, 1);
+    R->face_kap = (int8_t *)ARENA_CALLOC(arena, (size_t)nf, 1);
 
     /* per-face radial + kappa votes */
     for (f = 0; f < nf; f++) {
@@ -370,9 +370,9 @@ static int audit_run(Arena_T arena,
     /* sort by area desc; remap face_comp / vert_comp to sorted order */
     {
         int32_t *old2new = (int32_t *)ARENA_ALLOC(arena,
-                                                  (long)(ncomp * sizeof(int32_t)));
+                                                  (size_t)(ncomp * sizeof(int32_t)));
         CompStat *sorted = (CompStat *)ARENA_ALLOC(arena,
-                                                   (long)(ncomp * sizeof(CompStat)));
+                                                   (size_t)(ncomp * sizeof(CompStat)));
         memcpy(sorted, cs, ncomp * sizeof(CompStat));
         qsort(sorted, ncomp, sizeof(CompStat), cmp_comp_area);
         /* old->new by matching root ids (unique per comp); O(n^2) is fine
@@ -385,7 +385,7 @@ static int audit_run(Arena_T arena,
         }
         for (f = 0; f < nf; f++) R->face_comp[f] = old2new[R->face_comp[f]];
         R->vert_comp = (int32_t *)ARENA_ALLOC(arena,
-                                              (long)(nv * sizeof(int32_t)));
+                                              (size_t)(nv * sizeof(int32_t)));
         for (i = 0; i < nv; i++)
             R->vert_comp[i] = (comp_of_vert[i] >= 0)
                               ? old2new[comp_of_vert[i]] : -1;
@@ -810,13 +810,13 @@ int main(int argc, char **argv)
             if (fail_uv_overlap) exit_code = 2;
         } else {
             double *u = (double *)ARENA_ALLOC(
-                arena, (long)(m.nv * sizeof(double)));
+                arena, (size_t)(m.nv * sizeof(double)));
             double *v = (double *)ARENA_ALLOC(
-                arena, (long)(m.nv * sizeof(double)));
+                arena, (size_t)(m.nv * sizeof(double)));
             float *registered_u = (float *)ARENA_ALLOC(
-                arena, (long)(m.nv * sizeof(float)));
+                arena, (size_t)(m.nv * sizeof(float)));
             float *phi = (float *)ARENA_ALLOC(
-                arena, (long)(m.nv * sizeof(float)));
+                arena, (size_t)(m.nv * sizeof(float)));
             AtlasOverlapAudit overlap;
             for (size_t vi = 0; vi < m.nv; vi++) {
                 u[vi] = (double)m.uv[vi * 2 + 0];

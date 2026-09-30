@@ -52,7 +52,7 @@
       <WarningLevel>Level4</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>_DEBUG;VESUVIUS_DEBUG;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)deps\include;$(SolutionDir)deps\taucs\src;$(SolutionDir)deps\taucs\build;$(SolutionDir)deps\taucs\external\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)docs\research\gco-v3.0;$(SolutionDir)deps\include;$(SolutionDir)deps\taucs\src;$(SolutionDir)deps\taucs\build;$(SolutionDir)deps\taucs\external\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
@@ -66,7 +66,7 @@
       <SubSystem>Console</SubSystem>
       <StackReserveSize>536870912</StackReserveSize>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>$(SolutionDir)deps\clapack\LIB\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(SolutionDir)deps\lib\win64\Debug;$(SolutionDir)deps\lib\win64;$(SolutionDir)deps\clapack\LIB\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>clapackd_nowrap.lib;BLASd_nowrap.lib;libf2cd.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <IgnoreSpecificDefaultLibraries>LIBCMTD</IgnoreSpecificDefaultLibraries>
     </Link>
@@ -78,7 +78,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>NDEBUG;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)deps\include;$(SolutionDir)deps\taucs\src;$(SolutionDir)deps\taucs\build;$(SolutionDir)deps\taucs\external\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)docs\research\gco-v3.0;$(SolutionDir)deps\include;$(SolutionDir)deps\taucs\src;$(SolutionDir)deps\taucs\build;$(SolutionDir)deps\taucs\external\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
@@ -92,7 +92,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>$(SolutionDir)deps\clapack\LIB\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(SolutionDir)deps\lib\win64\Release;$(SolutionDir)deps\lib\win64;$(SolutionDir)deps\clapack\LIB\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>clapack_nowrap.lib;BLAS_nowrap.lib;libf2c.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <IgnoreSpecificDefaultLibraries>LIBCMT</IgnoreSpecificDefaultLibraries>
       <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
@@ -101,6 +101,7 @@
   <ItemGroup>
     <ClCompile Include="src\tools\scroll_whole.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\whole\cube_schedule.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\whole\shaft_warp.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\whole\axis_warp.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\whole\placed_cube.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\whole\cube_register.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
@@ -111,6 +112,11 @@
     <ClCompile Include="src\common\maxflow.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\flatten\ribbon.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\flatten\ribbon_grid_io.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\winding_mrf.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\lane_turn_mrf.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\gco_wrap.cpp"><CompileAs>CompileAsCpp</CompileAs></ClCompile>
+    <ClCompile Include="docs\research\gco-v3.0\GCoptimization.cpp"><CompileAs>CompileAsCpp</CompileAs></ClCompile>
+    <ClCompile Include="docs\research\gco-v3.0\LinkedBlockList.cpp"><CompileAs>CompileAsCpp</CompileAs></ClCompile>
     <ClCompile Include="src\remesh\intersection_cleanup.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\flatten\seam_cut.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\flatten\mesh_topo.c"><CompileAs>CompileAsC</CompileAs></ClCompile>

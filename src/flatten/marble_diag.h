@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "../common/raw_sample.h"
+#include "rawtex_bake.h"
 
 /* RAW/mesh alignment audit for a UV-carrying scroll surface.  This is not an
  * image-texture heuristic: sparse UV samples are mapped through the mesh into
@@ -48,6 +48,16 @@ int MarbleDiag_write(const char *prefix, const char *rawtex_path,
                      const int32_t *faces, size_t nf,
                      const float *vertex_normals,
                      double raster_du, double raster_dv, size_t raster_max_px,
+                     const RawtexWindow *window,
+                     const MarbleDiagOpts *opts, MarbleDiagStats *stats);
+
+int MarbleDiag_write_field(const char *prefix, const char *rawtex_path,
+                     CubeTable *ct,
+                     const float *verts, RawtexUv uv, size_t nv,
+                     const int32_t *faces, size_t nf,
+                     const float *vertex_normals,
+                     double raster_du, double raster_dv, size_t raster_max_px,
+                     const RawtexWindow *window,
                      const MarbleDiagOpts *opts, MarbleDiagStats *stats);
 
 #endif
