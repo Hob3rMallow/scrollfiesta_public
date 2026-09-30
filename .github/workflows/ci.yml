@@ -89,8 +89,11 @@ jobs:
         with:
           msystem: UCRT64
           update: false
+          # gcc lists libgomp only as an optional dependency, and -fopenmp
+          # links -lgomp.
           install: >-
             mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-libgomp
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
       - name: configure (library + tests)

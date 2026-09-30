@@ -755,6 +755,37 @@ static int is_valid_for_cdt(const double *pts_2d, size_t n)
     return 1;
 }
 
+/* Lexicographic order on 2-D points; NaN sorts last so the order is total. */
+static int cmp_pt2(const void *a, const void *b)
+{
+    const double *p = (const double *)a, *q = (const double *)b;
+    for (int k = 0; k < 2; k++) {
+        int pn = isnan(p[k]) != 0, qn = isnan(q[k]) != 0;
+        if (pn != qn) return pn - qn;
+        if (!pn && p[k] != q[k]) return p[k] < q[k] ? -1 : 1;
+    }
+    return 0;
+}
+
+/* A polygon that visits one exact 2-D point twice, as a chart loop touching
+ * itself does. Triangle keeps one copy, so its CDT cannot use every boundary
+ * vertex (fill_boundary_is_exact rejects the patch), and a segment ending at
+ * the dropped copy makes Triangle read that vertex's never-initialised
+ * triangle pointer in insertsegment(). */
+static int has_repeated_point(const double *pts_2d, size_t n)
+{
+    double *sorted = (double *)malloc(n * 2 * sizeof(double));
+    int repeated = 0;
+    if (!sorted) return 1;
+    memcpy(sorted, pts_2d, n * 2 * sizeof(double));
+    qsort(sorted, n, 2 * sizeof(double), cmp_pt2);
+    for (size_t i = 1; i < n && !repeated; i++)
+        repeated = sorted[i * 2] == sorted[i * 2 - 2] &&
+                   sorted[i * 2 + 1] == sorted[i * 2 - 1];
+    free(sorted);
+    return repeated;
+}
+
 /* ------------------------------------------------------------------ */
 /* safe_triangulate — crash-guarded wrapper around Triangle library     */
 /*                                                                      */
@@ -949,6 +980,10 @@ static int triangulate_polygon(const double *pts_2d, size_t n,
 
     /* Validate input before calling Triangle */
     if (!is_valid_for_cdt(pts_2d, n)) {
+        return -1;
+    }
+    if (has_repeated_point(pts_2d, n)) {
+        HFLOG("      [triangulate_polygon] repeated point; Triangle not called\n");
         return -1;
     }
 

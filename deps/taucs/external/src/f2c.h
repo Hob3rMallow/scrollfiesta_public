@@ -7,7 +7,11 @@
 #ifndef F2C_INCLUDE
 #define F2C_INCLUDE
 
-typedef long int integer;
+/* vesuvius-c: TAUCS passes these routines C int arrays (taucs.h declares
+ * genmmd_ with int*), so an INTEGER here is an int. f2c's long agrees only
+ * where long is 32 bits; on LP64 Linux genmmd read 8 bytes from every 4-byte
+ * argument. */
+typedef int integer;
 typedef char *address;
 typedef short int shortint;
 typedef float real;
