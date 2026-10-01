@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include "common/arena.h"
 #include "common/intrinsic_angle.h"
@@ -145,6 +146,196 @@ static void add_grid_block_hole(float *V, int32_t *F, size_t *pnv, size_t *pnf,
 }
 
 #define CHECK(cond,msg) do { if(!(cond)){ printf("    FAIL: %s\n", msg); fail++; } } while(0)
+
+
+#define UNDERPASS_PI 3.14159265358979323846
+extern int is_simple_polygon(const double *pts_2d, size_t n);
+
+static void jacobi_eig3(double a[3][3], double v[3][3], double d[3])
+{
+    int k, iter;
+    for (k = 0; k < 3; k++) { v[k][0]=(k==0); v[k][1]=(k==1); v[k][2]=(k==2); }
+    for (iter = 0; iter < 100; iter++) {
+        int p = 0, q = 1;
+        double off = fabs(a[0][1]);
+        if (fabs(a[0][2]) > off) { off = fabs(a[0][2]); p=0; q=2; }
+        if (fabs(a[1][2]) > off) { off = fabs(a[1][2]); p=1; q=2; }
+        if (off < 1e-12) break;
+        double app=a[p][p], aqq=a[q][q], apq=a[p][q];
+        double phi = 0.5*atan2(2.0*apq, aqq-app);
+        double c = cos(phi), s = sin(phi);
+        for (k = 0; k < 3; k++) { double akp=a[k][p], akq=a[k][q]; a[k][p]=c*akp-s*akq; a[k][q]=s*akp+c*akq; }
+        for (k = 0; k < 3; k++) { double apk=a[p][k], aqk=a[q][k]; a[p][k]=c*apk-s*aqk; a[q][k]=s*apk+c*aqk; }
+        for (k = 0; k < 3; k++) { double vkp=v[k][p], vkq=v[k][q]; v[k][p]=c*vkp-s*vkq; v[k][q]=s*vkp+c*vkq; }
+    }
+    d[0]=a[0][0]; d[1]=a[1][1]; d[2]=a[2][2];
+}
+
+static void build_underpass_loop(double pts3d[][3], int n, double R)
+{
+    int i;
+    for (i = 0; i < n; i++) {
+        double t = 2.0 * UNDERPASS_PI * (double)i / (double)n;
+        pts3d[i][0] = R * cos(t);
+        pts3d[i][1] = R * (0.35*sin(t) + 0.9*sin(3.0*t));
+        pts3d[i][2] = R * 0.5 * sin(2.0*t);
+    }
+}
+
+static double seg_seg_min_dist3(const double p0[3], const double p1[3],
+                                const double q0[3], const double q1[3])
+{
+    double d1[3], d2[3], r[3];
+    int k;
+    for (k=0;k<3;k++){ d1[k]=p1[k]-p0[k]; d2[k]=q1[k]-q0[k]; r[k]=p0[k]-q0[k]; }
+    double a=0,e=0,f=0,c=0,b=0;
+    for (k=0;k<3;k++){ a+=d1[k]*d1[k]; e+=d2[k]*d2[k]; f+=d2[k]*r[k]; c+=d1[k]*r[k]; b+=d1[k]*d2[k]; }
+    double s, t;
+    if (a<=1e-12 && e<=1e-12) { s=0; t=0; }
+    else if (a<=1e-12) { s=0; t=f/e; if(t<0)t=0; if(t>1)t=1; }
+    else if (e<=1e-12) { t=0; s=-c/a; if(s<0)s=0; if(s>1)s=1; }
+    else {
+        double denom = a*e-b*b;
+        s = (denom>1e-12) ? (b*f-c*e)/denom : 0.0;
+        if (s<0)s=0; if (s>1)s=1;
+        t = (b*s+f)/e; if(t<0)t=0; if(t>1)t=1;
+        s = (a>1e-12) ? (b*t-c)/a : 0.0; if(s<0)s=0; if(s>1)s=1;
+    }
+    double cp1[3], cp2[3], dd=0;
+    for (k=0;k<3;k++){ cp1[k]=p0[k]+s*d1[k]; cp2[k]=q0[k]+t*d2[k]; dd += (cp1[k]-cp2[k])*(cp1[k]-cp2[k]); }
+    return sqrt(dd);
+}
+
+static void project_plane(const double pts3d[][3], int n,
+                          const double u[3], const double w[3],
+                          const double centroid[3], double *out2d)
+{
+    int i, k;
+    for (i = 0; i < n; i++) {
+        double rel[3];
+        for (k=0;k<3;k++) rel[k] = pts3d[i][k] - centroid[k];
+        out2d[i*2+0] = rel[0]*u[0]+rel[1]*u[1]+rel[2]*u[2];
+        out2d[i*2+1] = rel[0]*w[0]+rel[1]*w[1]+rel[2]*w[2];
+    }
+}
+
+static int test_underpass_loop_projection(void)
+{
+    int fail = 0;
+    const int N = 24;
+    double pts3d[24][3];
+    build_underpass_loop(pts3d, N, 1.0);
+
+    double min_gap = 1e30;
+    int i, j;
+    for (i = 0; i < N; i++) {
+        int i2 = (i+1)%N;
+        for (j = i+2; j < N; j++) {
+            if (i==0 && j==N-1) continue;
+            int j2 = (j+1)%N;
+            double d = seg_seg_min_dist3(pts3d[i], pts3d[i2], pts3d[j], pts3d[j2]);
+            if (d < min_gap) min_gap = d;
+        }
+    }
+    printf("  underpass loop: min 3D edge-edge gap = %.4f (must be > 0)\n", min_gap);
+
+    double centroid[3] = {0,0,0};
+    int k;
+    for (i=0;i<N;i++) for (k=0;k<3;k++) centroid[k]+=pts3d[i][k];
+    for (k=0;k<3;k++) centroid[k] /= N;
+
+    double cov[3][3] = {{0,0,0},{0,0,0},{0,0,0}};
+    for (i=0;i<N;i++) {
+        double r[3]; for (k=0;k<3;k++) r[k]=pts3d[i][k]-centroid[k];
+        int a,c;
+        for (a=0;a<3;a++) for (c=0;c<3;c++) cov[a][c] += r[a]*r[c];
+    }
+    double V[3][3], D[3];
+    jacobi_eig3(cov, V, D);
+    int smallest = 0;
+    if (D[1] < D[smallest]) smallest = 1;
+    if (D[2] < D[smallest]) smallest = 2;
+    double u[3], w[3]; int idx2[2], c2=0;
+    for (i=0;i<3;i++) if (i!=smallest) idx2[c2++]=i;
+    for (i=0;i<3;i++) { u[i]=V[i][idx2[0]]; w[i]=V[i][idx2[1]]; }
+
+    double pts_pca[48], pts_xy[48], pts_xz[48], pts_yz[48];
+    double ex[3]={1,0,0}, ey[3]={0,1,0}, ez[3]={0,0,1}, zero[3]={0,0,0};
+    project_plane(pts3d, N, u, w, centroid, pts_pca);
+    project_plane(pts3d, N, ex, ey, zero, pts_xy);
+    project_plane(pts3d, N, ex, ez, zero, pts_xz);
+    project_plane(pts3d, N, ey, ez, zero, pts_yz);
+
+    int simple_pca = is_simple_polygon(pts_pca, (size_t)N);
+    int simple_xy  = is_simple_polygon(pts_xy,  (size_t)N);
+    int simple_xz  = is_simple_polygon(pts_xz,  (size_t)N);
+    int simple_yz  = is_simple_polygon(pts_yz,  (size_t)N);
+
+    printf("  PCA-plane projection simple? %s\n", simple_pca ? "yes" : "NO");
+    printf("  XY projection simple?        %s\n", simple_xy  ? "yes" : "NO");
+    printf("  XZ projection simple?        %s\n", simple_xz  ? "yes" : "NO");
+    printf("  YZ projection simple?        %s\n", simple_yz  ? "yes" : "NO");
+
+    CHECK(min_gap > 1e-6, "loop must be genuinely simple in 3D");
+    CHECK(!simple_pca, "PCA-plane projection MUST self-intersect (bug precondition)");
+    CHECK(!simple_xy,  "XY projection MUST self-intersect");
+    CHECK(!simple_xz,  "XZ projection MUST self-intersect");
+    CHECK(!simple_yz,  "YZ projection MUST self-intersect");
+    return fail;
+}
+
+static int test_underpass_loop_mesh_fill(void)
+{
+    Arena_T arena = Arena_new();
+    Arena_Mark m = Arena_save(arena);
+
+    const int N = 24;
+    const double Rout = 4.0;
+
+    float *V = (float*)ARENA_ALLOC(arena, (long)(2*(size_t)N*3*sizeof(float)));
+    int32_t *F = (int32_t*)ARENA_ALLOC(arena, (long)(2*(size_t)N*3*sizeof(int32_t)));
+    size_t nv = 0, nf = 0;
+    int i;
+
+    for (i = 0; i < N; i++) {
+        double t = 2.0 * UNDERPASS_PI * (double)i / (double)N;
+        V[(size_t)i*3+0] = (float)(Rout*cos(t));
+        V[(size_t)i*3+1] = (float)(Rout*sin(t));
+        V[(size_t)i*3+2] = 0.0f;
+    }
+    {
+        double pts3d[24][3];
+        build_underpass_loop(pts3d, N, 1.0);
+        for (i = 0; i < N; i++) {
+            V[(size_t)(N+i)*3+0] = (float)pts3d[i][0];
+            V[(size_t)(N+i)*3+1] = (float)pts3d[i][1];
+            V[(size_t)(N+i)*3+2] = (float)pts3d[i][2];
+        }
+    }
+    nv = (size_t)(2*N);
+
+    for (i = 0; i < N; i++) {
+        int i2 = (i+1) % N;
+        int32_t o0=(int32_t)i, o1=(int32_t)i2, n0=(int32_t)(N+i), n1=(int32_t)(N+i2);
+        F[nf*3+0]=o0; F[nf*3+1]=o1; F[nf*3+2]=n0; nf++;
+        F[nf*3+0]=o1; F[nf*3+1]=n1; F[nf*3+2]=n0; nf++;
+    }
+
+    size_t bnd_before = count_boundary_edges(F, nf);
+    size_t nl=0, ni=0, nfil=0;
+    HoleFill_process_ex(arena, &V, &F, &nv, &nf, NULL, 1, &nl, &ni, &nfil);
+    size_t bnd_after = count_boundary_edges(F, nf);
+
+    printf("  underpass loop as real mesh hole: bnd %zu->%zu  loops=%zu interior=%zu filled=%zu\n",
+           bnd_before, bnd_after, nl, ni, nfil);
+    printf("  %s\n", nfil > 0
+           ? "FILLED (via fallback -- no crash)"
+           : "NOT FILLED -- rejected gracefully, no crash");
+
+    Arena_restore(arena, m);
+    Arena_dispose(&arena);
+    return 0;
+}
 
 int main(int argc, char **argv)
 {
@@ -493,6 +684,9 @@ int main(int argc, char **argv)
     }
 
     Arena_dispose(&arena);
+    fail += test_underpass_loop_projection();
+    fail += test_underpass_loop_mesh_fill();
+
     printf("HOLEFILL INTERIOR SELFTEST %s\n", fail ? "FAILED" : "PASSED");
     return fail ? 1 : 0;
 }
