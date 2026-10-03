@@ -12,6 +12,10 @@
 #include <cmath>
 #include <vector>
 
+#ifdef USINGZ
+#error "clipper2_wrap is a 2-D ABI and must link only the non-Z Clipper2 library"
+#endif
+
 using namespace Clipper2Lib;
 
 static const double SCALE = 10000.0;
