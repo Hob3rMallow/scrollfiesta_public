@@ -40,6 +40,25 @@ option(SCROLLFIESTA_INSTALL
        "Generate install/export rules"
        ${PROJECT_IS_TOP_LEVEL})
 
+# AppleClang does not accept the driver's -fopenmp flag. Keep raw flags,
+# as with the other toolchains, and locate the separately supplied runtime.
+set(SF_OMP_COMPILE -fopenmp)
+set(SF_OMP_LINK -fopenmp)
+if(SCROLLFIESTA_OPENMP AND APPLE AND CMAKE_C_COMPILER_ID STREQUAL "AppleClang")
+    find_path(SF_LIBOMP_INCLUDE_DIR omp.h
+        HINTS /opt/homebrew/opt/libomp /usr/local/opt/libomp
+        PATH_SUFFIXES include)
+    find_library(SF_LIBOMP_LIBRARY omp
+        HINTS /opt/homebrew/opt/libomp /usr/local/opt/libomp
+        PATH_SUFFIXES lib)
+    if(NOT SF_LIBOMP_INCLUDE_DIR OR NOT SF_LIBOMP_LIBRARY)
+        message(FATAL_ERROR "AppleClang OpenMP requires libomp. Set SF_LIBOMP_INCLUDE_DIR "
+                            "and SF_LIBOMP_LIBRARY, or use -DSCROLLFIESTA_OPENMP=OFF.")
+    endif()
+    set(SF_OMP_COMPILE -Xpreprocessor -fopenmp "-I${SF_LIBOMP_INCLUDE_DIR}")
+    set(SF_OMP_LINK "${SF_LIBOMP_LIBRARY}")
+endif()
+
 if(SCROLLFIESTA_BUILD_TOOLS AND NOT SCROLLFIESTA_WITH_TIFF)
     message(FATAL_ERROR "SCROLLFIESTA_BUILD_TOOLS requires SCROLLFIESTA_WITH_TIFF=ON "
                         "(the CLI tools read/write prediction TIFFs).")
@@ -337,8 +356,8 @@ if(SCROLLFIESTA_OPENMP)
     if(MSVC)
         target_compile_options(sf_taucs PRIVATE /openmp)
     else()
-        target_compile_options(sf_taucs PRIVATE -fopenmp)
-        target_link_options(sf_taucs INTERFACE -fopenmp)
+        target_compile_options(sf_taucs PRIVATE ${SF_OMP_COMPILE})
+        target_link_options(sf_taucs INTERFACE ${SF_OMP_LINK})
     endif()
 endif()
 endif()  # SF_HAVE_LAPACK
@@ -419,9 +438,9 @@ if(SCROLLFIESTA_OPENMP)
     if(MSVC)
         target_compile_options(scrollfiesta_core PRIVATE /openmp)
     else()
-        target_compile_options(scrollfiesta_core PRIVATE -fopenmp)
+        target_compile_options(scrollfiesta_core PRIVATE ${SF_OMP_COMPILE})
         # Propagate the runtime to every final link that folds the core in.
-        target_link_options(scrollfiesta_core INTERFACE -fopenmp)
+        target_link_options(scrollfiesta_core INTERFACE ${SF_OMP_LINK})
     endif()
 endif()
 
@@ -622,8 +641,8 @@ if(SCROLLFIESTA_BUILD_TOOLS)
             if(MSVC)
                 target_compile_options(${tool} PRIVATE /openmp)
             else()
-                target_compile_options(${tool} PRIVATE -fopenmp)
-                target_link_options(${tool} PRIVATE -fopenmp)
+                target_compile_options(${tool} PRIVATE ${SF_OMP_COMPILE})
+                target_link_options(${tool} PRIVATE ${SF_OMP_LINK})
             endif()
         endforeach()
     endif()
@@ -662,8 +681,8 @@ if(SCROLLFIESTA_BUILD_TOOLS)
             if(MSVC)
                 target_compile_options(${tool} PRIVATE /openmp)
             else()
-                target_compile_options(${tool} PRIVATE -fopenmp)
-                target_link_options(${tool} PRIVATE -fopenmp)
+                target_compile_options(${tool} PRIVATE ${SF_OMP_COMPILE})
+                target_link_options(${tool} PRIVATE ${SF_OMP_LINK})
             endif()
         endif()
         # The MSVC projects reserve 512 MB of stack: TAUCS recursion and the
