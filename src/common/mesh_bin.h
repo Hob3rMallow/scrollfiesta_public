@@ -40,6 +40,14 @@ int MeshBin_companion_path(const char *path, char *out, size_t out_cap);
  * atomic rename, so a valid final-layout file is a completed write. */
 int MeshBin_looks_complete(const char *path);
 
+/* The validated header of a complete VESMESH1 file (the checks of MeshBin_looks_complete, exact length included):
+ * 0 and *out filled, or -1.  Offsets are byte offsets in the file (uv_offset 0 without UV). */
+typedef struct MeshBinHeader {
+    uint64_t nv, nf, vertices_offset, uv_offset, faces_offset, file_bytes;
+    uint32_t flags;                 /* MESH_BIN_HAS_UV, MESH_BIN_UV_F64 */
+} MeshBinHeader;
+int MeshBin_header(const char *path, MeshBinHeader *out);
+
 /* Atomic binary write.  uv == NULL writes a geometry-only container. */
 int MeshBin_write(const char *path, const float *verts, size_t nv,
                   const int32_t *faces, size_t nf, const float *uv);
@@ -57,6 +65,11 @@ int MeshBin_stream_open(Arena_T arena, const char *path, size_t nv, size_t nf,
 int MeshBin_stream_open_uv64(Arena_T arena, const char *path, size_t nv, size_t nf,
                              MeshBinStream_T *out);
 int MeshBin_stream_append(MeshBinStream_T writer, const MeshBinData *chunk);
+/* map has chunk->nv entries: -1 omits a vertex, retained entries must be
+ * exactly 0..nv-1 in original order. Every face must reference a retained
+ * vertex. Attributes/faces are compacted in bounded buffers, then rebased. */
+int MeshBin_stream_append_mapped(MeshBinStream_T writer, const MeshBinData *chunk,
+                                 const int32_t *map, size_t nv);
 int MeshBin_stream_close(MeshBinStream_T *writer, int publish);
 
 /* Strict readers: version/endian/layout, exact EOF, and every face index are

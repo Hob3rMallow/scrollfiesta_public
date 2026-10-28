@@ -6,6 +6,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <tiffio.h>
+#include "../common/ves_platform.h"
+#ifdef near
+#undef near
+#endif
+#ifdef far
+#undef far
+#endif
 
 typedef struct { uint64_t key; size_t hits; } RawtexPair;
 typedef struct {
@@ -335,7 +343,15 @@ int Rawtex_plan(const float *uv, size_t nv, double du, double dv,
     return Rawtex_plan_window(uv, nv, du, dv, max_px, NULL, out);
 }
 
-int Rawtex_write_tif_field(const char *path, CubeTable *ct,
+/* A band keeps the GLOBAL pixel frame and face order. Only storage is local;
+ * moving the UV origin would change floating-point barycentric decisions. */
+typedef struct RawtexBand {
+    RawtexPlan plan;
+    size_t y0, rows, core0, core1;
+    uint8_t *image, *coverage;
+} RawtexBand;
+
+static int rawtex_field(const char *path, CubeTable *ct,
                             const float *verts, RawtexUv uv, size_t nv,
                             const int32_t *faces, size_t nf,
                             const float *normals,
@@ -348,7 +364,7 @@ int Rawtex_write_tif_field(const char *path, CubeTable *ct,
                             const DiagOpts *diag,
                             size_t *out_W, size_t *out_H,
                             double *out_fill, size_t *out_multi,
-                            size_t *out_skip_uv, size_t *out_skip_3d)
+                            size_t *out_skip_uv, size_t *out_skip_3d, RawtexBand *band)
 {
     /* A boundary-only hit is ownership, not a second surface layer.  The
      * fitted ribbon deliberately puts vertices on its raster lattice, so a
@@ -383,6 +399,7 @@ int Rawtex_write_tif_field(const char *path, CubeTable *ct,
     uint8_t *multi_physical = NULL; /* bit 0: <=6 vox, bit 1: >6 vox */
     double zoff = 0.0;
     int rc = 0, coverage_rc = 0;
+    size_t oy = band ? band->y0 : 0;
 
     *out_W = 0; *out_H = 0; *out_fill = 0.0; *out_multi = 0;
     if (out_skip_uv != NULL) *out_skip_uv = 0;
@@ -397,7 +414,8 @@ int Rawtex_write_tif_field(const char *path, CubeTable *ct,
      * expensive sampling pass; a plan that reports ok never rejects here. */
     {
         RawtexPlan plan;
-        if (Rawtex_plan_field(uv, nv, du, dv, max_px, window, &plan) != 0)
+        if (band) plan = band->plan;
+        else if (Rawtex_plan_field(uv, nv, du, dv, max_px, window, &plan) != 0)
             return -1;
         if (!plan.ok) {
             fprintf(stderr,
@@ -410,7 +428,7 @@ int Rawtex_write_tif_field(const char *path, CubeTable *ct,
         }
         umin = plan.umin; umax = plan.umax;
         vmin = plan.vmin; vmax = plan.vmax;
-        W = plan.W; H = plan.H;
+        W = plan.W; H = band ? band->rows : plan.H;
     }
     sum = (double *)xcalloc(W * H, sizeof(double));
     cnt = (uint32_t *)xcalloc(W * H, sizeof(uint32_t));
@@ -562,9 +580,9 @@ int Rawtex_write_tif_field(const char *path, CubeTable *ct,
         x0 = (long)ceil(lox - 0.501); x1 = (long)floor(hix + 0.001);
         y0 = (long)ceil(loy - 0.501); y1 = (long)floor(hiy + 0.001);
         if (x0 < 0) x0 = 0;
-        if (y0 < 0) y0 = 0;
+        if (y0 < (long)oy) y0 = (long)oy;
         if (x1 >= (long)W) x1 = (long)W - 1;
-        if (y1 >= (long)H) y1 = (long)H - 1;
+        if (y1 >= (long)(oy + H)) y1 = (long)(oy + H) - 1;
         int face_hit = 0;
         for (yy = y0; yy <= y1; yy++) {
             for (xx = x0; xx <= x1; xx++) {
@@ -582,7 +600,7 @@ int Rawtex_write_tif_field(const char *path, CubeTable *ct,
                 if (l0 < -1e-9 || l1 < -1e-9 || l2 < -1e-9) continue;
                 face_hit = 1;
                 on_boundary = l0 <= 1e-9 || l1 <= 1e-9 || l2 <= 1e-9;
-                pi = (size_t)yy * W + (size_t)xx;
+                pi = ((size_t)yy - oy) * W + (size_t)xx;
                 if (diag != NULL) {
                     if (f_smax > dsmax[pi]) dsmax[pi] = f_smax;
                     if (dsmin[pi] == 0 || (f_smin != 0 && f_smin < dsmin[pi]))
@@ -669,8 +687,21 @@ int Rawtex_write_tif_field(const char *path, CubeTable *ct,
              * owner still wins the pixel. */
             double cu = (ua + ub + uc) / 3.0, cv = (va + vb + vc) / 3.0;
             long sx2 = (long)cu, sy2 = (long)cv;
-            if (sx2 >= 0 && sy2 >= 0 && sx2 < (long)W && sy2 < (long)H) {
-                size_t pi = (size_t)sy2 * W + (size_t)sx2;
+            /* A long sliver may hit a center in another band. Preserve the
+             * monolithic decision to stamp only globally sub-pixel faces. */
+            if (band && sx2 >= 0 && sy2 >= (long)oy && sx2 < (long)W && sy2 < (long)(oy+H)) {
+                long gy0=(long)ceil(loy-.501),gy1=(long)floor(hiy+.001);
+                if(gy0<0)gy0=0;
+                if(gy1>=(long)band->plan.H)gy1=(long)band->plan.H-1;
+                for(long gy=gy0;gy<=gy1 && !face_hit;gy++) for(long gx=x0;gx<=x1;gx++) {
+                    double pu=gx+.5,pv=gy+.5;
+                    double l1=((pu-ua)*(vc-va)-(pv-va)*(uc-ua))/A2;
+                    double l2=((ub-ua)*(pv-va)-(vb-va)*(pu-ua))/A2;
+                    if(1-l1-l2>=-1e-9 && l1>=-1e-9 && l2>=-1e-9){face_hit=1;break;}
+                }
+            }
+            if (!face_hit && sx2 >= 0 && sy2 >= (long)oy && sx2 < (long)W && sy2 < (long)(oy+H)) {
+                size_t pi = ((size_t)sy2 - oy) * W + (size_t)sx2;
                 if (cnt[pi] == 0) {
                     float p3[3], n3[3];
                     double nn = 0.0, s = 0.0;
@@ -708,8 +739,10 @@ int Rawtex_write_tif_field(const char *path, CubeTable *ct,
         if (ncover > 0) {
             double g = gray_of(sum[px] / (double)ncover, lo, hi);
             img[px] = (uint8_t)(g * 255.0 + 0.5);
-            filled++;
-            if (ncover > 1) multi++;
+            if (!band || (oy+px/W >= band->core0 && oy+px/W < band->core1)) {
+                filled++;
+                if (ncover > 1) multi++;
+            }
         }
     }
     if (centroid_stamps > 0)
@@ -838,7 +871,10 @@ int Rawtex_write_tif_field(const char *path, CubeTable *ct,
         if (vf_total > 0)
             fprintf(stderr, "  void-filled %zu crack/pinhole px "
                     "(coverage mask tags them 128)\n", vf_total);
-        {   /* coverage sibling: <base>_coverage.png */
+        if (band) {
+            band->coverage=(uint8_t *)xmalloc(W*H);
+            for(px=0;px<W*H;px++) band->coverage[px]=cover[px]==1?255:cover[px]==2?128:0;
+        } else {   /* coverage sibling: <base>_coverage.png */
             char cpath[2600];
             size_t plen = strlen(path);
             uint8_t *cimg = (uint8_t *)xmalloc(W * H);
@@ -865,6 +901,8 @@ int Rawtex_write_tif_field(const char *path, CubeTable *ct,
         }
         free(cover);
     }
+    if (band) { band->image=img; img=NULL; }
+    else {
     rc = TiffIO_save(path, img, 1, (int)H, (int)W);
     if (coverage_rc != 0) rc = -1;
     {   /* also a full-res grayscale PNG sibling (<path>.png), written from C
@@ -890,6 +928,7 @@ int Rawtex_write_tif_field(const char *path, CubeTable *ct,
         else
             snprintf(sp + plen, sizeof sp - plen, "_strip.tif");
         TifStrip_write_gray(sp, img, (int)W, (int)H, 0, -1);
+    }
     }
     *out_W = W; *out_H = H;
     *out_fill = (double)filled / (double)(W * H);
@@ -1060,6 +1099,177 @@ done:
     free(multi_physical);
     free(component_vertices); free(component_u_lo); free(component_u_hi);
     return rc;
+}
+
+int Rawtex_write_tif_field(const char *path, CubeTable *ct,
+    const float *verts, RawtexUv uv, size_t nv, const int32_t *faces, size_t nf,
+    const float *normals, const uint8_t *face_skip, double range, int nsteps,
+    double du, double dv, double lo, double hi, double stretch_ratio, double stretch_floor,
+    double max_edge3d, size_t max_px, const RawtexWindow *window, const DiagOpts *diag,
+    size_t *out_W, size_t *out_H, double *out_fill, size_t *out_multi,
+    size_t *out_skip_uv, size_t *out_skip_3d)
+{
+    return rawtex_field(path,ct,verts,uv,nv,faces,nf,normals,face_skip,range,nsteps,
+        du,dv,lo,hi,stretch_ratio,stretch_floor,max_edge3d,max_px,window,diag,
+        out_W,out_H,out_fill,out_multi,out_skip_uv,out_skip_3d,NULL);
+}
+
+static TIFF *rawtex_stream(const char *path, size_t w, size_t h)
+{
+    TIFF *t=TIFFOpen(path,w*h>UINT32_MAX/2?"w8":"w");
+    if(!t)return NULL;
+    TIFFSetField(t,TIFFTAG_IMAGEWIDTH,(uint32_t)w);
+    TIFFSetField(t,TIFFTAG_IMAGELENGTH,(uint32_t)h);
+    TIFFSetField(t,TIFFTAG_BITSPERSAMPLE,8);
+    TIFFSetField(t,TIFFTAG_SAMPLESPERPIXEL,1);
+    TIFFSetField(t,TIFFTAG_PHOTOMETRIC,PHOTOMETRIC_MINISBLACK);
+    TIFFSetField(t,TIFFTAG_PLANARCONFIG,PLANARCONFIG_CONTIG);
+    TIFFSetField(t,TIFFTAG_COMPRESSION,COMPRESSION_NONE);
+    TIFFSetField(t,TIFFTAG_ORIENTATION,ORIENTATION_TOPLEFT);
+    TIFFSetField(t,TIFFTAG_ROWSPERSTRIP,(uint32_t)64);
+    return t;
+}
+
+int Rawtex_write_ct_tiled(const char *path, CubeTable *ct,
+    const float *verts, RawtexUv uv, size_t nv, const int32_t *faces, size_t nf,
+    const float *normals, double lo, double hi, const RawtexWindow *window,
+    size_t max_px, size_t band_rows, size_t *out_W, size_t *out_H,
+    double *out_fill, size_t *out_multi)
+{
+    RawtexPlan plan;
+    TIFF *image=NULL,*coverage=NULL;
+    char cp[2600];
+    size_t *starts=NULL,*cursor=NULL,*face_ids=NULL,filled=0,multi=0;
+    int32_t *selected=NULL;
+    int rc=-1;
+    *out_W=*out_H=*out_multi=0;*out_fill=0;
+    if(!nf || Rawtex_plan_field(uv,nv,1,1,max_px,window,&plan) || !plan.ok)return -1;
+    if(!band_rows){band_rows=1048576/plan.W;if(band_rows>128)band_rows=128;if(!band_rows)band_rows=1;}
+    size_t bands=(plan.H+band_rows-1)/band_rows;
+    starts=(size_t *)calloc(bands+1,sizeof *starts);
+    cursor=(size_t *)calloc(bands,sizeof *cursor);
+    if(!starts || !cursor)goto out;
+    /* Stable per-band face lists avoid revisiting the full mesh for each band. */
+    for(int pass=0;pass<2;pass++) {
+        for(size_t f=0;f<nf;f++) {
+            double a=Rawtex_uv(uv,2*(size_t)faces[3*f]+1)-plan.vmin;
+            double b=Rawtex_uv(uv,2*(size_t)faces[3*f+1]+1)-plan.vmin;
+            double c=Rawtex_uv(uv,2*(size_t)faces[3*f+2]+1)-plan.vmin;
+            long y0=(long)floor(fmin(a,fmin(b,c)))-5,y1=(long)ceil(fmax(a,fmax(b,c)))+5;
+            if(y1<0 || y0>=(long)plan.H)continue;
+            if(y0<0)y0=0;if(y1>=(long)plan.H)y1=(long)plan.H-1;
+            for(size_t t=(size_t)y0/band_rows;t<=(size_t)y1/band_rows;t++) {
+                if(!pass)starts[t+1]++;
+                else face_ids[starts[t]+cursor[t]++]=f;
+            }
+        }
+        if(!pass) {
+            size_t largest=0;
+            for(size_t t=0;t<bands;t++){if(starts[t+1]>largest)largest=starts[t+1];starts[t+1]+=starts[t];}
+            face_ids=(size_t *)malloc((starts[bands]?starts[bands]:1)*sizeof *face_ids);
+            selected=(int32_t *)malloc((largest?largest:1)*3*sizeof *selected);
+            if(!face_ids || !selected)goto out;
+        }
+    }
+    snprintf(cp,sizeof cp,"%s",path);
+    size_t length=strlen(cp);
+    if(length>4 && !strcmp(cp+length-4,".tif"))length-=4;
+    snprintf(cp+length,sizeof cp-length,"_coverage.tif");
+    image=rawtex_stream(path,plan.W,plan.H);coverage=rawtex_stream(cp,plan.W,plan.H);
+    if(!image || !coverage)goto out;
+    fprintf(stderr,"[orch] stage ct: Rendering CT in %zu bands at full resolution\n",bands);
+    for(size_t t=0;t<bands;t++) {
+        size_t core0=t*band_rows,core1=core0+band_rows;
+        if(core1>plan.H)core1=plan.H;
+        size_t y0=core0>4?core0-4:0,y1=core1+4;
+        if(y1>plan.H)y1=plan.H;
+        RawtexBand band={0};band.plan=plan;band.y0=y0;band.rows=y1-y0;band.core0=core0;band.core1=core1;
+        size_t count=starts[t+1]-starts[t],w=0,h=0,m=0;
+        double fill=0;
+        for(size_t k=0;k<count;k++)memcpy(selected+3*k,faces+3*face_ids[starts[t]+k],3*sizeof *selected);
+        if(count) {
+            if(rawtex_field(path,ct,verts,uv,nv,selected,count,normals,NULL,4,5,1,1,lo,hi,
+                SHEET_LAYERS_STRETCH_RATIO,SHEET_LAYERS_STRETCH_FLOOR,0,max_px,window,NULL,
+                &w,&h,&fill,&m,NULL,NULL,&band)) { free(band.image);free(band.coverage);goto out; }
+            filled+=(size_t)llround(fill*(double)(w*h));multi+=m;
+        } else {
+            band.image=(uint8_t *)calloc(plan.W*band.rows,1);
+            band.coverage=(uint8_t *)calloc(plan.W*band.rows,1);
+            if(!band.image || !band.coverage){free(band.image);free(band.coverage);goto out;}
+        }
+        int failed=0;
+        for(size_t y=core0;y<core1;y++) {
+            if(TIFFWriteScanline(image,band.image+(y-y0)*plan.W,(uint32_t)y,0)<0 ||
+               TIFFWriteScanline(coverage,band.coverage+(y-y0)*plan.W,(uint32_t)y,0)<0){failed=1;break;}
+        }
+        free(band.image);free(band.coverage);
+        if(failed)goto out;
+        if(!getenv("PIPELINE_PROGRESS") || strcmp(getenv("PIPELINE_PROGRESS"),"0")) {
+            fprintf(stderr,"[orch] progress %zu/%zu\n",t+1,bands);fflush(stderr);
+        }
+    }
+    if(!TIFFWriteDirectory(image) || !TIFFWriteDirectory(coverage))goto out;
+    *out_W=plan.W;*out_H=plan.H;*out_fill=(double)filled/(double)(plan.W*plan.H);*out_multi=multi;
+    rc=0;
+out:
+    if(image)TIFFClose(image);if(coverage)TIFFClose(coverage);
+    free(starts);free(cursor);free(face_ids);free(selected);
+    /* Retain the historical PNG/strip siblings. Their export uses a single
+     * byte raster, after the large sampling accumulators have been released. */
+    if(!rc)for(int kind=0;kind<2;kind++) {
+        Arena_T arena=Arena_new();uint8_t *pixels=NULL;int d,h,w;
+        const char *src=kind?cp:path;char png[2700];
+        if(!TiffIO_load(arena,src,&pixels,&d,&h,&w)) {
+            snprintf(png,sizeof png,"%s",src);size_t n=strlen(png);
+            if(n>4)n-=4;snprintf(png+n,sizeof png-n,".png");
+            if(VesPng_write_gray(png,pixels,w,h))fprintf(stderr,"  PNG unavailable; full-resolution TIFF is retained\n");
+            if(!kind){snprintf(png+n,sizeof png-n,"_strip.tif");TifStrip_write_gray(png,pixels,w,h,0,-1);}
+        }
+        Arena_dispose(&arena);
+    }
+    return rc;
+}
+
+int Rawtex_tiled_selftest(void)
+{
+    char root[256],reference[320],tiled[320];
+    snprintf(root,sizeof root,VES_SELFTEST_DIR "/rawtex_tiled_%lu",(unsigned long)ves_getpid());
+    ves_mkdir(VES_SELFTEST_DIR);ves_mkdir(root);
+    snprintf(reference,sizeof reference,"%s/reference.tif",root);snprintf(tiled,sizeof tiled,"%s/tiled.tif",root);
+    CubeTable ct={0};uint8_t *volume=(uint8_t *)malloc(64*64*64);uint8_t *slot[1]={volume};
+    if(!volume)return 1;
+    ct.chunk=64;ct.nx=ct.ny=ct.nz=1;ct.n_loaded=1;ct.slot=slot;
+    for(int z=0;z<64;z++)for(int y=0;y<64;y++)for(int x=0;x<64;x++)volume[(z*64+y)*64+x]=(uint8_t)((x*11+y*17+z*3)%256);
+    float verts[81*3],normals[81*3];double uv[81*2];int32_t faces[128*3];size_t nf=0;
+    for(int y=0;y<9;y++)for(int x=0;x<9;x++) {
+        int i=y*9+x;double u=x*5+.137+sin(y*2.)*.15,v=y*5+.237+cos(x*3.)*.19;
+        uv[2*i]=u;uv[2*i+1]=v;verts[3*i]=20;verts[3*i+1]=(float)(v+5);verts[3*i+2]=(float)(u+5);
+        normals[3*i]=1;normals[3*i+1]=normals[3*i+2]=0;
+        if(x<8 && y<8 && (x+3*y)%13!=0) {
+            int32_t a[6]={i,i+1,i+9,i+1,i+10,i+9};memcpy(faces+3*nf,a,sizeof a);nf+=2;
+        }
+    }
+    RawtexWindow win={0,42,0,42};size_t w,h,m,tw,th,tm;double fill,tf;
+    int fail=Rawtex_write_tif_field(reference,&ct,verts,(RawtexUv){NULL,uv},81,faces,nf,normals,NULL,
+        4,5,1,1,12,243,SHEET_LAYERS_STRETCH_RATIO,SHEET_LAYERS_STRETCH_FLOOR,0,42*42,&win,NULL,
+        &w,&h,&fill,&m,NULL,NULL)!=0;
+    for(size_t rows=1;rows<=19;rows+=3) {
+        fail+=Rawtex_write_ct_tiled(tiled,&ct,verts,(RawtexUv){NULL,uv},81,faces,nf,normals,12,243,&win,42*42,rows,
+            &tw,&th,&tf,&tm)!=0;
+        fail+=tw!=w || th!=h || tm!=m || fabs(tf-fill)>1e-12;
+        for(int coverage=0;coverage<2;coverage++) {
+            char a[350],b[350];snprintf(a,sizeof a,"%s/reference%s.tif",root,coverage?"_coverage":"");
+            snprintf(b,sizeof b,"%s/tiled%s.tif",root,coverage?"_coverage":"");
+            Arena_T arena=Arena_new();uint8_t *av=NULL,*bv=NULL;int ad,ah,aw,bd,bh,bw;
+            if(TiffIO_load(arena,a,&av,&ad,&ah,&aw) || TiffIO_load(arena,b,&bv,&bd,&bh,&bw))fail++;
+            else fail+=ad!=bd || aw!=bw || ah!=bh || memcmp(av,bv,(size_t)aw*ah)!=0;
+            Arena_dispose(&arena);
+        }
+    }
+    free(volume);
+    if(!fail)ves_selftest_clean(root);
+    fprintf(stderr,"[selftest] tiled CT/coverage, stable coordinates, holes and band halos: %s (%d)\n",fail?"FAIL":"PASS",fail);
+    return fail?1:0;
 }
 
 int Rawtex_write_tif(const char *path, CubeTable *ct,

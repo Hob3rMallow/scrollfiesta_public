@@ -1,6 +1,11 @@
+#ifdef _WIN32
+#include <intrin.h>
+#endif
 #include "asm_contacts.h"
 #include "../common/pipeline_constants.h"
 #include "../common/union_find.h"
+#include "../common/ves_pool.h"
+#include "../common/ves_platform.h"
 #include <float.h>
 #include <limits.h>
 #include <math.h>
@@ -19,7 +24,8 @@ const char *AsmContacts_material_policy(void) { return "original_boundary_overla
  * sequence as the serial walk and the answers are bit-identical. */
 typedef struct AcLeafPair { int32_t a, b; } AcLeafPair;
 typedef struct AcHit { int32_t lp, seq; size_t a, b; double area, raw_area, ga[6], gb[6]; } AcHit;
-typedef struct AcBuf { AcHit *hit; size_t n, cap; int failed; } AcBuf;
+#define AC_UNMEASURED_SAMPLE 8   /* the first unmeasured pairs a walk keeps for its ledger */
+typedef struct AcBuf { AcHit *hit; size_t n, cap; int failed; size_t unmeasured, first_a, first_b; } AcBuf;
 
 /* WALK MEMO.  The sequence of hits a walk commits is a function of the
  * tree's partition, the coordinates, the active mask, the frame labels, the
@@ -70,6 +76,7 @@ struct AsmContacts {
     AsmContactWeight objective_weight;
     void *objective_context;
     int failed;
+    size_t unmeasured_ab[2*AC_UNMEASURED_SAMPLE], n_unmeasured_ab;   /* the first unmeasured pairs of the walk */
     double *built;        /* the geometry this tree was built on (2*nv), or NULL */
     int     have_built;
     int     threads;      /* <= 1 keeps the exact serial walk */
@@ -91,6 +98,8 @@ struct AsmContacts {
     uint8_t *probe_nodes;
     size_t probe_capacity;
     const uint8_t *probe_exclude;
+    struct AcCharts *charts;   /* embedded-chart pruning (AsmContacts_set_charts), or NULL */
+    const double *center;      /* [2*nf] face centroids during ac_build_all, else NULL */
 };
 
 /* Bump arenas cannot realloc: grow by allocating the larger block and copying.
@@ -112,8 +121,16 @@ static double ac_cross(double ax, double ay, double bx, double by)
  * repair corrections on a 10^3 block (2026-09-26). Unequal ordered inputs take the
  * comparison; equal or unordered ones (signed zeros, NaN) still reach the
  * CRT function, so every result is bit-identical to fmin/fmax. */
-static inline double ac_min(double a, double b) { return a < b ? a : b < a ? b : fmin(a,b); }
-static inline double ac_max(double a, double b) { return a > b ? a : b > a ? b : fmax(a,b); }
+/* Equal inputs with identical bits (a vertex shared by faces of one leaf meets
+ * its own coordinate) are their own fmin/fmax, so only signed zeros and NaN
+ * reach the CRT (2026-10-05: fmin+fmax were 1.6% of a large assembly's busy samples). */
+static inline int ac_same(double a, double b)
+{
+    uint64_t x, y; memcpy(&x,&a,sizeof x); memcpy(&y,&b,sizeof y);
+    return a == b && x == y;
+}
+static inline double ac_min(double a, double b) { return a < b ? a : b < a ? b : ac_same(a,b) ? a : fmin(a,b); }
+static inline double ac_max(double a, double b) { return a > b ? a : b > a ? b : ac_same(a,b) ? a : fmax(a,b); }
 
 #include "asm_contacts_band.inc"
 #include "asm_contacts_material.inc"
@@ -149,6 +166,13 @@ static int ac_overlap(const double a[6], const double b[6], double tolerance)
              * the edge length (a CRT hypot call) is needed only past it; a
              * degenerate edge projects to a zero gap and still separates. */
             if (tolerance >= 0 && gap <= 0) return 0;
+            /* The edge length matters only near the threshold.  A negative
+             * tolerance never separates a positive gap; a nonnegative one
+             * cannot separate a gap beyond tolerance*(|nx|+|ny|) (>= the
+             * length, with a margin for the roundoff of both products), so
+             * neither needs the hypot call -- the same decision either way.
+             * Touching neighbours reach here twice per objective pair. */
+            if (gap > 0 && (tolerance < 0 || gap > tolerance*(fabs(nx)+fabs(ny))*(1+16*DBL_EPSILON))) continue;
             double norm = hypot(nx,ny);
             if (!(norm > 0)) return 0;
             if (gap <= tolerance*norm) return 0;
@@ -186,6 +210,19 @@ static double ac_clip_polygon(const double a[6], const double b[6],double *clipp
     return .5*fabs(area);
 }
 
+/* Near-parallel boundary clipping divides two small determinants. Computing
+ * each as a difference of rounded products can give incompatible intersection
+ * parameters on opposite triangle banks, even producing a net translation
+ * force. Retain the product residuals; this changes arithmetic accuracy, not
+ * the contact tolerance or the treatment of coincident edges. */
+static double ac_boundary_cross(double x,double y,double u,double v)
+{
+    double p=x*v,q=y*u,head=p-q;
+    double bv=p-head,av=head+bv;
+    double difference_tail=(p-av)+(bv-q);
+    return head+(difference_tail+fma(x,v,-p)-fma(y,u,-q));
+}
+
 static void ac_boundary_gradient(const double a[6], const double b[6], double g[6])
 {
     memset(g,0,6*sizeof(double));
@@ -196,8 +233,8 @@ static void ac_boundary_gradient(const double a[6], const double b[6], double g[
         for (int v = 0; v < 3; v++) {
             int w = (v+1)%3;
             double bx = b[2*w]-b[2*v], by = b[2*w+1]-b[2*v+1];
-            double start = ac_cross(bx,by,a[2*k]-b[2*v],a[2*k+1]-b[2*v+1]);
-            double slope = ac_cross(bx,by,ex,ey);
+            double start = ac_boundary_cross(bx,by,a[2*k]-b[2*v],a[2*k+1]-b[2*v+1]);
+            double slope = ac_boundary_cross(bx,by,ex,ey);
             if (slope > 0) lo = ac_max(lo,-start/slope);
             else if (slope < 0) hi = ac_min(hi,-start/slope);
             else { if (start < 0) possible = 0; if (start == 0) coincident = 1; }
@@ -236,9 +273,11 @@ static double ac_center(const AsmContacts *q, size_t face, int axis)
     return (q->uv[2*(size_t)f[0]+axis]+q->uv[2*(size_t)f[1]+axis]+q->uv[2*(size_t)f[2]+axis])/3;
 }
 
+/* The build's centroids (ac_build_all computes them once with ac_center, so
+ * every comparison sees the values it used to recompute per call). */
 static int ac_less(const AsmContacts *q, size_t a, size_t b, int axis)
 {
-    double x = ac_center(q,a,axis), y = ac_center(q,b,axis);
+    double x = q->center[2*a+(size_t)axis], y = q->center[2*b+(size_t)axis];
     return x < y || (x == y && a < b);
 }
 
@@ -354,7 +393,7 @@ static int ac_build_top(AsmContacts *q, size_t begin, size_t end, int32_t id, si
     return ac_build_top(q,mid,end,node->right,grain,tasks,ntasks);
 }
 
-static int ac_build_all(AsmContacts *q)
+static int ac_build_tasks(AsmContacts *q)
 {
     int nt = q->threads;
     if (nt <= 1 || q->nf < AC_PARALLEL_MIN_FACES) return ac_build_at(q,0,q->nf,0);
@@ -366,6 +405,22 @@ static int ac_build_all(AsmContacts *q)
     for (t = 0; t < ntasks; t++) if (ac_build_at(q,tasks[t].begin,tasks[t].end,tasks[t].id) < 0) bad |= 1;
     free(tasks);
     return bad ? -1 : 0;
+}
+
+/* The quickselect compared two centroids per step, each recomputed from three
+ * coordinates and a division (ac_select was 2.1% of a large assembly's busy samples,
+ * 2026-10-06); they are computed once per build instead, with the same
+ * expression, so the comparisons and the tree are unchanged. */
+static int ac_build_all(AsmContacts *q)
+{
+    double *center = malloc((q->nf ? 2*q->nf : 1)*sizeof *center);
+    if (!center) return -1;
+    for (size_t f = 0; f < q->nf; f++) { center[2*f] = ac_center(q,f,0); center[2*f+1] = ac_center(q,f,1); }
+    q->center = center;
+    int rc = ac_build_tasks(q);
+    q->center = NULL;
+    free(center);
+    return rc;
 }
 
 AsmContacts *AsmContacts_new(Arena_T arena, size_t nv, const int32_t *faces,
@@ -421,6 +476,7 @@ static size_t ac_default_budget(size_t leaves)
  * that geometry is unchanged the existing partition IS the rebuild, and the
  * refit inside every measure re-establishes the boxes.  The comparison is one
  * linear pass against an O(n log n) median selection at every node. */
+static void acc_nodes(AsmContacts *q);   /* asm_contacts_charts.inc */
 int AsmContacts_rebuild(AsmContacts *q,const double *uv)
 {
     if(!q || !uv)return -1;
@@ -432,6 +488,7 @@ int AsmContacts_rebuild(AsmContacts *q,const double *uv)
     for(size_t f=0;f<q->nf;f++)q->order[f]=f;
     q->version++;   /* even a failed build leaves no partition a memo may assume */
     if(ac_build_all(q)<0)return -1;
+    acc_nodes(q);
     if(!acm_refit(q->material,uv,NULL))return -1;
     if(q->built){memcpy(q->built,uv,2*q->nv*sizeof *q->built);q->have_built=1;}
     q->leaves=0;for(size_t i=0;i<q->nodes;i++)q->leaves+=q->tree[i].left<0;
@@ -443,6 +500,8 @@ void AsmContacts_leaf_pair_budget(AsmContacts *q, size_t budget)
 { if (q) { q->budget = budget; q->budget_explicit = 1; } }
 size_t AsmContacts_budget(const AsmContacts *q) { return q ? q->budget : 0; }
 size_t AsmContacts_leaves(const AsmContacts *q) { return q ? q->leaves : 0; }
+
+#include "asm_contacts_charts.inc"
 
 static int ac_boxes(const AcNode *a, const AcNode *b)
 {
@@ -499,21 +558,62 @@ static int ac_separated(const double x[6], const double y[6])
     return 0;
 }
 
+/* Diagnostic pair-test counters (process-wide, interlocked; AsmContacts_pair_counts).
+ * Compiled out by default: interlocked adds in the pair test cost more than
+ * most pairs (E18 profiling, 2026-10-05). */
+#ifndef AC_PAIR_COUNTERS
+#define AC_PAIR_COUNTERS 0
+#endif
+static volatile long long ac_count_tests,ac_count_separated,ac_count_edge_clear,ac_count_vertex,ac_count_edge,ac_count_material,ac_count_hits;
+static volatile long long ac_count_leafpairs,ac_count_culls,ac_count_selfleaf;
+static volatile long long ac_count_vhit_area,ac_count_vhit_raw,ac_count_vhit_derivative,ac_count_ehit,ac_count_nhit;
+static void ac_count_add(volatile long long *p,long long v)
+{
+    if(!AC_PAIR_COUNTERS)return;
+#ifdef _WIN32
+    _InterlockedExchangeAdd64((volatile __int64 *)p,v);
+#else
+    __sync_fetch_and_add(p,v);
+#endif
+}
+void AsmContacts_pair_counts(long long out[7])
+{
+    out[0]=ac_count_tests;out[1]=ac_count_separated;out[2]=ac_count_edge_clear;out[3]=ac_count_vertex;
+    out[4]=ac_count_edge;out[5]=ac_count_material;out[6]=ac_count_hits;
+}
+void AsmContacts_hit_classes(long long out[5])
+{out[0]=ac_count_vhit_area;out[1]=ac_count_vhit_raw;out[2]=ac_count_vhit_derivative;out[3]=ac_count_ehit;out[4]=ac_count_nhit;}
+void AsmContacts_leaf_counts(long long out[3]){out[0]=ac_count_leafpairs;out[1]=ac_count_culls;out[2]=ac_count_selfleaf;}
+
 /* Geometry only: no shared state is touched, so this is what a worker runs.
  * Returns 1 when the pair contacts, -1 when its area is not finite. */
 static int ac_pair_area(const AsmContacts *q,size_t a,size_t b,double *area_out,double *raw_out,double *ga,double *gb,AcBandWork *work)
 {
     if (q->frames && q->frames[a] != q->frames[b]) return 0;
     if (q->active_faces && !q->active_faces[a] && !q->active_faces[b]) return 0;
+    if (acc_skip_faces(q,a,b)) return 0;
+    ac_count_add(&ac_count_tests,1);
+    int shared=0;
+    if(AC_PAIR_COUNTERS){   const int32_t *fa=q->faces+3*a,*fb=q->faces+3*b;
+        for(int i=0;i<3;i++)for(int j=0;j<3;j++)shared+=fa[i]==fb[j];
+        if(shared==1)ac_count_add(&ac_count_vertex,1);else if(shared==2)ac_count_add(&ac_count_edge,1);
+    }
     double x[6],y[6];ac_face_xy(q,q->uv,a,x);ac_face_xy(q,q->uv,b,y);
-    if(ac_separated(x,y))return 0;
-    if(q->objective_mode && ac_shared_edge_clear(q,a,b))return 0;
+    if(ac_separated(x,y)){ac_count_add(&ac_count_separated,1);return 0;}
+    if(q->objective_mode && ac_shared_edge_clear(q,a,b)){ac_count_add(&ac_count_edge_clear,1);return 0;}
+    ac_count_add(&ac_count_material,1);
     double area=ac_material_pair(work,q->material,a,q->uv,x,q->material,b,q->uv,y,q->tolerance,ga,gb,q->objective_mode?raw_out:NULL);
     if (!isfinite(area)) return -1;
     int derivative=0;
     if(q->objective_mode && ga && gb)for(int k=0;k<6;k++)derivative|=ga[k]!=0 || gb[k]!=0;
     if (!(area > 0) && !(q->objective_mode && (*raw_out>0 || derivative))) return 0;
-    *area_out = area;
+    *area_out = area;ac_count_add(&ac_count_hits,1);
+    if(!AC_PAIR_COUNTERS){}
+    else if(shared==1){
+        if(area>0)ac_count_add(&ac_count_vhit_area,1);
+        else if(q->objective_mode && *raw_out>0)ac_count_add(&ac_count_vhit_raw,1);
+        else ac_count_add(&ac_count_vhit_derivative,1);
+    }else if(shared>=2)ac_count_add(&ac_count_ehit,1);else ac_count_add(&ac_count_nhit,1);
     return 1;
 }
 
@@ -531,13 +631,25 @@ static void ac_commit(AsmContacts *q, size_t a, size_t b, double area,double raw
     if (q->visit && area>0) q->visit(q->context,a,b,area);
 }
 
+/* A pair whose material-boundary test could not finish (its gather overflowed
+ * ACB_SEGMENTS): a certificate walk counts it UNMEASURED and goes on, so the
+ * audit completes and says so (2026-10-23: PHerc1218 chart 63586, laid over
+ * itself, killed its audit with no message); an objective walk fails as before. */
+static void ac_unmeasured(AsmContacts *q, size_t count, size_t a, size_t b)
+{
+    q->stats.unmeasured += count;
+    if (q->n_unmeasured_ab < AC_UNMEASURED_SAMPLE) {
+        q->unmeasured_ab[2*q->n_unmeasured_ab] = a; q->unmeasured_ab[2*q->n_unmeasured_ab+1] = b; q->n_unmeasured_ab++;
+    }
+}
+
 /* The serial walk runs the same two halves the workers do, so the two paths
  * cannot drift apart. */
 static void ac_pair(AsmContacts *q, size_t a, size_t b)
 {
     double area = 0.0,raw_area=0,ga[6],gb[6];
     int hit = ac_pair_area(q,a,b,&area,&raw_area,q->gradient ? ga : NULL,q->gradient ? gb : NULL,ac_work(q));
-    if (hit < 0) { q->failed = 1; return; }
+    if (hit < 0) { if (q->objective_mode) q->failed = 1; else ac_unmeasured(q,1,a,b); return; }
     if (!hit) return;
     if (q->recording) {
         if (q->n_merged == q->cap_merged) {
@@ -623,6 +735,7 @@ static int ac_cull_apart(const AcCull *c, size_t i, size_t j)
 static AC_NOINLINE void ac_walk_leaves(AsmContacts *q, const AcNode *one, const AcNode *two, int self)
 {
     AcCull cull; ac_cull_leaves(q,one,two,self,&cull);
+    {size_t n1=one->end-one->begin,n2=two->end-two->begin;ac_count_add(&ac_count_leafpairs,1);ac_count_add(&ac_count_culls,(long long)(self?n1*(n1-1)/2:n1*n2));if(self)ac_count_add(&ac_count_selfleaf,1);}
     for (size_t i = one->begin; i < one->end; i++)
         for (size_t j = self ? i+1 : two->begin; j < two->end; j++)
             if (!ac_cull_apart(&cull,i-one->begin,j-two->begin)) ac_pair(q,q->order[i],q->order[j]);
@@ -633,6 +746,7 @@ static void ac_walk(AsmContacts *q, int32_t a, int32_t b)
     if (q->over_budget) return;
     AcNode *one = q->tree+a, *two = q->tree+b;
     if (!one->active && !two->active) return;
+    if (acc_skip_nodes(q,a,b)) return;
     if (!ac_boxes(one,two)) return;
     if (one->left < 0 && two->left < 0) {
         if (ac_leaf_pair_budget(q)) return;
@@ -651,6 +765,7 @@ static int ac_collect(AsmContacts *q, int32_t a, int32_t b)
     if (q->over_budget) return -2;
     AcNode *one = q->tree+a, *two = q->tree+b;
     if (!one->active && !two->active) return 0;
+    if (acc_skip_nodes(q,a,b)) return 0;
     if (!ac_boxes(one,two)) return 0;
     if (one->left < 0 && two->left < 0) {
         if (ac_leaf_pair_budget(q)) return -2;
@@ -684,12 +799,17 @@ static void ac_leafpair_run(AsmContacts *q, int32_t lp, AcBuf *buf)
     const AcNode *one = q->tree+q->lp[lp].a, *two = q->tree+q->lp[lp].b;
     int self = q->lp[lp].a == q->lp[lp].b, seq = 0;
     AcCull cull; ac_cull_leaves(q,one,two,self,&cull);
+    {size_t n1=one->end-one->begin,n2=two->end-two->begin;ac_count_add(&ac_count_leafpairs,1);ac_count_add(&ac_count_culls,(long long)(self?n1*(n1-1)/2:n1*n2));if(self)ac_count_add(&ac_count_selfleaf,1);}
     for (size_t i = one->begin; i < one->end; i++)
         for (size_t j = self ? i+1 : two->begin; j < two->end; j++) {
             if (ac_cull_apart(&cull,i-one->begin,j-two->begin)) continue;
             double area = 0.0,raw_area=0,ga[6],gb[6];
             int hit = ac_pair_area(q,q->order[i],q->order[j],&area,&raw_area,q->gradient ? ga : NULL,q->gradient ? gb : NULL,q->band_work+(buf-q->buf));
-            if (hit < 0) { buf->failed = 1; continue; }
+            if (hit < 0) {
+                if (q->objective_mode) buf->failed = 1;
+                else { if (!buf->unmeasured) { buf->first_a = q->order[i]; buf->first_b = q->order[j]; } buf->unmeasured++; }
+                continue;
+            }
             if (!hit) continue;
             if (buf->n == buf->cap) {
                 size_t cap = buf->cap ? 2*buf->cap : 1024;
@@ -712,35 +832,15 @@ static int ac_cmp_hit(const void *x, const void *y)
     return (a->seq > b->seq) - (a->seq < b->seq);
 }
 
-/* Enumerate serially, measure in parallel, then commit in the serial walk's
- * own order: the tallies receive the same values in the same sequence, so the
- * threaded answer is bit-identical to the serial one. */
-static int ac_walk_threaded(AsmContacts *q)
+/* The per-thread hit buffers of one walk, merged into the serial walk's
+ * order (leaf pair, then sequence within it) and committed in that order. */
+static int ac_merge_commit(AsmContacts *q, int nt)
 {
-    int nt = q->threads;
-    q->n_lp = 0; q->n_merged = 0;
-    if (ac_collect(q,0,0)) return q->over_budget ? -2 : -1;
-    if (!q->n_lp) return 0;
-    if (nt > (int)q->n_lp) nt = (int)q->n_lp;
-    if (nt < 1) nt = 1;
-    if (q->n_buf < nt) {
-        q->buf = (AcBuf *)ac_grow(q->arena, q->buf, (size_t)q->n_buf*sizeof *q->buf, (size_t)nt*sizeof *q->buf);
-        q->n_buf = nt;
-    }
-    for (int t = 0; t < nt; t++) { q->buf[t].hit = NULL; q->buf[t].n = 0; q->buf[t].cap = 0; q->buf[t].failed = 0; }
-#ifdef _OPENMP
-#pragma omp parallel num_threads(nt)
-    {
-        AcBuf *b = &q->buf[omp_get_thread_num()];
-        long count = (long)q->n_lp, k;
-#pragma omp for schedule(dynamic,16)
-        for (k = 0; k < count; k++) ac_leafpair_run(q,(int32_t)k,b);
-    }
-#else
-    for (size_t k = 0; k < q->n_lp; k++) ac_leafpair_run(q,(int32_t)k,&q->buf[0]);
-#endif
     size_t total = 0;
-    for (int t = 0; t < nt; t++) { total += q->buf[t].n; if (q->buf[t].failed) q->failed = 1; }
+    for (int t = 0; t < nt; t++) {
+        total += q->buf[t].n; if (q->buf[t].failed) q->failed = 1;
+        if (q->buf[t].unmeasured) ac_unmeasured(q,q->buf[t].unmeasured,q->buf[t].first_a,q->buf[t].first_b);
+    }
     if (q->cap_merged < total) {
         q->merged = (AcHit *)ac_grow(q->arena, q->merged, 0, total*sizeof *q->merged);
         q->cap_merged = total;
@@ -759,11 +859,85 @@ static int ac_walk_threaded(AsmContacts *q)
     return 0;
 }
 
+/* Enumerate serially, measure in parallel, then commit in the serial walk's
+ * own order: the tallies receive the same values in the same sequence, so the
+ * threaded answer is bit-identical to the serial one. */
+static int ac_walk_threaded(AsmContacts *q)
+{
+    int nt = q->threads;
+    q->n_lp = 0; q->n_merged = 0;
+    if (ac_collect(q,0,0)) return q->over_budget ? -2 : -1;
+    if (!q->n_lp) return 0;
+    if (nt > (int)q->n_lp) nt = (int)q->n_lp;
+    if (nt < 1) nt = 1;
+    if (q->n_buf < nt) {
+        q->buf = (AcBuf *)ac_grow(q->arena, q->buf, (size_t)q->n_buf*sizeof *q->buf, (size_t)nt*sizeof *q->buf);
+        q->n_buf = nt;
+    }
+    for (int t = 0; t < nt; t++) { q->buf[t].hit = NULL; q->buf[t].n = 0; q->buf[t].cap = 0; q->buf[t].failed = 0; q->buf[t].unmeasured = 0; }
+#ifdef _OPENMP
+#pragma omp parallel num_threads(nt)
+    {
+        AcBuf *b = &q->buf[omp_get_thread_num()];
+        long count = (long)q->n_lp, k;
+#pragma omp for schedule(dynamic,16)
+        for (k = 0; k < count; k++) ac_leafpair_run(q,(int32_t)k,b);
+    }
+#else
+    for (size_t k = 0; k < q->n_lp; k++) ac_leafpair_run(q,(int32_t)k,&q->buf[0]);
+#endif
+    return ac_merge_commit(q, nt);
+}
+
+/* POOLED WALK.  A walk on one thread inside a parallel region (a repair
+ * correction among the jobs of a wave) borrows the cores the other jobs leave
+ * idle (ves_pool.h): the same serial enumeration and the same order-restoring
+ * merge as ac_walk_threaded, so the committed sequence is the serial walk's
+ * bit for bit.  On 2026-10-05 a 240-cube assembly's repair waves kept 5.6 of 16
+ * workers busy while their slowest corrections ran single-threaded walks
+ * (contact measurement = 55% of the busy samples). */
+#define AC_POOL_MIN_LEAF_PAIRS 64
+#define AC_POOL_CHUNK 16
+
+static void ac_pool_leafpairs(void *ctx, size_t begin, size_t end, int slot)
+{
+    AsmContacts *q = (AsmContacts *)ctx;
+    for (size_t k = begin; k < end; k++) ac_leafpair_run(q, (int32_t)k, &q->buf[slot]);
+}
+
+static int ac_walk_pooled(AsmContacts *q, int helpers)
+{
+    q->n_lp = 0; q->n_merged = 0;
+    int rc = ac_collect(q,0,0);
+    if (rc == -2 || (!rc && q->n_lp < AC_POOL_MIN_LEAF_PAIRS)) {
+        /* Over its budget (the serial walk commits up to the stop) or too
+         * small to share: walk serially, exactly as before. */
+        q->over_budget = 0; q->stats.leaf_pairs = 0; q->n_lp = 0;
+        ac_walk(q,0,0);
+        return 0;
+    }
+    if (rc) return -1;
+    int nt = 1 + helpers;
+    if (q->n_buf < nt) {
+        q->buf = (AcBuf *)ac_grow(q->arena, q->buf, (size_t)q->n_buf*sizeof *q->buf, (size_t)nt*sizeof *q->buf);
+        q->n_buf = nt;
+    }
+    if (q->n_band_work < nt) {
+        q->band_work = ARENA_ALLOC(q->arena, (size_t)nt*sizeof *q->band_work);
+        q->n_band_work = nt;
+    }
+    for (int t = 0; t < nt; t++) { q->buf[t].hit = NULL; q->buf[t].n = 0; q->buf[t].cap = 0; q->buf[t].failed = 0; q->buf[t].unmeasured = 0; }
+    VesPool_run(q->n_lp, AC_POOL_CHUNK, ac_pool_leafpairs, q, helpers);
+    return ac_merge_commit(q, nt);
+}
+
 void AsmContacts_threads(AsmContacts *q,int threads)
 {
     if(!q)return;q->threads=threads;int count=threads>1?threads:1;
     if(count>q->n_band_work){q->band_work=ARENA_ALLOC(q->arena,(size_t)count*sizeof *q->band_work);q->n_band_work=count;}
 }
+
+void AsmContacts_no_memo(AsmContacts *q) { if (q) q->memo_off = 1; }
 
 /* A refit that costs the WHOLE field on every objective evaluation is what
  * made a one-chart admission as expensive as a whole-sheet repair: the
@@ -851,10 +1025,11 @@ static int ac_measure(AsmContacts *q,const double *uv,double *gradient,
     if(out)memset(out,0,sizeof *out);
     if(raw_area)*raw_area=NAN;
     if(!out || !ac_refit(q,uv))return -1;
+    acc_certify_all(q);
     q->gradient=gradient;q->visit=visit;q->context=context;
     q->objective_weight=weight;q->objective_context=weight_context;
     q->objective_mode=raw_area!=NULL;q->objective_area=0;
-    memset(&q->stats,0,sizeof q->stats);q->failed=0;q->over_budget=0;
+    memset(&q->stats,0,sizeof q->stats);q->failed=0;q->over_budget=0;q->n_unmeasured_ab=0;
     if(gradient)memset(gradient,0,2*q->nv*sizeof(double));
     AcMemo *memo=ac_memo_slot(q,gradient!=NULL);int fresh=1,replay=memo && ac_memo_hit(q,memo,uv);
     if(replay && q->memo_verify && !ac_memo_verified(q,memo,gradient!=NULL)){
@@ -867,23 +1042,36 @@ static int ac_measure(AsmContacts *q,const double *uv,double *gradient,
         for(size_t i=0;i<memo->n;i++){const AcHit *h=memo->hit+i;ac_commit(q,h->a,h->b,h->area,h->raw_area,h->ga,h->gb);}
     }else{
         q->n_merged=0;q->recording=memo!=NULL;
-        if (q->threads > 1) { int rc = ac_walk_threaded(q); if (rc && rc != -2) {
-            q->recording=0;q->objective_mode=0;q->objective_weight=NULL;q->objective_context=NULL;return -1;
-        } }
+        int helpers = q->threads > 1 ? 0 : VesPool_share();
+        if (q->threads > 1 || helpers > 0) {
+            int rc = q->threads > 1 ? ac_walk_threaded(q) : ac_walk_pooled(q,helpers);
+            if (rc && rc != -2) {
+                q->recording=0;q->objective_mode=0;q->objective_weight=NULL;q->objective_context=NULL;return -1;
+            }
+        }
         else ac_walk(q,0,0);
         q->recording=0;if(memo)q->memo_walks++;
     }
     q->objective_mode=0;q->objective_weight=NULL;q->objective_context=NULL;
-    *out = q->stats; out->complete = !q->over_budget && !q->failed;
+    *out = q->stats; out->complete = !q->over_budget && !q->failed && !q->stats.unmeasured;
     if (q->over_budget) return -2;
     if (gradient) for (size_t i = 0; i < 2*q->nv; i++) if (!isfinite(gradient[i])) return -1;
     if(q->failed || !isfinite(out->area) || !isfinite(q->objective_area))return -1;
-    if(memo && fresh)ac_memo_store(q,memo,uv);
+    if(q->stats.unmeasured)
+        fprintf(stderr,"[contacts] %zu pair(s) UNMEASURED: the material-boundary gather overflowed its %d segments (first pair: faces %zu, %zu); the walk went on, its overlaps are a lower bound\n",
+                q->stats.unmeasured,(int)ACB_SEGMENTS,q->unmeasured_ab[0],q->unmeasured_ab[1]);
+    if(memo && fresh && !q->stats.unmeasured)ac_memo_store(q,memo,uv);
     if(raw_area)*raw_area=q->objective_area;return 0;
 }
 
 int AsmContacts_measure(AsmContacts *q,const double *uv,double *gradient,AsmContactVisit visit,void *context,AsmContactStats *out)
 {return ac_measure(q,uv,gradient,visit,context,out,NULL,NULL,NULL);}
+size_t AsmContacts_unmeasured_sample(const AsmContacts *q,size_t *ab,size_t cap)
+{
+    size_t n = q ? q->n_unmeasured_ab : 0; if (n > cap) n = cap;
+    if (ab && n) memcpy(ab,q->unmeasured_ab,2*n*sizeof *ab);
+    return n;
+}
 int AsmContacts_objective(AsmContacts *q,const double *uv,double *gradient,AsmContactVisit visit,void *context,AsmContactStats *out,double *raw_area)
 {if(!raw_area)return -1;return ac_measure(q,uv,gradient,visit,context,out,raw_area,NULL,NULL);}
 int AsmContacts_weighted_objective(AsmContacts *q,const double *uv,double *gradient,
@@ -950,7 +1138,7 @@ static int ac_probe(AsmContacts *q, const double *uv, size_t n_ext, const double
     q->active_faces = NULL;
     int fine = refit ? ac_refit(q,uv) : 1;
     if(source && !acm_refit(source->material,source_uv,NULL))fine=0;
-    memset(&q->stats,0,sizeof q->stats); q->failed = 0; q->over_budget = 0;
+    memset(&q->stats,0,sizeof q->stats); q->failed = 0; q->over_budget = 0; q->n_unmeasured_ab = 0;
     for (size_t e = 0; fine && e < n_ext && !q->over_budget && !q->failed; e++) {
         double xy[6];const double *t;size_t source_face=source_faces?source_faces[e]:e;
         if(source){
@@ -1062,6 +1250,114 @@ static int ac_repartition_control(void)
  * the repair accepts or rejects trials on these numbers, so a reduction that
  * depended on the thread count would make the pipeline irreproducible.  The
  * exact comparisons below are the contract, not a tolerance oversight. */
+/* Diagnostic micro-benchmark (sheet_assemble --contact-bench): objective-mode
+ * walks with gradients over a synthetic two-layer field of `cells` jittered
+ * cells, single-threaded with the memo off.  Prints seconds per walk and a
+ * checksum of the area, raw area and gradient so builds can be compared for
+ * bit-identical answers as well as speed. */
+int AsmContacts_bench(int cells, int reps)
+{
+    if (cells < 16) cells = 16;
+    if (reps < 1) reps = 1;
+    /* A connected jittered grid (shared vertices, as a chart is) with every
+     * 61st cell folded over its neighbour: vertex- and edge-sharing
+     * neighbours dominate the pair tests, a few real overlaps exercise the
+     * material band at the production 4-vox width. */
+    int side = 1; while (side*side < cells) side++;
+    size_t nv = (size_t)(side+1)*(size_t)(side+1), nf = 2*(size_t)side*(size_t)side;
+    Arena_T arena = Arena_new();
+    double *uv = ARENA_ALLOC(arena,2*nv*sizeof(double)), *g = ARENA_ALLOC(arena,2*nv*sizeof(double));
+    int32_t *faces = ARENA_ALLOC(arena,3*nf*sizeof(int32_t));
+    uint8_t *active = ARENA_ALLOC(arena,nf);
+    uint64_t seed = 0x9E3779B97F4A7C15ull;
+    for (size_t y = 0; y <= (size_t)side; y++) for (size_t x = 0; x <= (size_t)side; x++) {
+        seed = seed*6364136223846793005ull+1442695040888963407ull;
+        double jx = (double)(seed>>40)/16777216.0-.5, jy = (double)((seed>>16)&0xFFFFFF)/16777216.0-.5;
+        size_t v = y*(size_t)(side+1)+x;
+        uv[2*v] = 1.5*(double)x+.5*jx; uv[2*v+1] = 1.5*(double)y+.5*jy;
+        if ((v % 61) == 7) { uv[2*v] += 2.2; uv[2*v+1] += 1.1; }   /* a fold */
+    }
+    for (size_t y = 0; y < (size_t)side; y++) for (size_t x = 0; x < (size_t)side; x++) {
+        size_t c = y*(size_t)side+x, a = y*(size_t)(side+1)+x, b = a+1, d = a+(size_t)(side+1), e = d+1;
+        int32_t *f = faces+6*c;
+        f[0]=(int32_t)a; f[1]=(int32_t)b; f[2]=(int32_t)e; f[3]=(int32_t)a; f[4]=(int32_t)e; f[5]=(int32_t)d;
+        active[2*c] = active[2*c+1] = (uint8_t)(c%5 != 4);
+    }
+    AsmContacts *q = AsmContacts_new(arena,nv,faces,nf,uv,4.0);
+    if (!q) { Arena_dispose(&arena); return 1; }
+    q->memo_off = 1; AsmContacts_threads(q,1); AsmContacts_active_faces(q,active);
+    int saved = VesPool_cores(); VesPool_configure(1);
+    double area = 0, raw = 0, best = 1e300; uint64_t h = 1469598103934665603ull; size_t pairs = 0, lp = 0;
+    for (int r = 0; r < reps; r++) {
+        AsmContactStats st; double ra = 0;
+        double t0 = ves_clock_sec();
+        if (AsmContacts_objective(q,uv,g,NULL,NULL,&st,&ra)) { fprintf(stderr,"contact bench: measure failed\n"); break; }
+        double dt = ves_clock_sec()-t0; if (dt < best) best = dt;
+        area = st.area; raw = ra; pairs = st.pairs; lp = st.leaf_pairs;
+    }
+    double best_value = 1e300;
+    for (int r = 0; r < reps; r++) {
+        AsmContactStats st; double ra = 0;
+        double t0 = ves_clock_sec();
+        if (AsmContacts_objective(q,uv,NULL,NULL,NULL,&st,&ra)) break;
+        double dt = ves_clock_sec()-t0; if (dt < best_value) best_value = dt;
+    }
+    fprintf(stderr,"contact bench: value-only objective best %.6f s/walk\n",best_value);
+    for (size_t k = 0; k < 2*nv; k++) { uint64_t b; memcpy(&b,&g[k],sizeof b); h = (h^b)*1099511628211ull; }
+    fprintf(stderr,"contact bench: %d cells, %zu faces, %zu leaf pairs, %zu pairs, best %.6f s/walk; area %.17g raw %.17g gradient hash %016llx\n",
+            cells,nf,lp,pairs,best,area,raw,(unsigned long long)h);
+    VesPool_configure(saved);
+    Arena_dispose(&arena);
+    return 0;
+}
+
+/* A pooled walk (one thread inside an outer job, helpers lent by ves_pool)
+ * commits the serial walk's sequence: same pairs, area and gradient, bit for
+ * bit, masked and complete; the memo is off so every request really walks. */
+static int ac_pooled_control(void)
+{
+    enum { CELLS=1024, NF=2*CELLS, NV=3*NF };
+    Arena_T arena=Arena_new();
+    double *uv=ARENA_ALLOC(arena,2*NV*sizeof(double));
+    double *serial=ARENA_ALLOC(arena,2*NV*sizeof(double)),*pooled=ARENA_ALLOC(arena,2*NV*sizeof(double));
+    int32_t *faces=ARENA_ALLOC(arena,3*NF*sizeof(int32_t));
+    uint8_t *active=ARENA_ALLOC(arena,NF);
+    const double triangle[]={0,0,1,0,0,1};
+    for(int i=0;i<NF;i++){
+        int cell=i/2;
+        for(int k=0;k<3;k++){
+            int v=3*i+k;faces[v]=v;
+            uv[2*v]=4*(cell%32)+triangle[2*k]+.25*(i%2);
+            uv[2*v+1]=4*(cell/32)+triangle[2*k+1]+.125*(i%2);
+        }
+        active[i]=(uint8_t)(cell%3!=2);
+    }
+    AsmContacts *q=AsmContacts_new(arena,NV,faces,NF,uv,1e-7);
+    if(!q){Arena_dispose(&arena);return 1;}
+    q->memo_off=1;
+    int fails=0,saved=VesPool_cores();size_t runs0=0,runs1=0,lp=0;
+    VesPool_counts(&runs0,NULL);
+    for(int masked=1;masked>=0;masked--){
+        AsmContactStats one={0},many={0};
+        AsmContacts_active_faces(q,masked?active:NULL);AsmContacts_threads(q,1);
+        VesPool_configure(1);
+        if(AsmContacts_measure(q,uv,serial,NULL,NULL,&one))fails++;
+        VesPool_configure(8);VesPool_job_enter();
+        if(AsmContacts_measure(q,uv,pooled,NULL,NULL,&many))fails++;
+        VesPool_job_leave();
+        lp=one.leaf_pairs;
+        if(one.pairs!=many.pairs || one.area!=many.area || one.leaf_pairs!=many.leaf_pairs || !(one.pairs>0))fails++;
+        for(int k=0;k<2*NV;k++)if(serial[k]!=pooled[k]){fails++;break;}
+    }
+    VesPool_counts(&runs1,NULL);
+    if(runs1<runs0+2)fails++;              /* both measurements actually borrowed helpers */
+    VesPool_configure(saved);AsmContacts_active_faces(q,NULL);
+    fprintf(stderr,"  contact walk pooled vs serial: %s (%d failures; %zu leaf pairs, %zu pooled runs)\n",
+            fails?"FAIL":"ok",fails,lp,runs1-runs0);
+    Arena_dispose(&arena);
+    return fails;
+}
+
 static int ac_threaded_control(void)
 {
     enum { CELLS=512, NF=2*CELLS, NV=3*NF };
@@ -1452,9 +1748,34 @@ static int ac_separated_control(void)
     return failures;
 }
 
+/* ac_min/ac_max bitwise == the comparison-then-CRT definitions they
+ * replaced, on signed zeros, NaN, infinities, equal and random values. */
+static int ac_minmax_control(void)
+{
+    const double special[] = {0.0, -0.0, 1.0, -1.0, 0.5, INFINITY, -INFINITY, NAN, -NAN, DBL_MIN, -DBL_MIN, 1e-310, DBL_MAX};
+    const size_t ns = sizeof special / sizeof special[0];
+    double values[64];
+    uint64_t state = 0x9E3779B97F4A7C15ULL;
+    int fails = 0;
+    for (size_t i = 0; i < 64; i++) {
+        state ^= state << 13; state ^= state >> 7; state ^= state << 17;
+        values[i] = i < ns ? special[i] : (double)(int64_t)(state >> 40) / 4096.0;
+    }
+    for (size_t i = 0; i < 64; i++) for (size_t j = 0; j < 64; j++) {
+        double a = values[i], b = values[j];
+        double lo = a < b ? a : b < a ? b : fmin(a,b), hi = a > b ? a : b > a ? b : fmax(a,b);
+        double got_lo = ac_min(a,b), got_hi = ac_max(a,b);
+        if (memcmp(&lo,&got_lo,sizeof lo) || memcmp(&hi,&got_hi,sizeof hi)) {
+            if (fails < 3) fprintf(stderr, "ac_minmax_control: (%g, %g) differs\n", a, b);
+            fails++;
+        }
+    }
+    return fails ? 1 : 0;
+}
+
 int AsmContacts_selftest(void)
 {
-    int fails = ac_separated_control()+acb_selftest()+acm_selftest()+ac_changed_refit_control()+ac_material_policy_control()+act_control()+ac_repartition_control()+ac_threaded_control()+ac_memo_control()+ac_parallel_build_control()+ac_budget_control()+ac_probe_control();
+    int fails = ac_minmax_control()+ac_separated_control()+acb_selftest()+acm_selftest()+ac_changed_refit_control()+ac_material_policy_control()+act_control()+ac_repartition_control()+ac_threaded_control()+ac_pooled_control()+ac_memo_control()+ac_parallel_build_control()+ac_budget_control()+ac_probe_control()+acc_control();
     double a[] = {0,0, 2,0, 0,2}, b[] = {.3,.2, 2.3,.2, .3,2.2}, ga[6], gb[6];
     double area = AsmContacts_pair(a,b,1e-11,ga,gb), sum = gb[0]+gb[2]+gb[4];
     for (int k = 0; k < 3; k++) b[2*k] += 1e-6;

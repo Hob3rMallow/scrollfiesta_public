@@ -7,6 +7,7 @@
 
 #include <assert.h>
 #include <math.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -60,17 +61,22 @@ int TifXYZ_write_double(Arena_T arena, const char *out_dir, const char *uuid,
     double vspan = vmax - vmin; if (vspan < 1e-9) vspan = 1e-9;
 
     /* Grid sized ~1 cell per voxel (vc_obj2tifxyz metric mode: ceil(range)+1). */
-    long Wl = (long)ceil(uspan * (double)px_per_vox) + 1;
-    long Hl = (long)ceil(vspan * (double)px_per_vox) + 1;
+    double wd = ceil(uspan * (double)px_per_vox) + 1;
+    double hd = ceil(vspan * (double)px_per_vox) + 1;
+    if (!isfinite(wd) || !isfinite(hd) || wd > INT_MAX || hd > INT_MAX ||
+        wd * hd > (double)(SIZE_MAX / (4 * sizeof(float)))) return -1;
+    int Wl = (int)wd, Hl = (int)hd;
+    int exact = opts && opts->preserve_sampling;
+    if (exact) max_dim = INT_MAX;
     int W = (Wl < 2) ? 2 : (Wl > max_dim ? max_dim : (int)Wl);
     int H = (Hl < 2) ? 2 : (Hl > max_dim ? max_dim : (int)Hl);
 
     /* meta.json "scale" = world units per pixel (matches vc_obj2tifxyz). */
-    double scale_u = uspan / (double)(W - 1);
-    double scale_v = vspan / (double)(H - 1);
+    double scale_u = exact ? 1.0 / px_per_vox : uspan / (double)(W - 1);
+    double scale_v = exact ? 1.0 / px_per_vox : vspan / (double)(H - 1);
     /* UV -> pixel factor (distinct from the metric scale above). */
-    double pxf_u = (double)(W - 1) / uspan;
-    double pxf_v = (double)(H - 1) / vspan;
+    double pxf_u = exact ? px_per_vox : (double)(W - 1) / uspan;
+    double pxf_v = exact ? px_per_vox : (double)(H - 1) / vspan;
 
     size_t ncell = (size_t)W * (size_t)H;
     float *xg = (float *)ARENA_ALLOC(arena, (size_t)(ncell * sizeof(float)));
@@ -206,11 +212,12 @@ int TifXYZ_write_double(Arena_T arena, const char *out_dir, const char *uuid,
         "  \"uuid\": \"%s\",\n"
         "  \"format\": \"tifxyz\",\n"
         "  \"scale\": [%.8f, %.8f],\n"
+        "  \"uv_origin\": [%.17g, %.17g],\n"
         "  \"contested_tolerance_vox\": %.4f,\n"
         "  \"invalid_contested_cells\": %zu\n"
         "}\n",
         lo[0], lo[1], lo[2], hi[0], hi[1], hi[2],
-        uuid, scale_u, scale_v, contested_tol, contested);
+        uuid, scale_u, scale_v, umin, vmin, contested_tol, contested);
     fclose(m);
 
     if (out_stats) {
@@ -256,6 +263,8 @@ int TifXYZ_selftest(void)
 {
     int fails = 0;
     Arena_T arena = Arena_new();
+    char root[256];
+    ves_selftest_dir(root, sizeof root, "tifxyz_write");
 
     /* (1) Float-TIFF round-trip (incl. negative sentinel values). */
     {
@@ -264,8 +273,8 @@ int TifXYZ_selftest(void)
         for (int i = 0; i < W * H; i++) {
             img[i] = (i % 3 == 0) ? -1.0f : (float)i * 0.5f - 2.25f;
         }
-        const char *p = "output/flatten_selftest/float2d.tif";
-        ves_ensure_parent_dir(p);
+        char p[320];
+        snprintf(p, sizeof p, "%s/float2d.tif", root);
         int wrc = TiffIO_save_float2d(p, img, W, H);
         float *back = NULL; int bw = 0, bh = 0;
         int rrc = TiffIO_load_float2d(arena, p, &back, &bw, &bh);
@@ -297,7 +306,8 @@ int TifXYZ_selftest(void)
 
         TifXYZOpts opt = { 32.0f, 0, 1.5f };  /* 32 px/unit -> ~33x33 grid for span 1 */
         TifXYZStats st = { 0 };
-        const char *dir = "output/flatten_selftest/tifxyz";
+        char dir[320];
+        snprintf(dir, sizeof dir, "%s/tifxyz", root);
         int wrc = TifXYZ_write(arena, dir, "selftest", v, 3, f, 1, uv, &opt, &st);
 
         float *xg = NULL, *yg = NULL, *zg = NULL;
@@ -366,7 +376,8 @@ int TifXYZ_selftest(void)
         };
         TifXYZOpts opt = { 16.0f, 0, 1.5f };
         TifXYZStats st = { 0 };
-        const char *dir = "output/flatten_selftest/tifxyz_contested";
+        char dir[320];
+        snprintf(dir, sizeof dir, "%s/tifxyz_contested", root);
         int wrc = TifXYZ_write(arena, dir, "contested", v, 6, f, 2,
                                uv, &opt, &st);
         float *xg = NULL; uint8_t *mask = NULL;
@@ -396,6 +407,26 @@ int TifXYZ_selftest(void)
         }
     }
 
+    /* A long, fractional-span strip must retain one native sample per voxel
+     * beyond the legacy dimension limit; the final partial cell stays empty. */
+    {
+        float v[12] = {10,20,30, 10,20,70030.25f, 10,22.5f,70030.25f, 10,22.5f,30};
+        double uv[8] = {0,0, 70000.25,0, 70000.25,2.5, 0,2.5};
+        int32_t f[6] = {0,1,2, 0,2,3};
+        TifXYZOpts opt = {1.0f, 32768, 1.5f, 1};
+        TifXYZStats st = {0};
+        char dir[320], xpath[360];
+        snprintf(dir, sizeof dir, "%s/tifxyz_full_width", root);
+        snprintf(xpath, sizeof xpath, "%s/x.tif", dir);
+        int rc = TifXYZ_write_double(arena,dir,"native",v,4,f,2,uv,&opt,&st);
+        float *x = NULL;int w = 0,h = 0;
+        int read = TiffIO_load_float2d(arena,xpath,&x,&w,&h);
+        int ok = !rc && !read && w == 70002 && h == 4 && st.scale_u == 1 && st.scale_v == 1;
+        if(ok)ok = fabsf(x[w+68000]-68030.f)<.01f && x[w+70001] == TIFXYZ_INVALID;
+        if(!ok)fails++;
+        fprintf(stderr,"[tifxyz selftest] full-width native sampling %s (%dx%d)\n",ok?"OK":"FAIL",w,h);
+    }
     Arena_dispose(&arena);
+    if (fails == 0) ves_selftest_clean(root);
     return fails;
 }

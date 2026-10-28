@@ -2248,4 +2248,441 @@
 /* sheet_strip's quick-look PNG: longest side at most this many pixels. */
 #define STRIP_PREVIEW_MAX_PX 4096
 
+
+/* ================================================================
+ * Close-ups and the fibre tools (ink_closeup, fiber_flatten, vmesh_fiber_rigid,
+ * closeup_strip_turn) and the shared modules they brought along, ported from
+ * vesuvius-c in October 2026.  Only the constants this tree uses.
+ * ================================================================ */
+
+/* Native TIFF output: retain the established strip geometry and lossless
+   * deflate level. Parallel encoding bounds compressed and predictor buffers
+   * together by this many bytes. */
+#define TIFF_OUTPUT_STRIP_BYTES (8u * 1024u * 1024u)
+#define TIFF_DEFLATE_BUFFER_BYTES (128u * 1024u * 1024u)
+#define TIFF_DEFLATE_LEVEL 1
+
+/* raw_sample's resident RAW store (2026-10-25): the chunks one process reads from a raw zarr stay in memory for every
+ * later cube table over the same zarr, up to this many GB; past it, chunks load into the table's arena as before.  The
+ * PHerc0358 32^3 block export built 569 cube tables over one 69 GB raw zarr and each re-read and re-copied all of it
+ * (20-27 s and 78 GB of arena per window). */
+#define SHEET_LAYERS_RAW_RESIDENT_GB 96
+
+/* rawtex_layers' geometry volume is written in row tiles of this many rows. */
+#define SHEET_LAYERS_GEOMETRY_TILE_ROWS 1024 /* geometry scratch is bounded in both dimensions */
+
+/* Cones (2026-10-23: "given a cone singularity, [we prefer] to cut it out to the border so that things can flatten
+ * correctly"): an interior node whose 3-D angle deficit, summed with a tent kernel, reaches ASM_SOLID_CONE_RAD is a
+ * cone (a saddle, deficit negative, is not: its lips would overlap).  The close-up's reparameterization cuts each cone
+ * to the border (src/tools/ink_closeup_cones.inc). */
+#define ASM_SOLID_CONE_RAD 0.7           /* radians of kernel-summed angle deficit: a cone (0.35 over 12 vox on the 4x5x5 gj61: 600-800
+                                          * cones a round, 30-50 in a group -- the grown surface's corrugations, not crumples -- and
+                                          * the biggest groups' solves refused for distortion; the selftest's cone of 0.9 rad
+                                          * scores ~0.8 at its apex node) */
+#define ASM_SOLID_CONE_NODE_RAD 0.1      /* a node's own deficit within a cone's window that gets a branch of the cut (the
+                                          * discretization spreads a cone over its neighbouring nodes) */
+
+/* A piece's fibre frame (asm_fibre_frame.h, 2026-10-21): its principal fibre directions go along the X and Y axes, the
+ * main lengthwise fibre direction along X.  A piece is turned only when its CT texture shows a fibre cross: the 4-fold coherence
+ * |m4| / w of its gradient moments at least MIN_COHERENCE over at least MIN_NODES interior nodes.  The family nearest
+ * the winding direction (+u) takes +u unless the cross lies within TIE_DEG of the diagonal, where the family with
+ * more fibre energy takes it (PHerc0358's crosses sit 34-39 deg from the rows). */
+#define ASM_FIBRE_MIN_COHERENCE 0.05
+#define ASM_FIBRE_MIN_NODES 2000u
+#define ASM_FIBRE_TIE_DEG 10.0
+
+/* ---- ink_closeup: one continuous, isometric close-up of an ink region (2026-09-29) ----------------
+ * src/flatten/closeup_surface.{h,c} (fused surface + flattening), closeup_adopt.{h,c} (the reduced
+ * placement: nearby charts joined by 3-D contact), ink_letters.{h,c} (letter boxes, rows, the row
+ * rectification warp), src/tools/ink_closeup.c.  Regime: 8-9 um scans, 1 px = 1 vox sheets, charts of
+ * 10^3-cube sheet assemblies.
+ *
+ * Fused surface: every observed chart pixel (the layout's own rasterisation, 1 px) is an observation;
+ * nodes every GRID_PX take a Gaussian-weighted local quadric (sigma = FIT_PX / 2) of the observations
+ * within FIT_PX, reweighted ROBUST_ROUNDS times by a Cauchy weight of scale ROBUST_VOX, so chart steps
+ * (1-3 vox, the per-cube trim gaps) become one surface and a stray other-wrap observation
+ * (>= 10 vox off) carries no weight.  Nodes with no observation within DATA_REACH_PX are FILL nodes up
+ * to FILL_PX from the data (holes and borders), fitted from the data nodes within a radius of
+ * 1.5 x the fill distance + FILL_FIT_MIN_PX, at most FILL_FIT_MAX_PX: a quadric continues the sheet's
+ * curvature (the apron's measurement: 0.3 vox 17 px out on a radius-100 turn). */
+#define CLOSEUP_GRID_PX 2.0
+#define CLOSEUP_FIT_PX 8.0
+#define CLOSEUP_FIT_MIN_OBS 24
+#define CLOSEUP_DATA_REACH_PX 2.0
+#define CLOSEUP_FILL_PX 24.0
+
+/* gated bridging (closeup_surface, 2026-10-13): two observed blobs on one wrap by the wrap index join into one
+ * component when their data lie within 2 x CLOSEUP_BRIDGE_PX of each other in the frame (the ordinary fill reach,
+ * never the completed-gap reach); a blob's wrap needs this share of its data nodes' charts to agree */
+#define CLOSEUP_BRIDGE_PX 24.0
+#define CLOSEUP_BRIDGE_AGREE 0.6
+
+/* ... and the two blobs must continue each other at the gap: their nearest data nodes no farther apart in 3-D than
+ * CLOSEUP_BRIDGE_STRETCH x their frame distance (+ 2 vox), and within CLOSEUP_BRIDGE_NORMAL_VOX of each other's
+ * tangent plane (a sheet thickness; two layers 12 vox apart never bridge, whatever the index says) */
+#define CLOSEUP_BRIDGE_STRETCH 1.5
+#define CLOSEUP_BRIDGE_NORMAL_VOX 4.0
+
+/* ... the normal-offset tolerance grows with the baseline (edge normals tilt a few degrees): the larger of
+ * CLOSEUP_BRIDGE_NORMAL_VOX and CLOSEUP_BRIDGE_NORMAL_SLOPE x the frame distance (9.6 vox at the 48 px reach, under
+ * one layer spacing on PHerc1218) */
+#define CLOSEUP_BRIDGE_NORMAL_SLOPE 0.2
+
+/* ... capped under one layer spacing (10-14 vox on PHerc1218), so a long bridge can never step to the next layer */
+#define CLOSEUP_BRIDGE_NORMAL_MAX_VOX 8.0
+#define CLOSEUP_FILL_FIT_MIN_PX 12.0
+#define CLOSEUP_FILL_FIT_MAX_PX 48.0
+
+/* Optional completion of wider segmentation gaps. Only observed nodes of the nearest connected
+ * piece support each quadric; the usual tangent, distance and normal gates remain in force. The
+ * resulting geometry remains labelled FILL and needs CT review before an ink reading is accepted. */
+#define CLOSEUP_COMPLETE_FILL_PX 160.0
+#define CLOSEUP_COMPLETE_FILL_FIT_MAX_PX 320.0
+
+/* Numerical work limits for generated-only continuation and orientation
+ * restoration. These never waive the final geometry or metric gates. */
+#define CLOSEUP_REBUILD_MOTION_SWEEPS 64
+#define CLOSEUP_REBUILD_PROJECTION_SWEEPS 16
+#define CLOSEUP_ROBUST_VOX 1.5
+#define CLOSEUP_ROBUST_ROUNDS 3
+
+/* The tear (2026-10-07; user: "Do both fixes, please, as engine level fixes"): after the fit, a node goes back to
+ * no surface when an edge to a grid neighbour is longer than TEAR_RATIO x its frame length (a sheet laid out
+ * isometric never stretches 3x; the PHerc1203 holes close-up bridged two charts 128 vox apart across 2 px), or
+ * when it is a DATA node more than TEAR_FLOAT_VOX in 3-D from every observation within DATA_REACH_PX of it (a fit
+ * pulled between two sheets floats off both).  Nodes are removed outright, never moved part-way. */
+#define CLOSEUP_TEAR_RATIO 3.0
+#define CLOSEUP_TEAR_FLOAT_VOX 4.0
+
+/* Observation face gates: the review bake's UV-stretch gate, and no face with a 3-D edge above
+ * MAX_EDGE3D_VOX (a bridge between sheets 12-14 vox apart). */
+#define CLOSEUP_STRETCH_RATIO 2.0
+#define CLOSEUP_STRETCH_FLOOR 2.0
+#define CLOSEUP_OBS_MIN_SCALE 0.5
+#define CLOSEUP_OBS_MAX_SCALE 2.0
+#define CLOSEUP_MAX_EDGE3D_VOX 10.0
+
+/* Isometric flattening: as-rigid-as-possible on a coarse FLAT_PX grid of the fused surface (TAUCS,
+ * factor once), FLAT_ITERS local/global rounds or a relative energy change below FLAT_TOL; the fine
+ * nodes take the coarse displacement bilinearly (the correction is smooth: the layout is isometric to
+ * ~2% inside charts, the errors are seams and rotation drift between charts). */
+#define CLOSEUP_FLAT_PX 8.0
+
+/* Re-UV local damping retries; every accepted triangle path is certified. */
+#define CLOSEUP_REUV_GUARD_PASSES 512
+
+/* Continuous application of a fibre frame: harmonic extension plus local
+ * constraint release. Each pass must release new nodes and recertify the
+ * complete map and unchanged source mesh; exhaustion fails closed. */
+#define FIBER_MAP_PAD_CELLS 2
+#define FIBER_MAP_REPAIR_HALO_CELLS 1
+#define FIBER_MAP_REPAIR_PASSES 64
+
+/* Original-face physical UV/3-D singular-value band; existing failures must
+ * not worsen on either side. These do not relax material contact tolerances. */
+#define FIBER_MAP_METRIC_MIN 0.75
+#define FIBER_MAP_METRIC_MAX 1.25
+
+/* Complete continuous-map metric consensus after local constraint release.
+ * These govern work/fit, never the original-face acceptance bounds. */
+#define FIBER_MAP_PROJECT_SECONDS 180.0
+#define FIBER_MAP_PROJECT_POLISH_SHARE 0.25 /* Reserve the final quarter for projecting a useful iterate to the same hard constraints. */
+#define FIBER_MAP_PROJECT_REFINEMENT 1 /* Candidate refinement adds unknowns, never measured targets. */
+#define FIBER_MAP_PROJECT_PENALTY 16.0
+#define FIBER_MAP_PROJECT_INTERIOR 0.0 /* Closed source bounds: strict improvement may be incompatible across one map cell. */
+#define FIBER_MAP_PROJECT_PRIOR 1e-8
+#define FIBER_MAP_PROJECT_SMOOTH 1e-3
+#define FIBER_MAP_PROJECT_MIN_GAIN 0.01
+#define FIBER_MAP_PROJECT_STALL_REL 1e-9
+#define FIBER_MAP_PROJECT_STALL_STEPS 8
+#define FIBER_MAP_PROJECT_REWEIGHT_STEPS 32
+#define FIBER_MAP_PROJECT_PRESSURE_GAIN 4.0
+#define FIBER_MAP_PROJECT_PRESSURE_MAX 1e6
+#define FIBER_MAP_PROJECT_LOG_SECONDS 1.0
+#define FIBER_MAP_DIRECTION_LENGTH_WEIGHT 0.01 /* Direct alignment: soft unit-length target; hard metric bounds stay unchanged. */
+#define FIBER_MAP_DIRECTION_PENALTY 1.0 /* Dimensionless proximal splitting pressure for unordered measured fiber arms. */
+#define CLOSEUP_FLAT_ITERS 60
+#define CLOSEUP_FLAT_TOL 1e-7
+
+/* CT cross measurement neighborhoods are indexed in the old frame, sampled
+ * in a physical tangent plane, and overlap by half their width. */
+#define CLOSEUP_FIBER_PATCH_PX 64.0
+
+/* At cosine .95 the sampling projection's condition is at most 1/.95:
+ * a physical direction can rotate by at most asin((1-.95)/(1+.95)) =
+ * 1.47 degrees through foreshortening. The inverse tangent lift below does
+ * not apply that distortion a second time. Guard contributors and targets. */
+#define CLOSEUP_FIBER_PATCH_NORMAL 0.95
+#define CLOSEUP_FIBER_DIRECTION_WEIGHT 16.0
+
+/* Independently certified rigid turns: full angular optimum, then halves. */
+#define CLOSEUP_ALIGN_RIGID_ATTEMPTS 8
+
+/* Native cut planning; independent per-tile/source raster gates remain. */
+#define CLOSEUP_ALIGN_BAD_AREA_FRACTION 0.05
+
+/* User target, 2026-10-27: accept 10 degrees; metric/material gates are separate. */
+#define CLOSEUP_FIBER_RMS_DEG 10.0
+#define CLOSEUP_FIBER_MIN_AREA 0.90
+
+/* A local single-slit cone certificate may avoid an extra fan branch only
+ * when every physical UV/3-D singular value is in [1/SCALE,SCALE], all raw
+ * evidence is present, and the existing direction/embedding guards pass.
+ * Its work budget is independent of global or diagnostic SLIM iterations. */
+#define CLOSEUP_CONE_FAN_ITERS 20
+#define CLOSEUP_CONE_FAN_SCALE 1.10
+
+/* Local feasibility search only: 16,8,4. Every candidate is audited against
+ * the original raw-arm objective at full strength; global SLIM stays at 16. */
+#define CLOSEUP_CONE_FAN_WEIGHT_STAGES 3
+
+/* A growth's final flattening (2026-10-15; the user on the grown candidates' "stringy exploding artifacts ... long
+ * filaments shooting off into space", then "we're doing SLIM for the flatten, right?"): the coarse ARAP folded lacy
+ * grown flaps over the sheet (cand4 s4: 241,656 faces in folded UV cells) and the exporter rasterised the overlaps into
+ * cells hundreds of vox long. SLIM with a SCAF scaffold from the frame (CloseupSurface_flatten_slim) is injective;
+ * GROW_SLIM_ITERS caps its iterations. */
+#define CLOSEUP_GROW_SLIM_ITERS 40
+
+/* The SLIM flattening's fringe (2026-10-15): on the s4 ARAP surfaces the faces within 3 grid steps of a boundary carried
+ * the distortion (5.6-6.3% of them stretched beyond 2.7x, the interior 0.04-0.09%); a coarse cell the sheet covers only
+ * in part was scaffold, its fine nodes carried at the frame's shape.  An empty lattice node next to the sheet now takes
+ * the sheet's affine continuation (the nearest valid fine node's component, least squares over the +-1 coarse step
+ * window, weights 1 / (1 + (d / step)^2)) when at least FRINGE_MIN of its nodes span FRINGE_SPREAD fine steps^2 in
+ * every direction and the continuation lies within FRINGE_REACH coarse steps of the nearest node in 3-D; such a cell
+ * holding any data is flattened as surface. */
+#define CLOSEUP_SLIM_FRINGE_MIN 6
+#define CLOSEUP_SLIM_FRINGE_SPREAD 0.2
+#define CLOSEUP_SLIM_FRINGE_REACH 4.0
+
+/* Duplicated papyrus (2026-10-15): on the s4S growths 0.6-1.4% of the nodes were FILL extrapolated over papyrus the
+ * surface already held elsewhere -- within 2 vox in 3-D of a node more than 30 px away in the frame (cand5: 113,603
+ * data-fill and 16,996 fill-fill pairs, 1,115 data-data) -- the same papyrus twice in the flattened sheet.  Before the
+ * final flattening such a FILL node goes (CloseupSurface_dedup_fill): within DEDUP_VOX of another valid node, normals
+ * within acos(DEDUP_COS), more than DEDUP_FRAME_PX apart in the frame. */
+#define CLOSEUP_DEDUP_VOX 2.0
+#define CLOSEUP_DEDUP_FRAME_PX 30.0
+#define CLOSEUP_DEDUP_COS 0.8
+
+/* The outward apron (2026-10-15; the user on the fibre-frame completions' striped edges: "if it's an artifact, go fix
+ * it!"): the gap fill reached 150-200 px PAST the observed papyrus at the sheet's outer edges (cand2 s7FC: those edge
+ * bands all FILL, DATA on one side only), cutting across the neighbouring wraps -- neighbouring strips ~10 vox apart in
+ * 3-D across 6 px gaps -- so the exporter dropped its stretched cells in strips and the render showed other layers
+ * between them (s7 had the same apron, less regular).  On (1): FILL stays only between observed papyrus
+ * (CloseupSurface_trim_apron, reach = the fill policy's reach), in the completion and in the growth's last steps. */
+#define CLOSEUP_APRON_TRIM 1
+
+/* The reduced placement (closeup_adopt): a chart of the pool (the unfiltered layout: other pieces,
+ * kibble) joins when at least ADOPT_MIN_CORR of its vertices lie within ADOPT_ON_VOX of the fused
+ * surface (normal offset) with their foot on data or within ADOPT_FOOT_FILL_PX of it, their normals
+ * within ADOPT_NORMAL_DEG, spanning at least ADOPT_MIN_EXTENT_PX; the 2-D rigid fit of its own UV to the
+ * feet must leave at most ADOPT_RMS_PX; after placement at least ADOPT_AGREE_FRAC of its vertices that
+ * land on the surface must lie within ADOPT_CONFLICT_VOX of it (another wrap runs 12-14 vox away), and
+ * at least ADOPT_NEW_FRAC must land where the surface has no data (it adds papyrus).  ADOPT_ROUNDS
+ * refit/adopt rounds; the pool is read within POOL_PAD_VOX of the surface's 3-D box. */
+#define CLOSEUP_ADOPT_ON_VOX 2.0
+#define CLOSEUP_ADOPT_FOOT_FILL_PX 8.0
+#define CLOSEUP_ADOPT_MIN_CORR 32
+#define CLOSEUP_ADOPT_MIN_EXTENT_PX 24.0
+#define CLOSEUP_ADOPT_RMS_PX 1.5
+#define CLOSEUP_ADOPT_CONFLICT_VOX 3.0
+#define CLOSEUP_ADOPT_AGREE_FRAC 0.9
+#define CLOSEUP_ADOPT_NORMAL_DEG 20.0
+#define CLOSEUP_ADOPT_NEW_FRAC 0.05
+
+/* The metric gate (2026-10-07; user on the PHerc1203 holes close-up: "the area marked with red circle needs
+ * debugging, as it's clearly deformed/ill-defined"): a placed chart keeps ITS OWN flattening (rigid fit), so a
+ * chart whose flattening squeezes or stretches part of it renders that part as streaks -- two pool ribbons
+ * beside a crack, ~400 vox tall, squeezed 4-22x, became a smeared bridge across a gap.  A chart is refused when
+ * faces whose own flattening stretches beyond ADOPT_METRIC_RATIO (largest singular value of the UV -> 3-D map
+ * above it, or the smallest below its inverse; a degenerate UV face counts) carry more than ADOPT_METRIC_FRAC of
+ * its 3-D area.  On that close-up: 2 of 41 adopted charts at 53% / 14%, the next 0.7%. */
+#define CLOSEUP_ADOPT_METRIC_RATIO 2.0
+#define CLOSEUP_ADOPT_METRIC_FRAC 0.05
+
+/* Adoption continuity (2026-10-07; user: "Do both fixes, please, as engine level fixes"): on that close-up the two
+ * charts were each isometric and each touched its own side of a crack, but they were placed side by side in the
+ * frame (u 1493 | 1494) while their facing edges lie ~128 vox apart in 3-D, and the fused fit smeared a bridge
+ * between them.  A chart's vertex that lands where the surface has no supported node is compared with the nearest
+ * supported node (data, or fill within ADOPT_FOOT_FILL_PX of data) within ADOPT_CONTINUITY_PX, and with the nearest
+ * claim of a chart accepted earlier in the same round: they must lie within ADOPT_CONTINUITY_SLOPE x their frame
+ * distance + ADOPT_CONFLICT_VOX in 3-D.  A chart is refused (deferred against a same-round claim) when more than
+ * 1 - ADOPT_AGREE_FRAC of its vertices so checked break it. */
+#define CLOSEUP_ADOPT_CONTINUITY_PX 24.0
+#define CLOSEUP_ADOPT_CONTINUITY_SLOPE 1.5
+
+/* The adoption's layer gate (2026-10-15, measured on candidate 5's round s4: 127 sampled vertex pairs of ADOPTED data lay
+ * ~10 vox apart across the normal and 230-240 px apart along the surface -- charts of the extension box B1's pool on two
+ * neighbouring sheets, z ~10090 y ~3220 x 3040-3160, reached by two routes; the conflict and continuity gates compare a
+ * chart with the surface only where it lands in the frame): a chart is refused when more than ADOPT_LAYER_FRAC of its
+ * sampled vertices have surface DATA within ADOPT_LAYER_VOX across their normal (sampled at 3, 5, 7 vox either side,
+ * each sample reaching 3 vox), more across than beside them, and more than 3 x their 3-D distance + ADOPT_LAYER_MARGIN_PX
+ * away along the surface -- the F0 bridge's layer guard (CLOSEUP_F0_LAYER_VOX) for charts: a surface never stacks a
+ * second layer onto itself. */
+#define CLOSEUP_ADOPT_LAYER_VOX 10.0
+#define CLOSEUP_ADOPT_LAYER_FRAC 0.05
+#define CLOSEUP_ADOPT_LAYER_MARGIN_PX 24.0
+#define CLOSEUP_ADOPT_ROUNDS 4
+
+/* Room for adopted papyrus: the node grid reaches this far beyond the seed pieces' frame box (and the
+ * pool is read that far beyond the fused surface's 3-D box). */
+#define CLOSEUP_ADOPT_MARGIN_PX 384.0
+
+/* The pool's near region (2026-10-13; user: "can we chunk the mesh somehow or make it so we can efficiently page
+ * in?").  The search box -- the fused surface's 3-D box + search_margin -- holds most of a curved 21^3 sheet: a
+ * PHerc1218 close-up of 4.7M faces read 588M pool faces, 52-83 GB per close-up.  A pool chart is now read only when
+ * its 3-D box also comes within NEAR_SLACK x the grid's reach of a supported node of the fused surface (cells of
+ * POOL_CELL_VOX, box metric).  The reach is the farthest node of the node grid from a supported node, in frame px:
+ * adopted papyrus lands on the grid, and an isometric chart lies no farther from the sheet in 3-D than in the frame
+ * (the slack covers the squeeze the metric gate admits on part of a chart).  A candidate chart's faces are clipped
+ * to the search box as before; the pool's mesh is paged by its <mesh>.chartidx (mesh_chart_index.h) when present.
+ * OFF (measured 2026-10-13, output/closeup_paging_ab_20261013): on both A/B close-ups the grid's reach (1,165 and
+ * 1,403 px x 1.25) covered the search box, so it selected exactly the charts the box did -- no reduction -- and it is
+ * untested where it would cut.  The paging alone gave byte-identical surfaces at 26.4 / 46.8 GB peak (42.0 / 70.0). */
+#define CLOSEUP_POOL_NEAR_SURFACE 0
+#define CLOSEUP_POOL_NEAR_SLACK 1.25
+#define CLOSEUP_POOL_CELL_VOX 16.0
+
+/* Frontier growth (ink_closeup config "grow", 2026-10-14; user: "extend candidates 1, 2, 3, 4, and 5 for pherc0211 by
+ * about the same amount of material in each direction, producing a connected mesh"): from a close-up surface over a
+ * target box many times its size, the pool is read again and again, each time only the charts whose 3-D box comes
+ * within GROW_MARGIN_VOX of the data boundary (the DATA nodes beside a non-DATA node: where the sheet can still grow),
+ * so memory follows the boundary, not the whole target box.  A read runs up to GROW_ROUNDS adoption rounds (one chart
+ * of growth each: ~100-130 vox); the margin covers a chart's size beyond the boundary at its last round.  Reads stop
+ * when one places nothing or after GROW_MAX_READS.  Adopted charts of pool k observe under ids first_adopted +
+ * k x GROW_POOL_ID_STRIDE + their pool chart id (a pool holds fewer than STRIDE charts). */
+#define CLOSEUP_GROW_MARGIN_VOX 192.0
+#define CLOSEUP_GROW_ROUNDS 6
+#define CLOSEUP_GROW_MAX_READS 400
+#define CLOSEUP_GROW_POOL_ID_STRIDE (1 << 24)
+
+/* The F0 bridge of a growth (closeup_f0bridge.c, grow "f0"; 2026-10-14, the PHerc0211 candidates stalled at the
+ * corners of the lens around the eye, where the mesher cuts the converging sheets apart and leaves 10-30 vox gaps that
+ * no chart crosses; measured at candidate 5's right corner, z 8640: a 28 vox gap, the continuing chart on the same F0
+ * band beyond it, the fitted fill 4-7.5 vox off it).  A fill node beside the data snaps to the F0 run nearest along
+ * its normal: within WINDOW_VOX each side, its centre within SHIFT_VOX (sheets lie 6-10 vox apart there), no thicker
+ * than MAX_RUN_VOX (the PHerc0211 F0 band is 3-6 vox; touching sheets read 8-12), joined by papyrus to the node it
+ * continues; RINGS rings (2 px each) per refit, never deeper than DEPTH_PX beyond the chart data, PASSES refits per
+ * read; at most MAX_CUBES decoded 128^3 cubes (2 MiB each) cached. */
+#define CLOSEUP_F0_WINDOW_VOX 6.0
+#define CLOSEUP_F0_SHIFT_VOX 2.0
+#define CLOSEUP_F0_MAX_RUN_VOX 8.0
+#define CLOSEUP_F0_DEPTH_PX 64.0
+#define CLOSEUP_F0_RINGS 8
+#define CLOSEUP_F0_PASSES 4
+#define CLOSEUP_F0_MAX_CUBES 1536
+
+/* The bridge's duplicate-layer guard (2026-10-14, measured on candidate 1's first bridged growth: 1.9% of its sampled
+ * data had another part of the same surface within 2.5 vox that lay 40+ px away along it -- two bridge fronts meeting
+ * round an obstacle, or the bridge coming back over the seed): a snap within DUP_VOX of existing data or of an earlier
+ * snap of the pass that lies more than 3 x their distance + DUP_MARGIN_PX away along the surface is refused.  Layers of
+ * a real fold lie a papyrus thickness (3-5 vox) apart or more, so they pass. */
+#define CLOSEUP_F0_DUP_VOX 3.0
+
+/* Adaptive reads of a bridged growth (2026-10-14: candidate 5's growth spent ~230 s a read re-reading ~90,000 pool charts
+ * for adoption rounds that placed nothing, while its F0 bridge kept advancing): after a read that placed no chart, the
+ * next reads are bridge passes only; the pools are read again every POOL_EVERY reads, or once more before the growth
+ * stops. */
+#define CLOSEUP_GROW_POOL_EVERY 4
+
+/* Measured progress ends a growth (2026-10-14: candidate 5's round s3 grew its data by +5.8, 3.5, 3.2, 2.5, 2.1, 1.6,
+ * 1.0, 0.9% read after read, ~150-500 s a read, and was ended by hand with a STOP file): two reads in a row that each
+ * grew the data nodes by less than MIN_GAIN of them end it, after one more read of the pools (a pool read that adopts
+ * a lot keeps it going).  Config "grow" "min_gain" (0: off). */
+#define CLOSEUP_GROW_MIN_GAIN 0.01
+#define CLOSEUP_F0_DUP_MARGIN_PX 24.0
+
+/* ... and its ambiguity refusal: no snap when a second F0 run lies less than AMBIG_VOX farther from the prediction than
+ * the nearest one (where sheets converge the prediction cannot tell which of two touching sheets it follows; stacked
+ * sheets 6-10 vox apart leave the second run 5+ vox farther). */
+#define CLOSEUP_F0_AMBIG_VOX 1.5
+
+/* ... and its layer guard (2026-10-14, measured on candidate 5's growth s3: 452 sampled vertex pairs of bridged data lay
+ * 5-10 vox from other data of the same surface ALONG the normal, normals opposite, 60-560 px apart along the surface --
+ * the bridge carried past the lens corner and back alongside the seed on the next layer; the duplicate guard's 3 vox do
+ * not reach a layer that far): no snap with surface data (or an earlier snap of the pass) within LAYER_VOX along its
+ * normal, mostly across rather than beside it, and more than 3 x their distance + DUP_MARGIN_PX away along the surface.
+ * A surface never stacks a second layer onto itself: a fold back or a step onto the next wrap. */
+#define CLOSEUP_F0_LAYER_VOX 10.0
+
+/* Raster: the close-up is rendered at 1 px per vox with this margin around the surface (room for the
+ * context apron, SHEET_LAYERS_APRON_PX). */
+#define CLOSEUP_RASTER_MARGIN_PX 72
+
+/* Import-only sampling normal at a retained, exactly doubled-back two-face
+ * source tip. All three surrounding vertex normals must agree within 30 deg;
+ * no propagation, geometry edit, or fallback for other singularities. */
+#define CLOSEUP_IMPORT_NEIGHBOR_NORMAL_COS 0.8660254037844386
+
+/* Several seed pieces (different wraps: PHerc0211's four squares) are framed one by one -- each its own
+ * reflection and rotation -- and laid side by side this far apart (more than two fill reaches plus the apron's
+ * context, so neither geometry nor the ink model's context crosses between pieces). */
+#define CLOSEUP_PIECE_GAP_PX 192.0
+
+/* The depth sweep (ink_closeup --render-sweep): one volume of SWEEP_DEPTH layers 1 vox apart centred on the
+ * surface; the ink model's 17-layer window slid across it reads the sheet at depth offsets
+ * (window start - (SWEEP_DEPTH - 17) / 2) vox: where the detector finds the ink relative to the surface. */
+#define CLOSEUP_SWEEP_DEPTH 33
+
+/* Experimental CT-only continuation audit; never an automatic admission.
+ * A fixed initial normal profile and a reverse-step check limit drift. The
+ * method must pass a withheld observed-surface audit before any mesh use. */
+#define CLOSEUP_CTTRACK_PROFILE_N 17
+#define CLOSEUP_CTTRACK_PROFILE_STEP 0.5
+#define CLOSEUP_CTTRACK_PATCH_STEP 1.5
+#define CLOSEUP_CTTRACK_PROFILE_RMS 6.0
+#define CLOSEUP_CTTRACK_TENSOR_STEP 1.5
+#define CLOSEUP_CTTRACK_AXIAL_MIN 0.5
+#define CLOSEUP_CTTRACK_COHERENCE 0.35
+#define CLOSEUP_CTTRACK_NORMAL_COS 0.9396926207859084
+#define CLOSEUP_CTTRACK_STEP 1.0
+#define CLOSEUP_CTTRACK_SEARCH_N 6
+#define CLOSEUP_CTTRACK_SEARCH_STEP 0.25
+#define CLOSEUP_CTTRACK_OFFSET_PRIOR 0.01
+#define CLOSEUP_CTTRACK_CORR 0.90
+#define CLOSEUP_CTTRACK_GAIN_MIN 0.5
+#define CLOSEUP_CTTRACK_GAIN_MAX 2.0
+#define CLOSEUP_CTTRACK_CYCLE 0.75
+#define CLOSEUP_CTTRACK_SEED_PX 8.0
+#define CLOSEUP_CTTRACK_STEPS 64
+#define CLOSEUP_CTTRACK_RAW_PAD 8.0
+
+/* Fibre-aligned re-flattening (fiber_flatten, src/flatten/fiber_frame.c; user 2026-10-15 "Do all the things" after the
+ * probe: PHerc0211 line 11's 19,959 px close-up page is a 2,089 px arc by the SD2 fibre field and 30 px re-flattened
+ * along the fibres; cand5's 1,946 px page 48 -> 7 px with no change in reading).  The values are the probe's that
+ * measured it (PHerc0139, 2026-10-14), on 9.4 um close-up canvases at 1 node per voxel; revalidate on another node
+ * pitch. */
+/* 2026-10-17: sparse mapped reads reduced RAM but stalled on a spinning-disk output
+ * array. The experiment stays disabled; reads use buffered chunks. */
+#define ZARR_U8_MAPPED_CHUNKS      0
+#define FIBER_FLATTEN_SAMPLE_PX    4      /* field samples every 4 canvas px (line 11: 3.4 M samples) ... */
+#define FIBER_FLATTEN_HALF_DEPTH   8      /* ... at -8..+8 vox along the render normal (the sheet's two fibre faces) */
+#define FIBER_FLATTEN_CELL_PX      8      /* the solve's grid: a node every 8 px (the field is smoothed at 12 px) */
+#define FIBER_FLATTEN_SIGMA_PX     12.0   /* Gaussian on the 4-fold field z4 = sum p exp(4 i psi) */
+#define FIBER_FLATTEN_EVIDENCE_REL 0.05   /* a node has fibre evidence when its smoothed weight > this x the median */
+#define FIBER_FLATTEN_EPS          1e-9   /* the gauge fixes ONLY the translation: a 1e-4 spring to the old coordinates
+                                           * held back every correction longer than ~1,000 px (probe v1, 2026-10-14) */
+#define FIBER_FLATTEN_GAP_CELLS    6      /* cracks up to ~2 x 6 nodes wide and enclosed holes are carried as nodes ... */
+#define FIBER_FLATTEN_GAP_WEIGHT   0.05   /* ... tied to the old layout this weakly (without: pieces joined by thin
+                                           * bridges float apart, probe v2 lost 16% of line 11) */
+#define FIBER_FLATTEN_INV_ITERS    30     /* the inverse map: quasi-Newton iterations at most ... */
+#define FIBER_FLATTEN_INV_STEP     0.002  /* ... stop when a step is below this (px) ... */
+#define FIBER_FLATTEN_INV_TOL      0.05   /* ... a new pixel is valid when its map residual is below this (px) */
+#define FIBER_FLATTEN_PAD_CELLS    2      /* the new page's margin round the solved nodes */
+#define FIBER_FLATTEN_TILE_PX      256    /* the audit's local patches (a rigid fit per patch) */
+#define FIBER_FLATTEN_PROFILE_MIN  10     /* a column of the fibre-climb profile needs this many evidence nodes */
+
+/* A close-up turned rigidly onto its strip piece's frame (closeup_strip_turn, 2026-10-21; the user: "Do it", for the
+ * fibre-framed sheets, where every piece is already turned so its fibre cross lies along the axes).  The close-up's
+ * own fibre estimate asked PHerc0358 bk2ff for warps of p50 50-430 px, which the reframe gate refused, and left one
+ * close-up a quarter turn (92.8 deg) off its strip.  The turn is the 2-D Kabsch rotation of the close-up canvas onto
+ * the strip's crop px over the box's papyrus matched in 3-D (closeup_splice.strip_matches). */
+#define STRIP_TURN_MIN_MATCHES   200     /* fewer matched samples: refused (too little of the box on the close-up) */
+#define STRIP_TURN_TRIM_ROUNDS   3       /* refits, each over the matches within ... */
+#define STRIP_TURN_TRIM_KEEP     0.8     /* ... the best 80% of the residuals (wrong-wrap matches within MATCH_VOX) */
+#define STRIP_TURN_MAX_RESIDUAL  0.25    /* refused when the rigid fit's rms residual exceeds this x the matches' rms
+                                          * spread about their centre (no single turn relates the two) */
+#define STRIP_TURN_CELL_PX       16      /* the written map's node pitch (any pitch is exact for a rotation) ... */
+#define STRIP_TURN_PAD_CELLS     2       /* ... with this many nodes beyond the canvas on every side, so every vertex
+                                          * of the close-up is interpolated bilinearly by ink_closeup --reuv */
+
 #endif

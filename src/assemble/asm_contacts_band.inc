@@ -8,7 +8,7 @@
  * Storage/work exhaustion returns -1, never a false clear result. */
 #define ACB_VERTICES 32
 #define ACB_PIECES 128
-#define ACB_SEGMENTS 128
+#define ACB_SEGMENTS 512   /* 128 until 2026-10-23: one self pair of PHerc1218 chart 63586 (a chart laid over itself) gathered more original boundary edges in its 4-vox box and its audit died; an overflow is now an UNMEASURED pair */
 #define ACB_POINTS (2*ACB_SEGMENTS)
 #define ACB_CANDIDATES 65536u
 
@@ -106,9 +106,11 @@ static int acb_witness(AcBandWork *work,const AcBandPoly *poly,const double p[2]
 static int acb_disk_complement(AcBandWork *work,const AcBandPoly *poly,int points,
                                 const double *segments,size_t count,double radius2,double roundoff,double witness[2])
 {
+    int incomplete=0;
     for(int i=0;i<poly->n;i++){
         int found=acb_witness(work,poly,poly->xy+2*i,points,segments,count,radius2,roundoff,witness);
-        if(found)return found;
+        if(found>0)return found;
+        if(found<0){incomplete=1;if(work->candidates>ACB_CANDIDATES)return -1;}
     }
     /* One disk containing every vertex contains this complete convex piece. */
     for(int i=0;i<points;i++){
@@ -129,7 +131,9 @@ static int acb_disk_complement(AcBandWork *work,const AcBandPoly *poly,int point
             double t=(height-nx*(start[0]-a[0])-ny*(start[1]-a[1]))/denominator;
             if(t<0 || t>1)continue;
             double p[2]={start[0]+t*(end[0]-start[0]),start[1]+t*(end[1]-start[1])};
-            int found=acb_witness(work,poly,p,points,segments,count,radius2,roundoff,witness);if(found)return found;
+            int found=acb_witness(work,poly,p,points,segments,count,radius2,roundoff,witness);
+            if(found>0)return found;
+            if(found<0){incomplete=1;if(work->candidates>ACB_CANDIDATES)return -1;}
         }
         for(int k=j+1;k<points;k++){
             const double *c=work->point+2*k;
@@ -137,10 +141,14 @@ static int acb_disk_complement(AcBandWork *work,const AcBandPoly *poly,int point
             if(denominator==0)continue;
             double ab=nx*nx+ny*ny,ac=x*x+y*y;
             double p[2]={a[0]+(ab*y-ac*ny)/denominator,a[1]+(ac*nx-ab*x)/denominator};
-            int found=acb_witness(work,poly,p,points,segments,count,radius2,roundoff,witness);if(found)return found;
+            int found=acb_witness(work,poly,p,points,segments,count,radius2,roundoff,witness);
+            if(found>0)return found;
+            if(found<0){incomplete=1;if(work->candidates>ACB_CANDIDATES)return -1;}
         }
     }
-    return 0;
+    /* A rounded boundary candidate is not a clear result and cannot hide a
+     * later exact positive witness. If none was established, retain failure. */
+    return incomplete?-1:0;
 }
 
 /* polygon and segments are recentered in the same frame. The caller supplies
@@ -195,15 +203,39 @@ static int acb_contact(AcBandWork *work,const double *polygon,int vertices,
         for(int j=0;j<points;j++)if(work->point[2*j]==p[0] && work->point[2*j+1]==p[1]){exists=1;break;}
         if(!exists){if(points==ACB_POINTS)return -1;memcpy(work->point+2*points++,p,2*sizeof(double));}
     }
+    int incomplete=0;
     for(int i=0;i<pieces;i++){
-        int found=acb_disk_complement(work,a+i,points,segments,count,radius2,roundoff,witness);if(found)return found;
+        int found=acb_disk_complement(work,a+i,points,segments,count,radius2,roundoff,witness);
+        if(found>0)return found;
+        if(found<0){incomplete=1;if(work->candidates>ACB_CANDIDATES)return -1;}
     }
-    return 0;
+    return incomplete?-1:0;
 }
 
 static int acb_selftest(void)
 {
     Arena_T arena=Arena_new();AcBandWork *work=ARENA_ALLOC(arena,sizeof *work);int failures=0;
+    {
+        /* Captured PHerc0358 source/fill pair, unchanged complete material
+         * boundaries. An endpoint-disk clearance of one ulp rounded the first
+         * interior step to zero; the next candidate has a verified interior
+         * clearance. Old early failure hid this positive material contact. */
+        const double polygon[10]={
+            .10865195065166694,-.033773336831545958,.67996972366608222,-.21136156668049194,
+            4.6583042346029853,-.26474229306644381,3.5405132888372464,1.8613880550105932,
+            .30712869663602138,.16146971939681998};
+        const double segments[20]={
+            5.4019013891065697,-1.679125262370917,7.2632894653634139,-5.2196385502359135,
+            3.5405132888372464,1.8613880550105932,5.4019013891065697,-1.679125262370917,
+            1.6791251843133068,5.4019013763418116,3.5405132888372464,1.8613880550105932,
+            -.061760299202433089,-.20140913877526145,4.3551910976348154,-4.9348262640048688,
+            -1.0898905258109153,4.3527319129427724,-.061760299202433089,-.20140913877526145};
+        double witness[2],roundoff=2.1164592306497379e-10,radius=2+roundoff;
+        int result=acb_contact(work,polygon,5,segments,5,4,roundoff,witness);
+        int okay=result==1 && acb_uncovered(witness,segments,5,radius*radius);
+        failures+=!okay;
+        fprintf(stderr,"  rounded material boundary candidate retains later exact witness: %s\n",okay?"ok":"FAIL");
+    }
     /* A material triangle of leg 8 has inscribed diameter 4.686. Cutting
      * its overlap along x=y must retain that contact; eroded-piece vertices
      * lie exactly on rectangle boundaries and need an interior witness. */

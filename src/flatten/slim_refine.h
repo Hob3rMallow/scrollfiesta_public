@@ -10,6 +10,14 @@
  * of manifold disk charts.  The input embedding is a feasibility certificate;
  * this stage is the metric optimizer.  Every accepted iterate preserves face
  * orientation and a simple boundary for every chart. */
+/* Physical material arms in the mesh's 3-D coordinate order. The solver
+ * projects them into each face tangent plane and normalizes their lengths.
+ * weight is relative evidence; zero leaves that face unconstrained. Evidence
+ * provenance belongs to the caller and is never inferred from input UV. */
+typedef struct SlimRefineDirection {
+    double h[3], v[3], weight;
+} SlimRefineDirection;
+
 typedef struct SlimRefineOpts {
     int iterations;          /* local/global iterations (default 20) */
     int homotopy_stages;     /* rest-metric continuation stages (default 1) */
@@ -22,8 +30,23 @@ typedef struct SlimRefineOpts {
     double proximal;         /* fraction of per-component mean diagonal (1e-5) */
     int line_search;         /* flip-avoiding halvings (default 24) */
     int use_amg;             /* block aggregation multigrid PCG preconditioner */
+    /* Optional symmetric block-system backend. diagonal[nv*3] and blocks[ne*3]
+     * store 00,01,11; rhs/result[nv*2] are interleaved. result starts at the
+     * current UV and receives the proposal; return 0 on success. The regular
+     * energy, face and boundary guards still apply. NULL uses AMG/PCG. */
+    void *linear_context;
+    int (*linear_solve)(Arena_T, void *context, size_t nv, size_t ne, const double *diagonal,
+                        const int32_t *edge_a, const int32_t *edge_b,
+                        const double *blocks, const double *rhs, double *result);
     int local_steps;          /* locally damp flip-limiting large charts */
     size_t local_step_min_faces; /* minimum chart size for local damping */
+    int local_line_search;    /* local feasibility sweeps, independent of uniform halvings */
+    int local_growth_sweeps;  /* feasible alpha growth after local damping fails; default 4, 0 disables */
+    int local_relaxation;     /* coordinate proxy sweeps after feasible growth or a stalled global step */
+    int local_relax_boundary; /* also relax the rim, with swept-edge collision checks */
+    const SlimRefineDirection *directions; /* [nf], optional physical material arms */
+    double direction_weight; /* area-weighted joint cross-axis objective; default 0 */
+    int direction_rigid_gauge; /* optional one common original-frame rigid turn; default 0 */
     const float *guide_uv;   /* optional winding/developable UV, [nv*2] */
     const float *metric_uv;  /* optional locally valid winding UV whose
                               * per-face metric replaces noisy 3-D rest metric */
@@ -46,6 +69,22 @@ typedef struct SlimRefineOpts {
 
 void SlimRefine_defaults(SlimRefineOpts *opts);
 
+/* Open coincident UV seam banks along caller-supplied inward displacements.
+ * Backtracking uses the same face and component-boundary certificates as SLIM.
+ * This is seam surgery only; it does not replace metric optimization. World
+ * geometry is untouched, and failure leaves uv_out unchanged. */
+int SlimRefine_open_seam_seed(Arena_T arena, const float *verts, size_t nv,
+                              const int32_t *faces, size_t nf,
+                              const double *uv, const double *displacement,
+                              double *uv_out, double *accepted_alpha);
+
+/* Symmetric-Dirichlet energy above its minimum, its exact Jacobian gradient,
+ * and the SLIM local quadratic (2 W^T W, 00/01/11). The same proxy is used by
+ * constrained seam/contact repair; its outer acceptance certificate remains
+ * independent. No caller may substitute an ARAP recovery on failure. */
+int SlimRefine_face_proxy(const double jacobian[4], const SlimRefineOpts *opts,
+                          double *energy, double gradient[4], double block[3]);
+
 typedef struct SlimRefineStats {
     size_t components;
     size_t edges;
@@ -62,6 +101,11 @@ typedef struct SlimRefineStats {
     double accepted_alpha_mean;
     double accepted_alpha_max;
     size_t local_component_steps_accepted;
+    size_t growth_component_steps_accepted;
+    size_t growth_vertex_steps;
+    double growth_vertex_alpha_mean;
+    double growth_vertex_alpha_max;
+    size_t relaxation_vertex_steps;
     double local_vertex_alpha_min;
     double local_vertex_alpha_mean;
     double local_vertex_alpha_max;
@@ -77,8 +121,18 @@ typedef struct SlimRefineStats {
     double pcg_relative_residual_max;
     int amg_levels;
     size_t amg_coarse_vertices;
-    double energy_before;
+    double energy_before;    /* pure symmetric Dirichlet; final value may not increase */
     double energy_after;
+    double objective_before; /* SD plus optional direction objective */
+    double objective_after;
+    size_t direction_faces;
+    double direction_area_fraction; /* physical area with positive evidence / all area */
+    double direction_energy_before;
+    double direction_energy_after;
+    double direction_angle_before; /* evidence-area weighted radians^2, both arms */
+    double direction_angle_after;
+    double direction_gauge_radians;
+    int direction_gauge_accepted;
     double qc_mean_before;
     double qc_mean_after;
     double qc_max_before;

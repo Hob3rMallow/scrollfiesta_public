@@ -1,9 +1,11 @@
 #define _USE_MATH_DEFINES
 #include "seam_cut.h"
+#include "slim_refine.h"
 #include "mesh_topo.h"
 #include "../common/ves_platform.h"   /* ves_clock_sec for phase timing */
 
 #include <assert.h>
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -94,6 +96,8 @@ static double corner_angle(const float *p0, const float *p1, const float *p2)
     if (c>1.0)c=1.0; if(c<-1.0)c=-1.0;
     return acos(c);
 }
+
+#include "seam_cut_direction.inc"
 
 /* ===================================================================
  * Seam edge set: hash of undirected vertex pairs (open addressing).
@@ -470,6 +474,318 @@ static int cut_surgery(Arena_T arena, const Conn *c, const SeamSet *seam,
     out->verts=V; out->faces=F; out->nv=(size_t)nvnew; out->nf=nf; out->vmap=vmap;
     return 0;
 }
+
+/* Join a new radial cut to the already boundary-connected seam network. The
+ * cone itself is excluded, so the second branch cannot retrace its first ray.
+ * Stamps make many short searches proportional to the visited neighborhoods. */
+static int fan_ray_to_boundary(const Conn *c, SeamSet *seam, int32_t cone,
+                               int32_t start, uint8_t *network, Heap *heap,
+                               double *dist, int32_t *parent,
+                               uint32_t *stamp, uint32_t serial,
+                               const uint8_t *blocked,SeamCutDiagnostic *diagnostic)
+{
+    if (blocked && blocked[start]) {
+        if (diagnostic) {diagnostic->reason=SEAM_CUT_RAY_BLOCKED;diagnostic->terminal=cone;diagnostic->ray=start;}
+        return -1;
+    }
+    if (!network[start]) {
+        int32_t target=-1;
+        heap->n=0;stamp[start]=serial;dist[start]=0;parent[start]=-1;
+        heap_push(heap,0,start);
+        while (heap->n) {
+            HItem it=heap_pop(heap);int32_t a=it.v;
+            if (it.d>dist[a]) continue;
+            if (network[a]) { target=a;break; }
+            for (int32_t p=c->voff[a];p<c->voff[a+1];p++) {
+                int32_t cc=c->vcor[p];
+                int32_t neighbors[2]={c->faces[NEXT(cc)],c->faces[PREV(cc)]};
+                for (int q=0;q<2;q++) {
+                    int32_t b=neighbors[q];double edge[3];
+                    if (b==cone || (blocked && blocked[b])) continue;
+                    vsub(c->verts+3*(size_t)a,c->verts+3*(size_t)b,edge);
+                    double next=it.d+vlen(edge);
+                    if (stamp[b]!=serial || next<dist[b]) {
+                        stamp[b]=serial;dist[b]=next;parent[b]=a;
+                        heap_push(heap,next,b);
+                    }
+                }
+            }
+        }
+        if (target<0) {
+            if (diagnostic) {diagnostic->reason=SEAM_CUT_RAY_UNREACHABLE;diagnostic->terminal=cone;diagnostic->ray=start;}
+            return -1;
+        }
+        for (int32_t a=target;parent[a]>=0;a=parent[a]) {
+            seam_add(seam,a,parent[a]);network[a]=network[parent[a]]=1;
+        }
+    }
+    seam_add(seam,cone,start);network[cone]=network[start]=1;
+    return 0;
+}
+
+/* Return a radial edge that bisects an intrinsically overfull fan sector.
+ * Work in connected corner fans, not a vertex's aggregate angle: two planar
+ * disks meeting only at one vertex must not be mistaken for one saddle cone. */
+static int32_t overfull_fan_ray_checked(Arena_T arena, const Conn *c,
+                                        const SeamSet *seam, int32_t vertex,
+                                        SeamCutFanCheck fan_check, void *context)
+{
+    Arena_Mark mark=Arena_save(arena);
+    int32_t begin=c->voff[vertex],degree=c->voff[vertex+1]-begin,result=-1;
+    int32_t *neighbor=ARENA_ALLOC(arena,2*(size_t)degree*sizeof *neighbor);
+    int32_t *ray=ARENA_ALLOC(arena,2*(size_t)degree*sizeof *ray);
+    int32_t *queue=ARENA_ALLOC(arena,(size_t)degree*sizeof *queue);
+    int32_t *corners=fan_check?ARENA_ALLOC(arena,(size_t)degree*sizeof *corners):NULL;
+    int32_t *rim=fan_check?ARENA_ALLOC(arena,((size_t)degree+1)*sizeof *rim):NULL;
+    double *angle=ARENA_ALLOC(arena,(size_t)degree*sizeof *angle);
+    uint8_t *seen=ARENA_CALLOC(arena,(size_t)degree,1);
+    for (int32_t p=0;p<degree;p++) {
+        int32_t cc=c->vcor[begin+p],edges[2]={cc,PREV(cc)};
+        angle[p]=corner_angle(c->verts+3*(size_t)vertex,
+                             c->verts+3*(size_t)c->faces[NEXT(cc)],
+                             c->verts+3*(size_t)c->faces[PREV(cc)]);
+        for (int q=0;q<2;q++) {
+            int32_t edge=edges[q],other=c->faces[q?PREV(cc):NEXT(cc)];
+            int32_t twin=c->twin[edge];
+            ray[2*p+q]=other;neighbor[2*p+q]=-1;
+            if (twin<0 || seam_has(seam,vertex,other)) continue;
+            for (int32_t k=0;k<degree;k++) if (c->vcor[begin+k]/3==twin/3) {
+                neighbor[2*p+q]=k;break;
+            }
+        }
+    }
+    for (int32_t seed=0;seed<degree && result<0;seed++) if (!seen[seed]) {
+        int32_t head=0,tail=0,start=-1;
+        double total=0;
+        seen[seed]=1;queue[tail++]=seed;
+        while (head<tail) {
+            int32_t p=queue[head++];total+=angle[p];
+            if (neighbor[2*p]<0 || neighbor[2*p+1]<0) start=p;
+            for (int q=0;q<2;q++) {
+                int32_t next=neighbor[2*p+q];
+                if (next>=0 && !seen[next]) { seen[next]=1;queue[tail++]=next; }
+            }
+        }
+        if (!(total>2*M_PI+1e-12)) continue;
+        if (start<0) {
+            /* A distinct closed fan at a point connection has no first slit. */
+            result=ray[2*seed];break;
+        }
+        if (fan_check) {
+            size_t count=0;
+            rim[0]=ray[2*start+(neighbor[2*start]<0?0:1)];
+            for (int32_t p=start;p>=0;) {
+                if (count>=(size_t)tail) { result=-2;goto done; }
+                int incoming=ray[2*p]==rim[count]?0:1;
+                if (ray[2*p+incoming]!=rim[count]) { result=-2;goto done; }
+                corners[count]=c->vcor[begin+p];
+                rim[++count]=ray[2*p+1-incoming];
+                p=neighbor[2*p+1-incoming];
+            }
+            if (count!=(size_t)tail) { result=-2;goto done; }
+            int feasible=fan_check(context,vertex,corners,rim,count);
+            if (feasible<0) { result=-2;goto done; }
+            if (feasible) continue;
+        }
+        double prefix=0,best=INFINITY;
+        int32_t previous=-1;
+        for (int32_t p=start;p>=0;) {
+            int32_t next=-1,edge_vertex=-1;
+            prefix+=angle[p];
+            for (int q=0;q<2;q++) if (neighbor[2*p+q]>=0 && neighbor[2*p+q]!=previous) {
+                next=neighbor[2*p+q];edge_vertex=ray[2*p+q];break;
+            }
+            if (next>=0 && fabs(prefix-.5*total)<best) {
+                best=fabs(prefix-.5*total);result=edge_vertex;
+            }
+            previous=p;p=next;
+        }
+    }
+done:
+    Arena_restore(arena,mark);
+    return result;
+}
+
+static int32_t overfull_fan_ray(Arena_T arena, const Conn *c,
+                                const SeamSet *seam, int32_t vertex)
+{ return overfull_fan_ray_checked(arena,c,seam,vertex,NULL,NULL); }
+
+const char *SeamCutReason_name(SeamCutReason reason)
+{
+    switch (reason) {
+    case SEAM_CUT_NOT_RUN:return "not_run";
+    case SEAM_CUT_COMPLETE:return "complete";
+    case SEAM_CUT_INVALID_INPUT:return "invalid_input";
+    case SEAM_CUT_NONMANIFOLD:return "nonmanifold_source";
+    case SEAM_CUT_RESERVED_TERMINAL:return "reserved_terminal";
+    case SEAM_CUT_INELIGIBLE_TERMINAL:return "ineligible_terminal";
+    case SEAM_CUT_UNREACHABLE_TERMINAL:return "unreachable_terminal";
+    case SEAM_CUT_FAN_CHECK_FAILED:return "overfull_fan_check_failed";
+    case SEAM_CUT_RAY_ALREADY_CUT:return "overfull_ray_already_cut";
+    case SEAM_CUT_RAY_BLOCKED:return "overfull_ray_blocked";
+    case SEAM_CUT_RAY_UNREACHABLE:return "overfull_ray_unreachable";
+    case SEAM_CUT_OVERFULL_UNRESOLVED:return "overfull_fan_unresolved";
+    case SEAM_CUT_SURGERY_FAILED:return "surgery_failed";
+    default:return "unknown";
+    }
+}
+
+static int seam_cut_diagnostic_fail(SeamCutDiagnostic *d,SeamCutReason reason,
+                                     int32_t terminal,int32_t ray)
+{
+    if (d) {d->reason=reason;d->terminal=terminal;d->ray=ray;}
+    return -1;
+}
+
+static int seam_cut_boundary_impl(Arena_T arena, const float *verts, size_t nv,
+                                 const int32_t *faces, size_t nf,
+                                 const uint8_t *terminals,
+                                 SeamCutFanCheck fan_check, void *context,
+                                 const uint8_t *eligible,
+                                 const uint8_t *reserved,
+                                 SeamCutResult *out,SeamCutDiagnostic *diagnostic)
+{
+    if (diagnostic) {
+        memset(diagnostic,0,sizeof *diagnostic);
+        diagnostic->first_reserved_terminal=diagnostic->first_unreachable_terminal=-1;
+        diagnostic->terminal=diagnostic->ray=-1;
+    }
+    if (!arena || !verts || !faces || !terminals || !out || !nv || !nf ||
+        nv>INT32_MAX || nf>(size_t)INT32_MAX/3)
+        return seam_cut_diagnostic_fail(diagnostic,SEAM_CUT_INVALID_INPUT,-1,-1);
+    memset(out,0,sizeof *out);
+    if (diagnostic) {
+        int valid=1;
+        for (size_t v=0;v<nv;v++) {
+            valid&=terminals[v]<=2&&(!eligible||eligible[v]<=1)&&(!reserved||reserved[v]<=1);
+            diagnostic->requested_terminals+=terminals[v]!=0;
+            diagnostic->overfull_terminals+=terminals[v]>=2;
+            diagnostic->reserved_vertices+=reserved&&reserved[v];
+            if (terminals[v]&&reserved&&reserved[v]) {
+                diagnostic->reserved_terminals++;
+                if (diagnostic->first_reserved_terminal<0) diagnostic->first_reserved_terminal=(int32_t)v;
+            }
+        }
+        diagnostic->input_counts_complete=valid;
+    }
+    Conn c; conn_build(arena,verts,nv,faces,nf,&c);
+    if (c.nonmanifold) return seam_cut_diagnostic_fail(diagnostic,SEAM_CUT_NONMANIFOLD,-1,-1);
+    double *dist=ARENA_ALLOC(arena,nv*sizeof *dist);
+    int32_t *parent=ARENA_ALLOC(arena,nv*sizeof *parent);
+    uint8_t *boundary=ARENA_CALLOC(arena,nv,1);
+    uint8_t *network=ARENA_CALLOC(arena,nv,1);
+    uint8_t *blocked=(eligible||reserved)?ARENA_CALLOC(arena,nv,1):NULL;
+    Heap heap={0}; heap.cap=c.nc*4+nv+1024;
+    heap.a=ARENA_ALLOC(arena,heap.cap*sizeof *heap.a);
+    for (size_t v=0;v<nv;v++) { dist[v]=INFINITY; parent[v]=-1; }
+    for (size_t cc=0;cc<c.nc;cc++) if (c.twin[cc]<0) {
+        boundary[faces[cc]]=1; boundary[faces[NEXT(cc)]]=1;
+    }
+    if (diagnostic) {
+        int valid=diagnostic->input_counts_complete;
+        for (size_t v=0;v<nv;v++) {
+            valid&=!eligible||!eligible[v]||boundary[v];
+            diagnostic->interior_terminals+=terminals[v]&&!boundary[v];
+            if (boundary[v]) {
+                int excluded=(eligible&&!eligible[v])||(reserved&&reserved[v]);
+                diagnostic->boundary_vertices++;
+                diagnostic->eligible_boundary_vertices+=!excluded;
+                diagnostic->blocked_boundary_vertices+=excluded;
+            }
+        }
+        diagnostic->boundary_counts_complete=valid;
+    }
+    for (size_t v=0;v<nv;v++) {
+        if (terminals[v]>2 || (eligible && (eligible[v]>1 ||
+            (eligible[v]&&!boundary[v]))) || (reserved && reserved[v]>1))
+            return seam_cut_diagnostic_fail(diagnostic,SEAM_CUT_INVALID_INPUT,(int32_t)v,-1);
+        if (blocked) blocked[v]=(uint8_t)((eligible&&boundary[v]&&!eligible[v]) ||
+                                          (reserved&&reserved[v]));
+        if (terminals[v] && blocked && blocked[v])
+            return seam_cut_diagnostic_fail(diagnostic,reserved&&reserved[v]?SEAM_CUT_RESERVED_TERMINAL:SEAM_CUT_INELIGIBLE_TERMINAL,(int32_t)v,-1);
+        if (boundary[v]&&(!blocked||!blocked[v])) { dist[v]=0; heap_push(&heap,0,(int32_t)v); }
+    }
+    while (heap.n) {
+        HItem it=heap_pop(&heap); int32_t a=it.v;
+        if (it.d>dist[a]) continue;
+        for (int32_t k=c.voff[a];k<c.voff[a+1];k++) {
+            int32_t cc=c.vcor[k], nb[2]={faces[NEXT(cc)],faces[PREV(cc)]};
+            for (int q=0;q<2;q++) {
+                int32_t b=nb[q]; double edge[3];
+                if (blocked && blocked[b]) continue;
+                vsub(verts+3*(size_t)a,verts+3*(size_t)b,edge);
+                double next=it.d+vlen(edge);
+                if (next<dist[b]) { dist[b]=next; parent[b]=a; heap_push(&heap,next,b); }
+            }
+        }
+    }
+    if (diagnostic) {
+        for (size_t v=0;v<nv;v++) if (terminals[v]&&!boundary[v]&&!isfinite(dist[v])) {
+            diagnostic->unreachable_terminals++;
+            if (diagnostic->first_unreachable_terminal<0) diagnostic->first_unreachable_terminal=(int32_t)v;
+        }
+        diagnostic->reachability_complete=1;
+    }
+    SeamSet seam; seam_init(arena,&seam,nv,c.nc);
+    for (size_t v=0;v<nv;v++) network[v]=(uint8_t)(boundary[v]&&(!blocked||!blocked[v]));
+    for (size_t v=0;v<nv;v++) if (terminals[v] && !boundary[v]) {
+        if (!isfinite(dist[v])) {
+            if (diagnostic) diagnostic->seam_edges=seam.n;
+            return seam_cut_diagnostic_fail(diagnostic,SEAM_CUT_UNREACHABLE_TERMINAL,(int32_t)v,-1);
+        }
+        out->n_terminals++;
+        for (int32_t a=(int32_t)v;parent[a]>=0;a=parent[a]) {
+            seam_add(&seam,a,parent[a]);network[a]=network[parent[a]]=1;
+        }
+    }
+    uint32_t *stamp=ARENA_CALLOC(arena,nv,sizeof *stamp),serial=0;
+    size_t extra_rays=0;
+    for (size_t v=0;v<nv;v++) if (terminals[v]>=2) {
+        size_t degree=(size_t)(c.voff[v+1]-c.voff[v]);
+        int resolved=0;
+        for (size_t attempt=0;attempt<degree;attempt++) {
+            int32_t ray=overfull_fan_ray_checked(arena,&c,&seam,(int32_t)v,fan_check,context);
+            if (diagnostic) diagnostic->seam_edges=seam.n;
+            if (ray==-2) return seam_cut_diagnostic_fail(diagnostic,SEAM_CUT_FAN_CHECK_FAILED,(int32_t)v,ray);
+            if (ray<0) { resolved=1;break; }
+            if (seam_has(&seam,(int32_t)v,ray))
+                return seam_cut_diagnostic_fail(diagnostic,SEAM_CUT_RAY_ALREADY_CUT,(int32_t)v,ray);
+            if (fan_ray_to_boundary(&c,&seam,(int32_t)v,ray,network,&heap,
+                                    dist,parent,stamp,++serial,blocked,diagnostic)) return -1;
+            extra_rays++;
+            if (diagnostic) {diagnostic->additional_rays=extra_rays;diagnostic->seam_edges=seam.n;}
+        }
+        if (!resolved && overfull_fan_ray_checked(arena,&c,&seam,(int32_t)v,fan_check,context)!=-1)
+            return seam_cut_diagnostic_fail(diagnostic,SEAM_CUT_OVERFULL_UNRESOLVED,(int32_t)v,-1);
+    }
+    if (extra_rays) fprintf(stderr,"  [seamcut] %zu additional negative-cone fan branches\n",extra_rays);
+    out->seam_edges=(long)seam.n;
+    if (diagnostic) {diagnostic->seam_edges=seam.n;diagnostic->routes_complete=1;}
+    int result=cut_surgery(arena,&c,&seam,out);
+    if (diagnostic) {diagnostic->surgery_complete=result==0;diagnostic->reason=result?SEAM_CUT_SURGERY_FAILED:SEAM_CUT_COMPLETE;}
+    return result;
+}
+
+int SeamCut_to_boundary_checked(Arena_T arena,const float *verts,size_t nv,
+    const int32_t *faces,size_t nf,const uint8_t *terminals,
+    SeamCutFanCheck fan_check,void *context,SeamCutResult *out)
+{ return seam_cut_boundary_impl(arena,verts,nv,faces,nf,terminals,fan_check,context,NULL,NULL,out,NULL); }
+
+int SeamCut_to_boundary_eligible(Arena_T arena,const float *verts,size_t nv,
+    const int32_t *faces,size_t nf,const uint8_t *terminals,
+    const uint8_t *eligible,const uint8_t *blocked,SeamCutResult *out)
+{ return seam_cut_boundary_impl(arena,verts,nv,faces,nf,terminals,NULL,NULL,eligible,blocked,out,NULL); }
+
+int SeamCut_to_boundary_eligible_report(Arena_T arena,const float *verts,size_t nv,
+    const int32_t *faces,size_t nf,const uint8_t *terminals,
+    const uint8_t *eligible,const uint8_t *blocked,SeamCutResult *out,
+    SeamCutDiagnostic *diagnostic)
+{ return seam_cut_boundary_impl(arena,verts,nv,faces,nf,terminals,NULL,NULL,eligible,blocked,out,diagnostic); }
+
+int SeamCut_to_boundary(Arena_T arena, const float *verts, size_t nv,
+                         const int32_t *faces, size_t nf,
+                         const uint8_t *terminals, SeamCutResult *out)
+{ return SeamCut_to_boundary_checked(arena,verts,nv,faces,nf,terminals,NULL,NULL,out); }
 
 /* Find the globally shortest mesh-edge path between two distinct boundary
  * loops.  All boundary vertices are zero-distance seeds carrying their loop
@@ -1469,9 +1785,49 @@ static void build_torus(Arena_T arena, int nu, int nr, double Rb, double rt,
     *out_v=v;*out_nv=NV;*out_f=f;*out_nf=fi;
 }
 
+#include "seam_cut_fan_test.inc"
+
 int SeamCut_selftest(void)
 {
     int fails=0; Arena_T arena=Arena_new();
+    fails+=seamcut_fan_callback_selftest(arena);
+    /* A saddle has excess intrinsic angle. One path reaches the rim but
+     * leaves the whole overfull fan at the tip; a second branch must split it
+     * without dropping or changing any source triangle. A planar fan needs
+     * no additional branch, even when requested through the same API. */
+    for (int saddle=0;saddle<2;saddle++) {
+        float vertices[27]={0};int32_t faces[24];uint8_t terminals[9]={2};
+        for (int k=0;k<8;k++) {
+            double t=2*M_PI*k/8;
+            vertices[3*(k+1)]=(float)cos(t);
+            vertices[3*(k+1)+1]=(float)sin(t);
+            vertices[3*(k+1)+2]=saddle?(k&1?.4f:-.4f):0;
+            faces[3*k]=0;faces[3*k+1]=k+1;faces[3*k+2]=(k+1)%8+1;
+        }
+        SeamCutResult cut={0};
+        int rc=SeamCut_to_boundary(arena,vertices,9,faces,8,terminals,&cut);
+        int ok=rc==0 && cut.nf==8,center_copies=0;
+        double maximum=0;
+        if (!rc) {
+            double *angles=ARENA_CALLOC(arena,cut.nv,sizeof *angles);
+            for (size_t k=0;k<3*cut.nf;k++) {
+                if (cut.vmap[cut.faces[k]]!=faces[k]) ok=0;
+                if (cut.vmap[cut.faces[k]]==0)
+                    angles[cut.faces[k]]+=corner_angle(cut.verts+3*(size_t)cut.faces[k],
+                        cut.verts+3*(size_t)cut.faces[NEXT(k)],cut.verts+3*(size_t)cut.faces[PREV(k)]);
+            }
+            for (size_t v=0;v<cut.nv;v++) {
+                if (memcmp(cut.verts+3*v,vertices+3*(size_t)cut.vmap[v],3*sizeof(float))) ok=0;
+                if (cut.vmap[v]==0) { center_copies++;maximum=fmax(maximum,angles[v]); }
+            }
+        }
+        ok&=maximum<=2*M_PI+1e-10 && (saddle?center_copies>=2:center_copies==1);
+        ok&=saddle?cut.seam_edges>=2:cut.seam_edges==1;
+        fprintf(stderr,"  [seamcut %s fan] rc=%d copies=%d max-angle=%.6g seam=%ld -> %s\n",
+                saddle?"negative-cone":"planar",rc,center_copies,maximum,cut.seam_edges,ok?"ok":"FAIL");
+        fails+=!ok;
+    }
+    #include "seam_cut_direction_test.inc"
     /* Annulus (closed cylinder strip): 2 boundary loops -> cut -> 1 loop disk. */
     {
         float *v; int32_t *f; size_t nvv,nff;

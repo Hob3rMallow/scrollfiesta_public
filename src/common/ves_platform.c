@@ -14,7 +14,10 @@
 #include <errno.h>
 #ifdef _WIN32
 #include <process.h>   /* _beginthreadex */
+#include <winioctl.h>  /* FSCTL_SET_REPARSE_POINT (the scratch selftest's junction) */
 #endif
+
+static int ves_scratch_selftest(void);   /* end of file */
 
 /* ================================================================
  * Directory creation: ves_ensure_parent_dir()
@@ -297,8 +300,241 @@ void ves_hard_timeout_cancel(void)
     }
 }
 
+/* ---- VES_PROF_OUT: in-process sampling profiler (diagnostics only) ----
+ * VES_PROF_OUT=<file> starts a background thread that, about 1000 times a
+ * second, suspends every other thread of the process, records its instruction
+ * pointer (GetThreadContext) and resumes it.  While a thread is suspended the
+ * sampler touches only a table allocated up front with VirtualAlloc, so it can
+ * never wait on a lock the suspended thread holds.  About once a second (with
+ * no thread suspended) it rewrites <file> with the module map and the
+ * per-address counts, so a TerminateProcess exit loses at most a second.
+ * Leaf (self) samples only; scripts/pipeline/ves_prof_report.py resolves them
+ * against the PDBs.  Output-neutral: nothing else reads the table. */
+#include <tlhelp32.h>
+#include <psapi.h>
+
+#define VES_PROF_TAB 65536u
+typedef struct { ULONG64 rip; ULONG32 count; ULONG32 pad; } VesProfSlot;
+static VesProfSlot *g_prof_tab = NULL;
+static ULONG64 g_prof_ticks = 0, g_prof_dropped = 0;
+static volatile LONG g_prof_stop = 0;
+static LONGLONG g_prof_due = -10000;             /* sample interval, 100 ns units (VES_PROF_MS, default 1 ms) */           /* selftest only: ends the sampler loop */
+static HANDLE g_prof_thread = NULL;
+static char g_prof_path[MAX_PATH];
+
+static void ves_prof_add(ULONG64 rip)
+{
+    ULONG32 h = (ULONG32)((rip * 0x9E3779B97F4A7C15ull) >> 48);
+    for (ULONG32 k = 0; k < 64; k++) {
+        VesProfSlot *s = &g_prof_tab[(h + k) & (VES_PROF_TAB - 1)];
+        if (s->rip == rip) { s->count++; return; }
+        if (s->rip == 0) { s->rip = rip; s->count = 1; return; }
+    }
+    g_prof_dropped++;
+}
+
+static volatile LONG g_prof_flushing = 0;
+
+static void ves_prof_flush(void)
+{
+    if (InterlockedExchange(&g_prof_flushing, 1)) return;   /* one writer at a time */
+    char tmp[MAX_PATH + 8];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", g_prof_path);
+    FILE *f = fopen(tmp, "w");
+    if (!f) { InterlockedExchange(&g_prof_flushing, 0); return; }
+    HMODULE mods[1024];
+    DWORD need = 0;
+    HANDLE proc = GetCurrentProcess();
+    if (EnumProcessModules(proc, mods, (DWORD)sizeof(mods), &need)) {
+        DWORD nm = need / (DWORD)sizeof(HMODULE);
+        if (nm > 1024) nm = 1024;
+        for (DWORD i = 0; i < nm; i++) {
+            MODULEINFO mi;
+            char name[MAX_PATH];
+            if (!GetModuleInformation(proc, mods[i], &mi, (DWORD)sizeof(mi))) continue;
+            if (!GetModuleFileNameA(mods[i], name, MAX_PATH)) continue;
+            fprintf(f, "module %llx %lx %s\n", (unsigned long long)(ULONG_PTR)mi.lpBaseOfDll,
+                    (unsigned long)mi.SizeOfImage, name);
+        }
+    }
+    fprintf(f, "ticks %llu dropped %llu\n", (unsigned long long)g_prof_ticks,
+            (unsigned long long)g_prof_dropped);
+    for (ULONG32 k = 0; k < VES_PROF_TAB; k++)
+        if (g_prof_tab[k].rip)
+            fprintf(f, "%llx %lu\n", (unsigned long long)g_prof_tab[k].rip, (unsigned long)g_prof_tab[k].count);
+    fclose(f);
+    MoveFileExA(tmp, g_prof_path, MOVEFILE_REPLACE_EXISTING);
+    InterlockedExchange(&g_prof_flushing, 0);
+}
+
+/* The thread list.  CreateToolhelp32Snapshot lists every thread on the
+ * machine (19,101 threads, 0.26 s on the busy box, 2026-10-05), so a helper
+ * thread refreshes the list every 2 s and the sampler never waits for it.
+ * The sampler holds the lock SHARED for a whole pass -- the helper swaps (and
+ * closes the old handles) only under the EXCLUSIVE lock, so no handle is
+ * closed while it is being suspended -- and neither profiler thread is in the
+ * list, so the sampler never suspends a thread that could hold the lock. */
+#define VES_PROF_MAXTH 512
+static SRWLOCK g_prof_lock = SRWLOCK_INIT;
+static HANDLE g_prof_th[VES_PROF_MAXTH];
+static int g_prof_nth = 0;
+static volatile DWORD g_prof_sampler_tid = 0, g_prof_lister_tid = 0;
+static HANDLE g_prof_lister = NULL;
+
+static DWORD WINAPI ves_prof_lister(LPVOID unused)
+{
+    (void)unused;
+    const DWORD pid = GetCurrentProcessId();
+    g_prof_lister_tid = GetCurrentThreadId();
+    while (!g_prof_stop) {
+        HANDLE fresh[VES_PROF_MAXTH];
+        int nf = 0;
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (snap != INVALID_HANDLE_VALUE) {
+            THREADENTRY32 te;
+            te.dwSize = (DWORD)sizeof(te);
+            for (BOOL ok = Thread32First(snap, &te); ok && nf < VES_PROF_MAXTH; ok = Thread32Next(snap, &te)) {
+                if (te.th32OwnerProcessID != pid || te.th32ThreadID == g_prof_sampler_tid ||
+                    te.th32ThreadID == g_prof_lister_tid) continue;
+                HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, te.th32ThreadID);
+                if (h) fresh[nf++] = h;
+            }
+            CloseHandle(snap);
+        }
+        HANDLE old[VES_PROF_MAXTH];
+        AcquireSRWLockExclusive(&g_prof_lock);
+        const int nold = g_prof_nth;
+        memcpy(old, g_prof_th, (size_t)nold * sizeof(HANDLE));
+        memcpy(g_prof_th, fresh, (size_t)nf * sizeof(HANDLE));
+        g_prof_nth = nf;
+        ReleaseSRWLockExclusive(&g_prof_lock);
+        for (int i = 0; i < nold; i++) CloseHandle(old[i]);
+        for (int w = 0; w < 20 && !g_prof_stop; w++) Sleep(100);
+    }
+    return 0;
+}
+
+static DWORD WINAPI ves_prof_thread(LPVOID unused)
+{
+    (void)unused;
+    g_prof_sampler_tid = GetCurrentThreadId();
+    ULONGLONG last_flush = GetTickCount64();
+    HANDLE timer = CreateWaitableTimerExW(NULL, NULL, 0x00000002 /* HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
+    while (!g_prof_stop) {
+        ULONGLONG now = GetTickCount64();
+        AcquireSRWLockShared(&g_prof_lock);
+        for (int i = 0; i < g_prof_nth; i++) {
+            if (SuspendThread(g_prof_th[i]) == (DWORD)-1) continue;
+            CONTEXT ctx;
+            memset(&ctx, 0, sizeof(ctx));
+            ctx.ContextFlags = CONTEXT_CONTROL;
+            if (GetThreadContext(g_prof_th[i], &ctx)) ves_prof_add(ctx.Rip);
+            ResumeThread(g_prof_th[i]);
+        }
+        ReleaseSRWLockShared(&g_prof_lock);
+        g_prof_ticks++;
+        if (now - last_flush >= 1000) { ves_prof_flush(); last_flush = now; }
+        if (timer) {
+            LARGE_INTEGER due;
+            due.QuadPart = g_prof_due;        /* relative */
+            if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) WaitForSingleObject(timer, INFINITE);
+            else Sleep((DWORD)(-g_prof_due / 10000));
+        } else {
+            Sleep((DWORD)(-g_prof_due / 10000));
+        }
+    }
+    if (timer) CloseHandle(timer);
+    return 0;
+}
+
+static void ves_prof_flush_atexit(void);
+
+void ves_prof_start_from_env(void)
+{
+    const char *p = getenv("VES_PROF_OUT");
+    if (!p || !*p || g_prof_tab) return;
+    snprintf(g_prof_path, sizeof(g_prof_path), "%s", p);
+    {   /* VES_PROF_MS=<n>: one sample every n ms (default 1; 10 for long multi-threaded runs) */
+        const char *ms = getenv("VES_PROF_MS");
+        long v = ms ? strtol(ms, NULL, 10) : 1;
+        if (v < 1) v = 1;
+        if (v > 1000) v = 1000;
+        g_prof_due = -(LONGLONG)v * 10000;
+    }
+    g_prof_tab = (VesProfSlot *)VirtualAlloc(NULL, (SIZE_T)VES_PROF_TAB * sizeof(VesProfSlot),
+                                             MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!g_prof_tab) return;
+    g_prof_stop = 0;
+    g_prof_thread = CreateThread(NULL, 0, ves_prof_thread, NULL, 0, NULL);
+    if (g_prof_thread) SetThreadPriority(g_prof_thread, THREAD_PRIORITY_HIGHEST);
+    while (g_prof_thread && !g_prof_sampler_tid) Sleep(0);   /* its id must be known before the first list */
+    g_prof_lister = CreateThread(NULL, 0, ves_prof_lister, NULL, 0, NULL);
+    atexit(ves_prof_flush_atexit);   /* tools that return from main (sheet_assemble) */
+}
+
+void ves_prof_flush_now(void)
+{
+    if (g_prof_tab) ves_prof_flush();
+}
+
+static void ves_prof_flush_atexit(void)
+{
+    if (g_prof_tab) ves_prof_flush();
+}
+
+/* Selftest: sample this process for ~1 s while one thread spins, stop the
+ * sampler, and check the file has ticks, the module map and samples. */
+static unsigned __stdcall prof_st_spin(void *p)
+{
+    volatile double x = 1.0;
+    ULONGLONG t0 = GetTickCount64();
+    while (GetTickCount64() - t0 < 1000) x = x * 1.0000001 + 1e-9;
+    *(double *)p = x;
+    return 0;
+}
+
+static int ves_prof_selftest(void)
+{
+    if (g_prof_tab) return 0;                    /* a real profile is running: leave it alone */
+    char dir[MAX_PATH], path[MAX_PATH];
+    if (!GetTempPathA(MAX_PATH, dir)) return 1;
+    snprintf(path, sizeof(path), "%sves_prof_selftest_%lu.prof", dir, (unsigned long)GetCurrentProcessId());
+    if (!SetEnvironmentVariableA("VES_PROF_OUT", path)) return 1;
+    _putenv_s("VES_PROF_OUT", path);
+    ves_prof_start_from_env();
+    double sink = 0.0;
+    uintptr_t h = _beginthreadex(NULL, 0, prof_st_spin, &sink, 0, NULL);
+    if (h) { WaitForSingleObject((HANDLE)h, INFINITE); CloseHandle((HANDLE)h); }
+    g_prof_stop = 1;
+    if (g_prof_thread) { WaitForSingleObject(g_prof_thread, 5000); CloseHandle(g_prof_thread); g_prof_thread = NULL; }
+    if (g_prof_lister) { WaitForSingleObject(g_prof_lister, 5000); CloseHandle(g_prof_lister); g_prof_lister = NULL; }
+    ves_prof_flush();
+    for (int i = 0; i < g_prof_nth; i++) CloseHandle(g_prof_th[i]);
+    g_prof_nth = 0; g_prof_sampler_tid = 0; g_prof_lister_tid = 0;
+    _putenv_s("VES_PROF_OUT", "");
+    SetEnvironmentVariableA("VES_PROF_OUT", NULL);
+    FILE *f = fopen(path, "r");
+    int modules = 0, samples = 0;
+    unsigned long long ticks = 0;
+    char line[1024];
+    while (f && fgets(line, sizeof(line), f)) {
+        if (!strncmp(line, "module ", 7)) modules++;
+        else if (!strncmp(line, "ticks ", 6)) ticks = strtoull(line + 6, NULL, 10);
+        else samples++;
+    }
+    if (f) fclose(f);
+    DeleteFileA(path);
+    VirtualFree(g_prof_tab, 0, MEM_RELEASE);
+    g_prof_tab = NULL; g_prof_ticks = 0; g_prof_dropped = 0;
+    int ok = modules > 0 && ticks > 0 && samples > 0;
+    fprintf(stderr, "ves_prof_selftest: %s (%llu ticks, %d modules, %d sampled addresses)\n",
+            ok ? "OK" : "FAIL", ticks, modules, samples);
+    return ok ? 0 : 1;
+}
+
 VES_NORETURN void ves_fast_exit(int code)
 {
+    ves_prof_flush_now();               /* VES_PROF_OUT: last second of samples */
     /* Lock-free flushes: a thread terminated while holding a stream lock
      * (Triangle prints to stdout) would deadlock fflush(NULL).  stderr is
      * unbuffered; every file this tool writes is closed before this point. */
@@ -400,6 +636,8 @@ int ves_platform_selftest(void)
     if (r3 != 2) { fprintf(stderr, "ves_platform_selftest FAIL: wall backstop %d\n", r3); fails++; }
     fprintf(stderr, "ves_platform_selftest: %s (CPU-bounded worker: quick/spin/sleep/blocked)\n",
             fails ? "FAIL" : "OK");
+    if (ves_prof_selftest() != 0) fails++;
+    if (ves_scratch_selftest() != 0) fails++;
     return fails;
 }
 
@@ -452,8 +690,11 @@ int ves_run_thread_cpu_bounded(VesThreadFn fn, void *arg, unsigned cpu_ms,
 
 int ves_platform_selftest(void)
 {
-    return 0;
+    return ves_scratch_selftest();
 }
+
+void ves_prof_start_from_env(void) {}
+void ves_prof_flush_now(void) {}
 
 #endif /* _WIN32 */
 
@@ -471,4 +712,128 @@ void ves_omp_set_threads(int n)
 {
     if (n <= 0) return;          /* keep the runtime's own default */
     omp_set_num_threads(n);
+}
+
+/* ================================================================
+ * Selftest of the selftest scratch helpers (ves_selftest_dir/_clean in
+ * ves_platform.h): a nested tree holding a read-only file and a junction
+ * (a symlink on POSIX) to a directory OUTSIDE the tree is removed, the
+ * link's target survives, and paths outside selftest/ are refused.
+ * ================================================================ */
+
+#ifdef _WIN32
+/* A directory junction `link` -> `target`; junctions need no privilege,
+ * unlike symlinks.  0 on success. */
+static int st_junction(const char *link, const char *target)
+{
+    WCHAR wt[MAX_PATH], full[MAX_PATH];
+    struct {                                  /* REPARSE_DATA_BUFFER, mount point */
+        DWORD tag;
+        WORD data_len, reserved, sub_off, sub_len, print_off, print_len;
+        WCHAR buf[2 * MAX_PATH + 8];
+    } rb;
+    DWORD full_n = 0, bytes = 0;
+    size_t sub_chars = 0;
+    HANDLE h = INVALID_HANDLE_VALUE;
+    int rc = -1;
+    if (MultiByteToWideChar(CP_ACP, 0, target, -1, wt, MAX_PATH) == 0) return -1;
+    full_n = GetFullPathNameW(wt, MAX_PATH, full, NULL);
+    if (full_n == 0 || full_n >= MAX_PATH) return -1;
+    if (!CreateDirectoryA(link, NULL)) return -1;
+    memset(&rb, 0, sizeof rb);
+    rb.tag = IO_REPARSE_TAG_MOUNT_POINT;
+    memcpy(rb.buf, L"\\??\\", 4 * sizeof(WCHAR));
+    memcpy(rb.buf + 4, full, (size_t)full_n * sizeof(WCHAR));
+    sub_chars = 4 + (size_t)full_n;
+    memcpy(rb.buf + sub_chars + 1, full, (size_t)full_n * sizeof(WCHAR));
+    rb.sub_len = (WORD)(sub_chars * sizeof(WCHAR));
+    rb.print_off = (WORD)((sub_chars + 1) * sizeof(WCHAR));
+    rb.print_len = (WORD)((size_t)full_n * sizeof(WCHAR));
+    rb.data_len = (WORD)(8 + rb.sub_len + sizeof(WCHAR) + rb.print_len + sizeof(WCHAR));
+    h = CreateFileA(link, GENERIC_WRITE, 0, NULL, OPEN_EXISTING,
+                    FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (h != INVALID_HANDLE_VALUE) {
+        if (DeviceIoControl(h, FSCTL_SET_REPARSE_POINT, &rb, (DWORD)(8 + rb.data_len),
+                            NULL, 0, &bytes, NULL))
+            rc = 0;
+        CloseHandle(h);
+    }
+    return rc;
+}
+
+static int st_exists(const char *path)
+{
+    return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+}
+#else
+static int st_exists(const char *path)
+{
+    struct stat st;
+    return lstat(path, &st) == 0;
+}
+#endif
+
+static int st_write(const char *path, const char *text)
+{
+    FILE *f = NULL;
+    if (ves_ensure_parent_dir(path) != 0) return -1;
+    f = fopen(path, "wb");
+    if (!f) return -1;
+    fputs(text, f);
+    return fclose(f) == 0 ? 0 : -1;
+}
+
+static int ves_scratch_selftest(void)
+{
+    int fails = 0, linked = 0;
+    char dir[256], keep[256], p[600], link[600], sentinel[600];
+    if (ves_selftest_dir(dir, sizeof dir, "ves_platform") != 0
+        || ves_selftest_dir(keep, sizeof keep, "ves_platform_keep") != 0) {
+        fprintf(stderr, "ves_platform_selftest FAIL: scratch dirs\n");
+        return 1;
+    }
+    snprintf(p, sizeof p, "%s/a/b/c.txt", dir);
+    if (st_write(p, "x") != 0) fails++;
+    snprintf(p, sizeof p, "%s/ro.txt", dir);
+    if (st_write(p, "x") != 0) fails++;
+#ifdef _WIN32
+    (void)SetFileAttributesA(p, FILE_ATTRIBUTE_READONLY);
+#endif
+    snprintf(sentinel, sizeof sentinel, "%s/sentinel.txt", keep);
+    if (st_write(sentinel, "keep") != 0) fails++;
+    snprintf(link, sizeof link, "%s/a/link", dir);
+#ifdef _WIN32
+    linked = st_junction(link, keep) == 0;
+#else
+    {
+        char rel[600];
+        snprintf(rel, sizeof rel, "../../%s", ves_path_basename(keep));
+        linked = symlink(rel, link) == 0;
+    }
+#endif
+    snprintf(p, sizeof p, "%s/sentinel.txt", link);
+    if (!linked || !st_exists(p)) {
+        fprintf(stderr, "ves_platform_selftest FAIL: link %s -> %s not made\n", link, keep);
+        fails++;
+    }
+    if (ves_selftest_clean(dir) != 0 || st_exists(dir)) {
+        fprintf(stderr, "ves_platform_selftest FAIL: %s not removed\n", dir);
+        fails++;
+    }
+    if (!st_exists(sentinel)) {
+        fprintf(stderr, "ves_platform_selftest FAIL: the clean followed the link into %s\n", keep);
+        fails++;
+    }
+    if (ves_selftest_clean(dir) != 0) fails++;                    /* already gone: 0 */
+    if (ves_selftest_clean("output/x") != -1 || ves_selftest_clean(VES_SELFTEST_DIR) != -1
+        || ves_selftest_clean(VES_SELFTEST_DIR "/") != -1
+        || ves_selftest_clean(VES_SELFTEST_DIR "/../output") != -1 || ves_selftest_clean(NULL) != -1) {
+        fprintf(stderr, "ves_platform_selftest FAIL: a path outside %s/ was not refused\n",
+                VES_SELFTEST_DIR);
+        fails++;
+    }
+    if (ves_selftest_clean(keep) != 0 || st_exists(keep)) fails++;
+    fprintf(stderr, "ves_platform_selftest: %s (selftest scratch: nested tree, read-only file, "
+            "link not followed, refusals)\n", fails ? "FAIL" : "OK");
+    return fails;
 }

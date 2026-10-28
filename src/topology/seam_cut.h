@@ -62,6 +62,88 @@ int SeamCut_repair_manifold(Arena_T arena, const float *verts, size_t nv,
                             int32_t **out_faces, size_t *out_nf,
                             int32_t **out_vmap);
 
+/* Open requested interior terminals to their nearest existing boundary by
+ * shortest 3-D edge paths. A value of 2 also splits any connected terminal fan
+ * with intrinsic angle above 2*pi: each extra radial cut takes a shortest path
+ * to the existing seam/boundary network without returning through the terminal.
+ * This permits negative-curvature cones to open without overlapping slit lips.
+ * Supports disconnected components. No faces or material are removed; vmap
+ * records the duplicated seam banks. */
+int SeamCut_to_boundary(Arena_T arena, const float *verts, size_t nv,
+                         const int32_t *faces, size_t nf,
+                         const uint8_t *terminals, SeamCutResult *out);
+
+/* Optional certificate for an already-open, intrinsically overfull sector.
+ * corners[nf] are original corner indices at vertex, ordered along the fan;
+ * rim[nf+1] are the corresponding original rim vertices. The two rim ends
+ * may name the same source vertex on opposite banks of a single slit.
+ * Return 1 only when this exact unmodified fan has a certified embedding
+ * without an extra ray; 0 retains the ordinary extra-ray behavior; -1 aborts.
+ * Arrays are temporary and must not be retained. Closed fans still receive
+ * their first slit. All requested first paths remain unconditional. */
+typedef int (*SeamCutFanCheck)(void *context, int32_t vertex,
+                               const int32_t *corners, const int32_t *rim,
+                               size_t nf);
+int SeamCut_to_boundary_checked(Arena_T arena, const float *verts, size_t nv,
+                                 const int32_t *faces, size_t nf,
+                                 const uint8_t *terminals,
+                                 SeamCutFanCheck fan_check, void *context,
+                                 SeamCutResult *out);
+
+/* Optional stable-boundary/domain reservation. eligible_boundary may mark
+ * only actual boundary vertices; unmarked boundary vertices cannot be seeds
+ * or intermediates. blocked_vertices additionally excludes any reserved
+ * vertex from every first/extra ray. NULL masks preserve the legacy route.
+ * No mask creates a boundary or authorizes a proximity connection. */
+int SeamCut_to_boundary_eligible(Arena_T arena, const float *verts, size_t nv,
+                                  const int32_t *faces, size_t nf,
+                                  const uint8_t *terminals,
+                                  const uint8_t *eligible_boundary,
+                                  const uint8_t *blocked_vertices,
+                                  SeamCutResult *out);
+
+/* Additive observation of the same stable-boundary route. A missing phase
+ * flag means its counts were not measured, never a measured zero. Vertex/ray
+ * witnesses use input indices. Reporting does not alter route or acceptance. */
+typedef enum SeamCutReason {
+    SEAM_CUT_NOT_RUN=0, SEAM_CUT_COMPLETE, SEAM_CUT_INVALID_INPUT,
+    SEAM_CUT_NONMANIFOLD, SEAM_CUT_RESERVED_TERMINAL,
+    SEAM_CUT_INELIGIBLE_TERMINAL, SEAM_CUT_UNREACHABLE_TERMINAL,
+    SEAM_CUT_FAN_CHECK_FAILED, SEAM_CUT_RAY_ALREADY_CUT,
+    SEAM_CUT_RAY_BLOCKED, SEAM_CUT_RAY_UNREACHABLE,
+    SEAM_CUT_OVERFULL_UNRESOLVED, SEAM_CUT_SURGERY_FAILED
+} SeamCutReason;
+
+typedef struct SeamCutDiagnostic {
+    SeamCutReason reason;
+    size_t requested_terminals, overfull_terminals, interior_terminals;
+    size_t reserved_vertices, reserved_terminals;
+    size_t boundary_vertices, eligible_boundary_vertices, blocked_boundary_vertices;
+    size_t unreachable_terminals, additional_rays, seam_edges;
+    int32_t first_reserved_terminal, first_unreachable_terminal;
+    int32_t terminal, ray;
+    int input_counts_complete, boundary_counts_complete;
+    int reachability_complete, routes_complete, surgery_complete;
+} SeamCutDiagnostic;
+
+const char *SeamCutReason_name(SeamCutReason reason);
+int SeamCut_to_boundary_eligible_report(Arena_T arena, const float *verts,
+                                         size_t nv,const int32_t *faces,size_t nf,
+                                         const uint8_t *terminals,
+                                         const uint8_t *eligible_boundary,
+                                         const uint8_t *blocked_vertices,
+                                         SeamCutResult *out,
+                                         SeamCutDiagnostic *diagnostic);
+
+struct SlimRefineDirection;
+/* Add terminals at nonzero quarter indices of a fully supported interior
+ * physical cross field, independent of angle-deficit magnitude. Existing
+ * terminal values (including overfull-fan requests) are preserved. */
+int SeamCut_direction_terminals(Arena_T arena,const float *verts,size_t nv,
+                                 const int32_t *faces,size_t nf,
+                                 const struct SlimRefineDirection *directions,
+                                 uint8_t *terminals,size_t *count);
+
 /* ---------------------------------------------------------------------------
  * Handle-loop enumeration (for bridge localization). The genus-reduction core
  * repeatedly cuts the shortest NON-SEPARATING loop until genus 0; each such loop

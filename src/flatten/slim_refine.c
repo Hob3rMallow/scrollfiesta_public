@@ -10,15 +10,19 @@
 #include "../common/ves_platform.h"
 
 #include <float.h>
+#if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#define VES_SSE2 1
+#include <emmintrin.h>
+#else
+#define VES_SSE2 0   /* aarch64 etc.: the scalar paths below, bitwise the SSE2 ones */
+#endif
 #include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef _OPENMP
 #include "../common/ves_omp.h"
-#endif
 
 #define SR_AREA_EPS 1.0e-12
 
@@ -27,6 +31,11 @@ typedef struct SRFace {
     double gy[3];
     double area;
 } SRFace;
+
+typedef struct SRDirection {
+    double h[3], v[3]; /* barycentric physical directional derivatives */
+    double weight;
+} SRDirection;
 
 typedef struct SRBoundaryEdge {
     int32_t a;
@@ -44,6 +53,8 @@ typedef struct SREdgeBox {
     double max_v;
 } SREdgeBox;
 
+#include "slim_refine_growth_reference.inc"
+
 typedef struct SRSystem {
     size_t nv;
     size_t nf;
@@ -54,6 +65,9 @@ typedef struct SRSystem {
     size_t metric_fallback_faces;
     const int32_t *faces;
     SRFace *face;
+    SRDirection *direction;
+    size_t direction_faces;
+    double direction_area_fraction;
     int32_t *edge_a;
     int32_t *edge_b;
     int32_t *face_edge;
@@ -69,6 +83,15 @@ typedef struct SRSystem {
     size_t *component_boundary_offset;
     size_t *component_boundary;
     SRBoundaryEdge *boundary;
+    size_t *incident_offset;
+    size_t *incident_face;
+    uint8_t *boundary_vertex;
+    size_t *rim_offset;
+    size_t *rim_edge;
+    SREdgeBox *relax_boxes;
+    double *relax_prefix;
+    double *growth_limit;
+    SRGrowthReference *growth_reference;
     double *diagonal;              /* [nv*3]: 00,01,11 */
     double *edge_block;            /* [ne*3]: 00,01,11 */
     double *rhs;                   /* [nv*2] */
@@ -98,6 +121,8 @@ typedef struct SRAMGLevel {
     int32_t *edge_to_coarse;
     size_t ncoarse;
     double *cholesky;
+    int finite;            /* every diagonal and edge block entry finite
+                            * (set by sr_amg_update; see sr_amg_smooth) */
 } SRAMGLevel;
 
 typedef struct SRAMG {
@@ -119,6 +144,9 @@ typedef struct SRCoarseRef {
 
 typedef struct SRMeasure {
     double energy;
+    double metric_energy;
+    double direction_energy;
+    double direction_angle;
     double qc_mean;
     double qc_max;
     double min_det;
@@ -299,6 +327,77 @@ static int sr_blend_rest_faces(SRSystem *system, const SRFace *initial,
     return 0;
 }
 
+static int sr_direction_setup(const float *a,const float *b,const float *c,
+                               const SRFace *physical,const SlimRefineDirection *input,
+                               double strength,SRDirection *out)
+{
+    double x[3],y[3],n[3],edge[3],length=0,norm=0,arms[2][2];
+    for (int k=0;k<3;k++) { x[k]=(double)b[k]-a[k];edge[k]=(double)c[k]-a[k];length+=x[k]*x[k]; }
+    length=sqrt(length);
+    for (int k=0;k<3;k++) { n[k]=x[(k+1)%3]*edge[(k+2)%3]-x[(k+2)%3]*edge[(k+1)%3];norm+=n[k]*n[k]; }
+    norm=sqrt(norm);
+    if (!(length>0 && norm>0)) return -1;
+    for (int k=0;k<3;k++) { x[k]/=length;n[k]/=norm; }
+    for (int k=0;k<3;k++) y[k]=n[(k+1)%3]*x[(k+2)%3]-n[(k+2)%3]*x[(k+1)%3];
+    for (int arm=0;arm<2;arm++) {
+        const double *world=arm?input->v:input->h;
+        double u=0,v=0,world_norm=0;
+        for (int k=0;k<3;k++) { u+=world[k]*x[k];v+=world[k]*y[k];world_norm+=world[k]*world[k]; }
+        double projected=hypot(u,v);
+        if (!isfinite(world_norm) || !(projected>1e-10*sqrt(world_norm))) return -1;
+        arms[arm][0]=u/projected;arms[arm][1]=v/projected;
+        double *coefficients=arm?out->v:out->h;
+        for (int k=1;k<3;k++) coefficients[k]=physical->gx[k]*arms[arm][0]+physical->gy[k]*arms[arm][1];
+        coefficients[0]=-coefficients[1]-coefficients[2];
+    }
+    if (!(fabs(arms[0][0]*arms[1][1]-arms[0][1]*arms[1][0])>1e-8)) return -1;
+    out->weight=strength*input->weight*physical->area;
+    return out->weight>0 && isfinite(out->weight)?0:-1;
+}
+
+static void sr_direction_vectors(const SRDirection *d,const int32_t *indices,
+                                  const double *uv,double h[2],double v[2])
+{
+    size_t origin=2*(size_t)indices[0];
+    for (int q=0;q<2;q++) {
+        double a=uv[2*(size_t)indices[1]+q]-uv[origin+q];
+        double b=uv[2*(size_t)indices[2]+q]-uv[origin+q];
+        h[q]=d->h[1]*a+d->h[2]*b;v[q]=d->v[1]*a+d->v[2]*b;
+    }
+}
+
+/* The two material families are a joint, unsigned quarter-turn frame. Holding
+ * the better assignment gives an exact quadratic upper bound on their minimum
+ * objective, touching it at the current iterate. SD supplies the length metric;
+ * this term adds only cross-axis pressure, with no position or boundary pins. */
+static double sr_direction_energy(const SRDirection *d,const int32_t *indices,
+                                   const double *uv,double *angle)
+{
+    if (!(d->weight>0)) { if (angle) *angle=0;return 0; }
+    double h[2],v[2];sr_direction_vectors(d,indices,uv,h,v);
+    if (angle) {
+        double ah=atan2(fabs(h[1]),fabs(h[0])),av=atan2(fabs(v[0]),fabs(v[1]));
+        double bh=atan2(fabs(h[0]),fabs(h[1])),bv=atan2(fabs(v[1]),fabs(v[0]));
+        *angle=fmin(ah*ah+av*av,bh*bh+bv*bv);
+    }
+    return d->weight*fmin(h[1]*h[1]+v[0]*v[0],h[0]*h[0]+v[1]*v[1]);
+}
+
+static int sr_direction_assignment(const SRDirection *d,const int32_t *indices,const double *uv)
+{
+    double h[2],v[2];sr_direction_vectors(d,indices,uv,h,v);
+    double a=h[1]*h[1]+v[0]*v[0],b=h[0]*h[0]+v[1]*v[1];
+    double tolerance=16*DBL_EPSILON*fmax(1,fmax(a,b));
+    if (a<b-tolerance) return 0;
+    if (b<a-tolerance) return 1;
+    /* Compare the unsigned output angles, rather than a named input arm.
+     * Swapping or reversing either physical arm must give the same proxy,
+     * including at the nonsmooth equal-cost quarter-turn boundary. */
+    double ah=atan2(2*h[0]*h[1],h[0]*h[0]-h[1]*h[1]);
+    double av=atan2(2*v[0]*v[1],v[0]*v[0]-v[1]*v[1]);
+    return ah>av;
+}
+
 static int sr_build_system(Arena_T arena, const float *verts, size_t nv,
                            const int32_t *faces, size_t nf,
                            const SlimRefineOpts *opts, int threads,
@@ -370,6 +469,9 @@ static int sr_build_system(Arena_T arena, const float *verts, size_t nv,
     system->face_edge = (int32_t *)ARENA_ALLOC(
         arena, key_count * sizeof(*system->face_edge));
     system->face = (SRFace *)ARENA_ALLOC(arena, nf * sizeof(*system->face));
+    if (opts->directions && opts->direction_weight>0)
+        system->direction=ARENA_CALLOC(arena,nf,sizeof *system->direction);
+    double direction_area=0,physical_area=0;
     for (face_index = 0; face_index < nf; face_index++) {
         size_t corner = 0;
         int32_t a = faces[face_index * 3];
@@ -409,6 +511,20 @@ static int sr_build_system(Arena_T arena, const float *verts, size_t nv,
             fprintf(stderr, "  [slim] degenerate rest face %zu\n", face_index);
             return -1;
         }
+        if (system->direction) {
+            SRFace physical={0};
+            const SlimRefineDirection *input=opts->directions+face_index;
+            if (sr_face_rest(verts+3*(size_t)a,verts+3*(size_t)b,verts+3*(size_t)c,&physical) ||
+                !isfinite(input->weight) || input->weight<0) return -1;
+            physical_area+=physical.area;
+            if (input->weight>0) {
+                if (sr_direction_setup(verts+3*(size_t)a,verts+3*(size_t)b,verts+3*(size_t)c,
+                                       &physical,input,opts->direction_weight,system->direction+face_index)) {
+                    fprintf(stderr,"  [slim] invalid material arms at face %zu\n",face_index);return -1;
+                }
+                system->direction_faces++;direction_area+=physical.area;
+            }
+        }
         for (corner = 0; corner < 3; corner++) {
             int32_t p = faces[face_index * 3 + corner];
             int32_t q = faces[face_index * 3 + (corner + 1) % 3];
@@ -417,6 +533,7 @@ static int sr_build_system(Arena_T arena, const float *verts, size_t nv,
             system->face_edge[face_index * 3 + corner] = (int32_t)found;
         }
     }
+    system->direction_area_fraction=physical_area>0?direction_area/physical_area:0;
 
     system->offset = (size_t *)ARENA_CALLOC(
         arena, nv + 1, sizeof(*system->offset));
@@ -658,7 +775,7 @@ static size_t sr_boundary_intersections(const SRSystem *system,
 static size_t sr_component_boundary_intersections(const SRSystem *system,
                                                   size_t component,
                                                   const double *uv,
-                                                  SREdgeBox *box)
+                                                  SREdgeBox *box, uint8_t *damp)
 {
     size_t begin = system->component_boundary_offset[component];
     size_t end = system->component_boundary_offset[component + 1];
@@ -697,14 +814,43 @@ static size_t sr_component_boundary_intersections(const SRSystem *system,
                                       &uv[(size_t)b->a * 2],
                                       &uv[(size_t)b->b * 2])) {
                 intersections++;
-                if (intersections >= 16) return intersections;
+                if (damp) {
+                    damp[a->a]=damp[a->b]=damp[b->a]=damp[b->b]=1;
+                } else if (intersections >= 16) return intersections;
             }
         }
     }
     return intersections;
 }
 
-static void sr_face_jacobian(const SRFace *face, const int32_t *indices,
+/* Keep this small hot kernel in its caller: local result storage cannot
+ * alias its input geometry. This retains the exact original arithmetic. */
+#if defined(_MSC_VER)
+#define SR_JACOBIAN_INLINE __forceinline
+#elif defined(__GNUC__)
+#define SR_JACOBIAN_INLINE inline __attribute__((always_inline))
+#else
+#define SR_JACOBIAN_INLINE inline
+#endif
+static SR_JACOBIAN_INLINE void sr_face_jacobian(const SRFace *face, const int32_t *indices,
+                             const double *uv, double jacobian[4])
+{
+    size_t corner = 0;
+    jacobian[0] = 0.0;
+    jacobian[1] = 0.0;
+    jacobian[2] = 0.0;
+    jacobian[3] = 0.0;
+    for (corner = 0; corner < 3; corner++) {
+        size_t vertex = (size_t)indices[corner];
+        jacobian[0] += face->gx[corner] * uv[vertex * 2];
+        jacobian[1] += face->gy[corner] * uv[vertex * 2];
+        jacobian[2] += face->gx[corner] * uv[vertex * 2 + 1];
+        jacobian[3] += face->gy[corner] * uv[vertex * 2 + 1];
+    }
+}
+#undef SR_JACOBIAN_INLINE
+
+static void sr_jacobian_original(const SRFace *face, const int32_t *indices,
                              const double *uv, double jacobian[4])
 {
     size_t corner = 0;
@@ -725,6 +871,7 @@ static int sr_measure(const SRSystem *system, const double *uv,
                       SRMeasure *measure)
 {
     double energy = 0.0;
+    double direction_energy=0,direction_angle=0,direction_mass=0;
     double qc_sum = 0.0;
     double area_sum = 0.0;
     double qc_max = 1.0;
@@ -752,6 +899,11 @@ static int sr_measure(const SRSystem *system, const double *uv,
                     jacobian[3] * jacobian[3];
         if (!(det > 0.0)) return -1;
         energy += face->area * frobenius * (1.0 + 1.0 / (det * det));
+        if (system->direction && system->direction[face_index].weight>0) {
+            const SRDirection *d=system->direction+face_index;double angle=0;
+            direction_energy+=sr_direction_energy(d,system->faces+3*face_index,uv,&angle);
+            direction_angle+=d->weight*angle;direction_mass+=2*d->weight;
+        }
         p = jacobian[0] * jacobian[0] + jacobian[1] * jacobian[1];
         q = jacobian[0] * jacobian[2] + jacobian[1] * jacobian[3];
         r = jacobian[2] * jacobian[2] + jacobian[3] * jacobian[3];
@@ -769,8 +921,12 @@ static int sr_measure(const SRSystem *system, const double *uv,
         area_sum += face->area;
         if (qc > qc_max) qc_max = qc;
     }
-    if (!isfinite(energy) || !isfinite(qc_sum) || !(area_sum > 0.0)) return -1;
-    measure->energy = energy;
+    if (!isfinite(energy+direction_energy) || !isfinite(direction_angle) ||
+        !isfinite(qc_sum) || !(area_sum > 0.0)) return -1;
+    measure->energy = energy+direction_energy;
+    measure->metric_energy = energy;
+    measure->direction_energy = direction_energy;
+    measure->direction_angle = direction_mass>0?direction_angle/direction_mass:0;
     measure->qc_mean = qc_sum / area_sum;
     measure->qc_max = qc_max;
     measure->min_det = min_det;
@@ -784,6 +940,7 @@ static int sr_measure_component(const SRSystem *system, const double *uv,
     size_t begin = system->component_face_offset[component];
     size_t end = system->component_face_offset[component + 1];
     double energy = 0.0;
+    double direction_energy=0;
     double qc_sum = 0.0;
     double area_sum = 0.0;
     double qc_max = 1.0;
@@ -813,6 +970,9 @@ static int sr_measure_component(const SRSystem *system, const double *uv,
                     jacobian[2] * jacobian[2] +
                     jacobian[3] * jacobian[3];
         energy += face->area * frobenius * (1.0 + 1.0 / (det * det));
+        if (system->direction && system->direction[face_index].weight>0)
+            direction_energy+=sr_direction_energy(system->direction+face_index,
+                                                   system->faces+3*face_index,uv,NULL);
         p = jacobian[0] * jacobian[0] + jacobian[1] * jacobian[1];
         q = jacobian[0] * jacobian[2] + jacobian[1] * jacobian[3];
         r = jacobian[2] * jacobian[2] + jacobian[3] * jacobian[3];
@@ -826,8 +986,14 @@ static int sr_measure_component(const SRSystem *system, const double *uv,
         area_sum += face->area;
         if (qc > qc_max) qc_max = qc;
     }
-    if (!isfinite(energy) || !isfinite(qc_sum) || !(area_sum > 0.0)) return -1;
-    measure->energy = energy;
+    if (!isfinite(energy+direction_energy) ||
+        !isfinite(qc_sum) || !(area_sum > 0.0)) return -1;
+    measure->energy = energy+direction_energy;
+    measure->metric_energy = energy;
+    measure->direction_energy = direction_energy;
+    /* The angular certificate is measured by sr_measure once per full
+     * iterate, not by every component line-search trial. */
+    measure->direction_angle = 0;
     measure->qc_mean = qc_sum / area_sum;
     measure->qc_max = qc_max;
     measure->min_det = min_det;
@@ -948,8 +1114,6 @@ static int sr_component_local_step(const SRSystem *system,
     size_t vertex_end = system->component_vertex_offset[component + 1];
     size_t face_begin = system->component_face_offset[component];
     size_t face_end = system->component_face_offset[component + 1];
-    size_t boundary_begin = system->component_boundary_offset[component];
-    size_t boundary_end = system->component_boundary_offset[component + 1];
     size_t trials = 0;
 
     for (size_t position = vertex_begin; position < vertex_end; position++) {
@@ -968,7 +1132,7 @@ static int sr_component_local_step(const SRSystem *system,
         }
     }
 
-    for (size_t line = 0; line < (size_t)opts->line_search; line++) {
+    for (size_t line = 0; line < (size_t)opts->local_line_search; line++) {
         size_t invalid_faces = 0;
         size_t boundary_intersections = 0;
         for (size_t position = vertex_begin; position < vertex_end;
@@ -1003,7 +1167,7 @@ static int sr_component_local_step(const SRSystem *system,
         }
         if (invalid_faces != 0) {
             if (opts->verbose &&
-                (line < 3 || line + 1 == (size_t)opts->line_search))
+                (line < 3 || line + 1 == (size_t)opts->local_line_search))
                 fprintf(stderr,
                         "      [slim local] c%zu trial=%zu invalid-faces=%zu\n",
                         component, line + 1, invalid_faces);
@@ -1016,19 +1180,13 @@ static int sr_component_local_step(const SRSystem *system,
         }
         if (opts->guard_boundary)
             boundary_intersections = sr_component_boundary_intersections(
-                system, component, trial, boxes);
+                system, component, trial, boxes, damp_vertex);
         if (boundary_intersections != 0) {
             if (opts->verbose &&
-                (line < 3 || line + 1 == (size_t)opts->line_search))
+                (line < 3 || line + 1 == (size_t)opts->local_line_search))
                 fprintf(stderr,
                         "      [slim local] c%zu trial=%zu boundary-x=%zu\n",
                         component, line + 1, boundary_intersections);
-            for (size_t position = boundary_begin; position < boundary_end;
-                 position++) {
-                size_t edge = system->component_boundary[position];
-                damp_vertex[(size_t)system->boundary[edge].a] = 1;
-                damp_vertex[(size_t)system->boundary[edge].b] = 1;
-            }
             for (size_t position = vertex_begin; position < vertex_end;
                  position++) {
                 size_t vertex = (size_t)system->component_vertex[position];
@@ -1058,7 +1216,7 @@ static int sr_component_local_step(const SRSystem *system,
             return 1;
         }
         if (opts->verbose &&
-            (line < 3 || line + 1 == (size_t)opts->line_search))
+            (line < 3 || line + 1 == (size_t)opts->local_line_search))
             fprintf(stderr,
                     "      [slim local] c%zu trial=%zu non-descent "
                     "E=%.9g candidate=%.9g\n",
@@ -1072,6 +1230,140 @@ static int sr_component_local_step(const SRSystem *system,
     }
     if (out_trials != NULL) *out_trials = trials;
     return 0;
+}
+
+/* A stalled global direction need not be stationary at the interior vertices.
+ * Relax the same SLIM quadratic in 2-D vertex blocks, accepting each move only
+ * when the actual symmetric-Dirichlet energy decreases. Optional rim motion
+ * checks every swept edge against the boundary. This supplements the global
+ * backend; it never substitutes a different flattening energy or metric. */
+static void sr_relax_setup(Arena_T arena, SRSystem *s)
+{
+    s->incident_offset = ARENA_CALLOC(arena, s->nv+1, sizeof(size_t));
+    s->incident_face = ARENA_ALLOC(arena, 3*s->nf*sizeof(size_t));
+    s->boundary_vertex = ARENA_CALLOC(arena, s->nv, 1);
+    s->rim_offset = ARENA_CALLOC(arena, s->nv+1, sizeof(size_t));
+    s->rim_edge = ARENA_ALLOC(arena, 2*s->nb*sizeof(size_t));
+    s->relax_boxes = ARENA_ALLOC(arena, s->nb*sizeof(SREdgeBox));
+    s->relax_prefix = ARENA_ALLOC(arena, s->nb*sizeof(double));
+    s->growth_limit = ARENA_ALLOC(arena, s->nv*sizeof(double));
+    s->growth_reference = ARENA_ALLOC(arena, s->nf*sizeof *s->growth_reference);
+    for (size_t k=0;k<3*s->nf;k++) s->incident_offset[(size_t)s->faces[k]+1]++;
+    for (size_t v=0;v<s->nv;v++) s->incident_offset[v+1]+=s->incident_offset[v];
+    Arena_Mark mark = Arena_save(arena);
+    size_t *next = ARENA_ALLOC(arena, s->nv*sizeof(size_t));
+    memcpy(next,s->incident_offset,s->nv*sizeof(size_t));
+    for (size_t k=0;k<3*s->nf;k++) s->incident_face[next[s->faces[k]]++]=k/3;
+    Arena_restore(arena,mark);
+    for (size_t e=0;e<s->nb;e++) {
+        s->boundary_vertex[s->boundary[e].a]=1;
+        s->boundary_vertex[s->boundary[e].b]=1;
+        s->rim_offset[(size_t)s->boundary[e].a+1]++;
+        s->rim_offset[(size_t)s->boundary[e].b+1]++;
+    }
+    for (size_t v=0;v<s->nv;v++) s->rim_offset[v+1]+=s->rim_offset[v];
+    mark=Arena_save(arena);
+    next=ARENA_ALLOC(arena,s->nv*sizeof(size_t));
+    memcpy(next,s->rim_offset,s->nv*sizeof(size_t));
+    for (size_t e=0;e<s->nb;e++) {
+        s->rim_edge[next[s->boundary[e].a]++]=e;
+        s->rim_edge[next[s->boundary[e].b]++]=e;
+    }
+    Arena_restore(arena,mark);
+}
+
+#include "slim_refine_boundary.inc"
+#include "slim_refine_growth.inc"
+#include "slim_refine_gauge.inc"
+
+static double sr_vertex_energy(const SRSystem *s, const double *uv, size_t v)
+{
+    double energy=0;
+    for (size_t p=s->incident_offset[v];p<s->incident_offset[v+1];p++) {
+        size_t f=s->incident_face[p];
+        double j[4];
+        const int32_t *face=s->faces+3*f;
+        if (!UvGuard_positive(uv,face)) return INFINITY;
+        sr_face_jacobian(s->face+f,face,uv,j);
+        double det=j[0]*j[3]-j[1]*j[2];
+        if (!(det>SR_AREA_EPS)) return INFINITY;
+        double norm=j[0]*j[0]+j[1]*j[1]+j[2]*j[2]+j[3]*j[3];
+        energy+=s->face[f].area*norm*(1+1/(det*det));
+        if (s->direction) energy+=sr_direction_energy(s->direction+f,face,uv,NULL);
+    }
+    return energy;
+}
+
+static size_t sr_component_relax(const SRSystem *s, const SlimRefineOpts *opts,
+                                 size_t component, double *uv)
+{
+    size_t begin=s->component_vertex_offset[component];
+    size_t end=s->component_vertex_offset[component+1],moves=0;
+    size_t rim_proposals=0,rim_capped=0,rim_moves=0;
+    double rim_requested=0,rim_maximum=0,rim_accepted=0;
+    for (int sweep=0;sweep<opts->local_relaxation;sweep++) {
+        if (opts->local_relax_boundary) sr_relax_rim_index(s,component,uv);
+        for (size_t index=0;index<end-begin;index++) {
+            size_t position=(sweep&1)?end-1-index:begin+index;
+            size_t v=(size_t)s->component_vertex[position];
+            if ((s->boundary_vertex[v] && !opts->local_relax_boundary) ||
+                (opts->fixed_vertices && opts->fixed_vertices[v])) continue;
+            double r[2]={s->rhs[2*v],s->rhs[2*v+1]};
+            for (size_t p=s->offset[v];p<s->offset[v+1];p++) {
+                size_t w=(size_t)s->neighbor[p];
+                const double *b=s->edge_block+3*s->adj_edge[p];
+                r[0]-=b[0]*uv[2*w]+b[1]*uv[2*w+1];
+                r[1]-=b[1]*uv[2*w]+b[2]*uv[2*w+1];
+            }
+            const double *d=s->diagonal+3*v;
+            double det=d[0]*d[2]-d[1]*d[1];
+            if (!(det>0 && isfinite(det))) continue;
+            double old[2]={uv[2*v],uv[2*v+1]};
+            double delta[2]={(d[2]*r[0]-d[1]*r[1])/det-old[0],
+                             (d[0]*r[1]-d[1]*r[0])/det-old[1]};
+            if (!isfinite(delta[0]) || !isfinite(delta[1])) continue;
+            if (s->boundary_vertex[v]) {
+                double length=hypot(delta[0],delta[1]);
+                rim_proposals++;rim_requested+=length;rim_maximum=fmax(rim_maximum,length);
+                if (length>SR_RELAX_RIM_STEP) {
+                    rim_capped++;
+                    delta[0]*=SR_RELAX_RIM_STEP/length;
+                    delta[1]*=SR_RELAX_RIM_STEP/length;
+                }
+            }
+            double before=sr_vertex_energy(s,uv,v),alpha=1;
+            if (!isfinite(before)) continue;
+            /* Moving one vertex gives a linear determinant, so a positive
+             * endpoint certifies the entire segment. Limit to 80% of the first
+             * collapse, then backtrack the exact energy. */
+            for (size_t p=s->incident_offset[v];p<s->incident_offset[v+1];p++) {
+                size_t f=s->incident_face[p];double j[4],k[4];
+                sr_face_jacobian(s->face+f,s->faces+3*f,uv,j);
+                uv[2*v]=old[0]+delta[0];uv[2*v+1]=old[1]+delta[1];
+                sr_face_jacobian(s->face+f,s->faces+3*f,uv,k);
+                uv[2*v]=old[0];uv[2*v+1]=old[1];
+                double a=j[0]*j[3]-j[1]*j[2],b=k[0]*k[3]-k[1]*k[2];
+                if (b<a) alpha=fmin(alpha,.8*a/(a-b));
+            }
+            int accepted=0;
+            for (int line=0;line<24 && alpha>0;line++,alpha*=.5) {
+                uv[2*v]=old[0]+alpha*delta[0];uv[2*v+1]=old[1]+alpha*delta[1];
+                double energy=sr_vertex_energy(s,uv,v);
+                if (isfinite(energy) && energy<before-1e-12*fmax(1,before) &&
+                    (!s->boundary_vertex[v] || sr_relax_rim_safe(s,component,uv,v,old))) {
+                    accepted=1;moves++;
+                    if (s->boundary_vertex[v]) { rim_moves++;rim_accepted+=hypot(uv[2*v]-old[0],uv[2*v+1]-old[1]); }
+                    break;
+                }
+            }
+            if (!accepted) { uv[2*v]=old[0];uv[2*v+1]=old[1]; }
+        }
+    }
+    if (opts->verbose && s->component_faces[component]>=10000 && rim_proposals)
+        fprintf(stderr,"    [slim relax rim] c%zu proposals=%zu capped=%zu requested-mean/max=%.6g/%.6g accepted=%zu mean=%.6g\n",
+                component,rim_proposals,rim_capped,rim_requested/(double)rim_proposals,rim_maximum,
+                rim_moves,rim_moves?rim_accepted/(double)rim_moves:0);
+    return moves;
 }
 
 /* Express each disconnected winding/developable guide chart in the similarity
@@ -1292,6 +1584,54 @@ static int sr_local_proxy(const double jacobian[4], const SlimRefineOpts *opts,
     return 0;
 }
 
+int SlimRefine_face_proxy(const double j[4], const SlimRefineOpts *opts,
+                          double *energy, double gradient[4], double block[3])
+{
+    double weight[3] = {0}, rotation[4] = {0};
+    if (sr_local_proxy(j, opts, weight, rotation)) return -1;
+    double det = j[0]*j[3]-j[1]*j[2], norm = 0;
+    for (int k = 0; k < 4; k++) norm += j[k]*j[k];
+    double inverse2 = 1/(det*det), inverse3 = inverse2/det;
+    double cofactor[4] = {j[3],-j[2],-j[1],j[0]};
+    *energy = fmax(0, norm*(1+inverse2)-4);
+    for (int k = 0; k < 4; k++) {
+        gradient[k] = 2*((1+inverse2)*j[k]-norm*inverse3*cofactor[k]);
+        if (!isfinite(gradient[k])) return -1;
+    }
+    block[0] = 2*(weight[0]*weight[0]+weight[1]*weight[1]);
+    block[1] = 2*weight[1]*(weight[0]+weight[2]);
+    block[2] = 2*(weight[1]*weight[1]+weight[2]*weight[2]);
+    return isfinite(*energy) && isfinite(block[0]) && isfinite(block[1]) && isfinite(block[2]) ? 0 : -1;
+}
+
+static int sr_face_proxy_selftest(void)
+{
+    SlimRefineOpts opts; SlimRefine_defaults(&opts);
+    const double cases[3][4] = {{1,0,0,1},{1.2,.3,-.1,.8},{.2,.1,-.1,2}};
+    int fails = 0;
+    for (int c = 0; c < 3; c++) {
+        double energy = 0, gradient[4], block[3], weight[3], rotation[4];
+        if (SlimRefine_face_proxy(cases[c],&opts,&energy,gradient,block) ||
+            sr_local_proxy(cases[c],&opts,weight,rotation)) { fails++; continue; }
+        for (int k = 0; k < 4; k++) {
+            double before[4], after[4], eb = 0, ea = 0, unused[4], h[3];
+            memcpy(before,cases[c],sizeof before); memcpy(after,before,sizeof after);
+            before[k] -= 1e-6; after[k] += 1e-6;
+            int rc = SlimRefine_face_proxy(before,&opts,&eb,unused,h) |
+                     SlimRefine_face_proxy(after,&opts,&ea,unused,h);
+            if (rc || fabs((ea-eb)/2e-6-gradient[k]) > 1e-5*fmax(1,fabs(gradient[k]))) fails++;
+            int row = k/2, col = k%2;
+            double dx = cases[c][col]-rotation[col], dy = cases[c][2+col]-rotation[2+col];
+            double proxy = row ? block[1]*dx+block[2]*dy : block[0]*dx+block[1]*dy;
+            if (fabs(proxy-gradient[k]) > 1e-10*fmax(1,fabs(gradient[k]))) fails++;
+        }
+        if (energy < 0 || !(block[0] > 0) || !(block[0]*block[2]-block[1]*block[1] > 0)) fails++;
+    }
+    { double j[4]={1,0,0,-1}, e=0, g[4], b[3]; if (!SlimRefine_face_proxy(j,&opts,&e,g,b)) fails++; }
+    fprintf(stderr,"  SLIM face proxy: exact gradient, local quadratic and fold rejection: %s (%d failures)\n",fails?"FAIL":"ok",fails);
+    return fails;
+}
+
 static int sr_assemble(SRSystem *system, const double *uv,
                        const SlimRefineOpts *opts)
 {
@@ -1347,6 +1687,19 @@ static int sr_assemble(SRSystem *system, const double *uv,
             system->edge_block[edge * 3] += coefficient * h00;
             system->edge_block[edge * 3 + 1] += coefficient * h01;
             system->edge_block[edge * 3 + 2] += coefficient * h11;
+        }
+        if (system->direction && system->direction[face_index].weight>0) {
+            const SRDirection *d=system->direction+face_index;
+            int swapped=sr_direction_assignment(d,indices,uv);
+            const double *u=swapped?d->h:d->v,*v=swapped?d->v:d->h;
+            for (size_t k=0;k<3;k++) {
+                size_t vertex=(size_t)indices[k],next=(k+1)%3;
+                size_t edge=(size_t)system->face_edge[3*face_index+k];
+                system->diagonal[3*vertex]+=d->weight*u[k]*u[k];
+                system->diagonal[3*vertex+2]+=d->weight*v[k]*v[k];
+                system->edge_block[3*edge]+=d->weight*u[k]*u[next];
+                system->edge_block[3*edge+2]+=d->weight*v[k]*v[next];
+            }
         }
     }
     system->proximal_min = DBL_MAX;
@@ -1667,12 +2020,44 @@ static int sr_amg_factor_coarsest(SRAMGLevel *level)
     return 0;
 }
 
+/* 1 when every value is finite: v - v is +0 for finite v and NaN otherwise,
+ * and a NaN survives every later addition. */
+static int sr_values_finite(const double *values, size_t count)
+{
+#if !VES_SSE2
+    double lanes[2] = {0.0, 0.0};          /* lane by lane: even indices in 0, odd in 1, the tail in 0 */
+    size_t i = 0;
+    for (; i + 2 <= count; i += 2) {
+        lanes[0] = lanes[0] + (values[i] - values[i]);
+        lanes[1] = lanes[1] + (values[i + 1] - values[i + 1]);
+    }
+    if (i < count) lanes[0] += values[i] - values[i];
+    return lanes[0] == 0.0 && lanes[1] == 0.0;
+#else
+    __m128d sum = _mm_setzero_pd();
+    double lanes[2];
+    size_t i = 0;
+    for (; i + 2 <= count; i += 2) {
+        __m128d v = _mm_loadu_pd(values + i);
+        sum = _mm_add_pd(sum, _mm_sub_pd(v, v));
+    }
+    _mm_storeu_pd(lanes, sum);
+    if (i < count) lanes[0] += values[i] - values[i];
+    return lanes[0] == 0.0 && lanes[1] == 0.0;
+#endif
+}
+
 static int sr_amg_update(SRAMG *amg)
 {
     int level = 0;
     for (level = 0; level + 1 < amg->levels; level++)
         if (sr_amg_restrict_matrix(&amg->level[level],
                                    &amg->level[level + 1]) != 0) return -1;
+    for (level = 0; level < amg->levels; level++) {
+        SRAMGLevel *l = &amg->level[level];
+        l->finite = sr_values_finite(l->diagonal, l->n * 3) &&
+                    sr_values_finite(l->edge_block, l->ne * 3);
+    }
     return sr_amg_factor_coarsest(&amg->level[amg->levels - 1]);
 }
 
@@ -1729,6 +2114,105 @@ static void sr_block_solve(const double *block, double r0, double r1,
     }
 }
 
+/* One row of the symmetric 2x2-block product y = A x (sr_apply and every
+ * AMG level; blocks stored 00,01,11).  Lane 0 of the SSE2 register carries
+ * y0 and lane 1 carries y1; each lane receives exactly the multiplies and
+ * adds of the scalar row (sr_block_row_scalar), in the same order, as
+ * separate operations (this build never contracts to FMA), so the result is
+ * bitwise the scalar row's: the selftest compares the two.  Halves the
+ * arithmetic of the assembler's hottest loop (sr_amg_apply_level, 19.5% of
+ * a large assembly's busy samples on 2026-10-05). */
+static inline void sr_block_row(const double *diagonal, const size_t *offset,
+                                const int32_t *neighbor,
+                                const size_t *adj_edge,
+                                const double *edge_block, const double *x,
+                                size_t vertex, double *result)
+{
+    const double *d = &diagonal[vertex * 3];
+#if !VES_SSE2
+    /* lane 0 = (d0*x0) + (d1*x1), lane 1 = (d1*x0) + (d2*x1); per neighbour y += ((b0*n0) + (b1*n1), (b1*n0) + (b2*n1)) */
+    const double x0 = x[vertex * 2], x1 = x[vertex * 2 + 1];
+    double y0 = (d[0] * x0) + (d[1] * x1);
+    double y1 = (d[1] * x0) + (d[2] * x1);
+    size_t position = 0;
+    for (position = offset[vertex]; position < offset[vertex + 1]; position++) {
+        const double *block = &edge_block[adj_edge[position] * 3];
+        const double n0 = x[(size_t)neighbor[position] * 2], n1 = x[(size_t)neighbor[position] * 2 + 1];
+        y0 = y0 + ((block[0] * n0) + (block[1] * n1));
+        y1 = y1 + ((block[1] * n0) + (block[2] * n1));
+    }
+    result[vertex * 2] = y0;
+    result[vertex * 2 + 1] = y1;
+#else
+    __m128d xv = _mm_loadu_pd(&x[vertex * 2]);
+    __m128d y = _mm_add_pd(
+        _mm_mul_pd(_mm_loadu_pd(d), _mm_unpacklo_pd(xv, xv)),
+        _mm_mul_pd(_mm_loadu_pd(d + 1), _mm_unpackhi_pd(xv, xv)));
+    size_t position = 0;
+    for (position = offset[vertex]; position < offset[vertex + 1];
+         position++) {
+        const double *block = &edge_block[adj_edge[position] * 3];
+        __m128d xn = _mm_loadu_pd(&x[(size_t)neighbor[position] * 2]);
+        y = _mm_add_pd(y, _mm_add_pd(
+            _mm_mul_pd(_mm_loadu_pd(block), _mm_unpacklo_pd(xn, xn)),
+            _mm_mul_pd(_mm_loadu_pd(block + 1), _mm_unpackhi_pd(xn, xn))));
+    }
+    _mm_storeu_pd(&result[vertex * 2], y);
+#endif
+}
+
+/* One block-Jacobi step of the AMG smoother for `vertex`,
+ * x += omega * D^-1 (rhs - A x): sr_block_solve's arithmetic with both
+ * components in one SSE2 register on the regular path (the singular fallback
+ * stays scalar).  Lane 1's -b*r0 + a*r1 is formed as (-b*r0) - ((-a)*r1),
+ * which IEEE defines as the same sum, so every non-NaN result is bitwise
+ * sr_block_solve's (the selftest compares them). */
+static inline void sr_smooth_row(const double *block, const double *rhs,
+                                 const double *temporary, double *x,
+                                 size_t vertex)
+{
+    double a = block[0];
+    double b = block[1];
+    double d = block[2];
+    double determinant = a * d - b * b;
+    double floor_value = 1.0e-18 * (fabs(a * d) + b * b + 1.0);
+#if !VES_SSE2
+    const double r0 = rhs[vertex * 2] - temporary[vertex * 2];
+    const double r1 = rhs[vertex * 2 + 1] - temporary[vertex * 2 + 1];
+    double c0, c1;
+    if (!(determinant > floor_value) || !isfinite(determinant)) {
+        c0 = r0 / fmax(a, 1.0e-12);
+        c1 = r1 / fmax(d, 1.0e-12);
+    } else {                                 /* the SSE2 lanes: (d*r0 - b*r1), ((-b)*r0 - (-a)*r1), each / det */
+        c0 = ((d * r0) - (b * r1)) / determinant;
+        c1 = ((-b * r0) - (-a * r1)) / determinant;
+    }
+    x[vertex * 2] = x[vertex * 2] + (SR_AMG_OMEGA * c0);
+    x[vertex * 2 + 1] = x[vertex * 2 + 1] + (SR_AMG_OMEGA * c1);
+#else
+    __m128d r = _mm_sub_pd(_mm_loadu_pd(&rhs[vertex * 2]),
+                           _mm_loadu_pd(&temporary[vertex * 2]));
+    __m128d correction;
+    if (!(determinant > floor_value) || !isfinite(determinant)) {
+        double r01[2];
+        _mm_storeu_pd(r01, r);
+        correction = _mm_set_pd(r01[1] / fmax(d, 1.0e-12),
+                                r01[0] / fmax(a, 1.0e-12));
+    } else {
+        __m128d r0 = _mm_unpacklo_pd(r, r);
+        __m128d r1 = _mm_unpackhi_pd(r, r);
+        correction = _mm_div_pd(
+            _mm_sub_pd(_mm_mul_pd(_mm_set_pd(-b, d), r0),
+                       _mm_mul_pd(_mm_set_pd(-a, b), r1)),
+            _mm_set1_pd(determinant));
+    }
+    _mm_storeu_pd(&x[vertex * 2],
+                  _mm_add_pd(_mm_loadu_pd(&x[vertex * 2]),
+                             _mm_mul_pd(_mm_set1_pd(SR_AMG_OMEGA),
+                                        correction)));
+#endif
+}
+
 static void sr_amg_apply_level(const SRAMG *amg, int level_index,
                                const double *x, double *result)
 {
@@ -1739,31 +2223,23 @@ static void sr_amg_apply_level(const SRAMG *amg, int level_index,
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static) num_threads(threads) if(threads > 1 && count >= 1000)
 #endif
-    for (ii = 0; ii < count; ii++) {
-        size_t vertex = (size_t)ii;
-        const double *diagonal = &level->diagonal[vertex * 3];
-        double y0 = diagonal[0] * x[vertex * 2] +
-                    diagonal[1] * x[vertex * 2 + 1];
-        double y1 = diagonal[1] * x[vertex * 2] +
-                    diagonal[2] * x[vertex * 2 + 1];
-        size_t position = 0;
-        for (position = level->offset[vertex];
-             position < level->offset[vertex + 1]; position++) {
-            size_t neighbor = (size_t)level->neighbor[position];
-            size_t edge = level->adj_edge[position];
-            const double *block = &level->edge_block[edge * 3];
-            y0 += block[0] * x[neighbor * 2] +
-                  block[1] * x[neighbor * 2 + 1];
-            y1 += block[1] * x[neighbor * 2] +
-                  block[2] * x[neighbor * 2 + 1];
-        }
-        result[vertex * 2] = y0;
-        result[vertex * 2 + 1] = y1;
-    }
+    for (ii = 0; ii < count; ii++)
+        sr_block_row(level->diagonal, level->offset, level->neighbor,
+                     level->adj_edge, level->edge_block, x, (size_t)ii,
+                     result);
 }
 
+/* x_zero: x is +0 in every component on entry (pre-smoothing starts from the
+ * memset iterate on every level).  With every block of the level finite, the
+ * first sweep's product A x is then +-0 in every component, so rhs - A x is
+ * rhs except that a zero residual may change sign; that zero yields a +-0
+ * correction and +0 + omega * (+-0) is +0, so the iterate after the sweep is
+ * bitwise the same with A x replaced by +0 -- one of the five level products
+ * of a V-cycle level, without its cost (sr_amg_apply_level was 42% of a
+ * clean stage's busy samples on 2026-10-05).  The selftest compares both. */
 static void sr_amg_smooth(const SRAMG *amg, int level_index,
-                          const double *rhs, double *x, double *temporary)
+                          const double *rhs, double *x, double *temporary,
+                          int x_zero)
 {
     const SRAMGLevel *level = &amg->level[level_index];
     int sweep = 0;
@@ -1771,21 +2247,16 @@ static void sr_amg_smooth(const SRAMG *amg, int level_index,
         int ii = 0;
         int count = (int)level->n;
         int threads = amg->threads;
-        sr_amg_apply_level(amg, level_index, x, temporary);
+        if (sweep == 0 && x_zero && level->finite)
+            memset(temporary, 0, level->n * 2 * sizeof(*temporary));
+        else
+            sr_amg_apply_level(amg, level_index, x, temporary);
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static) num_threads(threads) if(threads > 1 && count >= 1000)
 #endif
-        for (ii = 0; ii < count; ii++) {
-            size_t vertex = (size_t)ii;
-            double correction0 = 0.0;
-            double correction1 = 0.0;
-            sr_block_solve(&level->diagonal[vertex * 3],
-                           rhs[vertex * 2] - temporary[vertex * 2],
-                           rhs[vertex * 2 + 1] - temporary[vertex * 2 + 1],
-                           &correction0, &correction1);
-            x[vertex * 2] += SR_AMG_OMEGA * correction0;
-            x[vertex * 2 + 1] += SR_AMG_OMEGA * correction1;
-        }
+        for (ii = 0; ii < count; ii++)
+            sr_smooth_row(&level->diagonal[(size_t)ii * 3], rhs, temporary,
+                          x, (size_t)ii);
     }
 }
 
@@ -1828,7 +2299,7 @@ static int sr_amg_vcycle(const SRAMG *amg, SRAMGWork *work,
     if (level_index + 1 == amg->levels)
         return sr_amg_solve_coarsest(level, rhs, x, temporary);
 
-    sr_amg_smooth(amg, level_index, rhs, x, temporary);
+    sr_amg_smooth(amg, level_index, rhs, x, temporary, 1);
     sr_amg_apply_level(amg, level_index, x, temporary);
     {
         const SRAMGLevel *coarse = &amg->level[level_index + 1];
@@ -1851,7 +2322,7 @@ static int sr_amg_vcycle(const SRAMG *amg, SRAMGWork *work,
             x[vertex * 2 + 1] += coarse_x[aggregate * 2 + 1];
         }
     }
-    sr_amg_smooth(amg, level_index, rhs, x, temporary);
+    sr_amg_smooth(amg, level_index, rhs, x, temporary, 0);
     return 0;
 }
 
@@ -1893,27 +2364,10 @@ static void sr_apply(const SRSystem *system, const double *x, double *result)
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static) num_threads(threads) if(threads > 1)
 #endif
-    for (ii = 0; ii < count; ii++) {
-        size_t vertex = (size_t)ii;
-        double d00 = system->diagonal[vertex * 3];
-        double d01 = system->diagonal[vertex * 3 + 1];
-        double d11 = system->diagonal[vertex * 3 + 2];
-        double y0 = d00 * x[vertex * 2] + d01 * x[vertex * 2 + 1];
-        double y1 = d01 * x[vertex * 2] + d11 * x[vertex * 2 + 1];
-        size_t position = 0;
-        for (position = system->offset[vertex];
-             position < system->offset[vertex + 1]; position++) {
-            size_t neighbor = (size_t)system->neighbor[position];
-            size_t edge = system->adj_edge[position];
-            double b00 = system->edge_block[edge * 3];
-            double b01 = system->edge_block[edge * 3 + 1];
-            double b11 = system->edge_block[edge * 3 + 2];
-            y0 += b00 * x[neighbor * 2] + b01 * x[neighbor * 2 + 1];
-            y1 += b01 * x[neighbor * 2] + b11 * x[neighbor * 2 + 1];
-        }
-        result[vertex * 2] = y0;
-        result[vertex * 2 + 1] = y1;
-    }
+    for (ii = 0; ii < count; ii++)
+        sr_block_row(system->diagonal, system->offset, system->neighbor,
+                     system->adj_edge, system->edge_block, x, (size_t)ii,
+                     result);
 }
 
 static double sr_dot(const double *a, const double *b, size_t count,
@@ -2151,8 +2605,17 @@ void SlimRefine_defaults(SlimRefineOpts *opts)
     opts->proximal = 1.0e-5;
     opts->line_search = 24;
     opts->use_amg = 1;
+    opts->linear_solve = NULL;
+    opts->linear_context = NULL;
     opts->local_steps = 0;
     opts->local_step_min_faces = 100000;
+    opts->local_line_search = 24;
+    opts->local_growth_sweeps = 4;
+    opts->local_relaxation = 0;
+    opts->local_relax_boundary = 0;
+    opts->directions = NULL;
+    opts->direction_weight = 0;
+    opts->direction_rigid_gauge = 0;
     opts->guide_uv = NULL;
     opts->metric_uv = NULL;
     opts->guide_warm_start = 0;
@@ -2165,6 +2628,59 @@ void SlimRefine_defaults(SlimRefineOpts *opts)
     opts->scaffold_first_face = 0;
     opts->scaffold_weight = 1.0;
     opts->fixed_vertices = NULL;
+}
+
+int SlimRefine_open_seam_seed(Arena_T arena, const float *verts, size_t nv,
+                              const int32_t *faces, size_t nf,
+                              const double *uv, const double *displacement,
+                              double *uv_out, double *accepted_alpha)
+{
+    if (!arena || !uv || !displacement || !uv_out) return -1;
+    Arena_Mark mark=Arena_save(arena);
+    SlimRefineOpts opts;SlimRefine_defaults(&opts);
+    SRSystem system={0};int status=-1;
+    if (accepted_alpha) *accepted_alpha=0;
+    if (sr_build_system(arena,verts,nv,faces,nf,&opts,1,&system)) goto done;
+    int8_t *sign=ARENA_CALLOC(arena,system.ncomponents,sizeof *sign);
+    double *start=ARENA_ALLOC(arena,2*nv*sizeof *start);
+    double *destination=ARENA_ALLOC(arena,2*nv*sizeof *destination);
+    double *trial=ARENA_ALLOC(arena,2*nv*sizeof *trial);
+    SREdgeBox *boxes=ARENA_ALLOC(arena,system.nb*sizeof *boxes);
+    for (size_t f=0;f<nf;f++) {
+        size_t a=(size_t)faces[3*f],b=(size_t)faces[3*f+1],c=(size_t)faces[3*f+2];
+        double det=sr_orient2(uv+2*a,uv+2*b,uv+2*c);
+        int8_t s=det>0?1:det<0?-1:0;
+        size_t component=(size_t)system.vertex_component[a];
+        if (!s || (sign[component] && sign[component]!=s)) goto done;
+        sign[component]=s;
+    }
+    for (size_t v=0;v<nv;v++) {
+        double orientation=sign[system.vertex_component[v]]<0?-1:1;
+        start[2*v]=uv[2*v];start[2*v+1]=orientation*uv[2*v+1];
+        destination[2*v]=uv[2*v]+displacement[2*v];
+        destination[2*v+1]=orientation*(uv[2*v+1]+displacement[2*v+1]);
+    }
+    double alpha=1;
+    for (int attempt=0;attempt<24;attempt++,alpha*=.5) {
+        for (size_t k=0;k<2*nv;k++) trial[k]=start[k]+alpha*(destination[k]-start[k]);
+        SRMeasure measure={0};
+        int valid=UvGuard_mesh(trial,faces,nf) && !sr_measure(&system,trial,&measure) && !measure.flips;
+        for (size_t f=0;valid && f<nf;f++) valid=UvGuard_interval(start,destination,faces+3*f,alpha);
+        size_t contacts=valid?sr_boundary_intersections(&system,trial,boxes):0;
+        if (valid && !contacts) {
+            for (size_t v=0;v<nv;v++) {
+                uv_out[2*v]=trial[2*v];
+                uv_out[2*v+1]=trial[2*v+1]*(sign[system.vertex_component[v]]<0?-1:1);
+            }
+            if (accepted_alpha) *accepted_alpha=alpha;
+            status=0;break;
+        }
+        if (!attempt || attempt==23)
+            fprintf(stderr,"  [slim seam seed] trial=%d alpha=%.9g valid-faces=%d contacts=%zu\n",
+                    attempt+1,alpha,valid,contacts);
+    }
+done:
+    Arena_restore(arena,mark);return status;
 }
 
 int SlimRefine_run_double(Arena_T arena,
@@ -2219,12 +2735,13 @@ int SlimRefine_run_double(Arena_T arena,
     if (options != NULL) opts = *options;
     else SlimRefine_defaults(&opts);
     if (opts.iterations < 0 || opts.homotopy_stages <= 0 ||
-        opts.final_iterations < 0 ||
+        !isfinite(opts.direction_weight) || opts.direction_weight<0 ||
+        opts.final_iterations < 0 || opts.local_relaxation < 0 || opts.local_growth_sweeps < 0 ||
         opts.pcg_iterations <= 0 ||
         !(opts.pcg_tolerance > 0.0) || !(opts.energy_tolerance >= 0.0) ||
         !(opts.sigma_min > 0.0) || !(opts.weight_max >= 1.0) ||
         !(opts.proximal > 0.0) || opts.line_search <= 0 ||
-        (opts.local_steps && opts.local_step_min_faces == 0)) return -1;
+        (opts.local_steps && (opts.local_step_min_faces == 0 || opts.local_line_search <= 0))) return -1;
     if (opts.scaffold_uv != NULL &&
         (opts.scaffold_first_face == 0 || opts.scaffold_first_face >= nf ||
          !(opts.scaffold_weight > 0.0) || !isfinite(opts.scaffold_weight) ||
@@ -2258,6 +2775,8 @@ int SlimRefine_run_double(Arena_T arena,
     if (sr_build_system(arena, verts, nv, faces, nf, &opts,
                         opts.threads, &system) != 0)
         return -1;
+    if (opts.local_relaxation || (opts.local_steps && opts.local_growth_sweeps))
+        sr_relax_setup(arena,&system);
     if (opts.homotopy_stages > 1) {
         initial_face = (SRFace *)ARENA_ALLOC(
             arena, nf * sizeof(*initial_face));
@@ -2321,15 +2840,38 @@ int SlimRefine_run_double(Arena_T arena,
         stats->boundary_edges = system.nb;
         stats->metric_uv_faces = system.metric_uv_faces;
         stats->metric_fallback_faces = system.metric_fallback_faces;
-        stats->energy_before = before.energy;
+        stats->energy_before = before.metric_energy;
+        stats->objective_before = before.energy;
+        stats->direction_faces = system.direction_faces;
+        stats->direction_area_fraction = system.direction_area_fraction;
+        stats->direction_energy_before = before.direction_energy;
+        stats->direction_angle_before = before.direction_angle;
         stats->qc_mean_before = before.qc_mean;
         stats->qc_max_before = before.qc_max;
         stats->min_det_before = before.min_det;
         stats->flips_before = before.flips;
         stats->boundary_intersections_before = boundary_before;
-        stats->guide_energy_after = before.energy;
+        stats->guide_energy_after = before.metric_energy;
         stats->homotopy_stages_run = opts.homotopy_stages == 1 ? 1 : 0;
         stats->setup_seconds = ves_clock_sec() - section_start;
+    }
+
+    if (opts.direction_rigid_gauge && system.direction_faces && !opts.fixed_vertices) {
+        double angle=0;SRMeasure gauge={0};
+        if (sr_direction_gauge_proposal(arena,&system,current,uv_in,trial,&angle)) return -1;
+        int valid=!sr_measure(&system,trial,&gauge) && !gauge.flips &&
+            gauge.metric_energy<=before.metric_energy*(1+1e-10) && gauge.energy<before.energy;
+        for (size_t f=0;valid && f<nf;f++) valid=UvGuard_interval(current,trial,faces+3*f,1);
+        if (valid && opts.guard_boundary) valid=sr_boundary_intersections(&system,trial,boxes)==0;
+        if (valid) {
+            memcpy(current,trial,count*sizeof *current);current_measure=gauge;
+            for (size_t c=0;c<system.ncomponents;c++)
+                if (sr_measure_component(&system,current,c,component_measure+c)) return -1;
+            if (stats) { stats->direction_gauge_radians=angle;stats->direction_gauge_accepted=1; }
+            if (opts.verbose) fprintf(stderr,"  [slim direction gauge] common turn %.9g deg SD %.12g -> %.12g objective %.12g -> %.12g angular-rms %.9g -> %.9g rad\n",
+                angle*180/3.14159265358979323846,before.metric_energy,gauge.metric_energy,
+                before.energy,gauge.energy,sqrt(before.direction_angle),sqrt(gauge.direction_angle));
+        }
     }
 
     /* Tutte/harmonic is only the injective certificate.  Before metric
@@ -2374,7 +2916,7 @@ int SlimRefine_run_double(Arena_T arena,
                     candidate_measure.flips == 0 &&
                     (!opts.guard_boundary ||
                      sr_component_boundary_intersections(
-                         &system, component, trial, boxes) == 0) &&
+                         &system, component, trial, boxes, NULL) == 0) &&
                     candidate_measure.energy <
                         component_measure[component].energy) {
                     accepted = 1;
@@ -2433,7 +2975,7 @@ int SlimRefine_run_double(Arena_T arena,
             stats->guide_alpha_mean = accepted_components
                 ? guide_alpha_sum / (double)accepted_components : 0.0;
             stats->guide_alpha_max = guide_alpha_max;
-            stats->guide_energy_after = current_measure.energy;
+            stats->guide_energy_after = current_measure.metric_energy;
             stats->guide_seconds += ves_clock_sec() - section_start;
         }
     }
@@ -2509,7 +3051,7 @@ int SlimRefine_run_double(Arena_T arena,
                     opts.proximal, system.proximal_min,
                     system.proximal_mean, system.proximal_max);
         }
-        if (opts.use_amg) {
+        if (opts.use_amg && !opts.linear_solve) {
             section_start = ves_clock_sec();
             int amg_status = amg_built
                 ? sr_amg_update(&amg)
@@ -2543,12 +3085,13 @@ int SlimRefine_run_double(Arena_T arena,
         }
         memcpy(destination, current, count * sizeof(*destination));
         section_start = ves_clock_sec();
-        if (sr_pcg(arena, &system, opts.use_amg ? &amg : NULL,
+        if ((opts.linear_solve ? opts.linear_solve(arena, opts.linear_context, system.nv, system.ne, system.diagonal, system.edge_a, system.edge_b, system.edge_block, system.rhs, destination) :
+             sr_pcg(arena, &system, opts.use_amg ? &amg : NULL,
                    &opts, destination,
-                   &pcg_iterations, &pcg_relative) != 0) {
+                   &pcg_iterations, &pcg_relative)) != 0) {
             solver_failed = 1;
             if (opts.verbose)
-                fprintf(stderr, "  [slim] PCG breakdown at iteration %zu\n",
+                fprintf(stderr, "  [slim] linear solve failed at iteration %zu\n",
                         iteration + 1);
             break;
         }
@@ -2580,6 +3123,8 @@ int SlimRefine_run_double(Arena_T arena,
             double component_old_qc = component_measure[component].qc_max;
             size_t line = 0;
             int accepted = 0;
+            int used_growth = 0;
+            size_t growth_moves = 0;
             int used_local = opts.local_steps &&
                 system.component_faces[component] >=
                     opts.local_step_min_faces;
@@ -2596,6 +3141,15 @@ int SlimRefine_run_double(Arena_T arena,
                     &local_step_max);
                 alpha = local_step_mean;
                 if (stats != NULL) stats->line_search_trials += local_trials;
+                if (!accepted && opts.local_growth_sweeps) {
+                    size_t growth_trials=0;
+                    accepted=sr_component_growth_step(&system,current,destination,component,&opts,
+                        component_old_energy,trial,vertex_alpha,boxes,&candidate_measure,
+                        &growth_trials,&growth_moves,&local_step_min,&local_step_mean,&local_step_max);
+                    used_growth=accepted;
+                    alpha=local_step_mean;
+                    if (stats) stats->line_search_trials+=growth_trials;
+                }
             }
             /* Local damping is only a proposal. It can exhaust its search
              * while the uniform, analytically bounded step still descends.
@@ -2623,13 +3177,65 @@ int SlimRefine_run_double(Arena_T arena,
                         candidate_measure.flips == 0 &&
                         (!opts.guard_boundary ||
                          sr_component_boundary_intersections(
-                             &system, component, trial, boxes) == 0) &&
+                             &system, component, trial, boxes, NULL) == 0) &&
                         candidate_measure.energy <
                             component_measure[component].energy) {
                         accepted = 1;
                         break;
                     }
                     alpha *= 0.5;
+                }
+            }
+            /* Feasible growth recovers broad motion but its nonuniform alpha
+             * field can retain local metric error. Preserve the same bounded,
+             * exactly checked coordinate polish after it as after a stalled
+             * uniform step, even when its mean alpha is now substantial. */
+            if (opts.local_relaxation && (!accepted || alpha<1e-3 || used_growth)) {
+                if (!accepted) for (size_t p=vertex_begin;p<vertex_end;p++) {
+                    size_t v=(size_t)system.component_vertex[p];
+                    trial[2*v]=current[2*v];trial[2*v+1]=current[2*v+1];
+                }
+                size_t moves=sr_component_relax(&system,&opts,component,trial);
+                if (moves) {
+                    int measure_rc=sr_measure_component(&system,trial,component,&candidate_measure);
+                    size_t contacts=opts.guard_boundary?
+                        sr_component_boundary_intersections(&system,component,trial,boxes,NULL):0;
+                    if (measure_rc || candidate_measure.flips ||
+                        !(candidate_measure.energy<component_old_energy) || contacts) {
+                        /* A local relaxation is a proposal, just like the global
+                         * solve. Keep the current certificate and backtrack the
+                         * complete proposal through the same exact guards. */
+                        if (opts.verbose) fprintf(stderr,
+                            "    [slim relax] c%zu proposal refused: measure=%d flips=%zu contacts=%zu E=%.12g->%.12g; backtracking\n",
+                            component,measure_rc,candidate_measure.flips,contacts,
+                            component_old_energy,candidate_measure.energy);
+                        if (opts.verbose && contacts)
+                            sr_relax_rim_diagnose(&system,component,current,trial,boxes);
+                        for (size_t p=vertex_begin;p<vertex_end;p++) {
+                            size_t v=(size_t)system.component_vertex[p];
+                            destination[2*v]=trial[2*v];destination[2*v+1]=trial[2*v+1];
+                        }
+                        alpha=sr_component_flip_step(&system,current,destination,component);
+                        accepted=0;used_local=0;used_growth=0;
+                        for (int attempt=0;attempt<opts.line_search && alpha>0;attempt++,alpha*=.5) {
+                            for (size_t p=vertex_begin;p<vertex_end;p++) {
+                                size_t v=(size_t)system.component_vertex[p];
+                                trial[2*v]=current[2*v]+alpha*(destination[2*v]-current[2*v]);
+                                trial[2*v+1]=current[2*v+1]+alpha*(destination[2*v+1]-current[2*v+1]);
+                            }
+                            if (stats) stats->line_search_trials++;
+                            if (!sr_measure_component(&system,trial,component,&candidate_measure) &&
+                                !candidate_measure.flips && candidate_measure.energy<component_old_energy &&
+                                (!opts.guard_boundary || !sr_component_boundary_intersections(&system,component,trial,boxes,NULL))) {
+                                accepted=1;break;
+                            }
+                        }
+                        if (!accepted) moves=0;
+                    } else accepted=1;
+                    if (stats) stats->relaxation_vertex_steps+=moves;
+                    if (opts.verbose && system.component_faces[component]>=10000)
+                        fprintf(stderr,"    [slim relax] c%zu vertex-steps=%zu E=%.9g->%.9g\n",
+                                component,moves,component_old_energy,candidate_measure.energy);
                 }
             }
             if (accepted) {
@@ -2649,6 +3255,12 @@ int SlimRefine_run_double(Arena_T arena,
                         local_alpha_min = local_step_min;
                     if (local_step_max > local_alpha_max)
                         local_alpha_max = local_step_max;
+                }
+                if (used_growth && stats) {
+                    stats->growth_component_steps_accepted++;
+                    stats->growth_vertex_steps+=growth_moves;
+                    stats->growth_vertex_alpha_mean+=local_step_mean;
+                    stats->growth_vertex_alpha_max=fmax(stats->growth_vertex_alpha_max,local_step_max);
                 }
                 if (opts.verbose &&
                     (alpha < 1.0e-3 ||
@@ -2725,9 +3337,14 @@ int SlimRefine_run_double(Arena_T arena,
                     iteration_alpha_max,
                     pcg_iterations, pcg_relative, current_measure.qc_mean,
                     current_measure.qc_max);
+            if (system.direction_faces)
+                fprintf(stderr,"    [slim direction] faces=%zu coverage=%.6g SD=%.12g direction=%.12g angular-rms=%.9g rad\n",
+                        system.direction_faces,system.direction_area_fraction,current_measure.metric_energy,
+                        current_measure.direction_energy,sqrt(current_measure.direction_angle));
         }
         if ((old_energy - current_measure.energy) /
-                fmax(fabs(old_energy), 1.0) <= opts.energy_tolerance) {
+                fmax(fabs(old_energy), 1.0) <= opts.energy_tolerance &&
+            (!system.direction_faces || current_measure.metric_energy<=before.metric_energy*(1+1e-10))) {
             if (!final_stage) {
                 iteration = (stage + 1) * (size_t)opts.iterations - 1;
                 continue;
@@ -2743,7 +3360,8 @@ int SlimRefine_run_double(Arena_T arena,
     if (target_face != NULL)
         memcpy(system.face, target_face, nf * sizeof(*target_face));
     if (sr_measure(&system, current, &after) != 0 || after.flips != 0 ||
-        after.energy > before.energy * (1.0 + 1.0e-10)) {
+        after.energy > before.energy * (1.0 + 1.0e-10) ||
+        after.metric_energy > before.metric_energy * (1.0 + 1.0e-10)) {
         memcpy(current, uv_in, count * sizeof(*current));
         if (sr_normalize_orientation(arena, &system, current) != 0) return -1;
         after = before;
@@ -2783,7 +3401,12 @@ int SlimRefine_run_double(Arena_T arena,
                 ? local_alpha_sum /
                   (double)stats->local_component_steps_accepted : 0.0;
         stats->local_vertex_alpha_max = local_alpha_max;
-        stats->energy_after = after.energy;
+        if (stats->growth_component_steps_accepted)
+            stats->growth_vertex_alpha_mean/=(double)stats->growth_component_steps_accepted;
+        stats->energy_after = after.metric_energy;
+        stats->objective_after = after.energy;
+        stats->direction_energy_after = after.direction_energy;
+        stats->direction_angle_after = after.direction_angle;
         stats->qc_mean_after = after.qc_mean;
         stats->qc_max_after = after.qc_max;
         stats->min_det_after = after.min_det;
@@ -2835,6 +3458,21 @@ static int sr_local_interval_selftest(void)
             before.energy,trial,alpha,damp,boxes,&after,&trials,&amin,&amean,&amax);
         ok = ok && safe && !after.flips && after.energy < before.energy &&
             UvGuard_interval(current,trial,faces,1) && UvGuard_interval(current,trial,faces+3,1);
+        if (ready) {
+            size_t moves=0;uint8_t fixed[4]={1,0,0,0};
+            sr_relax_setup(arena,&system);
+            int grown=sr_component_growth_step(&system,current,destination,0,&opts,
+                before.energy,trial,alpha,boxes,&after,&trials,&moves,&amin,&amean,&amax);
+            if (grown) ok=ok && !after.flips && after.energy<before.energy &&
+                UvGuard_interval(current,trial,faces,1) && UvGuard_interval(current,trial,faces+3,1);
+            /* Explicit fixed vertices remain fixed even if the destination
+             * supplied directly to the helper tries to move them. */
+            opts.fixed_vertices=fixed;control[0]+=3;control[1]-=2;
+            grown=sr_component_growth_step(&system,current,control,0,&opts,
+                before.energy,trial,alpha,boxes,&after,&trials,&moves,&amin,&amean,&amax);
+            ok=ok && grown && trial[0]==current[0] && trial[1]==current[1] &&
+                UvGuard_interval(current,trial,faces,1) && UvGuard_interval(current,trial,faces+3,1);
+        }
         if (!ok) {
             fprintf(stderr,"[slim selftest] locally damped path crossed a fold (shifted %d, accepted %d, control %d)\n",shifted,accepted,safe);
             failures++;
@@ -2843,6 +3481,176 @@ static int sr_local_interval_selftest(void)
     }
     return failures;
 }
+
+/* The scalar row sr_block_row replaced (verbatim arithmetic), kept as the
+ * selftest's reference. */
+static void sr_block_row_scalar(const double *diagonal, const size_t *offset,
+                                const int32_t *neighbor,
+                                const size_t *adj_edge,
+                                const double *edge_block, const double *x,
+                                size_t vertex, double *result)
+{
+    double d00 = diagonal[vertex * 3];
+    double d01 = diagonal[vertex * 3 + 1];
+    double d11 = diagonal[vertex * 3 + 2];
+    double y0 = d00 * x[vertex * 2] + d01 * x[vertex * 2 + 1];
+    double y1 = d01 * x[vertex * 2] + d11 * x[vertex * 2 + 1];
+    size_t position = 0;
+    for (position = offset[vertex]; position < offset[vertex + 1];
+         position++) {
+        size_t nbr = (size_t)neighbor[position];
+        size_t edge = adj_edge[position];
+        double b00 = edge_block[edge * 3];
+        double b01 = edge_block[edge * 3 + 1];
+        double b11 = edge_block[edge * 3 + 2];
+        y0 += b00 * x[nbr * 2] + b01 * x[nbr * 2 + 1];
+        y1 += b01 * x[nbr * 2] + b11 * x[nbr * 2 + 1];
+    }
+    result[vertex * 2] = y0;
+    result[vertex * 2 + 1] = y1;
+}
+
+static double sr_block_row_test_value(uint64_t *state)
+{
+    uint64_t s = *state;
+    unsigned kind = 0;
+    s ^= s << 13; s ^= s >> 7; s ^= s << 17;
+    *state = s;
+    kind = (unsigned)(s >> 58);
+    if (kind == 0) return 0.0;
+    if (kind == 1) return -0.0;
+    /* mixed magnitudes so the two-term sums round */
+    return ldexp((double)(s >> 11) / 9007199254740992.0 - 0.5,
+                 (int)((s >> 3) % 41) - 20);
+}
+
+/* sr_block_row == sr_block_row_scalar and sr_smooth_row == sr_block_solve
+ * bit for bit on random graphs (isolated vertices, repeated neighbours,
+ * exact and signed zeros, singular diagonal blocks). */
+static int sr_block_row_selftest(void)
+{
+    enum { N = 211, E = 900 };
+    uint64_t state = 0x2545F4914F6CDD1DULL;
+    size_t *offset = (size_t *)calloc(N + 1, sizeof(*offset));
+    size_t *cursor = (size_t *)malloc(N * sizeof(*cursor));
+    int32_t *edge_a = (int32_t *)malloc(E * sizeof(*edge_a));
+    int32_t *edge_b = (int32_t *)malloc(E * sizeof(*edge_b));
+    int32_t *neighbor = (int32_t *)malloc(2 * E * sizeof(*neighbor));
+    size_t *adj_edge = (size_t *)malloc(2 * E * sizeof(*adj_edge));
+    double *diagonal = (double *)malloc(N * 3 * sizeof(*diagonal));
+    double *edge_block = (double *)malloc(E * 3 * sizeof(*edge_block));
+    double *x = (double *)malloc(N * 2 * sizeof(*x));
+    double *fast = (double *)malloc(N * 2 * sizeof(*fast));
+    double *slow = (double *)malloc(N * 2 * sizeof(*slow));
+    int failures = 0;
+    int round = 0;
+    size_t i = 0;
+    if (!offset || !cursor || !edge_a || !edge_b || !neighbor || !adj_edge ||
+        !diagonal || !edge_block || !x || !fast || !slow) failures = 1;
+    for (round = 0; round < 20 && failures == 0; round++) {
+        memset(offset, 0, (N + 1) * sizeof(*offset));
+        for (i = 0; i < E; i++) {
+            uint64_t r = 0;
+            sr_block_row_test_value(&state);
+            r = state;
+            /* vertices >= N - 7 stay isolated */
+            edge_a[i] = (int32_t)(r % (N - 7));
+            edge_b[i] = (int32_t)((edge_a[i] + 1 + (int32_t)((r >> 20) % 9)) % (N - 7));
+            offset[(size_t)edge_a[i] + 1]++;
+            offset[(size_t)edge_b[i] + 1]++;
+        }
+        for (i = 0; i < N; i++) offset[i + 1] += offset[i];
+        memcpy(cursor, offset, N * sizeof(*cursor));
+        for (i = 0; i < E; i++) {
+            size_t pa = cursor[edge_a[i]]++, pb = cursor[edge_b[i]]++;
+            neighbor[pa] = edge_b[i]; adj_edge[pa] = i;
+            neighbor[pb] = edge_a[i]; adj_edge[pb] = i;
+        }
+        for (i = 0; i < N * 3; i++) diagonal[i] = sr_block_row_test_value(&state);
+        for (i = 0; i < E * 3; i++) edge_block[i] = sr_block_row_test_value(&state);
+        for (i = 0; i < N * 2; i++) x[i] = sr_block_row_test_value(&state);
+        for (i = 0; i < N; i++) {
+            sr_block_row(diagonal, offset, neighbor, adj_edge, edge_block, x, i, fast);
+            sr_block_row_scalar(diagonal, offset, neighbor, adj_edge, edge_block, x, i, slow);
+        }
+        if (memcmp(fast, slow, N * 2 * sizeof(*fast)) != 0) {
+            fprintf(stderr, "[slim selftest] SSE2 block row differs from the scalar row (round %d)\n", round);
+            failures++;
+        }
+        /* smoother rows: diagonal blocks reused as D (every third vertex made
+         * singular or tiny so the scalar fallback runs too), x as rhs,
+         * fast/slow as the iterate both versions update */
+        for (i = 0; i < N; i++) {
+            if (i % 3 == 0) diagonal[i * 3 + 1] = diagonal[i * 3] + diagonal[i * 3 + 2] + 1.0;
+            if (i % 7 == 0) diagonal[i * 3] = 1.0e-14;
+        }
+        for (i = 0; i < N * 2; i++) fast[i] = slow[i] = sr_block_row_test_value(&state);
+        for (i = 0; i < N; i++) {
+            double c0 = 0.0, c1 = 0.0;
+            sr_smooth_row(&diagonal[i * 3], x, edge_block, fast, i);
+            sr_block_solve(&diagonal[i * 3], x[i * 2] - edge_block[i * 2],
+                           x[i * 2 + 1] - edge_block[i * 2 + 1], &c0, &c1);
+            slow[i * 2] += SR_AMG_OMEGA * c0;
+            slow[i * 2 + 1] += SR_AMG_OMEGA * c1;
+        }
+        if (memcmp(fast, slow, N * 2 * sizeof(*fast)) != 0) {
+            fprintf(stderr, "[slim selftest] SSE2 smoother row differs from sr_block_solve (round %d)\n", round);
+            failures++;
+        }
+        /* a zero-start smoothing pass with the first product skipped equals
+         * the one that computes it (x as rhs with exact and signed zeros,
+         * the singular blocks above included) */
+        {
+            SRAMG amg;
+            double *temporary = (double *)malloc(N * 2 * sizeof(*temporary));
+            memset(&amg, 0, sizeof(amg));
+            amg.levels = 2;
+            amg.threads = 1;
+            amg.level[0].n = N;
+            amg.level[0].ne = E;
+            amg.level[0].offset = offset;
+            amg.level[0].neighbor = neighbor;
+            amg.level[0].adj_edge = adj_edge;
+            amg.level[0].diagonal = diagonal;
+            amg.level[0].edge_block = edge_block;
+            amg.level[0].finite = sr_values_finite(diagonal, N * 3) &&
+                                  sr_values_finite(edge_block, E * 3);
+            for (i = 0; i < N * 2; i += 5) x[i] = (i % 10) ? -0.0 : 0.0;
+            memset(fast, 0, N * 2 * sizeof(*fast));
+            memset(slow, 0, N * 2 * sizeof(*slow));
+            if (temporary == NULL || !amg.level[0].finite) {
+                failures++;
+            } else {
+                sr_amg_smooth(&amg, 0, x, fast, temporary, 1);
+                sr_amg_smooth(&amg, 0, x, slow, temporary, 0);
+                if (memcmp(fast, slow, N * 2 * sizeof(*fast)) != 0) {
+                    fprintf(stderr, "[slim selftest] zero-start smoothing differs without the first product (round %d)\n", round);
+                    failures++;
+                }
+            }
+            free(temporary);
+        }
+    }
+    {
+        /* the finite flag sees every non-finite value, odd counts included */
+        double probe[5] = {1.0, -0.0, 2.0, 3.0, 4.0};
+        int k = 0;
+        if (!sr_values_finite(probe, 5)) failures++;
+        for (k = 0; k < 5; k++) {
+            double saved = probe[k];
+            probe[k] = (k % 2) ? INFINITY : NAN;
+            if (sr_values_finite(probe, 5)) failures++;
+            probe[k] = -INFINITY;
+            if (sr_values_finite(probe, 5)) failures++;
+            probe[k] = saved;
+        }
+    }
+    free(offset); free(cursor); free(edge_a); free(edge_b); free(neighbor);
+    free(adj_edge); free(diagonal); free(edge_block); free(x); free(fast); free(slow);
+    return failures;
+}
+
+#include "slim_refine_direction_test.inc"
 
 int SlimRefine_selftest(void)
 {
@@ -2861,7 +3669,20 @@ int SlimRefine_selftest(void)
     size_t x = 0;
     size_t y = 0;
     size_t face = 0;
-    int failures = sr_local_interval_selftest();
+    int failures = sr_face_proxy_selftest() + sr_local_interval_selftest() + sr_block_row_selftest() + sr_direction_selftest();
+    {
+        /* A contact in one slit must not freeze the remote rim. */
+        SRSystem local={0};
+        SRBoundaryEdge edges[3]={{0,1,0},{2,3,0},{4,5,0}};
+        size_t offsets[2]={0,3},indices[3]={0,1,2};
+        double crossing[12]={0,0,2,2,0,2,2,0,10,10,11,11};
+        uint8_t damp[6]={0};SREdgeBox boxes[3];
+        local.boundary=edges;local.component_boundary_offset=offsets;local.component_boundary=indices;
+        if (sr_component_boundary_intersections(&local,0,crossing,boxes,damp)!=1 ||
+            !damp[0] || !damp[1] || !damp[2] || !damp[3] || damp[4] || damp[5]) {
+            fprintf(stderr,"[slim selftest] contact damping reached unrelated boundary\n");failures++;
+        }
+    }
     {
         /* Original 3-D and float UV rest frames need the same thin-face
          * stability as the existing double scaffold frame. */
@@ -2941,6 +3762,8 @@ int SlimRefine_selftest(void)
         options.pcg_tolerance = 1e-10; options.threads = 1;
         options.strip_pack = 0; options.local_steps = 1;
         options.local_step_min_faces = 1; options.line_search = 1;
+        options.local_line_search = 1;
+        options.local_growth_sweeps = 0; /* exercise the original uniform fallback */
         options.energy_tolerance = 0;
         int rc = SlimRefine_run_double(scratch,x,9,f,8,seed,&options,result,&measured);
         if (rc || measured.accepted_steps != 1 || measured.local_component_steps_accepted ||
@@ -2948,6 +3771,59 @@ int SlimRefine_selftest(void)
             !(measured.energy_after < .5*measured.energy_before)) {
             fprintf(stderr,"[slim selftest] local-to-global fallback failed\n");
             failures++;
+        }
+        options.local_growth_sweeps=4;options.line_search=24;
+        rc=SlimRefine_run_double(scratch,x,9,f,8,seed,&options,result,&measured);
+        if (rc || !measured.growth_component_steps_accepted || !measured.growth_vertex_steps ||
+            !(measured.growth_vertex_alpha_mean>0) || !(measured.growth_vertex_alpha_max<=1) ||
+            !(measured.energy_after<measured.energy_before) || measured.flips_after ||
+            measured.boundary_intersections_after) {
+            fprintf(stderr,"[slim selftest] public feasible-growth fallback failed\n");failures++;
+        }
+        double growth_energy=measured.energy_after;
+        options.local_relaxation=2;options.local_relax_boundary=1;
+        rc=SlimRefine_run_double(scratch,x,9,f,8,seed,&options,result,&measured);
+        fprintf(stderr,"[slim growth polish fixture] rc=%d growth=%zu alpha=%.9g polish=%zu E=%.9g->%.9g\n",
+                rc,measured.growth_component_steps_accepted,measured.growth_vertex_alpha_mean,
+                measured.relaxation_vertex_steps,growth_energy,measured.energy_after);
+        if (rc || !measured.growth_component_steps_accepted ||
+            !(measured.growth_vertex_alpha_mean>1e-3) || !measured.relaxation_vertex_steps ||
+            !(measured.energy_after<growth_energy) || measured.flips_after ||
+            measured.boundary_intersections_after) {
+            fprintf(stderr,"[slim selftest] feasible growth lost coordinate polish\n");failures++;
+        }
+        Arena_dispose(&scratch);
+    }
+    #include "slim_refine_boundary_test.inc"
+    #include "slim_refine_growth_test.inc"
+    #include "slim_refine_growth_reference_test.inc"
+    #include "slim_refine_jacobian_test.inc"
+    /* An interior relaxation can progress without moving a constrained rim.
+     * It uses the SLIM proxy and must decrease the true energy monotonically. */
+    {
+        float x[27]; double seed[18],work[18];
+        int32_t f[24]={0,1,4,0,4,3,1,2,5,1,5,4,3,4,7,3,7,6,4,5,8,4,8,7};
+        for (size_t v=0;v<9;v++) {
+            x[3*v]=(float)(v%3);x[3*v+1]=(float)(v/3);x[3*v+2]=0;
+            seed[2*v]=(double)(v%3);seed[2*v+1]=(double)(v/3);
+        }
+        seed[8]=1.6;seed[9]=.8;memcpy(work,seed,sizeof work);
+        Arena_T scratch=Arena_new();SRSystem system={0};SlimRefineOpts options;
+        SRMeasure before={0},after={0};SlimRefine_defaults(&options);
+        options.local_relaxation=4;size_t moves=0;
+        int bad=sr_build_system(scratch,x,9,f,8,&options,1,&system);
+        if (!bad) {
+            sr_relax_setup(scratch,&system);
+            bad=sr_measure_component(&system,work,0,&before);
+            for (int k=0;!bad && k<10;k++) {
+                bad=sr_assemble(&system,work,&options);
+                if (!bad) moves+=sr_component_relax(&system,&options,0,work);
+            }
+            bad|=sr_measure_component(&system,work,0,&after);
+            for (size_t v=0;v<9;v++) if (v!=4 && (work[2*v]!=seed[2*v] || work[2*v+1]!=seed[2*v+1])) bad=1;
+        }
+        if (bad || !moves || after.flips || !(after.energy<.95*before.energy)) {
+            fprintf(stderr,"[slim selftest] constrained-rim relaxation failed\n");failures++;
         }
         Arena_dispose(&scratch);
     }
@@ -3075,3 +3951,7 @@ int SlimRefine_selftest(void)
             failures == 0 ? "ok" : "FAILED");
     return failures;
 }
+
+#ifdef VES_CLOSEUP_LOCAL_GLOBAL
+#include "closeup_angular_metric_angular.inc"
+#endif

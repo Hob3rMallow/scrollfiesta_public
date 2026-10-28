@@ -8,6 +8,7 @@
 
 #include "../common/arena.h"
 #include "../common/mesh_normals.h"
+#include "../common/pipeline_constants.h"
 #include "../common/tiff_io.h"
 #include "../common/ves_platform.h"
 
@@ -153,6 +154,195 @@ int RawtexLayers_orient(float *normals, const float *verts, size_t nv,
         free(acc);
     }
     free(parent); free(used); free(sum); free(mag);
+    return 0;
+}
+
+/* Each component owns its vertices. Ordered lists let its winding, vote and
+ * smoothing reductions run independently without atomics or changed sums. */
+typedef struct RlNormalComponent {
+    size_t face;
+    double sum, mag;
+    int32_t vertex;
+} RlNormalComponent;
+
+typedef struct RlNormalGroups {
+    RlNormalComponent *component;
+    size_t n, *next_face;
+    int32_t *next_vertex;
+} RlNormalGroups;
+
+static int rl_normal_groups(Arena_T work, Arena_T scratch, const int32_t *faces,
+                             size_t nv, size_t nf, RlNormalGroups *g)
+{
+    int32_t *parent = (int32_t *)ARENA_ALLOC(scratch, nv * sizeof *parent);
+    size_t *head = (size_t *)ARENA_ALLOC(scratch, nv * sizeof *head);
+    size_t v = 0, f = 0, n = 0;
+    memset(g, 0, sizeof *g);
+    for (v = 0; v < nv; v++) { parent[v] = (int32_t)v; head[v] = SIZE_MAX; }
+    for (f = 0; f < nf; f++) {
+        int32_t a = faces[f * 3], b = faces[f * 3 + 1], c = faces[f * 3 + 2];
+        if (a < 0 || b < 0 || c < 0 || (size_t)a >= nv || (size_t)b >= nv || (size_t)c >= nv)
+            return -1;
+        rl_union(parent, a, b);
+        rl_union(parent, a, c);
+    }
+    for (v = 0; v < nv; v++) parent[v] = rl_find(parent, (int32_t)v);
+    g->next_face = (size_t *)ARENA_ALLOC(work, nf * sizeof *g->next_face);
+    g->next_vertex = (int32_t *)ARENA_ALLOC(work, nv * sizeof *g->next_vertex);
+    /* Prepending in reverse file order gives ascending lists without sorting. */
+    for (f = nf; f-- > 0;) {
+        size_t root = (size_t)parent[faces[f * 3]];
+        g->next_face[f] = head[root];
+        head[root] = f;
+    }
+    for (v = 0; v < nv; v++) if (head[v] != SIZE_MAX) n++;
+    if (n > SIZE_MAX / sizeof *g->component) return -1;
+    g->component = (RlNormalComponent *)ARENA_CALLOC(work, n, sizeof *g->component);
+    g->n = n;
+    n = 0;
+    for (v = 0; v < nv; v++) {
+        if (head[v] == SIZE_MAX) continue;
+        g->component[n].face = head[v];
+        g->component[n].vertex = -1;
+        head[v] = n++;                       /* reuse the heads as root -> component */
+    }
+    for (v = nv; v-- > 0;) {
+        size_t c = head[parent[v]];
+        if (c == SIZE_MAX) continue;         /* an unused vertex stays zero */
+        g->next_vertex[v] = g->component[c].vertex;
+        g->component[c].vertex = (int32_t)v;
+    }
+    return 0;
+}
+
+static void rl_normal_component(RlNormalComponent *component, const RlNormalGroups *g,
+                                 float *normal, float *acc, const float *verts,
+                                 const int32_t *faces, const float *inward, int smooth_iters)
+{
+    size_t f = 0;
+    int32_t v = 0;
+    int it = 0;
+    for (f = component->face; f != SIZE_MAX; f = g->next_face[f]) {
+        size_t a = (size_t)faces[f * 3], b = (size_t)faces[f * 3 + 1], c = (size_t)faces[f * 3 + 2];
+        double e1[3], e2[3], cr[3], in[3], il = 0.0;
+        int k = 0;
+        for (k = 0; k < 3; k++) {
+            e1[k] = (double)verts[b * 3 + (size_t)k] - (double)verts[a * 3 + (size_t)k];
+            e2[k] = (double)verts[c * 3 + (size_t)k] - (double)verts[a * 3 + (size_t)k];
+            in[k] = (double)inward[a * 3 + (size_t)k] + (double)inward[b * 3 + (size_t)k]
+                  + (double)inward[c * 3 + (size_t)k];
+            il += in[k] * in[k];
+        }
+        cr[0] = e1[1] * e2[2] - e1[2] * e2[1];
+        cr[1] = e1[2] * e2[0] - e1[0] * e2[2];
+        cr[2] = e1[0] * e2[1] - e1[1] * e2[0];
+        for (k = 0; k < 3; k++) {
+            normal[a * 3 + (size_t)k] += (float)cr[k];
+            normal[b * 3 + (size_t)k] += (float)cr[k];
+            normal[c * 3 + (size_t)k] += (float)cr[k];
+        }
+        il = sqrt(il);
+        if (!(il < 1e-12)) {
+            double vote = 0.5 * (cr[0] * in[0] + cr[1] * in[1] + cr[2] * in[2]) / il;
+            component->sum += vote;
+            component->mag += fabs(vote);
+        }
+    }
+    for (v = component->vertex; v >= 0; v = g->next_vertex[v]) {
+        float *p = normal + (size_t)v * 3;
+        double x = (double)p[0], y = (double)p[1], z = (double)p[2];
+        double length = sqrt(x * x + y * y + z * z);
+        if (length > 1e-12) {
+            p[0] = (float)(x / length); p[1] = (float)(y / length); p[2] = (float)(z / length);
+        } else { p[0] = 0.0f; p[1] = 0.0f; p[2] = 0.0f; }
+        if (component->sum < 0.0) { p[0] = -p[0]; p[1] = -p[1]; p[2] = -p[2]; }
+    }
+    for (it = 0; it < smooth_iters; it++) {
+        for (v = component->vertex; v >= 0; v = g->next_vertex[v])
+            memset(acc + (size_t)v * 3, 0, 3 * sizeof *acc);
+        for (f = component->face; f != SIZE_MAX; f = g->next_face[f]) {
+            size_t a = (size_t)faces[f * 3], b = (size_t)faces[f * 3 + 1], c = (size_t)faces[f * 3 + 2];
+            int k = 0;
+            for (k = 0; k < 3; k++) {
+                float s = normal[a * 3 + (size_t)k] + normal[b * 3 + (size_t)k]
+                        + normal[c * 3 + (size_t)k];
+                acc[a * 3 + (size_t)k] += s;
+                acc[b * 3 + (size_t)k] += s;
+                acc[c * 3 + (size_t)k] += s;
+            }
+        }
+        for (v = component->vertex; v >= 0; v = g->next_vertex[v]) {
+            rl_normalize(acc + (size_t)v * 3);
+            memcpy(normal + (size_t)v * 3, acc + (size_t)v * 3, 3 * sizeof *acc);
+        }
+    }
+}
+
+static void rl_normal_groups_run(Arena_T work, RlNormalGroups *g, float *normal,
+                                  const float *verts, size_t nv, const int32_t *faces,
+                                  const float *inward, int smooth_iters, RawtexOrientStats *st)
+{
+    float *acc = smooth_iters > 0 ? (float *)ARENA_ALLOC(work, nv * 3 * sizeof *acc) : NULL;
+    double total = 0.0, agree = 0.0, flipped_mag = 0.0;
+    long c = 0;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic, 16) if(nv >= 1000)
+#endif
+    for (c = 0; c < (long)g->n; c++)
+        rl_normal_component(&g->component[c], g, normal, acc, verts, faces, inward, smooth_iters);
+    /* The statistics use the reference's root order, independent of scheduling. */
+    for (c = 0; c < (long)g->n; c++) {
+        const RlNormalComponent *p = &g->component[c];
+        if (st != NULL) {
+            st->components++;
+            if (p->sum < 0.0) st->flipped++;
+            if (fabs(p->sum) < 0.25 * p->mag) st->weak++;
+        }
+        total += p->mag;
+        agree += 0.5 * (p->mag + fabs(p->sum));
+        if (p->sum < 0.0) flipped_mag += p->mag;
+    }
+    if (st != NULL) {
+        st->agree_area = total > 0.0 ? agree / total : 1.0;
+        st->flipped_area = total > 0.0 ? flipped_mag / total : 0.0;
+    }
+}
+
+int RawtexLayers_normals(float **out, const float *verts, size_t nv,
+                         const int32_t *faces, size_t nf, const float *inward,
+                         int smooth_iters, RawtexOrientStats *st)
+{
+    Arena_T work = NULL, scratch = NULL;
+    RlNormalGroups groups;
+    float *normal = NULL;
+    volatile int rc = -1;
+    double t0 = ves_clock_sec(), t_index = 0.0;
+    if (out == NULL) return -1;
+    *out = NULL;
+    if (st != NULL) memset(st, 0, sizeof *st);
+    if (nv > (size_t)INT32_MAX || nv > SIZE_MAX / (3 * sizeof *normal) ||
+        nf > SIZE_MAX / (3 * sizeof *faces) || nf > SIZE_MAX / sizeof(size_t) ||
+        (nv != 0 && verts == NULL) || (nf != 0 && (nv == 0 || faces == NULL || inward == NULL))) return -1;
+    normal = (float *)calloc(nv > 0 ? nv * 3 : 1, sizeof *normal);
+    if (normal == NULL) return -1;
+    if (nf == 0) { *out = normal; return 0; }
+    work = Arena_new_sized(65536);
+    scratch = Arena_new_sized(65536);
+    TRY {
+        rc = rl_normal_groups(work, scratch, faces, nv, nf, &groups);
+    } EXCEPT(Arena_Failed) { rc = -1; } END_TRY;
+    Arena_dispose(&scratch);             /* release union/find before smoothing scratch */
+    t_index = ves_clock_sec();
+    if (rc == 0) {
+        TRY {
+            rl_normal_groups_run(work, &groups, normal, verts, nv, faces, inward, smooth_iters, st);
+        } EXCEPT(Arena_Failed) { rc = -1; } END_TRY;
+    }
+    Arena_dispose(&work);
+    if (rc != 0) { free(normal); return -1; }
+    fprintf(stderr, "  normal phases: index=%.3f compute=%.3f seconds (%zu independent components)\n",
+            t_index - t0, ves_clock_sec() - t_index, groups.n);
+    *out = normal;
     return 0;
 }
 
@@ -852,17 +1042,22 @@ static double rl_hand_sign(const uint8_t *state, const float *pos, const float *
 }
 
 /* Tiles whose halo-extended column range [t*cols - halo, (t+1)*cols + halo) a face's centre bbox meets. */
-static size_t rl_tile_lo(const RlFace *F, size_t halo, int cols)
+static size_t rl_tile_lo(long first, size_t halo, size_t width)
 {
-    size_t x = (size_t)F->x0 > halo ? (size_t)F->x0 - halo : 0;
-    return x / (size_t)cols;
+    size_t x = (size_t)first > halo ? (size_t)first - halo : 0;
+    return x / width;
 }
 
-static size_t rl_tile_hi(const RlFace *F, size_t halo, int cols, size_t ntiles)
+static size_t rl_tile_hi(long last, size_t halo, size_t width, size_t ntiles)
 {
-    size_t t = ((size_t)F->x1 + halo) / (size_t)cols;
+    size_t t = ((size_t)last + halo) / width;
     return t < ntiles ? t : ntiles - 1;
 }
+
+typedef struct RlColumnHand {
+    uint32_t team, mirror;
+    int32_t row0, row1;
+} RlColumnHand;
 
 static int rl_write_text(const char *path, const char *text)
 {
@@ -915,12 +1110,16 @@ int RawtexLayers_write(const char *zarr_dir, const char *mask_path,
 {
     RawtexPlan plan;
     size_t W = 0, H = 0, ntiles = 0, f = 0, t = 0;
+    size_t ncols = 0, nrows = 0, rows = 0, row_halo = 0, empty_tiles = 0;
+    int64_t face_index = 0;
     size_t *tile_start = NULL, *tile_fill = NULL;
     int32_t *tile_faces = NULL;
     uint8_t *paint = NULL, *mask = NULL;
     RlFace *rf = NULL;
     uint32_t *hc_team = NULL, *hc_mirror = NULL;    /* handedness census per column (o->hand) */
     int32_t *hc_r0 = NULL, *hc_r1 = NULL;
+    Arena_T census_arena = NULL;
+    RlColumnHand *worker_hand = NULL;
     char partial[2300], path[2400], gpartial[2300];
     size_t painted = 0, filled = 0, complete = 0, multi = 0, skip_uv = 0, chunks = 0;
     size_t apron = 0, apron_rej = 0, apron_fits = 0;
@@ -928,14 +1127,18 @@ int RawtexLayers_write(const char *zarr_dir, const char *mask_path,
     double smooth_sh2 = 0.0, smooth_turn = 0.0, step_m2 = 0.0;
     size_t halo = 0;
     int failed = 0;
+    const int geom_only = zarr_dir == NULL;      /* geometry sinks only: no RAW, no files */
     double t0 = ves_clock_sec();
+    double t_prepared = 0.0, t_tiles = 0.0;
+    double tile_raster_s = 0.0, tile_seam_s = 0.0, tile_finish_s = 0.0;
     FILE *probe = NULL;
 
     if (st != NULL) memset(st, 0, sizeof *st);
-    if (zarr_dir == NULL || mask_path == NULL || ct == NULL || verts == NULL ||
+    if ((zarr_dir == NULL) != (mask_path == NULL) || verts == NULL ||
         faces == NULL || normals == NULL || o == NULL || !Rawtex_has_uv(uv) ||
+        (geom_only ? (o->pos_sink == NULL || o->geom_dir != NULL) : ct == NULL) ||
         o->depth < 1 || o->depth > 255 || !(o->step > 0.0) || !isfinite(o->offset) ||
-        o->chunk < 1 || o->tile_cols < o->chunk || o->tile_cols % o->chunk != 0 ||
+        o->chunk < 1 || o->tile_cols < o->chunk || o->tile_cols % o->chunk != 0 || o->geom_tile_rows < 0 ||
         o->seam_reach < 0 || o->seam_passes < 0 || (o->seam_reach > 0 && !(o->seam_tol > 0.0)) ||
         o->apron_px < 0 || (o->apron_px > 0 && (o->apron_fit_px < 2 || o->apron_cell_px < 1 ||
                                                 o->apron_step_px < 1)) ||
@@ -968,6 +1171,11 @@ int RawtexLayers_write(const char *zarr_dir, const char *mask_path,
         return -1;
     }
     W = plan.W; H = plan.H;
+    if ((o->pos_sink != NULL || o->sign_sink != NULL) && (o->sink_w != W || o->sink_h != H)) {
+        fprintf(stderr, "ERROR: geometry sink %zux%zu differs from the %zux%zu raster\n", o->sink_w, o->sink_h,
+                W, H);
+        return -1;
+    }
     {   /* refuse to replace a published volume */
         const char *dirs[2];
         int d = 0;
@@ -986,11 +1194,14 @@ int RawtexLayers_write(const char *zarr_dir, const char *mask_path,
     }
     /* a fresh partial directory: stale chunks of a failed run must never
      * survive into a published volume */
-    snprintf(partial, sizeof partial, "%s.partial", zarr_dir);
-    snprintf(path, sizeof path, "%s/0", partial);
-    if (ves_ensure_parent_dir(partial) != 0 || ves_mkdir(partial) != 0 || ves_mkdir(path) != 0) {
-        fprintf(stderr, "ERROR: cannot create a fresh %s (remove a stale partial first)\n", path);
-        return -1;
+    partial[0] = 0;
+    if (!geom_only) {
+        snprintf(partial, sizeof partial, "%s.partial", zarr_dir);
+        snprintf(path, sizeof path, "%s/0", partial);
+        if (ves_ensure_parent_dir(partial) != 0 || ves_mkdir(partial) != 0 || ves_mkdir(path) != 0) {
+            fprintf(stderr, "ERROR: cannot create a fresh %s (remove a stale partial first)\n", path);
+            return -1;
+        }
     }
     gpartial[0] = 0;
     if (o->geom_dir != NULL) {
@@ -1002,19 +1213,31 @@ int RawtexLayers_write(const char *zarr_dir, const char *mask_path,
         }
     }
 
-    /* face prologue once; bucket paintable faces by column tile */
-    ntiles = (W + (size_t)o->tile_cols - 1) / (size_t)o->tile_cols;
+    /* Ordinary geometry uses bounded row tiles. Keep the established full-height
+     * path for the optional regularisation/apron stages and direct CT volumes. */
+    rows = H;
+    if (geom_only && o->smooth_sigma_px == 0.0 && o->step_sigma_px == 0.0 && o->apron_px == 0) {
+        rows = o->geom_tile_rows > 0 ? (size_t)o->geom_tile_rows : SHEET_LAYERS_GEOMETRY_TILE_ROWS;
+        row_halo = halo + 1;              /* seam dependencies, then the handedness row derivative */
+    }
+    ncols = (W + (size_t)o->tile_cols - 1) / (size_t)o->tile_cols;
+    nrows = (H + rows - 1) / rows;
+    ntiles = ncols * nrows;
     rf = (RlFace *)malloc(nf * sizeof *rf);
     paint = (uint8_t *)calloc(nf, 1);
     tile_start = (size_t *)calloc(ntiles + 1, sizeof *tile_start);
     tile_fill = (size_t *)calloc(ntiles, sizeof *tile_fill);
-    mask = (uint8_t *)calloc(W * H, 1);
-    if (rf == NULL || paint == NULL || tile_start == NULL || tile_fill == NULL || mask == NULL) {
+    mask = geom_only ? NULL : (uint8_t *)calloc(W * H, 1);
+    if (rf == NULL || paint == NULL || tile_start == NULL || tile_fill == NULL || (!geom_only && mask == NULL)) {
         failed = 1;
         goto done;
     }
     if (o->hand != NULL) {
         size_t c = 0;
+        size_t workers = 1;
+#ifdef _OPENMP
+        workers = (size_t)omp_get_max_threads();
+#endif
         RawtexHandedness_free(o->hand);
         hc_team = (uint32_t *)calloc(W, sizeof *hc_team);
         hc_mirror = (uint32_t *)calloc(W, sizeof *hc_mirror);
@@ -1022,53 +1245,92 @@ int RawtexLayers_write(const char *zarr_dir, const char *mask_path,
         hc_r1 = (int32_t *)malloc(W * sizeof *hc_r1);
         if (hc_team == NULL || hc_mirror == NULL || hc_r0 == NULL || hc_r1 == NULL) { failed = 1; goto done; }
         for (c = 0; c < W; c++) { hc_r0[c] = INT32_MAX; hc_r1[c] = -1; }
+        census_arena = Arena_new_sized(65536);
+        worker_hand = (RlColumnHand *)ARENA_ALLOC(census_arena, workers * (size_t)o->tile_cols * sizeof *worker_hand);
+    }
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) reduction(+:skip_uv)
+#endif
+    for (face_index = 0; face_index < (int64_t)nf; face_index++) {
+        size_t ff = (size_t)face_index;
+        int bad = 0;
+        if (face_skip != NULL && face_skip[ff]) continue;
+        paint[ff] = (uint8_t)rl_face(verts, uv, faces, ff, plan.umin, plan.vmin, W, H,
+                                     o->stretch_ratio, o->stretch_floor, &rf[ff], &bad);
+        if (bad) skip_uv++;
     }
     for (f = 0; f < nf; f++) {
-        int bad = 0;
-        if (face_skip != NULL && face_skip[f]) continue;
-        paint[f] = (uint8_t)rl_face(verts, uv, faces, f, plan.umin, plan.vmin, W, H,
-                                    o->stretch_ratio, o->stretch_floor, &rf[f], &bad);
-        if (bad) skip_uv++;
+        size_t y = 0, x0 = 0, x1 = 0, y1 = 0;
         if (!paint[f]) continue;
-        for (t = rl_tile_lo(&rf[f], halo, o->tile_cols); t <= rl_tile_hi(&rf[f], halo, o->tile_cols, ntiles); t++)
-            tile_start[t + 1]++;
+        x0 = rl_tile_lo(rf[f].x0, halo, (size_t)o->tile_cols);
+        x1 = rl_tile_hi(rf[f].x1, halo, (size_t)o->tile_cols, ncols);
+        y1 = rl_tile_hi(rf[f].y1, row_halo, rows, nrows);
+        for (y = rl_tile_lo(rf[f].y0, row_halo, rows); y <= y1; y++)
+            for (t = x0; t <= x1; t++) tile_start[y * ncols + t + 1]++;
     }
     for (t = 0; t < ntiles; t++) tile_start[t + 1] += tile_start[t];
     tile_faces = (int32_t *)malloc((tile_start[ntiles] ? tile_start[ntiles] : 1) * sizeof *tile_faces);
     if (tile_faces == NULL) { failed = 1; goto done; }
     for (f = 0; f < nf; f++) {
+        size_t y = 0, x0 = 0, x1 = 0, y1 = 0;
         if (!paint[f]) continue;
-        for (t = rl_tile_lo(&rf[f], halo, o->tile_cols); t <= rl_tile_hi(&rf[f], halo, o->tile_cols, ntiles); t++)
-            tile_faces[tile_start[t] + tile_fill[t]++] = (int32_t)f;
+        x0 = rl_tile_lo(rf[f].x0, halo, (size_t)o->tile_cols);
+        x1 = rl_tile_hi(rf[f].x1, halo, (size_t)o->tile_cols, ncols);
+        y1 = rl_tile_hi(rf[f].y1, row_halo, rows, nrows);
+        for (y = rl_tile_lo(rf[f].y0, row_halo, rows); y <= y1; y++)
+            for (t = x0; t <= x1; t++) {
+                size_t tile = y * ncols + t;
+                tile_faces[tile_start[tile] + tile_fill[tile]++] = (int32_t)f;
+            }
     }
 
+    t_prepared = ves_clock_sec();
     {
         const int depth = o->depth, C = o->chunk;
         const size_t cols = (size_t)o->tile_cols;
         const size_t cy_n = (H + (size_t)C - 1) / (size_t)C;
         long tt = 0;
+        size_t completed_tiles = 0;
 #ifdef _OPENMP
-#pragma omp parallel for schedule(dynamic, 1) reduction(+:painted,filled,complete,multi,chunks,apron,apron_rej,apron_fits,smooth_px,smooth_cap,smooth_sh2,smooth_turn,step_px,step_m2)
+#pragma omp parallel for schedule(dynamic, 1) reduction(+:painted,filled,complete,multi,chunks,apron,apron_rej,apron_fits,smooth_px,smooth_cap,smooth_sh2,smooth_turn,step_px,step_m2,tile_raster_s,tile_seam_s,tile_finish_s,empty_tiles)
 #endif
         for (tt = 0; tt < (long)ntiles; tt++) {
             /* core columns [tx0, tx0+tw) are emitted; the raster (and the seam
              * fill) also covers `halo` columns either side, [hx0, hx0+hw) */
-            size_t tx0 = (size_t)tt * cols;
+            size_t tx0 = ((size_t)tt % ncols) * cols, ty0 = ((size_t)tt / ncols) * rows;
             size_t tw = W - tx0 < cols ? W - tx0 : cols;
+            size_t th = H - ty0 < rows ? H - ty0 : rows;
             size_t hx0 = tx0 > halo ? tx0 - halo : 0;
             size_t hx1 = tx0 + tw + halo < W ? tx0 + tw + halo : W;
             size_t hw = hx1 - hx0, core = tx0 - hx0;
-            size_t hpx = hw * H, npx = tw * H, i = 0, k = 0;
+            size_t hy0 = ty0 > row_halo ? ty0 - row_halo : 0;
+            size_t hy1 = ty0 + th + row_halo < H ? ty0 + th + row_halo : H;
+            size_t hh = hy1 - hy0, first = (ty0 - hy0) * tw, end = first + th * tw;
+            size_t hpx = hw * hh, npx = tw * th, i = 0, k = 0, worker = 0;
+            double tile_mark = ves_clock_sec();
             int pass = 0;
+            RlColumnHand *local_hand = NULL;
+            if (geom_only && tile_start[tt] == tile_start[tt + 1]) { empty_tiles++; continue; }
+#ifdef _OPENMP
+            worker = (size_t)omp_get_thread_num();
+#endif
+            if (worker_hand != NULL) {
+                local_hand = worker_hand + worker * cols;
+                for (i = 0; i < tw; i++) {
+                    local_hand[i].team = local_hand[i].mirror = 0;
+                    local_hand[i].row0 = INT32_MAX; local_hand[i].row1 = -1;
+                }
+            }
             uint8_t *state = (uint8_t *)calloc(hpx, 1);
             uint8_t *snap = (uint8_t *)malloc(hpx);
             float *pos = (float *)malloc(hpx * 3 * sizeof(float));
             float *nrm = (float *)malloc(hpx * 3 * sizeof(float));
-            uint8_t *lay = (uint8_t *)calloc((size_t)depth * npx, 1);
-            uint8_t *buf = (uint8_t *)malloc((size_t)depth * (size_t)C * (size_t)C);
+            uint8_t *lay = geom_only ? NULL : (uint8_t *)calloc((size_t)depth * npx, 1);
+            uint8_t *buf = geom_only ? NULL : (uint8_t *)malloc((size_t)depth * (size_t)C * (size_t)C);
             float *geo = o->geom_dir != NULL ? (float *)malloc(6 * npx * sizeof(float)) : NULL;
             float *gbuf = o->geom_dir != NULL ? (float *)malloc(6 * (size_t)C * (size_t)C * sizeof(float)) : NULL;
-            if (state == NULL || snap == NULL || pos == NULL || nrm == NULL || lay == NULL || buf == NULL ||
+            if (state == NULL || snap == NULL || pos == NULL || nrm == NULL ||
+                (!geom_only && (lay == NULL || buf == NULL)) ||
                 (o->geom_dir != NULL && (geo == NULL || gbuf == NULL))) {
 #ifdef _OPENMP
 #pragma omp critical(rl_fail)
@@ -1085,20 +1347,23 @@ int RawtexLayers_write(const char *zarr_dir, const char *mask_path,
                 size_t a = (size_t)faces[ff * 3], b = (size_t)faces[ff * 3 + 1], c = (size_t)faces[ff * 3 + 2];
                 long xa = F->x0 > (long)hx0 ? F->x0 : (long)hx0;
                 long xb = F->x1 < (long)hx1 - 1 ? F->x1 : (long)hx1 - 1;
+                long ya = F->y0 > (long)hy0 ? F->y0 : (long)hy0;
+                long yb = F->y1 < (long)hy1 - 1 ? F->y1 : (long)hy1 - 1;
                 long yy = 0, xx = 0;
-                for (yy = F->y0; yy <= F->y1; yy++) {
+                for (yy = ya; yy <= yb; yy++) {
                     for (xx = xa; xx <= xb; xx++) {
                         double pu = (double)xx + 0.5, pv = (double)yy + 0.5;
                         double l1 = ((pu - F->ua) * (F->vc - F->va) - (pv - F->va) * (F->uc - F->ua)) / F->A2;
                         double l2 = ((F->ub - F->ua) * (pv - F->va) - (F->vb - F->va) * (pu - F->ua)) / F->A2;
                         double l0 = 1.0 - l1 - l2;
-                        size_t pi = (size_t)yy * hw + ((size_t)xx - hx0);
+                        size_t pi = ((size_t)yy - hy0) * hw + ((size_t)xx - hx0);
                         int on_boundary = 0, q = 0;
                         if (l0 < -1e-9 || l1 < -1e-9 || l2 < -1e-9) continue;
                         on_boundary = l0 <= 1e-9 || l1 <= 1e-9 || l2 <= 1e-9;
                         if (on_boundary && state[pi] != 0) continue;
                         if (!on_boundary && state[pi] == 2) {
-                            if ((size_t)xx >= tx0 && (size_t)xx < tx0 + tw) multi++;
+                            if ((size_t)xx >= tx0 && (size_t)xx < tx0 + tw &&
+                                (size_t)yy >= ty0 && (size_t)yy < ty0 + th) multi++;
                             continue;
                         }
                         for (q = 0; q < 3; q++) {
@@ -1111,8 +1376,12 @@ int RawtexLayers_write(const char *zarr_dir, const char *mask_path,
                     }
                 }
             }
+            tile_raster_s += ves_clock_sec() - tile_mark;
+            tile_mark = ves_clock_sec();
             for (pass = 0; pass < o->seam_passes && o->seam_reach > 0; pass++)
-                if (rl_seam_fill(state, pos, nrm, hw, H, o->seam_reach, o->seam_tol, snap) == 0) break;
+                if (rl_seam_fill(state, pos, nrm, hw, hh, o->seam_reach, o->seam_tol, snap) == 0) break;
+            tile_seam_s += ves_clock_sec() - tile_mark;
+            tile_mark = ves_clock_sec();
             if (o->smooth_sigma_px > 0.0) {
                 size_t sp = 0, sc = 0;
                 double s2 = 0.0, tu = 0.0;
@@ -1144,26 +1413,64 @@ int RawtexLayers_write(const char *zarr_dir, const char *mask_path,
                 apron_fits += fitc;
             }
             /* keep only the core columns from here on (in place, row by row) */
-            for (k = 0; k < H; k++) {
+            for (k = 0; k < hh; k++) {
                 memmove(&state[k * tw], &state[k * hw + core], tw);
                 memmove(&pos[k * tw * 3], &pos[(k * hw + core) * 3], tw * 3 * sizeof(float));
                 memmove(&nrm[k * tw * 3], &nrm[(k * hw + core) * 3], tw * 3 * sizeof(float));
             }
-            if (hc_team != NULL)            /* this tile owns core columns [tx0, tx0 + tw) */
-                for (i = 0; i < npx; i++) {
+            if (hc_team != NULL || o->sign_sink != NULL)    /* this tile owns core columns [tx0, tx0 + tw) */
+                for (i = first; i < end; i++) {
                     size_t col = tx0 + i % tw;
-                    int32_t row = (int32_t)(i / tw);
+                    int32_t row = (int32_t)(hy0 + i / tw);
                     double s = 0.0, nl = 0.0;
                     if (state[i] < 1 || state[i] > 3) continue;
-                    if (row < hc_r0[col]) hc_r0[col] = row;
-                    if (row > hc_r1[col]) hc_r1[col] = row;
+                    if (hc_team != NULL) {
+                        if (row < local_hand[i % tw].row0) local_hand[i % tw].row0 = row;
+                        if (row > local_hand[i % tw].row1) local_hand[i % tw].row1 = row;
+                    }
                     nl = (double)nrm[i * 3] * nrm[i * 3] + (double)nrm[i * 3 + 1] * nrm[i * 3 + 1] +
                          (double)nrm[i * 3 + 2] * nrm[i * 3 + 2];
                     if (nl < 0.25) continue;     /* degenerate normal: no depth axis to judge by */
-                    s = rl_hand_sign(state, pos, nrm, i, tw, H);
-                    if (s > 0.0) hc_team[col]++;
-                    else if (s < 0.0) hc_mirror[col]++;
+                    s = rl_hand_sign(state, pos, nrm, i, tw, hh);
+                    if (o->sign_sink != NULL)
+                        o->sign_sink[(size_t)row * W + col] = (int8_t)(s > 0.0 ? 1 : (s < 0.0 ? -1 : 0));
+                    if (hc_team == NULL) continue;
+                    if (s > 0.0) local_hand[i % tw].team++;
+                    else if (s < 0.0) local_hand[i % tw].mirror++;
                 }
+            if (local_hand != NULL) {
+#ifdef _OPENMP
+#pragma omp critical(rl_hand_merge)
+#endif
+                {
+                    for (i = 0; i < tw; i++) {
+                        size_t col = tx0 + i;
+                        hc_team[col] += local_hand[i].team;
+                        hc_mirror[col] += local_hand[i].mirror;
+                        if (local_hand[i].row0 < hc_r0[col]) hc_r0[col] = local_hand[i].row0;
+                        if (local_hand[i].row1 > hc_r1[col]) hc_r1[col] = local_hand[i].row1;
+                    }
+                }
+            }
+            if (o->pos_sink != NULL) {      /* the depth-zero points, as the geometry volume records them */
+                const size_t plane = W * H;
+                for (i = first; i < end; i++) {
+                    size_t g = (hy0 + i / tw) * W + tx0 + (i % tw);
+                    if (state[i] < 1 || state[i] > 3) continue;
+                    o->pos_sink[g] = pos[i * 3];
+                    o->pos_sink[plane + g] = pos[i * 3 + 1];
+                    o->pos_sink[2 * plane + g] = pos[i * 3 + 2];
+                }
+            }
+            if (geom_only) {                /* no RAW, no chunks: count the sheet and move on */
+                for (i = first; i < end; i++) {
+                    if (state[i] == 3) filled++;
+                    else if (state[i] == 1 || state[i] == 2) painted++;
+                }
+                free(state); free(snap); free(pos); free(nrm); free(lay); free(buf); free(geo); free(gbuf);
+                tile_finish_s += ves_clock_sec() - tile_mark;
+                continue;
+            }
             for (i = 0; i < npx; i++) {
                 const float *p = &pos[i * 3];
                 float *n = &nrm[i * 3];
@@ -1255,7 +1562,27 @@ int RawtexLayers_write(const char *zarr_dir, const char *mask_path,
                 }
             }
             free(state); free(snap); free(pos); free(nrm); free(lay); free(buf); free(geo); free(gbuf);
+#ifdef _OPENMP
+#pragma omp critical(rl_progress)
+#endif
+            {
+                completed_tiles++;
+                if(!getenv("PIPELINE_PROGRESS") || strcmp(getenv("PIPELINE_PROGRESS"),"0")) {
+                    fprintf(stderr,"[orch] progress %zu/%zu\n",completed_tiles,ntiles);fflush(stderr);
+                }
+            }
         }
+    }
+    t_tiles = ves_clock_sec();
+    if (geom_only)
+        fprintf(stderr, "  geometry phases: prepare=%.3f tiles=%.3f seconds; summed tile work: raster=%.3f seam=%.3f finish=%.3f seconds\n",
+                t_prepared - t0, t_tiles - t_prepared, tile_raster_s, tile_seam_s, tile_finish_s);
+    if (geom_only) {
+        size_t bound_w = (size_t)o->tile_cols + 2 * halo, bound_h = rows + 2 * row_halo;
+        if (bound_w > W) bound_w = W;
+        if (bound_h > H) bound_h = H;
+        fprintf(stderr, "  geometry work: %zu x %zu tiles, %zu empty; raster scratch at most %zu pixels per worker\n",
+                ncols, nrows, empty_tiles, bound_w * bound_h);
     }
     if (failed) { fprintf(stderr, "ERROR: layer render or chunk write failed\n"); goto done; }
     if (hc_team != NULL) {          /* pieces = runs of painted columns */
@@ -1284,6 +1611,7 @@ int RawtexLayers_write(const char *zarr_dir, const char *mask_path,
         o->hand->pieces = pc;
         o->hand->npieces = n;
     }
+    if (geom_only) goto done;           /* the sinks and the census are the result */
 
     snprintf(path, sizeof path, "%s/0/.zarray", partial);
     {
@@ -1346,6 +1674,7 @@ int RawtexLayers_write(const char *zarr_dir, const char *mask_path,
     }
 
 done:
+    if (census_arena != NULL) Arena_dispose(&census_arena);
     if (st != NULL) {
         st->W = W; st->H = H; st->umin = plan.umin; st->vmin = plan.vmin;
         st->painted_px = painted; st->filled_px = filled; st->complete_px = complete; st->multi_px = multi;
@@ -1367,6 +1696,177 @@ done:
 /* -------------------------------------------------------------- selftest */
 
 #define RL_CHECK(cond, msg) do { if (!(cond)) { fprintf(stderr, "  FAIL: %s\n", msg); fails++; } } while (0)
+
+static int rl_normals_selftest(void)
+{
+    enum { NC = 257, NX = 6, NY = 5, CV = NX * NY, CF = 2 * (NX - 1) * (NY - 1) + 2,
+           NV = NC * CV + 3, NF = NC * CF };
+    Arena_T arena = Arena_new_sized(65536);
+    float *verts = (float *)ARENA_CALLOC(arena, NV * 3, sizeof *verts);
+    float *inward = (float *)ARENA_CALLOC(arena, NV * 3, sizeof *inward);
+    int32_t *faces = (int32_t *)ARENA_ALLOC(arena, NF * 3 * sizeof *faces);
+    int c = 0, r = 0, x = 0, it = 0, fails = 0;
+    for (c = 0; c < NC; c++) {
+        int f = 0;
+        for (r = 0; r < NY; r++)
+            for (x = 0; x < NX; x++) {
+                int v = (r * NX + x) * NC + c;
+                verts[v * 3] = (float)(c % 17) * 20.0f + (float)x / 3.0f;
+                verts[v * 3 + 1] = (float)(c / 17) * 20.0f + (float)r / 7.0f;
+                verts[v * 3 + 2] = (float)((x * x + r * 3 + c) % 13) / 19.0f;
+                inward[v * 3] = (float)((c + r) % 3) / 11.0f;
+                inward[v * 3 + 1] = (float)((c + x) % 7) / 13.0f;
+                inward[v * 3 + 2] = c % 2 ? 1.0f : -1.0f;
+                if (c % 11 == 0) memset(inward + v * 3, 0, 3 * sizeof *inward);
+            }
+        for (r = 0; r < NY - 1; r++)
+            for (x = 0; x < NX - 1; x++) {
+                int32_t a = (r * NX + x) * NC + c, b = a + NC, d = a + NX * NC, e = d + NC;
+                int32_t *p = faces + ((size_t)f++ * NC + (size_t)c) * 3;
+                p[0] = a; p[1] = c % 3 ? b : d; p[2] = c % 3 ? d : b;
+                p = faces + ((size_t)f++ * NC + (size_t)c) * 3;
+                p[0] = b; p[1] = c % 5 ? e : d; p[2] = c % 5 ? d : e;
+            }
+        faces[((size_t)f * NC + (size_t)c) * 3] = c;
+        faces[((size_t)f * NC + (size_t)c) * 3 + 1] = c;
+        faces[((size_t)f++ * NC + (size_t)c) * 3 + 2] = c;  /* repeated vertex */
+        faces[((size_t)f * NC + (size_t)c) * 3] = c;
+        faces[((size_t)f * NC + (size_t)c) * 3 + 1] = c + NX * NC;
+        faces[((size_t)f * NC + (size_t)c) * 3 + 2] = c + NC;
+    }
+    for (it = 0; it <= 3; it++) {
+        float *reference = MeshNormals_compute(verts, NV, faces, NF), *parallel = NULL;
+        RawtexOrientStats a, b;
+        int ok = reference != NULL &&
+                 RawtexLayers_orient(reference, verts, NV, faces, NF, inward, it, &a) == 0 &&
+                 RawtexLayers_normals(&parallel, verts, NV, faces, NF, inward, it, &b) == 0;
+        RL_CHECK(ok, "component normals run on interleaved faces and vertices");
+        RL_CHECK(ok && memcmp(reference, parallel, NV * 3 * sizeof *reference) == 0,
+                 "component normals preserve every float bit, including unused and degenerate vertices");
+        RL_CHECK(ok && memcmp(&a, &b, sizeof a) == 0 && b.components == NC,
+                 "component orientation statistics preserve root-order reductions");
+        free(reference); free(parallel);
+    }
+    {
+        float *result = NULL;
+        RawtexOrientStats st;
+        faces[0] = -1;
+        RL_CHECK(RawtexLayers_normals(&result, verts, NV, faces, NF, inward, 2, &st) != 0 && result == NULL,
+                 "component normals reject negative face indices");
+        faces[0] = NV;
+        RL_CHECK(RawtexLayers_normals(&result, verts, NV, faces, NF, inward, 2, &st) != 0 && result == NULL,
+                 "component normals reject out-of-range face indices");
+        RL_CHECK(RawtexLayers_normals(&result, verts, NV, NULL, 0, NULL, 2, &st) == 0 &&
+                 result != NULL && st.components == 0, "component normals accept a face-free mesh");
+        if (result != NULL) {
+            int v = 0, nonzero = 0;
+            for (v = 0; v < NV * 3; v++) if (result[v] != 0.0f) nonzero++;
+            RL_CHECK(nonzero == 0, "a face-free mesh has zero normals");
+        }
+        free(result);
+        result = NULL;
+        RL_CHECK(RawtexLayers_normals(&result, NULL, 0, NULL, 0, NULL, 0, NULL) == 0 && result != NULL,
+                 "component normals accept an empty mesh");
+        free(result);
+    }
+    Arena_dispose(&arena);
+    return fails;
+}
+
+static int rl_geometry_tiles_selftest(void)
+{
+    enum { W = 57, H = 41, NQ = 7, NV = NQ * 4, NF = NQ * 2 };
+    const double rectangles[NQ][4] = {
+        {0,7,0,7}, {8,16,0,7}, {0,7,8,16}, {8,16,8,16},
+        {24,33,24,31}, {2,5,2,5}, {40,50,0,10}
+    };
+    const int heights[] = { 1, 2, 3, 4, 7, 8, 13, 0 };
+    const RawtexWindow window = { 0, W - 1e-6, 0, H - 1e-6 };
+    Arena_T arena = Arena_new_sized(65536);
+    float *verts = (float *)ARENA_ALLOC(arena, NV * 3 * sizeof *verts);
+    float *normals = (float *)ARENA_CALLOC(arena, NV * 3, sizeof *normals);
+    double *uv = (double *)ARENA_ALLOC(arena, NV * 2 * sizeof *uv);
+    int32_t *faces = (int32_t *)ARENA_ALLOC(arena, NF * 3 * sizeof *faces);
+    uint8_t skip[NF] = { 0 };
+    float *reference = (float *)ARENA_ALLOC(arena, W * H * 3 * sizeof *reference);
+    float *tiled = (float *)ARENA_ALLOC(arena, W * H * 3 * sizeof *tiled);
+    int8_t *ref_sign = (int8_t *)ARENA_CALLOC(arena, W * H, 1);
+    int8_t *tile_sign = (int8_t *)ARENA_ALLOC(arena, W * H);
+    RawtexLayersOpts opt;
+    RawtexLayersStats ref_stats, tile_stats;
+    RawtexHandedness ref_hand = { 0 }, tile_hand = { 0 };
+    RawtexUv field = { NULL, uv };
+    size_t i = 0;
+    int q = 0, fails = 0;
+    for (q = 0; q < NQ; q++) {
+        int k = 0;
+        for (k = 0; k < 4; k++) {
+            int v = q * 4 + k;
+            double x = rectangles[q][k == 1 || k == 2 ? 1 : 0];
+            double y = rectangles[q][k >= 2 ? 3 : 2];
+            double scale = q == 6 ? 0.001 : 1.0;
+            uv[v * 2] = x; uv[v * 2 + 1] = y;
+            verts[v * 3] = (float)(2.0 + y * scale);
+            verts[v * 3 + 1] = (float)(2.0 + x * scale);
+            verts[v * 3 + 2] = 7.5f;
+            normals[v * 3 + 2] = q == 4 ? 1.0f : -1.0f;
+        }
+        faces[q * 6] = q * 4; faces[q * 6 + 1] = q * 4 + 1; faces[q * 6 + 2] = q * 4 + 2;
+        faces[q * 6 + 3] = q * 4; faces[q * 6 + 4] = q * 4 + 2; faces[q * 6 + 5] = q * 4 + 3;
+    }
+    skip[NF - 1] = 1;                         /* explicit skip plus a stretched face */
+    memset(&opt, 0, sizeof opt);
+    opt.depth = 5; opt.step = 1.0; opt.tile_cols = 8; opt.chunk = 4;
+    opt.stretch_ratio = 4.0; opt.stretch_floor = 1.0;
+    opt.seam_reach = 2; opt.seam_passes = 3; opt.seam_tol = 4.5;
+    opt.window = &window; opt.sink_w = W; opt.sink_h = H;
+    opt.geom_tile_rows = H; opt.pos_sink = reference; opt.sign_sink = ref_sign; opt.hand = &ref_hand;
+    for (i = 0; i < W * H * 3; i++) reference[i] = NAN;
+    RL_CHECK(RawtexLayers_write(NULL, NULL, NULL, verts, field, NV, faces, NF, normals, skip, &opt,
+                                NULL, &ref_stats) == 0, "full-height geometry reference");
+    RL_CHECK(ref_stats.filled_px > 0 && ref_stats.multi_px > 0 && ref_stats.skip_uv_faces == 1 && ref_hand.npieces == 2,
+             "row-tiling fixture exercises seams, overlaps, stretch gates and separated pieces");
+    ref_stats.seconds = 0.0;
+    for (i = 0; i < sizeof heights / sizeof heights[0]; i++) {
+        size_t p = 0;
+        int ok = 0;
+        for (p = 0; p < W * H * 3; p++) tiled[p] = NAN;
+        memset(tile_sign, 0, W * H);
+        opt.geom_tile_rows = heights[i]; opt.pos_sink = tiled; opt.sign_sink = tile_sign; opt.hand = &tile_hand;
+        ok = RawtexLayers_write(NULL, NULL, NULL, verts, field, NV, faces, NF, normals, skip, &opt,
+                                NULL, &tile_stats) == 0;
+        tile_stats.seconds = 0.0;
+        RL_CHECK(ok && memcmp(reference, tiled, W * H * 3 * sizeof *reference) == 0 &&
+                 memcmp(ref_sign, tile_sign, W * H) == 0, "row tiles preserve every position and handedness bit");
+        RL_CHECK(ok && memcmp(&ref_stats, &tile_stats, sizeof ref_stats) == 0,
+                 "row tiles preserve raster counts, including overlapping faces");
+        RL_CHECK(ok && ref_hand.npieces == tile_hand.npieces &&
+                 memcmp(ref_hand.pieces, tile_hand.pieces, ref_hand.npieces * sizeof *ref_hand.pieces) == 0,
+                 "row tiles preserve piece bounds and full-column handedness census");
+        RawtexHandedness_free(&tile_hand);
+    }
+    for (i = 0; i < W * H * 3; i++) tiled[i] = NAN;
+    opt.geom_tile_rows = 3; opt.hand = NULL; opt.sign_sink = NULL;
+    RL_CHECK(RawtexLayers_write(NULL, NULL, NULL, verts, field, NV, faces, NF, normals, skip, &opt,
+                                NULL, &tile_stats) == 0 &&
+             memcmp(reference, tiled, W * H * 3 * sizeof *reference) == 0, "row tiles without handedness sinks");
+    memset(skip, 1, sizeof skip);
+    for (i = 0; i < W * H * 3; i++) tiled[i] = NAN;
+    memset(tile_sign, 0, W * H);
+    opt.hand = &tile_hand; opt.sign_sink = tile_sign;
+    RL_CHECK(RawtexLayers_write(NULL, NULL, NULL, verts, field, NV, faces, NF, normals, skip, &opt,
+                                NULL, &tile_stats) == 0 && tile_stats.painted_px == 0 && tile_stats.filled_px == 0 &&
+             tile_hand.npieces == 0, "empty geometry tiles keep the raster empty");
+    {
+        int changed = 0;
+        for (i = 0; i < W * H * 3; i++) if (!isnan(tiled[i])) changed++;
+        for (i = 0; i < W * H; i++) if (tile_sign[i] != 0) changed++;
+        RL_CHECK(changed == 0, "empty geometry tiles leave sinks unchanged");
+    }
+    RawtexHandedness_free(&ref_hand); RawtexHandedness_free(&tile_hand);
+    Arena_dispose(&arena);
+    return fails;
+}
 
 /* synthetic RAW: value = 10 + 3z + 2y + x on a 16^3 nested Zarr (chunk 8);
  * trilinear sampling of a linear field is exact */
@@ -1454,8 +1954,9 @@ static void rl_rm_raw(const char *dir)
 
 int RawtexLayers_selftest(void)
 {
-    int fails = 0;
-    const char *root = "rawtex_layers_selftest";
+    int fails = rl_normals_selftest() + rl_geometry_tiles_selftest();
+    char root[128];
+    if (ves_selftest_dir(root, sizeof root, "rawtex_layers")) return 1;
     char raw[256], raw_gap[256], zarr[256], zarr2[256], zarr3[256], maskp[256], mask2[256], mask3[256];
     char geom[256], zarr6[256], mask6[256];
     /* the plane x = 7.5 carries a 10 x 10 quad in (z,y) at [2,12]^2;
@@ -2207,6 +2708,59 @@ int RawtexLayers_selftest(void)
         remove(mf); remove(mw);
     }
 
+    /* 10. geometry only (sheet_layers --tifxyz): no RAW, no files; the sinks hold
+     * the depth-zero points and handedness signs.  On the plane's own grid pixel
+     * (px, py) is (z, y, x) = (2.5 + py, 2.5 + px, 7.5), sign +1 (test 8); on the
+     * CORNER window (origin shifted by half a pixel, one pixel wider and taller)
+     * node (c, r) is the grid corner (2 + r, 2 + c, 7.5), boundary nodes included. */
+    {
+        const RawtexWindow cw = { -0.5, 10.5, -0.5, 10.5 };
+        float *ps = (float *)malloc(3 * 121 * sizeof(float));
+        int8_t sg[121];
+        RawtexHandedness hd;
+        size_t j = 0;
+        int bad = 0, nplus = 0, nz = 0, run = 0;
+        memset(&hd, 0, sizeof hd);
+        RL_CHECK(ps != NULL, "sink allocation");
+        for (run = 0; ps != NULL && run < 2; run++) {
+            const size_t n = run == 0 ? 100 : 121, w = run == 0 ? 10 : 11;
+            for (j = 0; j < 3 * n; j++) ps[j] = NAN;
+            memset(sg, 0, sizeof sg);
+            opt.pos_sink = ps; opt.sign_sink = sg; opt.sink_w = w; opt.sink_h = w;
+            opt.window = run == 0 ? NULL : &cw;
+            opt.hand = &hd; opt.tile_cols = 8;
+            RL_CHECK(RawtexLayers_write(NULL, NULL, NULL, verts, uv, 4, faces, 2, normals, NULL, &opt, NULL,
+                                        &ls2) == 0 && ls2.W == w && ls2.H == w && ls2.painted_px == n &&
+                     ls2.complete_px == 0 && ls2.chunks_written == 0,
+                     run == 0 ? "geometry-only render of the plane" : "geometry-only render on the corner window");
+            bad = 0; nplus = 0; nz = 0;
+            for (j = 0; j < n; j++) {
+                const double off = run == 0 ? 2.5 : 2.0;
+                const double wz = off + (double)(j / w), wy = off + (double)(j % w);
+                if (!(fabs(ps[j] - wz) < 1e-5 && fabs(ps[n + j] - wy) < 1e-5 && fabs(ps[2 * n + j] - 7.5) < 1e-5))
+                    bad++;
+                nplus += sg[j] == 1;
+                nz += sg[j] == 0;
+            }
+            RL_CHECK(bad == 0, run == 0 ? "pos sink = the geometry volume's points"
+                                        : "corner sink = the grid corners, boundary included");
+            RL_CHECK((size_t)nplus + (size_t)nz == n && nplus > 0, "sign sink: team handedness (+1) or unjudged");
+            RL_CHECK(hd.npieces == 1 && hd.pieces[0].col0 == 0 && hd.pieces[0].col1 == w &&
+                     hd.pieces[0].px_team == (size_t)nplus && hd.pieces[0].px_mirror == 0,
+                     "the census counts the sign sink's pixels");
+            RawtexHandedness_free(&hd);
+        }
+        opt.sink_w = 12;                            /* a sink that does not match the raster is refused */
+        RL_CHECK(ps == NULL || RawtexLayers_write(NULL, NULL, NULL, verts, uv, 4, faces, 2, normals, NULL, &opt,
+                                                  NULL, &ls2) != 0, "a mis-sized sink is refused");
+        opt.pos_sink = NULL;                        /* geometry only needs a position sink */
+        RL_CHECK(RawtexLayers_write(NULL, NULL, NULL, verts, uv, 4, faces, 2, normals, NULL, &opt, NULL, &ls2) != 0,
+                 "geometry only without a sink is refused");
+        opt.sign_sink = NULL; opt.sink_w = opt.sink_h = 0; opt.window = NULL; opt.hand = NULL; opt.tile_cols = 16;
+        RawtexHandedness_free(&hd);
+        free(ps);
+    }
+
     free(normals);
     rl_rmtree_zarr(zarr, 2, 2);
     rl_rmtree_zarr(zarr2, 2, 2);
@@ -2216,7 +2770,7 @@ int RawtexLayers_selftest(void)
     remove(maskp); remove(mask2); remove(mask3); remove(mask6);
     rl_rm_raw(raw);
     rl_rm_raw(raw_gap);
-    ves_rmdir(root);
+    if (!fails) ves_selftest_clean(root);
     fprintf(stderr, "[selftest] rawtex_layers %s (%d failures)\n", fails ? "FAIL" : "PASS", fails);
     return fails ? 1 : 0;
 }

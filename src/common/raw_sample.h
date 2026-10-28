@@ -25,7 +25,9 @@ typedef struct CubeTable {
     uint8_t **slot;             /* [nz*ny*nx] */
     int       n_loaded, n_missing;
     size_t    n_outside;        /* requested bbox chunks outside Zarr shape */
+    size_t    n_untouched;      /* slots cubetable_prewarm_points marked absent unread (no point reaches them) */
     int       is_zarr;          /* dir/0/.zarray, uint8 + compressor:null */
+    int       support_only;     /* metadata table: cube_supported is allowed; cube_fetch refuses intensity reads */
     long      shape[3];         /* zarr level-0 shape; unused for TIFF cubes */
 } CubeTable;
 
@@ -35,15 +37,50 @@ typedef struct CubeTable {
 int cubetable_init(CubeTable *ct, Arena_T arena, const char *dir,
                    long chunk, const float *verts, size_t nv, double pad);
 
+/* The resident RAW store (2026-10-25): the chunks this process reads from ONE
+ * raw zarr (the first one a table loads from) stay in a process-lifetime arena,
+ * and every later table over that zarr takes its chunks (present or absent)
+ * from there instead of re-reading and re-copying them; chunks of any other
+ * directory, TIFF-cube directories, and chunks past
+ * SHEET_LAYERS_RAW_RESIDENT_GB load into the table's arena as before.  A
+ * table's slot may point into the store, never freed with the table.  OFF by
+ * default (no other tool changes); cubetable_resident(1) before the first load
+ * turns it on for the process.  cubetable_resident_reset turns it off, drops
+ * the binding and frees the store (tests). */
+void   cubetable_resident(int on);
+size_t cubetable_resident_bytes(void);
+size_t cubetable_resident_chunks(void);
+void   cubetable_resident_reset(void);
+
 /* Voxel fetch at integer (iz,iy,ix); returns 0..255, or -1 if the covering
  * cube is missing / out of the table. Loads the cube on first touch. */
 int cube_fetch(CubeTable *ct, long iz, long iy, long ix);
+
+/* Whether a voxel has readable RAW backing. Works with ordinary tables and
+ * support-only tables, which contain no intensity data. */
+int cube_supported(CubeTable *ct, long iz, long iy, long ix);
+
+/* Tifxyz export only asks whether RAW exists; the renderer reads intensities.
+ * For uncompressed byte Zarr, probe each file's readable extent once, caching
+ * presence across windows without loading the scan. TIFF cubes use the normal
+ * decoder. A fresh table is required; after prewarm concurrent reads are safe. */
+int cubetable_prewarm_support(CubeTable *ct);
 
 /* Load EVERY slot in the table bbox now (present -> volume, absent -> the
  * missing sentinel). After this, cube_fetch/sample_* never mutate the table,
  * so concurrent reads from OpenMP workers are safe. Serial; returns the
  * number of cubes loaded. */
 int cubetable_prewarm_all(CubeTable *ct);
+
+/* The selective form for a sparse surface in a big box (a whole-sheet block's
+ * bbox is the whole scan): load only the chunks intersecting some valid
+ * point's +-pad box -- a point is valid when its three coordinates are all
+ * >= -0.5, the tifxyz invalid marker being -1 -- and mark every other slot
+ * absent unread (n_untouched).  Afterwards no fetch loads lazily, so
+ * concurrent reads are safe; a sample beyond pad of every point reads no
+ * datum.  One-shot, in place of cubetable_prewarm_all.  z, y, x: n
+ * coordinates each.  Returns the number of cubes loaded, -1 on bad input. */
+int cubetable_prewarm_points(CubeTable *ct, const float *z, const float *y, const float *x, size_t n, double pad);
 
 /* Coverage proof after prewarm.  Expected chunks are only chunks intersecting
  * the physical Zarr shape; bbox halo outside that shape is counted separately

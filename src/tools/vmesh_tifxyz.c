@@ -190,6 +190,9 @@ static int uv_join(Arena_T arena, UnionFind *uf, const int32_t *faces, size_t nf
     return 0;
 }
 
+static int g_native_grid;
+static int g_canvas;              /* one raster of the existing UV layout; no geometry is joined */
+
 static int export_pieces(Arena_T arena, const float *verts, size_t nv, const int32_t *faces, size_t nf,
                          const double *uv, const char *out_dir, const char *prefix, int top, double min_area,
                          int max_dim, double join_cell, FILE *index)
@@ -202,8 +205,9 @@ static int export_pieces(Arena_T arena, const float *verts, size_t nv, const int
             return -1;
         uf_union(&uf, t[0], t[1]);
         uf_union(&uf, t[0], t[2]);
+        if (g_canvas) uf_union(&uf, faces[0], t[0]);
     }
-    if (join_cell > 0.0 && uv_join(arena, &uf, faces, nf, uv, nv, join_cell) != 0) return -1;
+    if (!g_canvas && join_cell > 0.0 && uv_join(arena, &uf, faces, nf, uv, nv, join_cell) != 0) return -1;
     /* per-root face counts and UV areas */
     size_t *slot = (size_t *)ARENA_ALLOC(arena, nv * sizeof(size_t));
     for (size_t i = 0; i < nv; i++) slot[i] = (size_t)-1;
@@ -257,6 +261,7 @@ static int export_pieces(Arena_T arena, const float *verts, size_t nv, const int
         memset(&opt, 0, sizeof opt);
         opt.px_per_vox = 1.0f;
         opt.max_dim = max_dim;
+        opt.preserve_sampling = g_native_grid;
         TifXYZStats st;
         memset(&st, 0, sizeof st);
         int rc = TifXYZ_write_double(scratch, dir, name, pv, pnv, pf, pnf, puv, &opt, &st);
@@ -312,7 +317,8 @@ static int run(const char *in, const char *out_dir, const char *prefix, int top,
     }
     fprintf(index, "{\"source\": ");
     json_str(index, in);
-    fprintf(index, ", \"verts\": %zu, \"faces\": %zu, \"pieces\": [\n", m.nv, m.nf);
+    fprintf(index, ", \"verts\": %zu, \"faces\": %zu, \"combined_canvas\": %s, \"pieces\": [\n", m.nv, m.nf,
+            g_canvas ? "true" : "false");
     int n = export_pieces(arena, m.verts, m.nv, m.faces, m.nf, uv, out_dir, prefix, top, min_area, max_dim, join_cell,
                           index);
     fprintf(index, "\n]}\n");
@@ -405,6 +411,18 @@ static int selftest(void)
         if (!(cx > 9.0f && cx < 51.0f)) { fprintf(stderr, "selftest: x.tif centre %.2f\n", cx); fails++; }
     }
     Arena_dispose(&a2);
+    /* Whole-canvas export retains the small, disconnected island and the blank gap. */
+    g_canvas = 1; g_native_grid = 1;
+    snprintf(dir2, sizeof dir2, "vmesh_tifxyz_selftest_canvas_%d", (int)ves_getpid());
+    int nc = export_pieces(arena, v, 12, f, 6, uv, dir2, "t", 1, 1.0, 8192, 4.0, NULL);
+    a2 = Arena_new(); x = NULL; W = H = 0;
+    snprintf(path, sizeof path, "%s/t_p000/x.tif", dir2);
+    if (nc != 1 || TiffIO_load_float2d(a2,path,&x,&W,&H) != 0 || W != 111 || H != 21 ||
+        x[5*W+105] < 0 || x[5*W+75] != TIFXYZ_INVALID || x[5*W+20] < 0) {
+        fprintf(stderr,"selftest: canvas did not preserve both pieces and their gap\n"); fails++;
+    }
+    Arena_dispose(&a2);
+    g_canvas = 0; g_native_grid = 0;
     Arena_dispose(&arena);
     fprintf(stderr, "vmesh_tifxyz selftest: %s (%d failures)\n", fails ? "FAIL" : "PASS", fails);
     return fails;
@@ -422,6 +440,8 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--top") && i + 1 < argc) top = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--min-area") && i + 1 < argc) min_area = atof(argv[++i]);
         else if (!strcmp(argv[i], "--max-dim") && i + 1 < argc) max_dim = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--native-grid")) g_native_grid = 1;
+        else if (!strcmp(argv[i], "--canvas")) g_canvas = 1;
         else if (!strcmp(argv[i], "--uv-join") && i + 1 < argc) join_cell = atof(argv[++i]);
         else if (!strcmp(argv[i], "--seam-fill") && i + 1 < argc) g_seam_reach = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--seam-tol") && i + 1 < argc) g_seam_tol = (float)atof(argv[++i]);
@@ -431,11 +451,13 @@ int main(int argc, char **argv)
     return run(argv[1], argv[2], prefix, top, min_area, max_dim, join_cell);
 usage:
     fprintf(stderr, "usage: vmesh_tifxyz <in.vmesh> <out_dir> [--prefix S] [--top K] [--min-area A] [--max-dim N]"
-                    " [--uv-join F] [--seam-fill N] [--seam-tol F]\n"
+                    " [--native-grid] [--canvas] [--uv-join F] [--seam-fill N] [--seam-tol F]\n"
                     "       vmesh_tifxyz --selftest\n"
                     "Writes one VC3D tifxyz directory per piece (largest UV area first). A piece is a mesh\n"
                     "component joined with components whose UV footprints come within F vox (default 4;\n"
                     "0 = mesh connectivity only): charts of one packed piece abut, pieces keep a gap.\n"
+                    "--native-grid preserves exact one-voxel spacing without dimension-based shrinkage.\n"
+                    "--canvas exports every component together in its existing UV position, keeping gaps empty.\n"
                     "Seam gaps up to N cells (default 2; 0 = off) between opposite valid cells at most F vox\n"
                     "apart in 3-D (default 4.5) are closed by interpolation; wider holes stay invalid.\n");
     return 2;

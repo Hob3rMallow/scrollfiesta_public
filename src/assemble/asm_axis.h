@@ -60,6 +60,14 @@ AsmAxis *AsmAxis_line(Arena_T arena, const double point[3], const double dir[3],
  * Any output may be NULL. */
 void AsmAxis_project(const AsmAxis *a, const double p[3], double *s, double *r, double dir[3], double foot[3]);
 
+/* Reusable nearest-foot index for many queries on an immutable axis. The
+ * index belongs to arena; concurrent queries are read-only. The candidate
+ * window, endpoint extrapolation and equal-distance tie order are identical
+ * to AsmAxis_project, without evaluating tangents or scanning distant segments. */
+typedef struct AsmAxisProjector AsmAxisProjector;
+AsmAxisProjector *AsmAxis_projector(Arena_T arena, const AsmAxis *a);
+void AsmAxis_project_foot(const AsmAxisProjector *index, const double p[3], double foot[3]);
+
 /* The measurement frame of p: out = (s, e1 . (p - foot), e2 . (p - foot)). */
 void AsmAxis_frame(const AsmAxis *a, const double p[3], double out[3]);
 

@@ -14,9 +14,13 @@ typedef struct AsmContacts AsmContacts;
 double AsmContacts_material_tolerance(void);
 const char *AsmContacts_material_policy(void);
 /* leaf_pairs = leaf-leaf node pairs the walk visited; complete = 0 when the
- * walk stopped at its budget (then pairs/area are NOT an answer). */
-typedef struct AsmContactStats { size_t pairs; double area; size_t leaf_pairs; int complete; } AsmContactStats;
+ * walk stopped at its budget (then pairs/area are NOT an answer) or when a
+ * pair's material-boundary test could not finish (unmeasured > 0: that pair's
+ * overlap is UNMEASURED, not zero, and pairs/area are a lower bound). */
+typedef struct AsmContactStats { size_t pairs; double area; size_t leaf_pairs; int complete; size_t unmeasured; } AsmContactStats;
 typedef void (*AsmContactVisit)(void *context, size_t a, size_t b, double area);
+/* The first unmeasured pairs of the last walk (faces a, b interleaved), at most cap pairs; returns the count copied. */
+size_t AsmContacts_unmeasured_sample(const AsmContacts *query, size_t *ab, size_t cap);
 AsmContacts *AsmContacts_new(Arena_T arena, size_t nv, const int32_t *faces,
                              size_t nf, const double *uv, double tolerance);
 /* Repartition after a large placement change, reusing the allocated storage.
@@ -121,6 +125,9 @@ void AsmContacts_memo_counts(const AsmContacts *query, size_t *measured, size_t 
  * serial walk.  Enumeration and the reduction stay serial and in the walk's
  * own order, so the answer does not depend on the thread count. */
 void AsmContacts_threads(AsmContacts *query, int threads);
+/* (2026-10-27, join_fast_v1) A query whose requests never repeat -- a join transaction's baseline and trial walks -- keeps
+ * no walk memo: no copy of the coordinates, mask and hits for a replay that cannot come.  The answers are unchanged. */
+void AsmContacts_no_memo(AsmContacts *query);
 /* Independent polygon clipping for audit; boundary integration for gradient.
  * Coordinates are recentered before area products. */
 double AsmContacts_pair(const double a[6], const double b[6], double tolerance,
@@ -132,4 +139,19 @@ double AsmContacts_pair(const double a[6], const double b[6], double tolerance,
  * numerical triangle SAT semantics and cannot certify material width. */
 double AsmContacts_pair_faces(const AsmContacts *query,const double *uv,size_t a,size_t b,double ga[6],double gb[6]);
 int AsmContacts_selftest(void);
+/* Diagnostic micro-benchmark of objective-mode walks (sheet_assemble --contact-bench). */
+int AsmContacts_bench(int cells, int reps);
+/* Diagnostic process-wide pair-test counters: tests, separated, shared-edge clears, sharing one vertex, sharing an edge, material tests, hits. */
+void AsmContacts_pair_counts(long long out[7]);
+/* Diagnostic: hits of pairs sharing one vertex (area, raw-only, derivative-only), sharing an edge, sharing nothing. */
+void AsmContacts_hit_classes(long long out[5]);
+/* Diagnostic: leaf pairs walked, cull evaluations, self leaf pairs. */
+void AsmContacts_leaf_counts(long long out[3]);
+/* Embedded-chart pruning: per-face chart ids (any ids below n_ids). Before
+ * each walk every chart with an active face is certified embedded (positive
+ * faces, simple disjoint boundary loops, one counterclockwise loop); the walk
+ * then skips pairs inside a certified chart, which cannot overlap. 0 = ok. */
+int AsmContacts_set_charts(AsmContacts *query,const int32_t *face_chart,size_t n_ids);
+/* Diagnostic: walks certified, chart certificates granted, refused. */
+void AsmContacts_chart_counts(const AsmContacts *query,size_t out[3]);
 #endif

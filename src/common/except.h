@@ -45,9 +45,10 @@ enum {
     Except_finalized = 3
 };
 
-extern Except_Frame *Except_stack;
+extern EXCEPT_THREAD_LOCAL Except_Frame *Except_stack;
 
 void Except_raise(const Except_T *e, const char *file, int line);
+int Except_selftest(void);
 
 #define RAISE(e) Except_raise(&(e), __FILE__, __LINE__)
 

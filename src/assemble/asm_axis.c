@@ -1,7 +1,9 @@
 /* asm_axis.c -- the scroll axis as a polyline (see asm_axis.h). */
 #include "asm_axis.h"
 
+#include <float.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -165,20 +167,29 @@ AsmAxis *AsmAxis_line(Arena_T arena, const double point[3], const double dir[3],
     return a;
 }
 
-void AsmAxis_project(const AsmAxis *a, const double p[3], double *s, double *r, double dir[3], double foot[3])
+static size_t aa_project_range(const AsmAxis *a, const double p[3], size_t *lo, size_t *hi)
 {
-    double best_d2 = 1e300, best_s = 0.0, best_dir[3] = { 1.0, 0.0, 0.0 }, best_foot[3] = { p[0], p[1], p[2] };
+    size_t seed = 0;
     /* the rows are monotone in z: only the segments within a window of the point's z can be nearest
      * (the window covers a tilt of 45 degrees over the largest radius the scrolls have) */
-    size_t lo = 0, hi = a->n - 1;
+    *lo = 0; *hi = a->n - 1;
     if (a->n > 64) {
         size_t l = 0, h = a->n - 1;
         while (l < h) { size_t mid = (l + h) / 2; if (a->p[mid*3] < p[0]) l = mid + 1; else h = mid; }
         double win = 2000.0;
         size_t span = (size_t)(win / AA_DENSE_DZ) + 2;
-        lo = l > span ? l - span : 0;
-        hi = l + span < a->n - 1 ? l + span : a->n - 1;
+        *lo = l > span ? l - span : 0;
+        *hi = l + span < a->n - 1 ? l + span : a->n - 1;
+        seed = l > 0 ? l - 1 : 0;
     }
+    return seed;
+}
+
+void AsmAxis_project(const AsmAxis *a, const double p[3], double *s, double *r, double dir[3], double foot[3])
+{
+    double best_d2 = 1e300, best_s = 0.0, best_dir[3] = { 1.0, 0.0, 0.0 }, best_foot[3] = { p[0], p[1], p[2] };
+    size_t lo = 0, hi = 0;
+    (void)aa_project_range(a, p, &lo, &hi);
     for (size_t i = lo; i + 1 <= hi && i + 1 < a->n; i++) {
         const double *A = &a->p[i*3], *B = &a->p[(i+1)*3];
         double e[3] = { B[0]-A[0], B[1]-A[1], B[2]-A[2] };
@@ -204,6 +215,131 @@ void AsmAxis_project(const AsmAxis *a, const double p[3], double *s, double *r, 
     if (r) *r = sqrt(best_d2);
     if (dir) for (int k = 0; k < 3; k++) dir[k] = best_dir[k];
     if (foot) for (int k = 0; k < 3; k++) foot[k] = best_foot[k];
+}
+
+typedef struct AaProjectNode {
+    double lo[3], hi[3];
+    size_t begin, end, left, right;
+} AaProjectNode;
+
+struct AsmAxisProjector {
+    const AsmAxis *axis;
+    AaProjectNode *nodes;
+    size_t root, used;
+    double coordinate2;
+};
+
+static size_t aa_project_tree(AsmAxisProjector *index, size_t begin, size_t end)
+{
+    size_t number = index->used++, i = 0;
+    AaProjectNode *node = &index->nodes[number];
+    int k = 0;
+    node->begin = begin; node->end = end;
+    node->left = node->right = SIZE_MAX;
+    if (end - begin <= 4) {
+        for (k = 0; k < 3; k++) node->lo[k] = node->hi[k] = index->axis->p[begin * 3 + (size_t)k];
+        for (i = begin + 1; i <= end; i++)
+            for (k = 0; k < 3; k++) {
+                double x = index->axis->p[i * 3 + (size_t)k];
+                if (x < node->lo[k]) node->lo[k] = x;
+                if (x > node->hi[k]) node->hi[k] = x;
+            }
+    } else {
+        size_t mid = begin + (end - begin) / 2;
+        node->left = aa_project_tree(index, begin, mid);
+        node->right = aa_project_tree(index, mid, end);
+        for (k = 0; k < 3; k++) {
+            node->lo[k] = fmin(index->nodes[node->left].lo[k], index->nodes[node->right].lo[k]);
+            node->hi[k] = fmax(index->nodes[node->left].hi[k], index->nodes[node->right].hi[k]);
+        }
+    }
+    return number;
+}
+
+AsmAxisProjector *AsmAxis_projector(Arena_T arena, const AsmAxis *a)
+{
+    AsmAxisProjector *index = NULL;
+    double largest = 0.0;
+    size_t i = 0;
+    if (arena == NULL || a == NULL || a->n < 2 || a->n > SIZE_MAX / (2 * sizeof(AaProjectNode))) return NULL;
+    index = (AsmAxisProjector *)ARENA_CALLOC(arena, 1, sizeof *index);
+    index->axis = a; index->root = SIZE_MAX;
+    for (i = 0; i < a->n * 3; i++) if (fabs(a->p[i]) > largest) largest = fabs(a->p[i]);
+    index->coordinate2 = 3.0 * largest * largest;
+    /* The first and last segments extrapolate to rays: query those separately
+     * so every tree box is finite and contains its entire candidate segment. */
+    if (a->n > 3) {
+        index->nodes = (AaProjectNode *)ARENA_ALLOC(arena, 2 * (a->n - 3) * sizeof *index->nodes);
+        index->root = aa_project_tree(index, 1, a->n - 2);
+    }
+    return index;
+}
+
+typedef struct AaFootQuery {
+    const AsmAxisProjector *index;
+    const double *point;
+    double foot[3], best, roundoff;
+    size_t begin, end, segment;
+} AaFootQuery;
+
+static void aa_foot_segment(AaFootQuery *query, size_t i)
+{
+    const AsmAxis *a = query->index->axis;
+    const double *p = query->point, *A = &a->p[i * 3], *B = &a->p[(i + 1) * 3];
+    double e[3] = { B[0]-A[0], B[1]-A[1], B[2]-A[2] };
+    double L2 = e[0]*e[0] + e[1]*e[1] + e[2]*e[2];
+    double t = 0.0, q[3], d2 = 0.0;
+    if (L2 < 1e-18) return;
+    t = ((p[0]-A[0])*e[0] + (p[1]-A[1])*e[1] + (p[2]-A[2])*e[2]) / L2;
+    if (i > 0 && t < 0.0) t = 0.0;
+    if (i + 2 < a->n && t > 1.0) t = 1.0;
+    q[0] = A[0] + t*e[0]; q[1] = A[1] + t*e[1]; q[2] = A[2] + t*e[2];
+    d2 = (p[0]-q[0])*(p[0]-q[0]) + (p[1]-q[1])*(p[1]-q[1]) + (p[2]-q[2])*(p[2]-q[2]);
+    if (d2 < query->best || (d2 == query->best && query->segment != SIZE_MAX && i < query->segment)) {
+        query->best = d2; query->segment = i;
+        memcpy(query->foot, q, sizeof q);
+    }
+}
+
+static void aa_foot_tree(AaFootQuery *query, size_t number)
+{
+    const AaProjectNode *node = &query->index->nodes[number];
+    double lower = 0.0;
+    int k = 0;
+    if (node->end <= query->begin || node->begin >= query->end) return;
+    for (k = 0; k < 3; k++) {
+        double p = query->point[k];
+        double d = p < node->lo[k] ? node->lo[k] - p : (p > node->hi[k] ? p - node->hi[k] : 0.0);
+        lower += d * d;
+    }
+    /* A conservative guard covers endpoint interpolation and squared-distance
+     * rounding. It only admits extra candidates; it never changes the winner's
+     * arithmetic or treats near-equal distances as equal. */
+    if (lower > query->best + query->roundoff + 128.0 * DBL_EPSILON * query->best) return;
+    if (node->left == SIZE_MAX) {
+        size_t i = node->begin > query->begin ? node->begin : query->begin;
+        size_t end = node->end < query->end ? node->end : query->end;
+        for (; i < end; i++) aa_foot_segment(query, i);
+    } else {
+        aa_foot_tree(query, node->left);
+        aa_foot_tree(query, node->right);
+    }
+}
+
+void AsmAxis_project_foot(const AsmAxisProjector *index, const double p[3], double foot[3])
+{
+    AaFootQuery query;
+    size_t seed = 0, last = index->axis->n - 2;
+    query.index = index; query.point = p; query.best = 1e300; query.segment = SIZE_MAX;
+    memcpy(query.foot, p, sizeof query.foot);
+    query.roundoff = 128.0 * DBL_EPSILON *
+                    (1.0 + index->coordinate2 + p[0]*p[0] + p[1]*p[1] + p[2]*p[2]);
+    seed = aa_project_range(index->axis, p, &query.begin, &query.end);
+    aa_foot_segment(&query, seed);
+    if (query.begin == 0) aa_foot_segment(&query, 0);
+    if (last != 0 && last >= query.begin && last < query.end) aa_foot_segment(&query, last);
+    if (index->root != SIZE_MAX) aa_foot_tree(&query, index->root);
+    memcpy(foot, query.foot, sizeof query.foot);
 }
 
 void AsmAxis_frame(const AsmAxis *a, const double p[3], double out[3])
@@ -240,6 +376,76 @@ void AsmAxis_mean_dir(const AsmAxis *a, double z0, double z1, double dir[3])
     double L = sqrt(sum[0]*sum[0] + sum[1]*sum[1] + sum[2]*sum[2]);
     if (n == 0 || L < 1e-9) { dir[0] = 1.0; dir[1] = 0.0; dir[2] = 0.0; return; }
     for (int k = 0; k < 3; k++) dir[k] = sum[k] / L;
+}
+
+static int aa_projector_selftest(Arena_T arena)
+{
+    const size_t sizes[] = { 2, 3, 64, 65, 257, 1025 };
+    int fails = 0;
+    size_t test = 0;
+    for (test = 0; test < sizeof sizes / sizeof sizes[0]; test++) {
+        AsmAxis *a = (AsmAxis *)ARENA_CALLOC(arena, 1, sizeof *a);
+        AsmAxisProjector *index = NULL;
+        double offset = test % 2 ? 1e8 : 0.0;
+        uint32_t rng = UINT32_C(0x84bc31d7);
+        size_t i = 0;
+        int bad = 0;
+        a->n = sizes[test];
+        a->p = (double *)ARENA_ALLOC(arena, a->n * 3 * sizeof *a->p);
+        a->t = (double *)ARENA_ALLOC(arena, a->n * 3 * sizeof *a->t);
+        a->s = (double *)ARENA_ALLOC(arena, a->n * sizeof *a->s);
+        for (i = 0; i < a->n; i++) {
+            a->p[i * 3] = offset + (double)i * 8.0;
+            a->p[i * 3 + 1] = offset + 200.0 * sin((double)i * 0.035);
+            a->p[i * 3 + 2] = offset + 110.0 * cos((double)i * 0.013);
+            if (i > 0 && i % 37 == 0) memcpy(a->p + i * 3, a->p + (i - 1) * 3, 3 * sizeof *a->p);
+        }
+        aa_finish(a);
+        index = AsmAxis_projector(arena, a);
+        if (index == NULL) { fails++; continue; }
+        for (i = 0; i < 8192 + a->n * 3; i++) {
+            double p[3], reference[3], indexed[3];
+            int k = 0;
+            if (i < a->n * 3) {
+                memcpy(p, a->p + (i / 3) * 3, sizeof p);
+                if (i % 3 != 0) p[0] = nextafter(p[0], i % 3 == 1 ? INFINITY : -INFINITY);
+            } else {
+                for (k = 0; k < 3; k++) {
+                    rng = rng * UINT32_C(1664525) + UINT32_C(1013904223);
+                    p[k] = offset + (double)(rng & UINT32_C(0xffff)) / 65535.0 *
+                           (k == 0 ? (double)a->n * 8.0 + 4000.0 : 8000.0) - (k == 0 ? 2000.0 : 4000.0);
+                }
+            }
+            AsmAxis_project(a, p, NULL, NULL, NULL, reference);
+            AsmAxis_project_foot(index, p, indexed);
+            if (memcmp(reference, indexed, sizeof reference) != 0) bad++;
+        }
+        if (bad) {
+            fprintf(stderr, "  asm_axis selftest FAIL: indexed nearest foot, %zu rows, %d mismatches\n", a->n, bad);
+            fails++;
+        }
+    }
+    /* Equal distances can have different feet. The earlier segment must win
+     * even when a later, equally close segment seeds the indexed search. */
+    {
+        AsmAxis a;
+        double p[12] = { 0,0,0, 10,10,0, 20,0,0, 30,10,0 }, s[4], t[12];
+        double q[3] = { 10,0,0 }, reference[3], indexed[3];
+        AsmAxisProjector *index = NULL;
+        AaFootQuery query;
+        memset(&a, 0, sizeof a); a.n = 4; a.p = p; a.s = s; a.t = t;
+        aa_finish(&a);
+        index = AsmAxis_projector(arena, &a);
+        AsmAxis_project(&a, q, NULL, NULL, NULL, reference);
+        AsmAxis_project_foot(index, q, indexed);
+        if (memcmp(reference, indexed, sizeof reference) != 0) fails++;
+        memset(&query, 0, sizeof query);
+        query.index = index; query.point = q; query.best = 1e300; query.segment = SIZE_MAX;
+        aa_foot_segment(&query, 1);
+        aa_foot_segment(&query, 0);
+        if (query.segment != 0 || memcmp(reference, query.foot, sizeof reference) != 0) fails++;
+    }
+    return fails;
 }
 
 int AsmAxis_selftest(void)
@@ -287,6 +493,7 @@ int AsmAxis_selftest(void)
         AsmAxis_mean_dir(a, 0.0, 100.0, dm);
         if (fabs(dm[0] - 1.0) > 1e-9) { fprintf(stderr, "  asm_axis selftest FAIL: mean dir over the first segment (%.3f)\n", dm[0]); fails++; }
     }
+    fails += aa_projector_selftest(arena);
     Arena_dispose(&arena);
     if (fails == 0) fprintf(stderr, "  asm_axis selftest: all passed\n");
     return fails;

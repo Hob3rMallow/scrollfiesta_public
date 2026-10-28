@@ -1,4 +1,5 @@
 #include "mesh_bin.h"
+#include "ves_platform.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -76,6 +77,12 @@ int MeshBin_companion_path(const char *path, char *out, size_t out_cap)
 
 int MeshBin_looks_complete(const char *path)
 {
+    MeshBinHeader h;
+    return MeshBin_header(path, &h) == 0 ? 1 : 0;
+}
+
+int MeshBin_header(const char *path, MeshBinHeader *out)
+{
     unsigned char magic[8];
     uint32_t version = 0, endian = 0, flags = 0, header_bytes = 0;
     uint64_t nv = 0, nf = 0, vertices_offset = 0, uv_offset = 0;
@@ -85,9 +92,10 @@ int MeshBin_looks_complete(const char *path)
     FILE *f = NULL;
     int ok = 0;
 
-    if (path == NULL) return 0;
+    if (out != NULL) memset(out, 0, sizeof *out);
+    if (path == NULL || out == NULL) return -1;
     f = fopen(path, "rb");
-    if (f == NULL) return 0;
+    if (f == NULL) return -1;
     ok = mb_read_bytes(f, magic, sizeof magic) &&
          mb_read_bytes(f, &version, sizeof version) &&
          mb_read_bytes(f, &endian, sizeof endian) &&
@@ -102,7 +110,7 @@ int MeshBin_looks_complete(const char *path)
     ok = 0;
     if (!header_read || memcmp(magic, mb_magic, sizeof magic) != 0 ||
         version != MB_VERSION || endian != UINT32_C(0x01020304) ||
-        (flags & ~(MESH_BIN_HAS_UV|MESH_BIN_UV_F64)) != 0 ||
+        (flags & ~(uint32_t)(MESH_BIN_HAS_UV|MESH_BIN_UV_F64)) != 0 ||
         ((flags & MESH_BIN_UV_F64) && !(flags & MESH_BIN_HAS_UV)) || header_bytes != MB_HEADER_BYTES ||
         nv == 0 || nf == 0 || nv > INT32_MAX ||
         nv > UINT64_MAX / (3u * sizeof(float)) ||
@@ -142,9 +150,14 @@ int MeshBin_looks_complete(const char *path)
     }
 #endif
     ok = actual_size == expected_end;
+    if (ok) {
+        out->nv = nv; out->nf = nf; out->flags = flags;
+        out->vertices_offset = vertices_offset; out->uv_offset = uv_offset; out->faces_offset = faces_offset;
+        out->file_bytes = actual_size;
+    }
 done:
     fclose(f);
-    return ok ? 1 : 0;
+    return ok ? 0 : -1;
 }
 
 static int mb_replace(const char *temporary, const char *destination)
@@ -352,6 +365,8 @@ fail:
     return -1;
 }
 
+#include "mesh_bin_mapped.inc"
+
 int MeshBin_stream_close(MeshBinStream_T *writer, int publish)
 {
     MeshBinStream_T w=writer ? *writer : NULL;
@@ -397,7 +412,7 @@ static int mb_read(const char *path, Arena_T arena, int use_arena, int accept_uv
     ok = 0;
     if (!header_read || memcmp(magic, mb_magic, sizeof magic) != 0 ||
         version != MB_VERSION || endian != UINT32_C(0x01020304) ||
-        (flags & ~(MESH_BIN_HAS_UV|MESH_BIN_UV_F64)) != 0 ||
+        (flags & ~(uint32_t)(MESH_BIN_HAS_UV|MESH_BIN_UV_F64)) != 0 ||
         ((flags & MESH_BIN_UV_F64) && (!(flags & MESH_BIN_HAS_UV) || !accept_uv64)) || header_bytes != MB_HEADER_BYTES ||
         nv64 == 0 || nf64 == 0 || nv64 > INT32_MAX ||
         nv64 > SIZE_MAX || nf64 > SIZE_MAX)
@@ -487,18 +502,23 @@ void MeshBin_dispose(MeshBinData *mesh)
 
 int MeshBin_selftest(void)
 {
-    const char *path = "mesh_bin_selftest.vmesh";
+    /* scratch: selftest/mesh_bin_<pid> (ves_selftest_dir) -- many tools run this selftest, and never into each
+     * other's file; removed after a pass */
+    char dir[256] = "", path[320] = "";
     float vertices[12] = {0,0,0, 1,0,0, 1,1,0, 0,1,0};
     float uv[8] = {0,0, 1,0, 1,1, 0,1};
     int32_t faces[6] = {0,1,2, 0,2,3};
     MeshBinData readback = {0};
     char companion[64];
-    int failed = MeshBin_companion_path("foo.obj", companion,
-                                        sizeof companion) != 0 ||
-                 strcmp(companion, "foo.vmesh") != 0 ||
-                 MeshBin_write(path, vertices, 4, faces, 2, uv) != 0 ||
-                 !MeshBin_looks_complete(path) ||
-                 MeshBin_read_malloc(path, &readback) != 0;
+    int failed = ves_selftest_dir(dir, sizeof dir, "mesh_bin") != 0;
+    snprintf(path, sizeof path, "%s/mesh_bin_selftest.vmesh", dir);
+    failed = failed ||
+             MeshBin_companion_path("foo.obj", companion,
+                                    sizeof companion) != 0 ||
+             strcmp(companion, "foo.vmesh") != 0 ||
+             MeshBin_write(path, vertices, 4, faces, 2, uv) != 0 ||
+             !MeshBin_looks_complete(path) ||
+             MeshBin_read_malloc(path, &readback) != 0;
     if (!failed) {
         failed = readback.nv != 4 || readback.nf != 2 ||
                  readback.uv == NULL ||
@@ -536,7 +556,7 @@ int MeshBin_selftest(void)
     {
         Arena_T arena=Arena_new();
         MeshBinStream_T writer=NULL;
-        MeshBinData chunk={vertices,uv,faces,4,2};
+        MeshBinData chunk={vertices,uv,faces,4,2,NULL};
         failed+=MeshBin_stream_open(arena,path,8,4,1,&writer)!=0;
         failed+=MeshBin_stream_append(writer,&chunk)!=0;
         failed+=MeshBin_looks_complete(path)!=0;
@@ -597,6 +617,8 @@ int MeshBin_selftest(void)
         remove(path);
         Arena_dispose(&arena);
     }
+    failed += mb_mapped_selftest();
+    if (!failed) (void)ves_selftest_clean(dir);
     fprintf(stderr, "[mesh_bin selftest] %s\n", failed ? "FAILED" : "PASSED");
     return failed ? 1 : 0;
 }

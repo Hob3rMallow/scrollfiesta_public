@@ -66,6 +66,23 @@ typedef int (*IntersectionCleanupConflictVisitor)(size_t face_a,
                                                   int hit_kind,
                                                   void *context);
 
+/* Read-only broad phase for independent contact certificates. Every unordered
+ * pair of closed AABBs within gap is visited once; no triangle predicate or
+ * geometric policy is applied here. If selected is non-NULL, a callback is
+ * made when EITHER face is selected (unlike the legacy cleanup face_mask).
+ * No pair list is accumulated. A visitor abort/resource failure leaves
+ * complete=0, so partial work can never certify a clear candidate. */
+typedef int (*IntersectionCleanupCandidateVisitor)(size_t face_a,size_t face_b,void *context);
+typedef struct IntersectionCleanupCandidateStats {
+    size_t overlapping_pairs,selected_pairs;
+    int complete;
+} IntersectionCleanupCandidateStats;
+
+int IntersectionCleanup_visit_candidates(const float *verts,size_t nv,
+    const int32_t *faces,size_t nf,const uint8_t *selected,double gap,
+    IntersectionCleanupCandidateVisitor visitor,void *context,
+    IntersectionCleanupCandidateStats *stats);
+
 void IntersectionCleanup_default_params(IntersectionCleanupParams *params);
 
 /*

@@ -24,6 +24,36 @@ extern void  taucs_supernodal_factor_free(void *L);
 extern void  taucs_supernodal_factor_free_numeric(void *L);
 extern void  taucs_vec_permute(int n, int flags, void *v, void *pv, int p[]);
 extern void  taucs_vec_ipermute(int n, int flags, void *v, void *pv, int p[]);
+extern void *taucs_ccs_factor_llt_mf(taucs_ccs_matrix *A);
+
+/* 1 = the fill-reducing ordering past 64 unknowns is AMD (2026-10-22:
+ * stack samples put GENMMD's mmdupd_/mmdelm_ at ~5% of the
+ * running threads, on band systems solved once each); 0 = TAUCS's GENMMD.
+ * A build choice (2026-10-25): 1 only where the build compiles the vendored AMD
+ * (sheet_assemble.vcxproj defines it); every other tool orders with GENMMD,
+ * as it did before, and links no AMD. */
+#ifndef SPARSE_ORDER_AMD
+#define SPARSE_ORDER_AMD 0
+#endif
+
+/* SuiteSparse AMD, vendored with OSQP (deps/osqp/amd) and compiled into the
+ * tools that link OSQP.  Declared here rather than through amd.h, which pulls
+ * in osqp.h: int indices and double controls, as this build configures OSQP
+ * (neither OSQP_USE_LONG nor OSQP_USE_FLOAT). */
+#if defined(OSQP_USE_LONG) || defined(OSQP_USE_FLOAT)
+#error "sparse_solve.c declares the vendored AMD with int indices and double controls"
+#endif
+#if SPARSE_ORDER_AMD
+extern int  amd_order(int n, const int Ap[], const int Ai[], int P[], double Control[], double Info[]);
+extern void amd_defaults(double Control[]);
+#endif
+#define SP_AMD_CONTROL 5
+#define SP_AMD_INFO 20
+#define SP_AMD_STATUS 0
+#define SP_AMD_LNZ 9
+#define SP_AMD_OK 0
+#define SP_AMD_OK_BUT_JUMBLED 1
+
 /* Orderings come from TAUCS's allocator and return to it (taucs_malloc.c may
  * give each thread its own heap). */
 extern void *taucs_malloc_stub(size_t size);
@@ -78,10 +108,11 @@ static int cmp_rv(const void *a, const void *b)
 }
 
 /* Build a TAUCS lower-symmetric CCS matrix from COO triplets (row >= col,
- * duplicates summed).  Returns NULL on invalid input or allocation failure. */
-static taucs_ccs_matrix *sp_build_ccs(int n, int nt,
-                                      const int *rows, const int *cols,
-                                      const double *vals)
+ * duplicates summed).  Returns NULL on invalid input or allocation failure.
+ * (The per-column qsort build: the selftest's reference since 2026-10-22.) */
+static taucs_ccs_matrix *sp_build_ccs_qsort(int n, int nt,
+                                            const int *rows, const int *cols,
+                                            const double *vals)
 {
     /* --- Bucket triplets by column. --- */
     int *colcnt = (int *)calloc((size_t)n + 1, sizeof(int));
@@ -134,6 +165,226 @@ static taucs_ccs_matrix *sp_build_ccs(int n, int nt,
     return A;
 }
 
+/* Build a TAUCS lower-symmetric CCS matrix from COO triplets (row >= col,
+ * duplicates summed in their input order).  Two counting sorts -- by row, then
+ * a stable pass by column, so each column's entries arrive in row order -- and
+ * one linear merge of equal rows: O(nt + n), no comparisons (2026-10-22: the
+ * per-column qsort was 14% of the running threads, on the band
+ * systems' duplicate-heavy columns).  Returns NULL on invalid input or
+ * allocation failure. */
+static taucs_ccs_matrix *sp_build_ccs(int n, int nt,
+                                      const int *rows, const int *cols,
+                                      const double *vals)
+{
+    int *rcnt = (int *)calloc((size_t)n + 1, sizeof(int));
+    int *ccnt = (int *)calloc((size_t)n + 1, sizeof(int));
+    int *by_row = (int *)malloc((size_t)(nt > 0 ? nt : 1) * sizeof(int));
+    RV *buf = (RV *)malloc((size_t)(nt > 0 ? nt : 1) * sizeof(RV));
+    taucs_ccs_matrix *A = NULL;
+    if (!rcnt || !ccnt || !by_row || !buf) goto out;
+    for (int t = 0; t < nt; t++) {
+        int c = cols[t], r = rows[t];
+        if (c < 0 || c >= n || r < c || r >= n) goto out;
+        rcnt[r + 1]++; ccnt[c + 1]++;
+    }
+    for (int i = 0; i < n; i++) { rcnt[i + 1] += rcnt[i]; ccnt[i + 1] += ccnt[i]; }
+    for (int t = 0; t < nt; t++) by_row[rcnt[rows[t]]++] = t;             /* rcnt[r] ends at row r's end */
+    for (int q = 0; q < nt; q++) {                                          /* ccnt[c] ends at column c's end */
+        int t = by_row[q], c = cols[t];
+        buf[ccnt[c]].row = rows[t]; buf[ccnt[c]].val = vals[t]; ccnt[c]++;
+    }
+    A = sp_ccs_create(n, (nt > 0 ? nt : 1));
+    if (!A) goto out;
+    int k = 0, s0 = 0;
+    for (int c = 0; c < n; c++) {
+        int e = ccnt[c];                                                    /* column c: buf[s0, e) */
+        A->colptr[c] = k;
+        for (int i = s0; i < e;) {
+            int r = buf[i].row; double acc = 0.0;
+            while (i < e && buf[i].row == r) { acc += buf[i].val; i++; }
+            A->rowind[k] = r; A->values.d[k] = acc; k++;
+        }
+        s0 = e;
+    }
+    A->colptr[n] = k;
+out:
+    free(rcnt); free(ccnt); free(by_row); free(buf);
+    return A;
+}
+
+#if SPARSE_ORDER_AMD
+/* (2026-10-22) The block graph of A for AMD: when n = b m and, for every
+ * block k, its b columns reach the same row blocks outside block k (a vector
+ * field's systems: the growth's band equations have 3 x 3 blocks), the m-node
+ * lower-triangle graph of those blocks in (*colptr, *rowind) (malloc'd);
+ * else 0 and nothing allocated.  Within-block entries are dropped (AMD ignores
+ * the diagonal).  1 = built, -1 = allocation failure. */
+static int sp_block_graph(const taucs_ccs_matrix *A, int b, int **colptr, int **rowind)
+{
+    const int n = A->n, m = n / b;
+    *colptr = NULL; *rowind = NULL;
+    if (b < 2 || n % b || m < 2) return 0;
+    int *cp = (int *)malloc(((size_t)m + 1) * sizeof(int));
+    int *ri = (int *)malloc((size_t)(A->colptr[n] > 0 ? A->colptr[n] : 1) * sizeof(int));
+    if (!cp || !ri) { free(cp); free(ri); return -1; }
+    int k_out = 0;
+    for (int k = 0; k < m; k++) {
+        cp[k] = k_out;
+        int first = 1, s0 = k_out, e0 = k_out;  /* block k's first column's distinct row blocks: ri[s0, e0) */
+        for (int c = b * k; c < b * k + b; c++) {
+            int last = -1, cnt = 0, pos = s0;
+            for (int p = A->colptr[c]; p < A->colptr[c + 1]; p++) {
+                int rb = A->rowind[p] / b;
+                if (rb == k || rb == last) continue;          /* rows sorted: the row blocks arrive sorted */
+                last = rb;
+                if (first) ri[k_out++] = rb;
+                else if (pos >= e0 || ri[pos++] != rb) { free(cp); free(ri); return 0; }
+                cnt++;
+            }
+            if (first) { e0 = k_out; first = 0; }
+            else if (cnt != e0 - s0) { free(cp); free(ri); return 0; }
+        }
+    }
+    cp[m] = k_out;
+    *colptr = cp; *rowind = ri;
+    return 1;
+}
+#endif
+
+/* The symmetric ordering of A (lower triangle, its diagonal included) as
+ * TAUCS takes it: perm[k] = the old index of the k-th pivot, invperm its
+ * inverse, both from TAUCS's allocator.  n <= 64: the identity (TAUCS's f2c
+ * GENMMD could fault on tiny graphs, and no ordering reduces fill materially at
+ * that scale).  Else AMD (SPARSE_ORDER_AMD), falling back to GENMMD where AMD
+ * fails.  *lnz (nullable): AMD's count of L's off-diagonal nonzeros, -1 when
+ * AMD did not order.  0 ok. */
+static int sp_order(taucs_ccs_matrix *A, int use_amd, int **perm, int **invperm, double *lnz)
+{
+    const int n = A->n;
+    *perm = NULL; *invperm = NULL;
+    if (lnz) *lnz = -1;
+    if (n <= 64 || use_amd) {
+        *perm = (int *)taucs_malloc_stub((size_t)n * sizeof(int)); *invperm = (int *)taucs_malloc_stub((size_t)n * sizeof(int));
+        if (!*perm || !*invperm) { taucs_free_stub(*perm); taucs_free_stub(*invperm); *perm = *invperm = NULL; return -1; }
+        if (n <= 64) {
+            for (int i = 0; i < n; i++) { (*perm)[i] = i; (*invperm)[i] = i; }
+            return 0;
+        }
+#if SPARSE_ORDER_AMD
+        double control[SP_AMD_CONTROL], info[SP_AMD_INFO];
+        amd_defaults(control);
+        int st = -1;
+        for (int b = 3; b >= 2 && st < 0; b--) {      /* (2026-10-22) the block graph where A has one */
+            int *bcp = NULL, *bri = NULL, got = sp_block_graph(A, b, &bcp, &bri), m = n / b;
+            if (got < 0) break;
+            if (!got) continue;
+            int *bperm = (int *)malloc((size_t)m * sizeof(int));
+            if (bperm) {
+                int bst = amd_order(m, bcp, bri, bperm, control, info);
+                if (bst == SP_AMD_OK || bst == SP_AMD_OK_BUT_JUMBLED) {
+                    for (int k = 0; k < m; k++) for (int a = 0; a < b; a++) (*perm)[b * k + a] = b * bperm[k] + a;
+                    st = SP_AMD_OK;
+                    if (lnz) *lnz = -2;                 /* (the block graph's count is not L's) */
+                }
+            }
+            free(bperm); free(bcp); free(bri);
+        }
+        if (st < 0) st = amd_order(n, A->colptr, A->rowind, *perm, control, info);
+        if (st == SP_AMD_OK || st == SP_AMD_OK_BUT_JUMBLED) {
+            for (int k = 0; k < n; k++) (*invperm)[(*perm)[k]] = k;
+            if (lnz && *lnz != -2) *lnz = info[SP_AMD_LNZ];
+            return 0;
+        }
+#endif
+        taucs_free_stub(*perm); taucs_free_stub(*invperm); *perm = *invperm = NULL;   /* AMD failed (or not built): GENMMD */
+    }
+#ifndef SPARSE_TAUCS_THREAD_SAFE
+#pragma omp critical(sparse_taucs_call)
+#endif
+    taucs_ccs_order(A, perm, invperm, "genmmd");
+    if (!*perm || !*invperm) { taucs_free_stub(*perm); taucs_free_stub(*invperm); *perm = *invperm = NULL; return -1; }
+    return 0;
+}
+
+/* One SPD solve without taucs_linsolve: the ordering, ONE symmetric
+ * permutation, the multifrontal supernodal factor, the triangular solves (the
+ * path taucs_linsolve takes for LLT + mf, without its per-call option parsing
+ * and handle).  0 ok. */
+static int sp_solve_spd_once(taucs_ccs_matrix *A, int use_amd, const double *b, double *x)
+{
+    const int n = A->n;
+    int *perm = NULL, *invperm = NULL, rc = -1;
+    if (sp_order(A, use_amd, &perm, &invperm, NULL)) return -1;
+    double *pb = (double *)malloc((size_t)n * sizeof(double)), *px = (double *)malloc((size_t)n * sizeof(double));
+    if (pb && px) {
+#ifndef SPARSE_TAUCS_THREAD_SAFE
+#pragma omp critical(sparse_taucs_call)
+#endif
+        {
+            taucs_ccs_matrix *PAPT = taucs_ccs_permute_symmetrically(A, perm, invperm);
+            void *L = PAPT ? taucs_ccs_factor_llt_mf(PAPT) : NULL;
+            if (L) {
+                taucs_vec_permute(n, TAUCS_DOUBLE, (void *)b, pb, perm);
+                if (taucs_supernodal_solve_llt(L, px, pb) == 0) {
+                    taucs_vec_ipermute(n, TAUCS_DOUBLE, px, x, perm);
+                    rc = 0;
+                }
+                taucs_supernodal_factor_free(L);
+            }
+            if (PAPT) taucs_ccs_free(PAPT);
+        }
+    }
+    free(pb); free(px);
+    taucs_free_stub(perm); taucs_free_stub(invperm);
+    return rc;
+}
+
+/* (2026-10-22) SPD systems of at most SPARSE_DENSE_MAX unknowns by a dense LL^T in double (the growth's band systems split
+ * into ~10^7 blocks a round on the PHerc0358 10^3, most of a few nodes, where TAUCS's per-call ordering, symbolic analysis
+ * and allocations cost ~1 ms each).  Duplicates summed; -1 when not positive definite (TAUCS's path then decides). */
+#ifndef SPARSE_DENSE_MAX
+#define SPARSE_DENSE_MAX 96
+#endif
+int Sparse_spd_dense_limit(void)
+{ return SPARSE_DENSE_MAX > 0 ? SPARSE_DENSE_MAX : 0; }
+
+static int sp_dense_spd(int n, int nt, const int *rows, const int *cols, const double *vals, const double *b, double *x)
+{
+    double *L = (double *)calloc((size_t)n * (size_t)n, sizeof(double)), *y = (double *)malloc((size_t)n * sizeof(double));
+    int rc = -1;
+    if (!L || !y) goto out;
+    for (int t = 0; t < nt; t++) {
+        int r = rows[t], c = cols[t];
+        if (c < 0 || r < c || r >= n) goto out;
+        L[(size_t)r * (size_t)n + (size_t)c] += vals[t];          /* the lower triangle, row-major */
+    }
+    for (int j = 0; j < n; j++) {
+        double *lj = L + (size_t)j * (size_t)n, d = lj[j];
+        for (int k = 0; k < j; k++) d -= lj[k] * lj[k];
+        if (!(d > 0.0)) goto out;
+        lj[j] = sqrt(d);
+        for (int i = j + 1; i < n; i++) {
+            double *li = L + (size_t)i * (size_t)n, v = li[j];
+            for (int k = 0; k < j; k++) v -= li[k] * lj[k];
+            li[j] = v / lj[j];
+        }
+    }
+    for (int i = 0; i < n; i++) {                                   /* L y = b */
+        const double *li = L + (size_t)i * (size_t)n; double v = b[i];
+        for (int k = 0; k < i; k++) v -= li[k] * y[k];
+        y[i] = v / li[i];
+    }
+    for (int i = n - 1; i >= 0; i--) {                              /* L^T x = y */
+        double v = y[i];
+        for (int k = i + 1; k < n; k++) v -= L[(size_t)k * (size_t)n + (size_t)i] * x[k];
+        x[i] = v / L[(size_t)i * (size_t)n + (size_t)i];
+    }
+    rc = 0;
+out:
+    free(L); free(y);
+    return rc;
+}
+
 int Sparse_solve_sym(int n, int nt,
                      const int *rows, const int *cols, const double *vals,
                      const double *b, double *x, SparseMode mode)
@@ -155,10 +406,18 @@ int Sparse_solve_sym(int n, int nt,
         return 0;
     }
 
+    if (mode == SPARSE_SPD && n <= SPARSE_DENSE_MAX) {       /* (2026-10-22) small: dense; else (not SPD) TAUCS decides */
+        if (sp_dense_spd(n, nt, rows, cols, vals, b, x) == 0) return 0;
+    }
     taucs_ccs_matrix *A = sp_build_ccs(n, nt, rows, cols, vals);
     if (!A) return -1;
+    if (mode == SPARSE_SPD) {                 /* (2026-10-22) AMD, one permutation, no option parsing */
+        int rc_spd = sp_solve_spd_once(A, SPARSE_ORDER_AMD, b, x);
+        sp_ccs_free(A);
+        return rc_spd;
+    }
 
-    /* --- Solve. --- */
+    /* --- Solve (the indefinite path: MINRES through taucs_linsolve). --- */
     char *opt_spd[]   = { "taucs.factor.LLT=true", "taucs.factor.mf=true", NULL };
     /* TAUCS's legacy f2c GENMMD path is not reliable on very small graphs
      * (the 13-vertex welded-scroll disk reaches it with only a handful of
@@ -229,27 +488,14 @@ struct SparseFactor {
     SpPattern *slot;        /* the cache slot lent to this factor, or NULL */
     double *pb, *px;        /* permuted right-hand side and solution */
     double scalar;          /* n==1 exact path: L==NULL */
+    taucs_ccs_matrix *A;    /* Sparse_factor_spd_ccs: the owned pattern refactored in place, else NULL */
 };
 
 /* Ordering + symbolic factor for a pattern nobody has cached. */
 static int sp_symbolic(taucs_ccs_matrix *A, int **perm, int **invperm, void **L)
 {
-    const int n = A->n;
     *perm = NULL; *invperm = NULL; *L = NULL;
-    if (n <= 64) {
-        /* TAUCS's legacy f2c GENMMD path is not reliable on very small
-         * graphs (a 13-vertex disk can fault under /O2), and ordering cannot
-         * materially reduce fill at this scale: the identity permutation. */
-        *perm = (int *)taucs_malloc_stub((size_t)n * sizeof(int)); *invperm = (int *)taucs_malloc_stub((size_t)n * sizeof(int));
-        if (!*perm || !*invperm) { taucs_free_stub(*perm); taucs_free_stub(*invperm); *perm = *invperm = NULL; return -1; }
-        for (int i = 0; i < n; i++) { (*perm)[i] = i; (*invperm)[i] = i; }
-    } else {
-#ifndef SPARSE_TAUCS_THREAD_SAFE
-#pragma omp critical(sparse_taucs_call)
-#endif
-        taucs_ccs_order(A, perm, invperm, "genmmd");
-        if (!*perm || !*invperm) { taucs_free_stub(*perm); taucs_free_stub(*invperm); *perm = *invperm = NULL; return -1; }
-    }
+    if (sp_order(A, SPARSE_ORDER_AMD, perm, invperm, NULL)) return -1;   /* identity <= 64, else AMD (2026-10-22) */
     taucs_ccs_matrix *PAPT = NULL;
 #ifndef SPARSE_TAUCS_THREAD_SAFE
 #pragma omp critical(sparse_taucs_call)
@@ -410,9 +656,185 @@ void Sparse_factor_free(SparseFactor_T *pf)
         sp_factor_free(f->L, 0);
         taucs_free_stub(f->perm); taucs_free_stub(f->invperm);
     }
+    if (f->A) sp_ccs_free(f->A);
     free(f->pb); free(f->px);
     free(f);
     *pf = NULL;
+}
+
+/* A caller-assembled pattern, factored once symbolically and owned by the
+ * factor (never lent to or borrowed from the pattern cache: a SLIM global
+ * step refactors the same pattern every iteration, and several groups do so
+ * at once). */
+int Sparse_factor_spd_ccs(int n, const int *colptr, const int *rowind,
+                          const double *values, SparseFactor_T *out)
+{
+    if (!out) return -1;
+    *out = NULL;
+    if (n <= 1 || !colptr || !rowind || !values || colptr[0] != 0) return -1;
+    const int nnz = colptr[n];
+    if (nnz < n) return -1;
+    for (int c = 0; c < n; c++) {
+        if (colptr[c + 1] <= colptr[c] || rowind[colptr[c]] != c) return -1;   /* diagonal first */
+        for (int k = colptr[c] + 1; k < colptr[c + 1]; k++)
+            if (rowind[k] <= rowind[k - 1] || rowind[k] >= n) return -1;
+    }
+    struct SparseFactor *f = (struct SparseFactor *)calloc(1, sizeof *f);
+    if (!f) return -1;
+    f->n = n;
+    f->A = sp_ccs_create(n, nnz);
+    f->pb = (double *)malloc((size_t)n * sizeof(double));
+    f->px = (double *)malloc((size_t)n * sizeof(double));
+    if (!f->A || !f->pb || !f->px) { Sparse_factor_free(&f); return -1; }
+    memcpy(f->A->colptr, colptr, (size_t)(n + 1) * sizeof(int));
+    memcpy(f->A->rowind, rowind, (size_t)nnz * sizeof(int));
+    memcpy(f->A->values.d, values, (size_t)nnz * sizeof(double));
+    if (sp_symbolic(f->A, &f->perm, &f->invperm, &f->L)) { f->L = NULL; Sparse_factor_free(&f); return -1; }
+    if (sp_numeric(f->A, f->perm, f->invperm, f->L)) { Sparse_factor_free(&f); return -1; }
+    *out = f;
+    return 0;
+}
+
+int Sparse_factor_refactor_ccs(SparseFactor_T f, const double *values)
+{
+    if (!f || !f->A || !f->L || !values) return -1;
+    memcpy(f->A->values.d, values, (size_t)f->A->colptr[f->n] * sizeof(double));
+    sp_factor_free(f->L, 1);   /* numeric parts only; the symbolic structure stays */
+    return sp_numeric(f->A, f->perm, f->invperm, f->L);
+}
+
+/* ---- repeated solves of one pattern (2026-10-27) ----------------------------- */
+
+struct SparseRepeat {
+    int n, nt;
+    int *rows, *cols;              /* the triplet pattern, in the caller's order */
+    int *slot;                     /* [nt] each triplet's position in A's values */
+    taucs_ccs_matrix *A;           /* the CCS of the latest values */
+    int *perm, *invperm; void *L;  /* the ordering and the supernodal factor (numeric part replaced per solve) */
+    double *pb, *px;
+    int numeric;                   /* L holds a numeric factor */
+};
+
+void Sparse_repeat_free(SparseRepeat_T *cache)
+{
+    if (!cache || !*cache) return;
+    struct SparseRepeat *r = *cache;
+    if (r->L) sp_factor_free(r->L, 0);
+    taucs_free_stub(r->perm); taucs_free_stub(r->invperm);
+    if (r->A) sp_ccs_free(r->A);
+    free(r->rows); free(r->cols); free(r->slot); free(r->pb); free(r->px); free(r);
+    *cache = NULL;
+}
+
+/* the pattern's CCS (sp_build_ccs: the same sums), each triplet's slot, the ordering and the symbolic factor */
+static int sp_repeat_build(struct SparseRepeat *r, int n, int nt, const int *rows, const int *cols, const double *vals)
+{
+    r->n = n; r->nt = nt;
+    r->A = sp_build_ccs(n, nt, rows, cols, vals);
+    r->rows = (int *)malloc((size_t)(nt > 0 ? nt : 1) * sizeof(int)); r->cols = (int *)malloc((size_t)(nt > 0 ? nt : 1) * sizeof(int));
+    r->slot = (int *)malloc((size_t)(nt > 0 ? nt : 1) * sizeof(int));
+    r->pb = (double *)malloc((size_t)n * sizeof(double)); r->px = (double *)malloc((size_t)n * sizeof(double));
+    if (!r->A || !r->rows || !r->cols || !r->slot || !r->pb || !r->px) return -1;
+    if (nt) { memcpy(r->rows, rows, (size_t)nt * sizeof(int)); memcpy(r->cols, cols, (size_t)nt * sizeof(int)); }
+    for (int t = 0; t < nt; t++) {        /* the row in its column (sorted, one entry a row) */
+        int lo = r->A->colptr[cols[t]], hi = r->A->colptr[cols[t] + 1];
+        while (lo < hi) { int mid = lo + (hi - lo) / 2; if (r->A->rowind[mid] < rows[t]) lo = mid + 1; else hi = mid; }
+        if (lo >= r->A->colptr[cols[t] + 1] || r->A->rowind[lo] != rows[t]) return -1;
+        r->slot[t] = lo;
+    }
+    return sp_symbolic(r->A, &r->perm, &r->invperm, &r->L);
+}
+
+int Sparse_repeat_solve(SparseRepeat_T *cache, int n, int nt, const int *rows, const int *cols, const double *vals,
+                        const double *b, double *x)
+{
+    if (!cache) return -1;
+    if (n <= SPARSE_DENSE_MAX) return Sparse_solve_sym(n, nt, rows, cols, vals, b, x, SPARSE_SPD);   /* as ever: dense, scalar */
+    if (nt < 0 || !rows || !cols || !vals || !b || !x) return -1;
+    struct SparseRepeat *r = *cache;
+    int same = r && r->n == n && r->nt == nt && (!nt || (!memcmp(r->rows, rows, (size_t)nt * sizeof(int)) &&
+                                                      !memcmp(r->cols, cols, (size_t)nt * sizeof(int))));
+    if (!same) {
+        Sparse_repeat_free(cache);
+        for (int t = 0; t < nt; t++) if (cols[t] < 0 || cols[t] >= n || rows[t] < cols[t] || rows[t] >= n) return -1;
+        r = (struct SparseRepeat *)calloc(1, sizeof *r); if (!r) return -1;
+        *cache = r;
+        if (sp_repeat_build(r, n, nt, rows, cols, vals)) { Sparse_repeat_free(cache); return -1; }
+    } else {   /* sp_build_ccs's sums: each slot's triplets in their order, from +0 */
+        double *v = r->A->values.d; int nnz = r->A->colptr[n];
+        for (int k = 0; k < nnz; k++) v[k] = 0.0;
+        for (int t = 0; t < nt; t++) v[r->slot[t]] += vals[t];
+        if (r->numeric) { sp_factor_free(r->L, 1); r->numeric = 0; }   /* numeric parts only; the symbolic structure stays */
+    }
+    if (sp_numeric(r->A, r->perm, r->invperm, r->L)) { Sparse_repeat_free(cache); return -1; }
+    r->numeric = 1;
+    int rc = 0;
+#ifndef SPARSE_TAUCS_THREAD_SAFE
+#pragma omp critical(sparse_taucs_call)
+#endif
+    {
+        taucs_vec_permute(n, TAUCS_DOUBLE, (void *)b, r->pb, r->perm);
+        if (taucs_supernodal_solve_llt(r->L, r->px, r->pb) != 0) rc = -1;
+        else taucs_vec_ipermute(n, TAUCS_DOUBLE, r->px, x, r->perm);
+    }
+    /* the numeric factor is made again by every solve: only the ordering, the symbolic structure and the CCS slots are
+     * kept between solves (a growth ring holds one such cache per large block of its band) */
+    sp_factor_free(r->L, 1); r->numeric = 0;
+    return rc;
+}
+
+/* (2026-10-27) Sparse_repeat_solve against Sparse_solve_sym, bit for bit: random SPD patterns with duplicate triplets
+ * either side of the dense cut, several value sets each, then a changed pattern (a fresh start) and a value set that is
+ * not positive definite (both refuse). */
+static int sp_repeat_selftest(void)
+{
+    unsigned long long st = 0xD1B54A32D192ED03ull;
+    int bad = 0, solves = 0;
+    for (int n = 40; n <= 460 && !bad; n += 60) {
+        int cap = n * 16, nt = 0;
+        int *r = (int *)malloc((size_t)cap * sizeof(int)), *c = (int *)malloc((size_t)cap * sizeof(int));
+        double *v = (double *)malloc((size_t)cap * sizeof(double)), *b = (double *)malloc((size_t)n * sizeof(double));
+        double *x1 = (double *)malloc((size_t)n * sizeof(double)), *x2 = (double *)malloc((size_t)n * sizeof(double));
+        if (!r || !c || !v || !b || !x1 || !x2) bad = 1;
+        for (int i = 0; i < n && !bad; i++) {
+            r[nt] = i; c[nt] = i; nt++;
+            r[nt] = i; c[nt] = i; nt++;                                   /* a duplicate */
+            for (int k = 1; k <= 6 && i - k >= 0; k++) {
+                st ^= st << 13; st ^= st >> 7; st ^= st << 17;
+                if (st % 3 == 0) continue;
+                int j = (int)(st % (unsigned long long)(k * 5)); if (j > i) j = i - k;   /* near and far below the diagonal */
+                if (j == i) continue;
+                r[nt] = i; c[nt] = j; nt++;
+            }
+        }
+        SparseRepeat_T cache = NULL;
+        for (int round = 0; round < 4 && !bad; round++) {
+            for (int t = 0; t < nt; t++) {
+                st ^= st << 13; st ^= st >> 7; st ^= st << 17;
+                double u = (double)(st >> 11) / 9007199254740992.0;
+                v[t] = r[t] == c[t] ? 3.5 + 2.0 * u : (u - 0.5) * 0.4;
+            }
+            for (int i = 0; i < n; i++) { st ^= st << 13; st ^= st >> 7; st ^= st << 17; b[i] = (double)(st >> 11) / 9007199254740992.0 - .5; }
+            int e1 = Sparse_solve_sym(n, nt, r, c, v, b, x1, SPARSE_SPD), e2 = Sparse_repeat_solve(&cache, n, nt, r, c, v, b, x2);
+            if (e1 || e2 || memcmp(x1, x2, (size_t)n * sizeof *x1)) bad = 1;
+            solves++;
+        }
+        if (!bad && nt > n + 2) {                                         /* a changed pattern: a fresh start, still exact */
+            int keep = nt - 1;
+            if (Sparse_solve_sym(n, keep, r, c, v, b, x1, SPARSE_SPD) || Sparse_repeat_solve(&cache, n, keep, r, c, v, b, x2) ||
+                memcmp(x1, x2, (size_t)n * sizeof *x1)) bad = 1;
+            solves++;
+        }
+        if (!bad) {                                                       /* not positive definite: both refuse */
+            for (int t = 0; t < nt; t++) if (r[t] == c[t] && r[t] == n / 2) v[t] = -50.0;
+            int e1 = Sparse_solve_sym(n, nt, r, c, v, b, x1, SPARSE_SPD), e2 = Sparse_repeat_solve(&cache, n, nt, r, c, v, b, x2);
+            if (!e1 || !e2) bad = 1;
+        }
+        Sparse_repeat_free(&cache);
+        free(r); free(c); free(v); free(b); free(x1); free(x2);
+    }
+    fprintf(stderr, "sparse selftest: repeated solves of one pattern == the one-shot solver bit for bit (%d solves): %s\n", solves, bad ? "FAIL" : "ok");
+    return bad;
 }
 
 /* Cache statistics for the selftest and the logs. */
@@ -423,6 +845,11 @@ void Sparse_factor_cache_stats(unsigned long long *hits, unsigned long long *mis
 }
 
 /* ---- selftest ------------------------------------------------------------ */
+
+/* Owned nonlinear-solve contexts use this adapter's exact TAUCS assembly and
+ * factor ownership. Keep the public implementation in the canonical library. */
+#include "sparse_context.inc"
+#include "sparse_context_test.inc"
 
 /* Dense Schur complements reach the largest degree bucket. Dirty scratch
  * beyond that bucket must neither be read nor affect the permutation. */
@@ -497,6 +924,146 @@ int Sparse_selftest(void)
 {
     if(sp_ordering_selftest()){
         fprintf(stderr,"sparse selftest: dense degree ordering failed\n");return -1;
+    }
+    if (sp_repeat_selftest()) return -1;
+    /* (2026-10-22) the dense path against TAUCS: random SPD systems (a banded random part + a dominant diagonal, with
+     * duplicate triplets) of 2..SPARSE_DENSE_MAX unknowns agree to 1e-10 relative; a negative-definite one is refused
+     * by both */
+    {
+        unsigned long long st = 0x9E3779B97F4A7C15ull;
+        int bad = 0; double worst = 0;
+        for (int n = 2; n <= SPARSE_DENSE_MAX && !bad; n += 7) {
+            int cap = n * 12, nt = 0;
+            int *r = (int *)malloc((size_t)cap * sizeof(int)), *c = (int *)malloc((size_t)cap * sizeof(int));
+            double *v = (double *)malloc((size_t)cap * sizeof(double)), *b = (double *)malloc((size_t)n * sizeof(double));
+            double *xd = (double *)calloc((size_t)n, sizeof(double)), *xt = (double *)calloc((size_t)n, sizeof(double));
+            taucs_ccs_matrix *A = NULL;
+            if (!r || !c || !v || !b || !xd || !xt) bad = 1;
+            for (int i = 0; i < n && !bad; i++) {
+                r[nt] = i; c[nt] = i; v[nt] = 3.0 + (double)(i % 5); nt++;
+                r[nt] = i; c[nt] = i; v[nt] = 1.5; nt++;                  /* a duplicate */
+                for (int k = 1; k <= 4 && i - k >= 0; k++) {
+                    st ^= st << 13; st ^= st >> 7; st ^= st << 17;
+                    r[nt] = i; c[nt] = i - k; v[nt] = ((double)(st >> 11) / 9007199254740992.0 - 0.5) * 0.9; nt++;
+                }
+                st ^= st << 13; st ^= st >> 7; st ^= st << 17;
+                b[i] = (double)(st >> 11) / 9007199254740992.0 - 0.5;
+            }
+            if (!bad && sp_dense_spd(n, nt, r, c, v, b, xd)) bad = 1;
+            if (!bad && !(A = sp_build_ccs(n, nt, r, c, v))) bad = 1;
+            if (!bad && sp_solve_spd_once(A, SPARSE_ORDER_AMD, b, xt)) bad = 1;
+            double scale = 0, d = 0;
+            for (int i = 0; i < n && !bad; i++) { d = fmax(d, fabs(xd[i] - xt[i])); scale = fmax(scale, fabs(xt[i])); }
+            if (!bad && !(d <= 1e-10 * (scale > 1 ? scale : 1))) bad = 1;
+            worst = fmax(worst, d);
+            if (A) sp_ccs_free(A);
+            free(r); free(c); free(v); free(b); free(xd); free(xt);
+        }
+        {   /* not positive definite: refused */
+            int rr[2] = {0, 1}, cc[2] = {0, 1}; double vv[2] = {-1.0, 2.0}, bb[2] = {1, 1}, xx[2] = {0, 0};
+            if (sp_dense_spd(2, 2, rr, cc, vv, bb, xx) != -1) bad = 1;
+        }
+        if (bad) { fprintf(stderr, "sparse selftest: dense small-system path disagrees with TAUCS\n"); return -1; }
+        fprintf(stderr, "sparse selftest: dense path for n <= %d agrees with TAUCS (worst %.1e)\n", SPARSE_DENSE_MAX, worst);
+    }
+#if SPARSE_ORDER_AMD
+    /* (2026-10-22) AMD against GENMMD: 2-D grid systems with 3 unknowns a
+     * node (the growth's band systems' shape), sides 12..90; the AMD path and
+     * the GENMMD path solve to the same answer, AMD's ordering is a
+     * permutation, and the ordering times print */
+    {
+        int bad = 0; double t_amd = 0, t_mmd = 0, lnz_sum = 0; const char *why = ""; int why_side = 0;
+        for (int side = 12; side <= 90 && !bad; side += 26) {
+            int nn = side * side, n3 = 3 * nn, cap = n3 * 9, nt3 = 0;
+            int *r3 = (int *)malloc((size_t)cap * sizeof(int)), *c3 = (int *)malloc((size_t)cap * sizeof(int));
+            double *v3 = (double *)malloc((size_t)cap * sizeof(double)), *b3 = (double *)malloc((size_t)n3 * sizeof(double));
+            double *xa = (double *)calloc((size_t)n3, sizeof(double)), *xg = (double *)calloc((size_t)n3, sizeof(double));
+            if (!r3 || !c3 || !v3 || !b3 || !xa || !xg) bad = 1;
+            for (int j = 0; j < side && !bad; j++) for (int i = 0; i < side; i++) {
+                int p = j * side + i;
+                for (int d = 0; d < 3; d++) {
+                    int q = 3 * p + d;
+                    r3[nt3] = q; c3[nt3] = q; v3[nt3] = 4.6 + 0.1 * d; nt3++;   /* SPD: grid part > 0.6, the node block >= -0.34 */
+                    if (d > 0) { r3[nt3] = q; c3[nt3] = q - 1; v3[nt3] = -0.3; nt3++; }      /* within the node */
+                    if (i > 0) { r3[nt3] = q; c3[nt3] = q - 3; v3[nt3] = -1.0; nt3++; }      /* the grid's edges */
+                    if (j > 0) { r3[nt3] = q; c3[nt3] = q - 3 * side; v3[nt3] = -1.0; nt3++; }
+                    b3[q] = sin(0.37 * q) + 0.5;
+                }
+            }
+            taucs_ccs_matrix *A = bad ? NULL : sp_build_ccs(n3, nt3, r3, c3, v3);
+            if (!A) { bad = 1; why = "build"; }
+            int *pa = NULL, *ia = NULL, *pg = NULL, *ig = NULL; double lnz = -1;
+            if (!bad) {
+                double t0 = (double)clock() / CLOCKS_PER_SEC;
+                if (sp_order(A, 1, &pa, &ia, &lnz)) { bad = 1; why = "AMD order"; }
+                double t1 = (double)clock() / CLOCKS_PER_SEC;
+                if (!bad && sp_order(A, 0, &pg, &ig, NULL)) { bad = 1; why = "GENMMD order"; }
+                double t2 = (double)clock() / CLOCKS_PER_SEC;
+                t_amd += t1 - t0; t_mmd += t2 - t1; lnz_sum += lnz > 0 ? lnz : 0;
+            }
+            if (!bad) {                               /* a permutation, and invperm its inverse */
+                char *seen = (char *)calloc((size_t)n3, 1);
+                if (!seen) bad = 1;
+                for (int k = 0; k < n3 && !bad; k++) {
+                    if (pa[k] < 0 || pa[k] >= n3 || seen[pa[k]] || ia[pa[k]] != k) { bad = 1; why = "not a permutation"; }
+                    else seen[pa[k]] = 1;
+                }
+                free(seen);
+            }
+            if (!bad && sp_solve_spd_once(A, 1, b3, xa)) { bad = 1; why = "AMD solve"; }
+            if (!bad && sp_solve_spd_once(A, 0, b3, xg)) { bad = 1; why = "GENMMD solve"; }
+            double worst = 0, scale = 0;
+            for (int q = 0; q < n3 && !bad; q++) { worst = fmax(worst, fabs(xa[q] - xg[q])); scale = fmax(scale, fabs(xg[q])); }
+            if (!bad && !(worst <= 1e-10 * (scale > 1 ? scale : 1))) { bad = 1; why = "answers differ"; }
+            if (bad && !why_side) why_side = side;
+            taucs_free_stub(pa); taucs_free_stub(ia); taucs_free_stub(pg); taucs_free_stub(ig);
+            if (A) sp_ccs_free(A);
+            free(r3); free(c3); free(v3); free(b3); free(xa); free(xg);
+        }
+        if (!bad) {                                   /* the block graph: found on a 3-block system, refused without one */
+            int rr[6] = {0, 1, 2, 3, 4, 5}, cc[6] = {0, 1, 2, 3, 4, 5}; double vv[6] = {2, 2, 2, 2, 2, 2};
+            int r2[9], c2[9]; double v2[9]; int k2 = 0;
+            for (int q = 0; q < 6; q++) { r2[k2] = q; c2[k2] = q; v2[k2] = 4; k2++; }
+            r2[k2] = 3; c2[k2] = 0; v2[k2] = -1; k2++;   /* row block 1 from column 0 only: not a block pattern */
+            taucs_ccs_matrix *D = sp_build_ccs(6, 6, rr, cc, vv), *E = sp_build_ccs(6, k2, r2, c2, v2);
+            int *bc = NULL, *bri = NULL, gd = D ? sp_block_graph(D, 3, &bc, &bri) : -1;
+            free(bc); free(bri); bc = NULL; bri = NULL;
+            int ge = E ? sp_block_graph(E, 3, &bc, &bri) : -1;
+            free(bc); free(bri);
+            if (D) sp_ccs_free(D);
+            if (E) sp_ccs_free(E);
+            if (gd != 1 || ge != 0) { bad = 1; why = "block graph detection"; }
+        }
+        if (bad) { fprintf(stderr, "sparse selftest: AMD ordering / solve against GENMMD failed (%s, side %d)\n", why, why_side); return -1; }
+        fprintf(stderr, "sparse selftest: AMD ordering agrees with GENMMD on 3 grid systems (orderings %.3f s AMD, %.3f s GENMMD; "
+                        "AMD's L %.0f off-diagonal nonzeros)\n", t_amd, t_mmd, lnz_sum);
+    }
+#endif
+    /* (2026-10-22) the counting-sort CCS build against the qsort one: random
+     * lower-triangle triplets with many duplicates and integer values (sums are
+     * exact in any order), so the two matrices must match exactly */
+    {
+        enum { TN = 57, TT = 4000 };
+        int *tr = (int *)malloc(TT * sizeof(int)), *tc = (int *)malloc(TT * sizeof(int));
+        double *tv = (double *)malloc(TT * sizeof(double));
+        unsigned long long st = 0x2545F4914F6CDD1Dull;
+        int bad = !tr || !tc || !tv;
+        for (int t = 0; !bad && t < TT; t++) {
+            st ^= st << 13; st ^= st >> 7; st ^= st << 17;
+            int a = (int)((st >> 8) % TN), b = (int)((st >> 24) % TN);
+            tr[t] = a > b ? a : b; tc[t] = a > b ? b : a; tv[t] = (double)((int)((st >> 40) % 199) - 99);
+        }
+        taucs_ccs_matrix *A1 = bad ? NULL : sp_build_ccs(TN, TT, tr, tc, tv);
+        taucs_ccs_matrix *A2 = bad ? NULL : sp_build_ccs_qsort(TN, TT, tr, tc, tv);
+        bad = !A1 || !A2;
+        for (int c = 0; !bad && c <= TN; c++) bad |= A1->colptr[c] != A2->colptr[c];
+        for (int k = 0; !bad && k < A1->colptr[TN]; k++) bad |= A1->rowind[k] != A2->rowind[k] || A1->values.d[k] != A2->values.d[k];
+        int bad_input = 0;                                   /* an upper-triangle triplet is refused */
+        if (!bad) { int r0 = 0, c0 = 1; double v0 = 1.0; taucs_ccs_matrix *A3 = sp_build_ccs(2, 1, &r0, &c0, &v0); bad_input = A3 != NULL; if (A3) sp_ccs_free(A3); }
+        if (A1) sp_ccs_free(A1);
+        if (A2) sp_ccs_free(A2);
+        free(tr); free(tc); free(tv);
+        if (bad || bad_input) { fprintf(stderr, "sparse selftest: counting-sort CCS build differs from the qsort build\n"); return -1; }
     }
     /* 6-node SPD: path-graph Laplacian + 0.5 I, two right-hand sides.  The
      * factored solves must agree with the one-shot solver to solver noise. */

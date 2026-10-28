@@ -36,6 +36,14 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "pinhole_fill_test", "pinhol
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "mesh_resplit_test", "mesh_resplit_test.vcxproj", "{D5E6F7A8-B9C0-4D12-9E34-5F6A7B8C9D03}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ink_closeup", "ink_closeup.vcxproj", "{B37687A7-D290-4C52-B930-0D8EE14DA46C}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "fiber_flatten", "fiber_flatten.vcxproj", "{2842D27E-58D0-4AD0-8756-2F7E95A2C725}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "closeup_strip_turn", "closeup_strip_turn.vcxproj", "{D16523A5-7138-4743-9CAC-8EF1F0C25DC8}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "vmesh_fiber_rigid", "vmesh_fiber_rigid.vcxproj", "{288B93BB-2D99-48E8-B502-BFE03DF607D9}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -110,6 +118,20 @@ Global
 		{B2C3D4E5-F6A7-48B9-AC0D-2E3F4A5B6C7D}.Debug|x64.Build.0 = Debug|x64
 		{B2C3D4E5-F6A7-48B9-AC0D-2E3F4A5B6C7D}.Release|x64.ActiveCfg = Release|x64
 		{B2C3D4E5-F6A7-48B9-AC0D-2E3F4A5B6C7D}.Release|x64.Build.0 = Release|x64
+		{B37687A7-D290-4C52-B930-0D8EE14DA46C}.Debug|x64.ActiveCfg = Release|x64
+		{B37687A7-D290-4C52-B930-0D8EE14DA46C}.Release|x64.ActiveCfg = Release|x64
+		{B37687A7-D290-4C52-B930-0D8EE14DA46C}.Release|x64.Build.0 = Release|x64
+		{2842D27E-58D0-4AD0-8756-2F7E95A2C725}.Debug|x64.ActiveCfg = Debug|x64
+		{2842D27E-58D0-4AD0-8756-2F7E95A2C725}.Debug|x64.Build.0 = Debug|x64
+		{2842D27E-58D0-4AD0-8756-2F7E95A2C725}.Release|x64.ActiveCfg = Release|x64
+		{2842D27E-58D0-4AD0-8756-2F7E95A2C725}.Release|x64.Build.0 = Release|x64
+		{D16523A5-7138-4743-9CAC-8EF1F0C25DC8}.Debug|x64.ActiveCfg = Debug|x64
+		{D16523A5-7138-4743-9CAC-8EF1F0C25DC8}.Debug|x64.Build.0 = Debug|x64
+		{D16523A5-7138-4743-9CAC-8EF1F0C25DC8}.Release|x64.ActiveCfg = Release|x64
+		{D16523A5-7138-4743-9CAC-8EF1F0C25DC8}.Release|x64.Build.0 = Release|x64
+		{288B93BB-2D99-48E8-B502-BFE03DF607D9}.Debug|x64.ActiveCfg = Release|x64
+		{288B93BB-2D99-48E8-B502-BFE03DF607D9}.Release|x64.ActiveCfg = Release|x64
+		{288B93BB-2D99-48E8-B502-BFE03DF607D9}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

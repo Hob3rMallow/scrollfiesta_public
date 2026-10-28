@@ -3,7 +3,8 @@ static double ac_test_objective_weight(void *context,size_t a,size_t b,double ar
 
 static int ac_material_policy_control(void)
 {
-    int fails=fabs(AsmContacts_material_tolerance()-4)>1e-12;
+    const double tolerance=AsmContacts_material_tolerance();
+    int fails=fabs(tolerance-4)>1e-12;
     for(int pose=0;pose<2;pose++)for(int width=0;width<4;width++)for(int refined=0;refined<2;refined++){
         Arena_T arena=Arena_new();int n=refined?20:1;
         size_t vertices=(size_t)(n+1)*(n+1),faces=(size_t)2*n*n,nv=2*vertices,nf=2*faces;
@@ -11,7 +12,7 @@ static int ac_material_policy_control(void)
         int32_t *tri=ARENA_ALLOC(arena,3*nf*sizeof *tri);
         size_t *external=ARENA_ALLOC(arena,faces*sizeof *external);
         uint8_t *exclude=ARENA_CALLOC(arena,nf,1);
-        double depth=width==0?3.5:width==1?4:width==2?4.0001:6,angle=pose?.37:0,cs=cos(angle),sn=sin(angle);
+        double depth=width==0?.875*tolerance:width==1?tolerance:width==2?tolerance+.0001:6,angle=pose?.37:0,cs=cos(angle),sn=sin(angle);
         for(int side=0;side<2;side++){
             for(int j=0;j<=n;j++)for(int i=0;i<=n;i++){
                 size_t v=(size_t)side*vertices+(size_t)j*(n+1)+i;double x=20.*i/n+side*(20-depth),y=20.*j/n;

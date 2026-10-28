@@ -24,6 +24,7 @@ typedef struct {
     int   max_dim;       /* cap on grid width/height (0 => default) */
     float contested_tol_vox; /* invalidate multi-covers farther apart than this
                               * (<=0 => 1.5 vox) */
+    int preserve_sampling; /* exact px_per_vox spacing; no max_dim rescaling */
 } TifXYZOpts;
 
 typedef struct {

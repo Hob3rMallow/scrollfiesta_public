@@ -311,6 +311,55 @@ done:
     return rc;
 }
 
+typedef struct IntersectionCandidateContext {
+    const uint8_t *selected;
+    IntersectionCleanupCandidateVisitor visitor;
+    void *context;
+    IntersectionCleanupCandidateStats stats;
+} IntersectionCandidateContext;
+
+static int intersection_candidate_pair(const FaceBox *a,const FaceBox *b,void *context)
+{
+    IntersectionCandidateContext *c=context;
+    if(c->stats.overlapping_pairs==SIZE_MAX) return -1;
+    ++c->stats.overlapping_pairs;
+    if(c->selected&&!c->selected[a->face]&&!c->selected[b->face]) return 0;
+    if(c->stats.selected_pairs==SIZE_MAX) return -1;
+    ++c->stats.selected_pairs;
+    size_t fa=(size_t)a->face,fb=(size_t)b->face;
+    if(fa>fb) { size_t t=fa;fa=fb;fb=t; }
+    return c->visitor(fa,fb,c->context);
+}
+
+int IntersectionCleanup_visit_candidates(const float *verts,size_t nv,
+    const int32_t *faces,size_t nf,const uint8_t *selected,double gap,
+    IntersectionCleanupCandidateVisitor visitor,void *context,
+    IntersectionCleanupCandidateStats *stats)
+{
+    IntersectionCandidateContext c={0};FaceBox *boxes=NULL;int rc=-1;
+    if(stats) memset(stats,0,sizeof *stats);
+    if(!visitor||!isfinite(gap)||gap<0||nf>INT32_MAX||nf>SIZE_MAX/sizeof *boxes||
+       (nf&&(!verts||!faces||!nv))) return -1;
+    c.selected=selected;c.visitor=visitor;c.context=context;
+    if(!nf) { c.stats.complete=1;rc=0;goto done; }
+    boxes=(FaceBox*)malloc(nf*sizeof *boxes);if(!boxes) goto done;
+    for(size_t f=0;f<nf;++f) {
+        FaceBox *box=boxes+f;box->face=(int32_t)f;box->morton=0;
+        for(int j=0;j<3;++j) {
+            int32_t v=faces[3*f+j];if(v<0||(size_t)v>=nv) goto done;
+            for(int d=0;d<3;++d) {
+                double x=verts[3*(size_t)v+d];if(!isfinite(x)) goto done;
+                if(!j) box->lo[d]=box->hi[d]=x;
+                else { box->lo[d]=fmin(box->lo[d],x);box->hi[d]=fmax(box->hi[d],x); }
+            }
+        }
+    }
+    if(facebox_visit_overlaps(boxes,nf,gap,intersection_candidate_pair,&c)) goto done;
+    c.stats.complete=1;rc=0;
+done:
+    free(boxes);if(stats) *stats=c.stats;return rc;
+}
+
 static void vsub(double out[3], const double a[3], const double b[3])
 {
     out[0] = a[0] - b[0];

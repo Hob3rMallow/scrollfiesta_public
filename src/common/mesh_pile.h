@@ -2,6 +2,8 @@
 #define MESH_PILE_INCLUDED
 
 #include <stddef.h>
+#include <stdint.h>
+#include "arena.h"
 
 /* ============================================================================
  * mesh_pile.h -- selection of a per-cube mesh PILE from a dump tree.
@@ -22,7 +24,9 @@
 typedef struct {
     char path[MESH_PILE_MAX_PATH];
     char cube_id[24];      /* "" for a plain world-frame vmesh without an id */
-    long oz, oy, ox;       /* cube origin (world offset), 0 without an id */
+    int32_t oz, oy, ox;    /* cube origin (world offset), 0 without an id. int32_t, not long: .asr files
+                              store this record, and long is 4 bytes on Windows, 8 on Linux (1,064 vs
+                              1,080 bytes; 2026-10-14). int32_t = the Windows layout on both. */
     int  has_id;
 } MeshPileEntry;
 
@@ -39,10 +43,19 @@ int MeshPile_parse_cube_id(const char *name, char id[24],
  * candidate (plain world-frame meshes allowed); below depth 0 only
  * *_final_all.vmesh per-cube dumps are.  Cube-id files failing the filter
  * or already present (dedup by id) are skipped.  Entries land in pile[]
- * (capacity cap) sorted by (oz, oy, ox, path).  Returns 0, or -1 when the
- * directory cannot be read or the pile overflows cap. */
+ * (capacity cap) sorted by (oz, oy, ox, path). Returns 0, or -1 on a read,
+ * path-length, temporary-allocation or capacity error. On such an error,
+ * *n and pile retain the sorted prefix that was accepted before it. */
 int MeshPile_scan(const char *dir, MeshPileEntry *pile, size_t cap,
                   size_t *n, MeshPile_Filter filter, void *ctx);
+
+/* The same selection and ordering, without a caller-supplied cube-count cap.
+ * On success, *pile is an exact-size arena-owned array (*pile == NULL for an
+ * empty pile). On scan/temporary-allocation failure, returns -1 with *pile ==
+ * NULL and *n == 0. A final arena allocation failure raises Arena_Failed after
+ * freeing all temporary storage. The directory and source meshes are read only. */
+int MeshPile_scan_arena(Arena_T arena, const char *dir, MeshPileEntry **pile,
+                        size_t *n, MeshPile_Filter filter, void *ctx);
 
 /* Sort pile[0..n) by (oz, oy, ox, path): the streaming order. */
 void MeshPile_sort(MeshPileEntry *pile, size_t n);

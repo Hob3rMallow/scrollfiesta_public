@@ -9,9 +9,130 @@
 #include <math.h>
 
 #include "tiff_io.h"
+#include "pipeline_constants.h"
+#include "ves_platform.h"
 
 /* slot[] sentinel: tried and missing (grid edge). */
 #define CUBE_ABSENT ((uint8_t *)(uintptr_t)1)
+#define CUBE_PRESENT ((uint8_t *)(uintptr_t)2) /* support-only; never dereferenced */
+
+/* ---- the resident RAW store (raw_sample.h) ------------------------------------------------------------------ */
+#define RAW_STORE_SLOTS ((size_t)1 << 20)   /* open addressing over chunk keys; a 32^3 box is 32,768 chunks + halo */
+
+typedef struct RawStore {
+    int on, bound, support_only;
+    char dir[2048];
+    long chunk;
+    Arena_T arena;                 /* the chunks, process lifetime */
+    uint64_t *keys;                /* RAW_STORE_SLOTS; 0 = empty */
+    uint8_t **vals;                /* a chunk, or CUBE_ABSENT */
+    size_t n, bytes, cap_bytes;
+} RawStore;
+
+static RawStore raw_store = { 0 };
+static ves_mutex_t raw_store_lock = VES_MUTEX_INITIALIZER;
+
+void cubetable_resident(int on) { raw_store.on = on; }
+size_t cubetable_resident_bytes(void) { return raw_store.bytes; }
+size_t cubetable_resident_chunks(void) { return raw_store.n; }
+
+void cubetable_resident_reset(void)
+{
+    ves_mutex_lock(&raw_store_lock);
+    if (raw_store.arena != NULL) Arena_dispose(&raw_store.arena);
+    free(raw_store.keys);
+    free(raw_store.vals);
+    memset(&raw_store, 0, sizeof raw_store);
+    ves_mutex_unlock(&raw_store_lock);
+}
+
+static uint64_t raw_store_key(long cz, long cy, long cx)
+{
+    return 1u + ((((uint64_t)cz & 0xFFFFF) << 40) | (((uint64_t)cy & 0xFFFFF) << 20) | ((uint64_t)cx & 0xFFFFF));
+}
+
+/* under the lock: is the store for this table's directory (binding it to the first zarr asked)? */
+static int raw_store_for(const CubeTable *ct)
+{
+    if (!raw_store.on || !ct->is_zarr) return 0;
+    if (!raw_store.bound) {
+        raw_store.keys = (uint64_t *)calloc(RAW_STORE_SLOTS, sizeof *raw_store.keys);
+        raw_store.vals = (uint8_t **)calloc(RAW_STORE_SLOTS, sizeof *raw_store.vals);
+        raw_store.arena = Arena_new();
+        if (raw_store.keys == NULL || raw_store.vals == NULL || raw_store.arena == NULL) {
+            free(raw_store.keys); free(raw_store.vals);
+            if (raw_store.arena != NULL) Arena_dispose(&raw_store.arena);
+            memset(&raw_store, 0, sizeof raw_store);
+            return 0;                                           /* off for good: no memory for the index */
+        }
+        snprintf(raw_store.dir, sizeof raw_store.dir, "%s", ct->dir);
+        raw_store.chunk = ct->chunk;
+        raw_store.support_only = ct->support_only;
+        raw_store.cap_bytes = (size_t)SHEET_LAYERS_RAW_RESIDENT_GB << 30;
+        raw_store.bound = 1;
+    }
+    return raw_store.chunk == ct->chunk && raw_store.support_only == ct->support_only && strcmp(raw_store.dir, ct->dir) == 0;
+}
+
+/* under the lock: the slot of key (inserting it when absent); NULL when the index is full */
+static uint8_t **raw_store_slot(uint64_t key)
+{
+    size_t i = (size_t)(key * 0x9E3779B97F4A7C15ull >> 44) & (RAW_STORE_SLOTS - 1), probes = 0;
+    while (raw_store.keys[i] != 0 && raw_store.keys[i] != key) {
+        i = (i + 1) & (RAW_STORE_SLOTS - 1);
+        if (++probes == RAW_STORE_SLOTS) return NULL;
+    }
+    if (raw_store.keys[i] == 0) {
+        /* A whole scroll may exceed the cache. Keep empty slots so a miss
+         * never scans a saturated million-entry table; uncached reads work. */
+        if (raw_store.n >= RAW_STORE_SLOTS * 7 / 10) return NULL;
+        raw_store.keys[i] = key; raw_store.n++;
+    }
+    return &raw_store.vals[i];
+}
+
+/* the store's chunk for (cz, cy, cx) of ct's directory: 1 and *out (a chunk or CUBE_ABSENT) when known */
+static int raw_store_lookup(const CubeTable *ct, long cz, long cy, long cx, uint8_t **out)
+{
+    int hit = 0;
+    ves_mutex_lock(&raw_store_lock);
+    if (raw_store_for(ct)) {
+        uint64_t key = raw_store_key(cz, cy, cx);
+        size_t i = (size_t)(key * 0x9E3779B97F4A7C15ull >> 44) & (RAW_STORE_SLOTS - 1), probes = 0;
+        while (raw_store.keys[i] != 0 && raw_store.keys[i] != key && ++probes < RAW_STORE_SLOTS) i = (i + 1) & (RAW_STORE_SLOTS - 1);
+        if (raw_store.keys[i] == key && raw_store.vals[i] != NULL) { *out = raw_store.vals[i]; hit = 1; }
+    }
+    ves_mutex_unlock(&raw_store_lock);
+    return hit;
+}
+
+/* remember a chunk just read (copied into the store, up to the cap) or an absent one; returns the pointer the table
+ * should keep (the store's copy when it took one, else `data`) */
+static uint8_t *raw_store_insert(const CubeTable *ct, long cz, long cy, long cx, uint8_t *data, size_t bytes)
+{
+    uint8_t *keep = data, **slot = NULL;
+    ves_mutex_lock(&raw_store_lock);
+    if (raw_store_for(ct) && (slot = raw_store_slot(raw_store_key(cz, cy, cx))) != NULL) {
+        if (*slot != NULL) keep = *slot;                        /* another window read it first: share that copy */
+        else if (data == CUBE_ABSENT || data == CUBE_PRESENT) *slot = data;
+        else if (raw_store.bytes + bytes <= raw_store.cap_bytes) {
+            uint8_t *copy = (uint8_t *)ARENA_ALLOC(raw_store.arena, bytes);
+            if (copy != NULL) { memcpy(copy, data, bytes); raw_store.bytes += bytes; *slot = copy; keep = copy; }
+        }
+    }
+    ves_mutex_unlock(&raw_store_lock);
+    return keep;
+}
+
+/* does the store already hold chunks of ct's directory (a later table need not warm the page cache)? */
+static int raw_store_warm(const CubeTable *ct)
+{
+    int warm = 0;
+    ves_mutex_lock(&raw_store_lock);
+    warm = raw_store_for(ct) && raw_store.n > 0;
+    ves_mutex_unlock(&raw_store_lock);
+    return warm;
+}
 
 static long floor_div(long a, long b)
 {
@@ -157,6 +278,7 @@ int cubetable_init(CubeTable *ct, Arena_T arena, const char *dir,
 
 int cube_fetch(CubeTable *ct, long iz, long iy, long ix)
 {
+    if (ct->support_only) return -1; /* support metadata must never masquerade as zero-valued CT */
     long cz = floor_div(iz, ct->chunk);
     long cy = floor_div(iy, ct->chunk);
     long cx = floor_div(ix, ct->chunk);
@@ -172,6 +294,10 @@ int cube_fetch(CubeTable *ct, long iz, long iy, long ix)
     si = ((size_t)tz * (size_t)ct->ny + (size_t)ty) * (size_t)ct->nx
          + (size_t)tx;
     buf = ct->slot[si];
+    if (buf == NULL && ct->is_zarr && raw_store_lookup(ct, cz, cy, cx, &buf)) {   /* the resident store knows it */
+        if (buf == CUBE_ABSENT) ct->n_missing++; else ct->n_loaded++;
+        ct->slot[si] = buf;
+    }
     if (buf == NULL) {   /* lazy load */
         char path[2600];
         uint8_t *vol = NULL;
@@ -191,17 +317,29 @@ int cube_fetch(CubeTable *ct, long iz, long iy, long ix)
         if (probe == NULL) {
             buf = CUBE_ABSENT;
             ct->n_missing++;
+            if (ct->is_zarr) (void)raw_store_insert(ct, cz, cy, cx, CUBE_ABSENT, 0);
         } else {
             if (ct->is_zarr) {
-                vol = (uint8_t *)ARENA_ALLOC(ct->arena, (size_t)chunk_bytes);
-                size_t got = fread(vol, 1, chunk_bytes, probe);
+                /* read into a scratch buffer, then the store keeps a copy (shared with every later table) or, past
+                 * its cap, the table's arena does */
+                uint8_t *tmp = (uint8_t *)malloc(chunk_bytes);
+                size_t got = tmp != NULL ? fread(tmp, 1, chunk_bytes, probe) : 0;
                 fclose(probe);
-                if (got == chunk_bytes) {
-                    buf = vol;
+                if (tmp != NULL && got == chunk_bytes) {
+                    uint8_t *kept = raw_store_insert(ct, cz, cy, cx, tmp, chunk_bytes);
+                    if (kept == tmp) {                          /* the store took no copy: the table's arena holds it */
+                        vol = (uint8_t *)ARENA_ALLOC(ct->arena, (size_t)chunk_bytes);
+                        memcpy(vol, tmp, chunk_bytes);
+                        kept = vol;
+                    }
+                    free(tmp);
+                    buf = kept;
                     ct->n_loaded++;
                 } else {
+                    free(tmp);
                     buf = CUBE_ABSENT;
                     ct->n_missing++;
+                    (void)raw_store_insert(ct, cz, cy, cx, CUBE_ABSENT, 0);
                 }
             } else {
                 fclose(probe);
@@ -224,6 +362,49 @@ int cube_fetch(CubeTable *ct, long iz, long iy, long ix)
                     + (size_t)(ix - cx * ct->chunk)];
 }
 
+int cube_supported(CubeTable *ct, long iz, long iy, long ix)
+{
+    if (!ct->support_only) return cube_fetch(ct, iz, iy, ix) >= 0;
+    if (iz < 0 || iy < 0 || ix < 0 || iz >= ct->shape[0] || iy >= ct->shape[1] || ix >= ct->shape[2]) return 0;
+    long z = floor_div(iz, ct->chunk) - ct->cz0, y = floor_div(iy, ct->chunk) - ct->cy0, x = floor_div(ix, ct->chunk) - ct->cx0;
+    if (z < 0 || y < 0 || x < 0 || z >= ct->nz || y >= ct->ny || x >= ct->nx) return 0;
+    return ct->slot[((size_t)z * (size_t)ct->ny + (size_t)y) * (size_t)ct->nx + (size_t)x] == CUBE_PRESENT;
+}
+
+int cubetable_prewarm_support(CubeTable *ct)
+{
+    if (!ct || ct->n_loaded || ct->n_missing || ct->support_only) return -1;
+    if (!ct->is_zarr) return cubetable_prewarm_all(ct);
+    ct->support_only = 1;
+    const size_t total = cubetable_expected_chunks(ct);
+    const uint64_t bytes = (uint64_t)ct->chunk * ct->chunk * ct->chunk;
+    int loaded = 0, missing = 0;
+    long t = 0;
+    /* Every iteration owns one slot. The shared presence cache is locked. */
+#pragma omp parallel for schedule(dynamic, 32) reduction(+:loaded,missing)
+    for (t = 0; t < (long)total; t++) {
+        long cz = ct->cz0 + t / (ct->ny * ct->nx), cy = ct->cy0 + (t / ct->nx) % ct->ny, cx = ct->cx0 + t % ct->nx;
+        uint8_t *value = NULL;
+        if (!raw_store_lookup(ct, cz, cy, cx, &value)) {
+            char path[2600]; cube_path(ct, cz, cy, cx, path, sizeof path);
+            FILE *fp = fopen(path, "rb"); int ok = 0;
+            if (fp) {
+#ifdef _WIN32
+                ok = !_fseeki64(fp, (long long)bytes - 1, SEEK_SET) && fgetc(fp) != EOF;
+#else
+                ok = !fseeko(fp, (off_t)bytes - 1, SEEK_SET) && fgetc(fp) != EOF;
+#endif
+                fclose(fp);
+            }
+            value = raw_store_insert(ct, cz, cy, cx, ok ? CUBE_PRESENT : CUBE_ABSENT, 0);
+        }
+        ct->slot[t] = value;
+        if (value == CUBE_PRESENT) loaded++; else missing++;
+    }
+    ct->n_loaded = loaded; ct->n_missing = missing;
+    return loaded;
+}
+
 int cubetable_prewarm_all(CubeTable *ct)
 {
     long before = ct->n_loaded;
@@ -233,8 +414,9 @@ int cubetable_prewarm_all(CubeTable *ct)
      * memcpy-speed once the bytes are in the OS cache; reading ~2k cube
      * files one at a time was 80+ s of pure disk latency (the whole bake
      * cost on the 4x21x21).  Neither libtiff nor the arena is touched here,
-     * so this phase is trivially thread-safe. */
-    {
+     * so this phase is trivially thread-safe.  Skipped once the resident
+     * store holds this directory's chunks: phase 2 takes them from memory. */
+    if (!raw_store_warm(ct)) {
         long t = 0;
 #pragma omp parallel for schedule(dynamic, 4)
         for (t = 0; t < total; t++) {
@@ -260,6 +442,67 @@ int cubetable_prewarm_all(CubeTable *ct)
                                  (ct->cy0 + ty) * ct->chunk,
                                  (ct->cx0 + tx) * ct->chunk);
     (void)total;
+    return (int)(ct->n_loaded - before);
+}
+
+int cubetable_prewarm_points(CubeTable *ct, const float *z, const float *y, const float *x, size_t n, double pad)
+{
+    long total = 0, t = 0, before = 0;
+    uint8_t *want = NULL;
+    size_t i = 0;
+
+    if (ct == NULL || ct->slot == NULL || z == NULL || y == NULL || x == NULL || pad < 0.0) return -1;
+    total = ct->nz * ct->ny * ct->nx;
+    if (total <= 0) return -1;
+    before = ct->n_loaded;
+    want = (uint8_t *)calloc((size_t)total, 1);
+    if (want == NULL) return -1;
+    for (i = 0; i < n; i++) {
+        const double p[3] = { (double)z[i], (double)y[i], (double)x[i] };
+        const long base[3] = { ct->cz0, ct->cy0, ct->cx0 }, dims[3] = { ct->nz, ct->ny, ct->nx };
+        long lo[3] = { 0, 0, 0 }, hi[3] = { 0, 0, 0 }, bz = 0, by = 0, bx = 0;
+        int a = 0, empty = 0;
+        if (!(p[0] >= -0.5 && p[1] >= -0.5 && p[2] >= -0.5)) continue;     /* invalid (or NaN) */
+        for (a = 0; a < 3; a++) {
+            /* the trilinear neighbour of the last sample: +1 beyond the pad box */
+            lo[a] = floor_div((long)floor(p[a] - pad) - 1, ct->chunk) - base[a];
+            hi[a] = floor_div((long)floor(p[a] + pad) + 1, ct->chunk) - base[a];
+            if (lo[a] < 0) lo[a] = 0;
+            if (hi[a] >= dims[a]) hi[a] = dims[a] - 1;
+            if (lo[a] > hi[a]) empty = 1;
+        }
+        if (empty) continue;
+        for (bz = lo[0]; bz <= hi[0]; bz++)
+            for (by = lo[1]; by <= hi[1]; by++)
+                for (bx = lo[2]; bx <= hi[2]; bx++)
+                    want[((size_t)bz * (size_t)ct->ny + (size_t)by) * (size_t)ct->nx + (size_t)bx] = 1;
+    }
+#ifdef _OPENMP
+    /* the page-cache warm of the wanted files only, in parallel (as cubetable_prewarm_all does for all) */
+#pragma omp parallel for schedule(dynamic, 4)
+    for (t = 0; t < total; t++) {
+        char path[2600];
+        char buf[32768];
+        FILE *f = NULL;
+        if (!want[t] || ct->slot[t] != NULL) continue;
+        cube_path(ct, ct->cz0 + t / (ct->ny * ct->nx), ct->cy0 + (t / ct->nx) % ct->ny, ct->cx0 + t % ct->nx,
+                  path, sizeof path);
+        f = fopen(path, "rb");
+        if (f == NULL) continue;
+        while (fread(buf, 1, sizeof buf, f) == sizeof buf) { /* warm */ }
+        fclose(f);
+    }
+#endif
+    for (t = 0; t < total; t++) {
+        const long tz = t / (ct->ny * ct->nx), ty = (t / ct->nx) % ct->ny, tx = t % ct->nx;
+        if (want[t]) {
+            (void)cube_fetch(ct, (ct->cz0 + tz) * ct->chunk, (ct->cy0 + ty) * ct->chunk, (ct->cx0 + tx) * ct->chunk);
+        } else if (ct->slot[t] == NULL) {
+            ct->slot[t] = CUBE_ABSENT;
+            ct->n_untouched++;
+        }
+    }
+    free(want);
     return (int)(ct->n_loaded - before);
 }
 

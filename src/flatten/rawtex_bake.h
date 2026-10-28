@@ -142,4 +142,14 @@ int Rawtex_write_tif_field(const char *path, CubeTable *ct,
 
 int Rawtex_selftest(void);
 
+/* Streaming CT bake at one pixel per voxel. The workspace is bounded to
+ * about one million pixels plus a four-row halo; full-resolution TIFFs are
+ * written in scanline order. band_rows=0 chooses the bounded production size. */
+int Rawtex_write_ct_tiled(const char *path, CubeTable *ct,
+    const float *verts, RawtexUv uv, size_t nv, const int32_t *faces, size_t nf,
+    const float *normals, double lo, double hi, const RawtexWindow *window,
+    size_t max_px, size_t band_rows, size_t *out_W, size_t *out_H,
+    double *out_fill, size_t *out_multi);
+int Rawtex_tiled_selftest(void);
+
 #endif /* RAWTEX_BAKE_H */

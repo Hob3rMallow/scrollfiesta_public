@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{B37687A7-D290-4C52-B930-0D8EE14DA46C}</ProjectGuid>
+    <RootNamespace>ink_closeup</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType><UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset><CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(SolutionDir)build\Release\</OutDir>
+    <IntDir>$(SolutionDir)build\obj\ink_closeup_$(Configuration)\</IntDir>
+    <DepsRoot Condition="'$(DepsRoot)'==''">$(SolutionDir)</DepsRoot>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel><Optimization>MaxSpeed</Optimization>
+      <PreprocessorDefinitions>VES_CLOSEUP_LOCAL_GLOBAL;NDEBUG;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)src;$(DepsRoot)deps\include;$(DepsRoot)deps\src\tiff-4.7.1\libtiff;$(DepsRoot)deps\src\tiff-4.7.1\bld\libtiff;$(SolutionDir)deps\taucs\src;$(SolutionDir)deps\taucs\build;$(SolutionDir)deps\taucs\external\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ConformanceMode>true</ConformanceMode><LanguageStandard_C>stdc17</LanguageStandard_C>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary><OpenMPSupport>true</OpenMPSupport><MultiProcessorCompilation>true</MultiProcessorCompilation>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem><GenerateDebugInformation>true</GenerateDebugInformation>
+      <!-- TAUCS recursion: 512 MB of stack, as sheet_assemble -->
+      <StackReserveSize>536870912</StackReserveSize>
+      <AdditionalLibraryDirectories>$(DepsRoot)deps\lib\win64\Release;$(SolutionDir)deps\lib\win64;$(SolutionDir)deps\clapack\LIB\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>tiff.lib;zs.lib;clapack_nowrap.lib;BLAS_nowrap.lib;libf2c.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <IgnoreSpecificDefaultLibraries>LIBCMT</IgnoreSpecificDefaultLibraries>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="src\tools\ink_closeup.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\closeup_surface.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\closeup_adopt.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\chart_pool.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\closeup_cttrack.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\closeup_f0bridge.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\eig3.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\ink_letters.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\rawtex_layers.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\rawtex_tifxyz.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\zarr_shard.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\rawtex_bake.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\sparse_solve.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\fiber_map.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\slim_refine.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\mesh_manifold.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\closeup_align.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\closeup_local_global.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\sparse_local_global.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\metric_bounds.cpp"><CompileAs>CompileAsCpp</CompileAs><LanguageStandard>stdcpp17</LanguageStandard><ExceptionHandling>Sync</ExceptionHandling><FloatingPointModel>Strict</FloatingPointModel><AdditionalIncludeDirectories>$(SolutionDir)deps\src\attene-predicates;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories></ClCompile>
+    <ClCompile Include="deps\src\attene-predicates\uinteger.cpp"><CompileAs>CompileAsCpp</CompileAs><LanguageStandard>stdcpp17</LanguageStandard><ExceptionHandling>Sync</ExceptionHandling><FloatingPointModel>Strict</FloatingPointModel><AdditionalIncludeDirectories>$(SolutionDir)deps\src\attene-predicates;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories></ClCompile>
+    <ClCompile Include="src\flatten\closeup_align_selftest.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\closeup_fiber.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\closeup_fiber_volume.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\fiber_frame.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\assemble\asm_fibre_frame.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\assemble\asm_contacts.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\remesh\intersection_cleanup.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\ves_pool.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\zarr_u8.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\seam_cut.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\mesh_topo.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\union_find.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\assemble\asm_axis.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\json_read.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\raw_sample.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\mesh_normals.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\closeup_import.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\flatten\closeup_seed.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\mesh_bin.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\mesh_chart_index.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\kdtree.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\tiff_io.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\ves_png.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\tif_strip.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\arena.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\except.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\ves_platform.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <!-- TAUCS double-real subset; canonical list lives in marble_uv_repair.vcxproj -->
+    <ClCompile Include="deps\taucs\build\wrap\taucs_complex_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_complex_D.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_logging_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_timer_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_malloc_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_base_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_base_D.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_vec_base_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_vec_base_D.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_ops_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_ops_D.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_order_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_sn_llt_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_sn_llt_D.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_factor_llt_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_factor_llt_D.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_solve_llt_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_ccs_solve_llt_D.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_iter_D.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\wrap\taucs_linsolve_GEN.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\external\src\genmmd.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="deps\taucs\build\taucs_stubs.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

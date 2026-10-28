@@ -19,6 +19,7 @@
 
 #include <stddef.h>
 #include <stdio.h>
+#include <string.h>    /* memcpy (ves_temp_dir), strcmp/strstr (ves_selftest_clean) */
 
 /* ================================================================
  * Compiler compat
@@ -82,7 +83,7 @@
   #include <time.h>
   #include <signal.h>
   #include <pthread.h>
-  #include <string.h>    /* memcpy (ves_temp_dir); on Windows it comes via <windows.h> */
+  #include <dirent.h>    /* opendir (ves_selftest_clean) */
 #endif
 
 /* ================================================================
@@ -215,6 +216,100 @@ static inline int ves_rmdir(const char *path)
 #else
     return rmdir(path);
 #endif
+}
+
+/* ================================================================
+ * Selftest scratch: VES_SELFTEST_DIR, ves_selftest_dir(), ves_selftest_clean()
+ *
+ * Every selftest writes its scratch under VES_SELFTEST_DIR (relative to the
+ * working directory, the repo root), never under output/.  User, 2026-10-12:
+ * "put all the selftests into a new selftest/ folder from now on that can be
+ * blown out" and "they should clean up after a pass".  The folder may be
+ * deleted at any time.
+ *
+ * ves_selftest_dir(buf, len, name): "selftest/<name>_<pid>" into buf, created
+ *   together with selftest/.  The pid keeps two runs of the same selftest out
+ *   of each other's files.  0 on success.
+ * ves_selftest_clean(path): after a PASS, delete a file or a directory tree
+ *   under VES_SELFTEST_DIR.  Junctions and symlinks inside are removed as
+ *   links, never followed.  A path outside VES_SELFTEST_DIR, the root itself
+ *   or a path containing ".." is refused (-1).  A failing selftest keeps its
+ *   scratch for inspection.  0 when the path is gone.
+ * ================================================================ */
+
+#define VES_SELFTEST_DIR "selftest"
+
+static inline int ves_selftest_dir(char *buf, size_t len, const char *name)
+{
+    int k = snprintf(buf, len, VES_SELFTEST_DIR "/%s_%d", name, ves_getpid());
+    if (k < 0 || (size_t)k >= len) return -1;
+    (void)ves_mkdir(VES_SELFTEST_DIR);
+    (void)ves_mkdir(buf);
+    return 0;
+}
+
+/* Recursive delete behind ves_selftest_clean(); never follows a link. */
+static inline int ves_remove_tree_(const char *path)
+{
+    char sub[1024];
+    int rc = 0;
+#ifdef _WIN32
+    DWORD attr = GetFileAttributesA(path);
+    if (attr == INVALID_FILE_ATTRIBUTES) return 0;
+    if (attr & FILE_ATTRIBUTE_READONLY)
+        (void)SetFileAttributesA(path, attr & ~(DWORD)FILE_ATTRIBUTE_READONLY);
+    if (!(attr & FILE_ATTRIBUTE_DIRECTORY)) return DeleteFileA(path) ? 0 : -1;
+    if (attr & FILE_ATTRIBUTE_REPARSE_POINT)        /* junction / dir symlink */
+        return RemoveDirectoryA(path) ? 0 : -1;
+    {
+        WIN32_FIND_DATAA fd;
+        HANDLE h;
+        int k = snprintf(sub, sizeof sub, "%s/*", path);
+        if (k < 0 || (size_t)k >= sizeof sub) return -1;
+        h = FindFirstFileA(sub, &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            do {
+                if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0)
+                    continue;
+                k = snprintf(sub, sizeof sub, "%s/%s", path, fd.cFileName);
+                if (k < 0 || (size_t)k >= sizeof sub || ves_remove_tree_(sub) != 0)
+                    rc = -1;
+            } while (FindNextFileA(h, &fd));
+            FindClose(h);
+        }
+    }
+    if (!RemoveDirectoryA(path)) rc = -1;
+#else
+    struct stat st;
+    DIR *d = NULL;
+    if (lstat(path, &st) != 0) return 0;
+    if (!S_ISDIR(st.st_mode)) return unlink(path) == 0 ? 0 : -1;  /* files, links */
+    d = opendir(path);
+    if (d != NULL) {
+        struct dirent *e = NULL;
+        while ((e = readdir(d)) != NULL) {
+            int k = 0;
+            if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
+                continue;
+            k = snprintf(sub, sizeof sub, "%s/%s", path, e->d_name);
+            if (k < 0 || (size_t)k >= sizeof sub || ves_remove_tree_(sub) != 0)
+                rc = -1;
+        }
+        closedir(d);
+    }
+    if (rmdir(path) != 0) rc = -1;
+#endif
+    return rc;
+}
+
+static inline int ves_selftest_clean(const char *path)
+{
+    size_t n = strlen(VES_SELFTEST_DIR);
+    if (path == NULL || strncmp(path, VES_SELFTEST_DIR, n) != 0
+        || (path[n] != '/' && path[n] != '\\') || path[n + 1] == '\0'
+        || strstr(path, "..") != NULL)
+        return -1;
+    return ves_remove_tree_(path);
 }
 
 /* ================================================================
@@ -407,5 +502,13 @@ int ves_run_thread_cpu_bounded(VesThreadFn fn, void *arg, unsigned cpu_ms,
 /* Selftest of ves_run_thread_cpu_bounded (quick, spinning, sleeping and
  * blocked workers).  Returns 0 on success. */
 int ves_platform_selftest(void);
+
+/* VES_PROF_OUT=<file>: start the in-process sampling profiler (~1 kHz leaf
+ * samples of every thread, rewritten to <file> about once a second; resolve
+ * with scripts/pipeline/ves_prof_report.py).  No-op when unset or on POSIX.
+ * Diagnostics only: outputs are unaffected. */
+void ves_prof_start_from_env(void);
+/* Write the samples now (ves_fast_exit calls it before terminating). */
+void ves_prof_flush_now(void);
 
 #endif /* VES_PLATFORM_H */

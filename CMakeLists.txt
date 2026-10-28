@@ -771,8 +771,17 @@ if(SCROLLFIESTA_BUILD_TOOLS)
         ${SF_SRC}/whole/axis_track.c
         ${SF_SRC}/common/mesh_pile.c
         ${SF_SRC}/common/png_write.c)
+    # The rigid turns of the close-up tools (October 2026): a close-up's canvas
+    # onto its strip piece, and a whole sheet onto its measured fibre axes.
+    add_executable(closeup_strip_turn
+        ${SF_SRC}/tools/closeup_strip_turn.c
+        ${SF_SRC}/common/json_read.c)
+    add_executable(vmesh_fiber_rigid
+        ${SF_SRC}/tools/vmesh_fiber_rigid.c
+        ${SF_SRC}/flatten/fiber_rigid.c)
     set(SF_SHEET_TOOLS ribbon_verdict swirl_slim obj_bake_raw sheet_strip
-                       sheet_reading sheet_layers vmesh_tifxyz scroll_axis_track)
+                       sheet_reading sheet_layers vmesh_tifxyz scroll_axis_track
+                       closeup_strip_turn vmesh_fiber_rigid)
 
     # sheet_assemble solves its constrained QPs with the vendored OSQP 1.0
     # (built-in QDLDL + AMD; configuration in deps/osqp/osqp_configure.h) and
@@ -892,6 +901,7 @@ if(SCROLLFIESTA_BUILD_TOOLS)
             ${SF_SRC}/common/mesh_pile.c
             ${SF_SRC}/common/maxflow.c
             ${SF_SRC}/common/ves_png.c
+            ${SF_SRC}/common/ves_pool.c
             ${SF_SRC}/common/json_read.c
             ${SF_SRC}/flatten/convex_qp.c
             ${SF_SRC}/flatten/active_set_qp.c
@@ -899,6 +909,59 @@ if(SCROLLFIESTA_BUILD_TOOLS)
             ${SF_CLAPACK_TS_SRC})
         target_link_libraries(sheet_assemble PRIVATE sf_osqp ${SF_ASM_TAUCS})
         list(APPEND SF_SHEET_TOOLS sheet_assemble)
+
+        # Close-ups (October 2026): ink_closeup turns one region of an
+        # assembled sheet into a continuous, isometric surface, grows and
+        # fibre-aligns it, and renders its surface volume. fiber_flatten
+        # re-flattens a canvas along a 3-D fibre field. Both solve with TAUCS.
+        add_executable(ink_closeup
+            ${SF_SRC}/tools/ink_closeup.c
+            ${SF_SRC}/flatten/closeup_surface.c
+            ${SF_SRC}/flatten/closeup_adopt.c
+            ${SF_SRC}/flatten/chart_pool.c
+            ${SF_SRC}/flatten/closeup_cttrack.c
+            ${SF_SRC}/flatten/closeup_f0bridge.c
+            ${SF_SRC}/flatten/ink_letters.c
+            ${SF_SRC}/flatten/rawtex_layers.c
+            ${SF_SRC}/flatten/rawtex_tifxyz.c
+            ${SF_SRC}/common/zarr_shard.c
+            ${SF_SRC}/flatten/rawtex_bake.c
+            ${SF_SRC}/flatten/fiber_map.c
+            ${SF_SRC}/flatten/slim_refine.c
+            ${SF_SRC}/flatten/closeup_align.c
+            ${SF_SRC}/flatten/closeup_local_global.c
+            ${SF_SRC}/flatten/sparse_local_global.c
+            ${SF_SRC}/flatten/metric_bounds.cpp
+            ${SF_SRC}/flatten/closeup_align_selftest.c
+            ${SF_SRC}/flatten/closeup_fiber.c
+            ${SF_SRC}/flatten/closeup_fiber_volume.c
+            ${SF_SRC}/flatten/fiber_frame.c
+            ${SF_SRC}/assemble/asm_fibre_frame.c
+            ${SF_SRC}/assemble/asm_contacts.c
+            ${SF_SRC}/common/ves_pool.c
+            ${SF_SRC}/common/zarr_u8.c
+            ${SF_SRC}/assemble/asm_axis.c
+            ${SF_SRC}/common/json_read.c
+            ${SF_SRC}/flatten/closeup_import.c
+            ${SF_SRC}/flatten/closeup_seed.c
+            ${SF_SRC}/common/mesh_chart_index.c
+            ${SF_SRC}/common/ves_png.c
+            ${SF_SRC}/common/tif_strip.c)
+        target_compile_definitions(ink_closeup PRIVATE VES_CLOSEUP_LOCAL_GLOBAL)
+        # The physical metric classifier's exact arithmetic is the core's
+        # attene-predicates backend (BSNumber over UIntegerAP).
+        target_include_directories(ink_closeup PRIVATE ${SF_DEPS}/src/attene-predicates)
+        set_target_properties(ink_closeup PROPERTIES CXX_STANDARD 17 CXX_EXTENSIONS OFF)
+        set_source_files_properties(${SF_SRC}/flatten/metric_bounds.cpp PROPERTIES
+            COMPILE_OPTIONS "$<IF:$<CXX_COMPILER_ID:MSVC>,/fp:strict,-frounding-math;-fno-fast-math>")
+        target_link_libraries(ink_closeup PRIVATE sf_taucs)
+        add_executable(fiber_flatten
+            ${SF_SRC}/tools/fiber_flatten.c
+            ${SF_SRC}/flatten/fiber_frame.c
+            ${SF_SRC}/common/zarr_u8.c
+            ${SF_SRC}/common/json_read.c)
+        target_link_libraries(fiber_flatten PRIVATE sf_taucs)
+        list(APPEND SF_SHEET_TOOLS ink_closeup fiber_flatten)
     endif()  # SF_HAVE_LAPACK
 
     foreach(tool ${SF_SHEET_TOOLS})
@@ -1007,6 +1070,19 @@ if(SCROLLFIESTA_BUILD_TESTS)
             # The assembler's suite runs whole miniature assemblies (about 100 s
             # on 8 threads).
             set_tests_properties(sheet_assemble_selftest PROPERTIES TIMEOUT 3600)
+        endif()
+        if(TARGET ink_closeup)
+            # About 90 s in a Release build: SLIM, local/global and fibre-map
+            # solves, growth, the F0 bridge, the re-UV and the reparameterization.
+            # ink_closeup --material-contact-selftest checks the contact walk.
+            set_tests_properties(ink_closeup_selftest PROPERTIES TIMEOUT 3600)
+            set(_sf_wd ${CMAKE_CURRENT_BINARY_DIR}/selftest/ink_closeup_material_contact)
+            file(MAKE_DIRECTORY ${_sf_wd})
+            add_test(NAME ink_closeup_material_contact_selftest
+                     COMMAND ink_closeup --material-contact-selftest
+                     WORKING_DIRECTORY ${_sf_wd})
+            set_tests_properties(ink_closeup_material_contact_selftest PROPERTIES
+                ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
         endif()
     endif()
 endif()

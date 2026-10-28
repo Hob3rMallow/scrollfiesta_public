@@ -90,10 +90,10 @@ static int acm_refit(AcMaterial *m,const double *uv,const uint8_t *active)
     return 1;
 }
 
-static AcMaterial *acm_new(Arena_T arena,size_t nv,const int32_t *faces,size_t nf,const double *uv,const int32_t *material_vertex)
+static AcMaterial *acm_construct(Arena_T arena,size_t nv,const int32_t *faces,size_t nf,const double *uv,
+                                 const int32_t *material_vertex,Arena_T scratch)
 {
-    if(!arena || !faces || !uv || !nf || nf>INT32_MAX || nf>SIZE_MAX/3/sizeof(uint64_t) || nv>INT32_MAX)return NULL;
-    Arena_T scratch=Arena_new();AcMaterial *result=NULL;
+    AcMaterial *result=NULL;
     size_t *offset=ARENA_CALLOC(scratch,nv+1,sizeof *offset),*fill=ARENA_CALLOC(scratch,nv,sizeof *fill);
     uint64_t *key=ARENA_ALLOC(scratch,3*nf*sizeof *key);UnionFind uf=UF_new(scratch,(int32_t)nf);
     for(size_t f=0;f<nf;f++)for(int k=0;k<3;k++){
@@ -169,7 +169,21 @@ static AcMaterial *acm_new(Arena_T arena,size_t nv,const int32_t *faces,size_t n
     }
     result=m;
 done:
-    Arena_dispose(&scratch);return result;
+    return result;
+}
+
+static AcMaterial *acm_new(Arena_T arena,size_t nv,const int32_t *faces,size_t nf,const double *uv,const int32_t *material_vertex)
+{
+    if(!arena || !faces || !uv || !nf || nf>INT32_MAX || nf>SIZE_MAX/3/sizeof(uint64_t) || nv>INT32_MAX)return NULL;
+    Arena_T scratch=Arena_new();AcMaterial *result=NULL;
+    TRY
+        result=acm_construct(arena,nv,faces,nf,uv,material_vertex,scratch);
+    FINALLY
+        /* A destination or scratch allocation can raise Arena_Failed. The
+         * caller may recover, so no independent scratch arena may escape. */
+        Arena_dispose(&scratch);
+    END_TRY;
+    return result;
 }
 
 typedef struct AcMaterialGather {

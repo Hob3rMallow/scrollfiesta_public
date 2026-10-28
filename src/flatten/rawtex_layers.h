@@ -38,6 +38,8 @@ typedef struct RawtexLayersOpts {
     double step;           /* vox between consecutive layers */
     double offset;         /* vox added to every layer offset (+ = inward) */
     int    tile_cols;      /* raster columns per work tile (multiple of chunk) */
+    int    geom_tile_rows; /* geometry-only row tile; 0 uses the shared default.
+                           * Regularisation/aprons retain the full-height path. */
     int    chunk;          /* Zarr chunk edge in y and x */
     double stretch_ratio;  /* obj_bake_raw's UV-stretch face gate */
     double stretch_floor;
@@ -121,6 +123,20 @@ typedef struct RawtexLayersOpts {
      * columns of the full sheet, whatever part of the mesh it passes -- the way
      * to render a sheet wider than the per-axis raster cap. */
     const RawtexWindow *window;
+    /* Geometry sinks (NULL = off), for exporting the sheet itself (sheet_layers
+     * --tifxyz).  pos_sink: the caller's float [3 * sink_h * sink_w], plane-major
+     * (z plane, then y, then x), receiving the depth-zero point of every painted
+     * and seam-filled pixel -- the geometry volume's points, never the apron's --
+     * and left untouched elsewhere (callers prefill NaN).  sign_sink (nullable):
+     * int8 [sink_h * sink_w], the handedness sign s of RawtexHandedness per
+     * painted pixel (+1, -1, or 0 where it cannot be judged), untouched
+     * elsewhere.  sink_w / sink_h must equal the raster (the window's or the mesh
+     * plan's).  zarr_dir == NULL and mask_path == NULL select GEOMETRY ONLY: no
+     * RAW is sampled (ct may be NULL), nothing is written to disk, geom_dir must
+     * be NULL; the sinks and the census are filled as in a full render. */
+    float  *pos_sink;
+    int8_t *sign_sink;
+    size_t  sink_w, sink_h;
 } RawtexLayersOpts;
 
 /* Which way round each piece shows the recto.  Per painted pixel,
@@ -194,9 +210,18 @@ int RawtexLayers_orient(float *normals, const float *verts, size_t nv,
                         const int32_t *faces, size_t nf, const float *inward,
                         int smooth_iters, RawtexOrientStats *st);
 
+/* Compute winding normals, orient and smooth in one component-parallel pass.
+ * Every component retains the original face and vertex order, including the
+ * floating-point reductions: identical to MeshNormals_compute then orient.
+ * On success *out is malloc'd [nv,3] (caller frees); on error it is NULL. */
+int RawtexLayers_normals(float **out, const float *verts, size_t nv,
+                         const int32_t *faces, size_t nf, const float *inward,
+                         int smooth_iters, RawtexOrientStats *st);
+
 /* Render.  normals must already be oriented inward (RawtexLayers_orient).
  * face_skip (nullable, [nf]) omits faces entirely, as in the bake.  `ct`
- * must be prewarmed (cubetable_prewarm_all) so reads are thread-safe.
+ * must be prewarmed (cubetable_prewarm_all) so reads are thread-safe; it may
+ * be NULL for a geometry-only call (zarr_dir == mask_path == NULL, pos_sink set).
  * Writes <zarr_dir>/.zgroup, <zarr_dir>/.zattrs (attrs_json verbatim, or {}),
  * <zarr_dir>/0/.zarray + chunks, and mask_path (uint8 TIFF); with
  * o->geom_dir also <geom_dir>/{.zgroup,.zattrs,0/...}.  Refuses an existing
