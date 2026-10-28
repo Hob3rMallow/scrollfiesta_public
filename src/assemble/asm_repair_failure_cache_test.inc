@@ -1,3 +1,15 @@
+/* apa_attempt called depth frames of 4 KB further down the stack. */
+static int afc_attempt_deeper(int depth,AsmRun *run,const AsmRepairOpts *opts,const uint8_t *core,
+                              size_t *anchors,AsmRepairStats *stats,const char **reason,
+                              const ApaBox *boxes,const AsmField *parent,ApaReport *rep)
+{
+    volatile char pad[4096];pad[0]=(char)depth;
+    int accepted=depth>0 ? afc_attempt_deeper(depth-1,run,opts,core,anchors,stats,reason,boxes,parent,rep)
+                         : apa_attempt(run,opts,core,anchors,stats,reason,NULL,boxes,parent,NULL,rep,4);
+    pad[1]=(char)accepted;
+    return accepted;
+}
+
 static int afc_selftest(void)
 {
     int failures=0;Arena_T arena=Arena_new();AsmRun run={0};
@@ -48,7 +60,10 @@ static int afc_selftest(void)
     AsmChart aside[3];memcpy(aside,run.charts,sizeof aside);
     for(int repeat=0;repeat<2;repeat++){
         size_t anchors=0;AsmRepairStats stats={0};ApaReport report={0};const char *reason="";
-        int accepted=apa_attempt(&run,&opts,core,&anchors,&stats,&reason,NULL,boxes,parent,NULL,&report,4);
+        /* The repeat runs 4 KB deeper on the stack: identical attempts must
+         * share a key wherever their frames are (ASan's fake stack moves
+         * them on every call). */
+        int accepted=afc_attempt_deeper(repeat,&run,&opts,core,&anchors,&stats,&reason,boxes,parent,&report);
         int okay=!accepted && !strcmp(reason,"incident_source_seam_failed") && report.cache_hit==repeat &&
             cache.count==1 && cache.hits==(size_t)repeat && !memcmp(aside,run.charts,sizeof aside);
         if(!okay)fprintf(stderr,"  seam cache repeat %d: accepted %d reason %s hit %d entries %zu hits %zu\n",repeat,accepted,reason,report.cache_hit,cache.count,cache.hits);

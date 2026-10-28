@@ -57,10 +57,12 @@ static void afc_key(const AsmField *f,const AsmRepairOpts *opts,const uint8_t *m
     settings.admission_moving=NULL;settings.admission_trace_dir=NULL;settings.admission_failure_cache=NULL;
     settings.external_guard=NULL;settings.external_context=NULL;settings.checkpoint=NULL;settings.checkpoint_context=NULL;
     settings.layer_place=NULL;settings.layer_conflict=NULL;
-    /* The certificate context is a per-call stack object (its field, core and
-     * reference are bound below). Under ASan's fake stack its address differs
-     * on every call, so hashing it made identical attempts miss the cache. */
-    settings.contact_merit_context=NULL;
+    /* The certificate context and the compact transaction's workspace are
+     * per-call stack objects (the context's field, core and reference are bound
+     * below; the workspace only measures memory). Their addresses move with
+     * the caller's stack depth, and under ASan's fake stack on every call, so
+     * hashing them made identical attempts miss the cache. */
+    settings.contact_merit_context=NULL;settings.workspace=NULL;
     VesSha256_update(&hash,&settings,sizeof settings);
     size_t sizes[]={f->run->n_charts,f->nv,f->nf,f->n_seams,f->n_witness,AsmContacts_budget(f->contacts)};
     VesSha256_update(&hash,sizes,sizeof sizes);VesSha256_update(&hash,moving,f->run->n_charts);

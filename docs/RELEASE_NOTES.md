@@ -53,10 +53,10 @@ Merged in this release:
 ### Builds and CI
 
 - CI's ASan job had failed since the September release. The assembler's
-  local-failure cache keyed each attempt partly on the address of a per-call
-  stack object, which ASan moves on every call, so identical attempts never
-  hit the cache. The key ignores that address now, and the cache's selftest
-  checks it.
+  local-failure cache keyed each attempt partly on the addresses of two
+  per-call stack objects, which ASan moves on every call, so identical
+  attempts never hit the cache. The key ignores those addresses now, and the
+  cache's selftest repeats its attempt from a deeper stack to check it.
 - The same job found two memory errors, both fixed: the conflict audit read
   its report cells after the arena restore that released them, and Triangle's
   exact arithmetic loaded one element past the end of an expansion (results
