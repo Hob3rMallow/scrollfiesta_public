@@ -5,6 +5,10 @@ artifact pipeline. The main integration goal is to keep algorithm changes,
 review evidence, and generated outputs separable so working branches can be
 merged without obscuring regressions.
 
+We cannot guarantee we will take any patches! There is a private tree which we are also
+working on, and things change fast. However, we will try to merge patches at the end
+of the month before new public releases.
+
 ## Keep changes reviewable
 
 - Prefer one behavioral change per branch or pull request.
@@ -39,7 +43,7 @@ run `build-deps.ps1` before configuring or building the full toolchain.
 
 ## Validation expectations
 
-At minimum:
+At minimum, please:
 
 1. Build the smallest profile that compiles every changed source file.
 2. Run `ctest --output-on-failure` for that profile.
@@ -92,11 +96,13 @@ runtime loading, and a hostile embedding-consumer configuration.
 ## Updates from the development tree
 
 ScrollFiesta is developed in a larger private tree, and its improvements reach
-this repository as periodic updates. An update is a three-way merge onto this
-repository's `main`, file by file, with the private tree's state at the previous
-update as the base. Commits merged here, including community pull requests,
-therefore survive every update; an update never replaces this repository's
-history. Each update's commit message names the private commits it carries.
+this repository as periodic updates. When we update, we perform a three-way merge
+onto this repository's `main', file by file, with the private tree's state at the
+previous update as the base. Commits merged here, including community pull requests,
+therefore (theoretically!) survive every update; updates from the development tree do
+not smush this repository's history (it may smush private tree history.) 
+
+Each update's commit message names the private commits it carries.
 
 ## Pull-request checklist
 
