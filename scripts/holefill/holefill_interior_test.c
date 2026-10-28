@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include "common/arena.h"
 #include "common/intrinsic_angle.h"
@@ -145,6 +146,55 @@ static void add_grid_block_hole(float *V, int32_t *F, size_t *pnv, size_t *pnf,
 }
 
 #define CHECK(cond,msg) do { if(!(cond)){ printf("    FAIL: %s\n", msg); fail++; } } while(0)
+
+/* An "underpass" loop (from #22): simple in 3-D, but its projections onto the
+ * PCA plane and onto XY, XZ and YZ all self-intersect, which sends
+ * fill_one_hole down its fallback paths, Clipper2_union included. */
+static void build_underpass_loop(double pts3d[][3], int n, double R)
+{
+    for (int i = 0; i < n; i++) {
+        double t = 2.0 * 3.14159265358979323846 * (double)i / (double)n;
+        pts3d[i][0] = R * cos(t);
+        pts3d[i][1] = R * (0.35*sin(t) + 0.9*sin(3.0*t));
+        pts3d[i][2] = R * 0.5 * sin(2.0*t);
+    }
+}
+
+/* The underpass loop as the inner boundary of a planar annulus. Filling it or
+ * refusing it are both acceptable; the test is that hole filling returns. */
+static int test_underpass_loop_mesh_fill(void)
+{
+    enum { N = 24 };
+    const double Rout = 4.0;
+    Arena_T arena = Arena_new();
+    float *V = ARENA_ALLOC(arena, 2 * (size_t)N * 3 * sizeof(float));
+    int32_t *F = ARENA_ALLOC(arena, 2 * (size_t)N * 3 * sizeof(int32_t));
+    double pts3d[N][3];
+    size_t nv = 2 * (size_t)N, nf = 0;
+
+    build_underpass_loop(pts3d, N, 1.0);
+    for (int i = 0; i < N; i++) {
+        double t = 2.0 * 3.14159265358979323846 * (double)i / (double)N;
+        V[(size_t)i*3+0] = (float)(Rout*cos(t));
+        V[(size_t)i*3+1] = (float)(Rout*sin(t));
+        V[(size_t)i*3+2] = 0.0f;
+        for (int k = 0; k < 3; k++)
+            V[(size_t)(N+i)*3+(size_t)k] = (float)pts3d[i][k];
+    }
+    for (int i = 0; i < N; i++) {
+        int32_t o0 = i, o1 = (i+1) % N, n0 = N+i, n1 = N+(i+1) % N;
+        F[nf*3+0] = o0; F[nf*3+1] = o1; F[nf*3+2] = n0; nf++;
+        F[nf*3+0] = o1; F[nf*3+1] = n1; F[nf*3+2] = n0; nf++;
+    }
+
+    size_t bnd_before = count_boundary_edges(F, nf);
+    size_t nl = 0, ni = 0, nfil = 0;
+    HoleFill_process_ex(arena, &V, &F, &nv, &nf, NULL, 1, &nl, &ni, &nfil);
+    printf("  underpass loop as a mesh hole: bnd %zu->%zu loops=%zu interior=%zu filled=%zu (%s, no crash)\n",
+           bnd_before, count_boundary_edges(F, nf), nl, ni, nfil, nfil ? "filled" : "refused");
+    Arena_dispose(&arena);
+    return 0;
+}
 
 int main(int argc, char **argv)
 {
@@ -493,6 +543,7 @@ int main(int argc, char **argv)
     }
 
     Arena_dispose(&arena);
+    fail += test_underpass_loop_mesh_fill();
     printf("HOLEFILL INTERIOR SELFTEST %s\n", fail ? "FAILED" : "PASSED");
     return fail ? 1 : 0;
 }
