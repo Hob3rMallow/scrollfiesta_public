@@ -58,9 +58,9 @@ BUILD_FLAGS   = $(DEBUG_FLAGS)
 TEST_INC      = -I.
 
 # ---- Source groups (mirror cube_mesh.vcxproj) ----
-# common/pitch_table.c e common/closest_tri.c sono su disco e referenziati (PitchTable_*,
-# ClosestTri_*) ma non erano in nessuna lista: il link di cube_mesh li chiedeva come
-# simboli non definiti.
+# common/pitch_table.c and common/closest_tri.c are referenced (PitchTable_*,
+# ClosestTri_*) but were in no list, so cube_mesh failed to link with
+# undefined symbols.
 COMMON_SRC = common/pitch_table.c common/closest_tri.c common/arena.c common/except.c common/csr.c common/kdtree.c \
              common/union_find.c common/cc_color.c common/bfs.c common/pca.c common/mls_project.c \
              common/vert_weld.c common/mesh_normals.c common/tiff_io.c common/halo_loader.c \
@@ -84,9 +84,9 @@ CORE_OBJ = $(COMMON_SRC:.c=.o) $(EXTRACT_SRC:.c=.o) $(SPLIT_SRC:.c=.o) \
 COMMON_OBJ = $(COMMON_SRC:.c=.o)
 
 # C++ wrappers (Clipper2 boolean ops; lifted-multicut graph solver).
-# Le tre righe di attene servono a cube_mesh perche' remesh/cvt_remesh.c chiama
-# CVT_remesh -> rvd_clip -> AttenePred_*. Le regole per costruirle esistevano gia' piu'
-# in basso, ma solo WELD_CPP_OBJ le usava.
+# cube_mesh needs the three attene objects because remesh/cvt_remesh.c calls
+# CVT_remesh -> rvd_clip -> AttenePred_*. Their build rules already existed
+# further down, but only WELD_CPP_OBJ used them.
 CPP_OBJ = holefill/clipper2_wrap.o split/multicut_wrap.o common/gco_wrap.o \
           common/attene_predicates_wrap.o \
           ../deps/src/attene-predicates/uinteger.o \
