@@ -15,11 +15,11 @@ static void ac_face_xy(const AsmContacts *q,const double *uv,size_t face,double 
     for(int k=0;k<3;k++)for(int d=0;d<2;d++)xy[2*k+d]=uv[2*(size_t)q->faces[3*face+k]+d];
 }
 
-static void ac_pair_gradient(const double a[6],const double b[6],const int ia[3],const int ib[3],double *ga,double *gb)
+static void ac_pair_gradient(const double a[6],const double b[6],const int ia[3],const int ib[3],double roundoff,double *ga,double *gb)
 {
     double g[6];
-    if(ga){ac_boundary_gradient(a,b,g);for(int k=0;k<3;k++)for(int d=0;d<2;d++)ga[2*ia[k]+d]=g[2*k+d];}
-    if(gb){ac_boundary_gradient(b,a,g);for(int k=0;k<3;k++)for(int d=0;d<2;d++)gb[2*ib[k]+d]=g[2*k+d];}
+    if(ga){ac_boundary_gradient(a,b,roundoff,g);for(int k=0;k<3;k++)for(int d=0;d<2;d++)ga[2*ia[k]+d]=g[2*k+d];}
+    if(gb){ac_boundary_gradient(b,a,roundoff,g);for(int k=0;k<3;k++)for(int d=0;d<2;d++)gb[2*ib[k]+d]=g[2*k+d];}
 }
 
 #if defined(_MSC_VER)
@@ -78,13 +78,13 @@ static double ac_material_pair(AcBandWork *work,
          * Their symmetric boundary derivative completes the force from the
          * positive pairs on the other side. Omitting it makes an aligned
          * fine grid appear stationary despite a changing overlap width. */
-        if(raw_area && (ga || gb) && ac_overlap(a,b,-roundoff))ac_pair_gradient(a,b,ia,ib,ga,gb);
+        if(raw_area && (ga || gb) && ac_overlap(a,b,-roundoff))ac_pair_gradient(a,b,ia,ib,roundoff,ga,gb);
         return 0;
     }
     double area=ac_clip_polygon(a,b,polygon,&vertices);
     if(!(area>0) || !isfinite(area))return area;
     if(raw_area)*raw_area=area;
-    if(ga || gb)ac_pair_gradient(a,b,ia,ib,ga,gb);
+    if(ga || gb)ac_pair_gradient(a,b,ia,ib,roundoff,ga,gb);
     if(tolerance>0 && !(one && one->strict[one->component[face_a]]) &&
        !(two && two->strict[two->component[face_b]])){
         int contact=ac_material_contact(work,one,face_a,uv_a,a,two,face_b,uv_b,b,origin,polygon,vertices,tolerance,roundoff);

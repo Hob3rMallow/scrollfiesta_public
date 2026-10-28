@@ -186,7 +186,7 @@ static double ac_clip_polygon(const double a[6], const double b[6],double *clipp
     return .5*fabs(area);
 }
 
-static void ac_boundary_gradient(const double a[6], const double b[6], double g[6])
+static void ac_boundary_gradient(const double a[6], const double b[6], double roundoff, double g[6])
 {
     memset(g,0,6*sizeof(double));
     for (int k = 0; k < 3; k++) {
@@ -197,7 +197,17 @@ static void ac_boundary_gradient(const double a[6], const double b[6], double g[
             int w = (v+1)%3;
             double bx = b[2*w]-b[2*v], by = b[2*w+1]-b[2*v+1];
             double start = ac_cross(bx,by,a[2*k]-b[2*v],a[2*k+1]-b[2*v+1]);
-            double slope = ac_cross(bx,by,ex,ey);
+            double finish = ac_cross(bx,by,a[2*j]-b[2*v],a[2*j+1]-b[2*v+1]);
+            /* Input coordinates may already have lost low bits before the
+             * local origin is subtracted. Classify both edge endpoints with
+             * the narrow phase's coordinate roundoff, so a rotated shared
+             * edge receives the same symmetric derivative as an exact one.
+             * This changes only the derivative, never the audited area or
+             * material-contact certificate. */
+            double error = roundoff*(fabs(bx)+fabs(by));
+            if (fabs(start) <= error) start = 0;
+            if (fabs(finish) <= error) finish = 0;
+            double slope = finish-start;
             if (slope > 0) lo = ac_max(lo,-start/slope);
             else if (slope < 0) hi = ac_min(hi,-start/slope);
             else { if (start < 0) possible = 0; if (start == 0) coincident = 1; }
@@ -216,14 +226,17 @@ double AsmContacts_pair(const double in_a[6], const double in_b[6], double toler
     if (ga) memset(ga,0,6*sizeof(double)); if (gb) memset(gb,0,6*sizeof(double));
     if (!isfinite(tolerance) || tolerance < 0) return NAN;
     for (int k = 0; k < 6; k++) if (!isfinite(in_a[k]) || !isfinite(in_b[k])) return NAN;
+    double scale = 1;
+    for (int k = 0; k < 6; k++) scale = ac_max(scale,ac_max(fabs(in_a[k]),fabs(in_b[k])));
+    double roundoff = 64*DBL_EPSILON*scale;
     double a[6], b[6], origin[2] = {in_a[0],in_a[1]}; int ia[3], ib[3];
     ac_positive(in_a,a,ia,origin); ac_positive(in_b,b,ib,origin);
     if (!ac_overlap(a,b,tolerance)) return 0;
     double area = ac_clip_polygon(a,b,NULL,NULL);
     if (area > 0 && (ga || gb)) {
         double g[6];
-        if (ga) { ac_boundary_gradient(a,b,g); for (int k = 0; k < 3; k++) for (int d = 0; d < 2; d++) ga[2*ia[k]+d] = g[2*k+d]; }
-        if (gb) { ac_boundary_gradient(b,a,g); for (int k = 0; k < 3; k++) for (int d = 0; d < 2; d++) gb[2*ib[k]+d] = g[2*k+d]; }
+        if (ga) { ac_boundary_gradient(a,b,roundoff,g); for (int k = 0; k < 3; k++) for (int d = 0; d < 2; d++) ga[2*ia[k]+d] = g[2*k+d]; }
+        if (gb) { ac_boundary_gradient(b,a,roundoff,g); for (int k = 0; k < 3; k++) for (int d = 0; d < 2; d++) gb[2*ib[k]+d] = g[2*k+d]; }
     }
     return area;
 }

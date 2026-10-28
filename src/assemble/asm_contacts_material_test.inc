@@ -46,6 +46,25 @@ static int ac_material_policy_control(void)
             if(AsmContacts_objective(q,uv,gradient,NULL,NULL,&objective,&raw) || objective.pairs!=serial.pairs || objective.area!=serial.area)bad=1;
             for(size_t v=vertices;v<nv;v++)force+=cs*gradient[2*v]+sn*gradient[2*v+1];
             if(fabs(raw-20*depth)>1e-6 || fabs(force+20)>1e-6)bad=1;
+            /* An independent area difference must agree with the boundary
+             * derivative even when translated, rotated mesh edges coincide.
+             * Restore exact bytes: the subsequent parallel/memo controls
+             * compare the same query, not a round trip through addition. */
+            if(refined && pose){
+                double h=1e-4,plus=0,minus=0;AsmContactStats shifted={0};
+                memcpy(before,uv,2*nv*sizeof *before);
+                for(int sign=1;sign>=-1;sign-=2){
+                    for(size_t v=vertices;v<nv;v++){
+                        uv[2*v]=before[2*v]+sign*h*cs;
+                        uv[2*v+1]=before[2*v+1]+sign*h*sn;
+                    }
+                    double value=0;
+                    if(AsmContacts_objective(q,uv,NULL,NULL,NULL,&shifted,&value) || !shifted.complete)bad=1;
+                    if(sign>0)plus=value;else minus=value;
+                }
+                memcpy(uv,before,2*nv*sizeof *uv);
+                if(AsmContacts_refit(q,uv) || fabs((plus-minus)/(2*h)-force)>1e-4)bad=1;
+            }
             if(refined){
                 size_t left=vertices+(size_t)(n/2)*(n+1),inside=left+1;
                 if(fabs(cs*gradient[2*left]+sn*gradient[2*left+1]+20./n)>1e-6 ||
