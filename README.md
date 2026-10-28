@@ -89,6 +89,13 @@ cmake --build build --parallel 4
 ctest --test-dir build --output-on-failure
 ```
 
+On macOS with AppleClang, the full build uses libtiff, libomp and the system
+Accelerate LAPACK. With those dependencies available, use the same CMake
+commands as above (Ninja is optional). CMake searches the standard prefixes
+and the Intel and Apple Silicon Homebrew libomp prefixes. For a custom
+runtime location, set `SF_LIBOMP_INCLUDE_DIR` and `SF_LIBOMP_LIBRARY`.
+Use `-DSCROLLFIESTA_OPENMP=OFF` for a serial build without libomp.
+
 For a dependency-light library and API test build, disable the CLI and TIFF:
 
 ```bash

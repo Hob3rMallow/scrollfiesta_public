@@ -4,6 +4,8 @@
  * do not belong to the field arena. Checks are cooperative, not an OS quota. */
 #ifdef _WIN32
 #include <psapi.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
 #endif
 typedef struct AprWorkspace {
     size_t entry, peak, estimate;
@@ -16,6 +18,12 @@ static int apr_process_bytes(size_t *bytes)
     PROCESS_MEMORY_COUNTERS_EX usage={0};usage.cb=sizeof usage;
     if(!GetProcessMemoryInfo(GetCurrentProcess(),(PROCESS_MEMORY_COUNTERS *)&usage,sizeof usage))return 0;
     *bytes=(size_t)usage.PrivateUsage;return 1;
+#elif defined(__APPLE__)
+    mach_task_basic_info_data_t usage={0};
+    mach_msg_type_number_t count=MACH_TASK_BASIC_INFO_COUNT;
+    if(task_info(mach_task_self(),MACH_TASK_BASIC_INFO,(task_info_t)&usage,&count)!=KERN_SUCCESS)return 0;
+    if(usage.resident_size>SIZE_MAX)return 0;
+    *bytes=(size_t)usage.resident_size;return 1;
 #else
     FILE *fp=fopen("/proc/self/statm","rb");unsigned long long pages=0,resident=0;
     if(!fp)return 0;
