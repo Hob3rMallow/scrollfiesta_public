@@ -46,4 +46,7 @@ int NormalOrient_consistent(Arena_T arena,
                             float radius,
                             size_t *out_flips);
 
+/* Selftest (cube_mesh --selftest): the radix edge sort against qsort. */
+int NormalOrient_selftest(void);
+
 #endif

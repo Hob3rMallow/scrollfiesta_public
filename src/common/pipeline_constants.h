@@ -97,6 +97,16 @@
                                       * smooth residual through-thickness "lumps" left on
                                       * post-split components (sheets 1/2 of
                                       * z04736_y04224_x01920 still bumpy at 10). */
+/* MLS kernel accumulation (2026-10-06).  1 = the AVX2 kernel forms r^2 and the
+ * second-moment sums with FMA (one rounding instead of two).  The double moments
+ * then differ from the two-rounding kernel in their last bits; the float32
+ * positions and normals the projection returns absorb that (bit-identical on
+ * every cube of the mls_bench and parity-bench sets, 2026-10-06), but it is not a
+ * proof: a rare cube can differ by one float ulp.  0 = the bit-exact kernel.
+ * Paired kernel speedup in the production regime (SMT siblings busy): 1.13x
+ * exact (FMA 4t+1, double SoA, cell-order queries, tail mask on the last batch
+ * only), 1.26x with this on (scripts/extract/mls_bench.c). */
+#define MLS_FMA_ACCUMULATE     1
 
 /* Seam-band pin (cross-cube convergence). Extract MLS-projects owned verts within
  * MLS_PROJECT_RADIUS_VOX of the cube boundary with HALO (two-sided) support, so
@@ -162,6 +172,10 @@
 #define SHEET_REWELD_RHO_MAX      6.0f  /* wider ball for the permissive weld */
 #define SHEET_REWELD_BAND         6.0f  /* seam band (match phase-1) */
 #define MLS_RESPLIT_ASSIGN_MARGIN_VOX 1.5f
+#define MLS_RESPLIT_ASSIGN_SLACK_VOX 1.0e-3f /* bound slack of the fast assignment's
+                                           * other-piece query: covers float rounding
+                                           * of best+margin; decisions are identical
+                                           * (2026-10-04)                            */
                                      /* 2026-06-03: re-LOP point->piece assignment
                                       * margin. A parent original point is assigned
                                       * to its NEAREST split piece only when the
@@ -979,7 +993,47 @@
 #define CVT_TARGET_SPACING_PITCH  0.44    /* initial uniform edge spacing / wrap pitch */
 #define CVT_WIND_MAX_RETRIES         4    /* winding shortcut: density may cure it     */
 #define CVT_TOPOLOGY_MAX_RETRIES     1    /* one 2x attempt, then retain source chart */
+/* Mid-Lloyd certificate probe (2026-10-05, A/B scaffolding; the defaults run
+ * no probe and leave the output byte-identical).  A probe builds the dual of
+ * the CURRENT sites -- exactly what the attempt would emit if Lloyd stopped
+ * there -- and scores it with the ladder's own winding certificate (and, when
+ * tracing, its topology certificate); the sites are not touched.
+ *   CVT_PROBE_TRACE 1: probe after every Lloyd iteration and log the scores
+ *     per attempt ("CVT-probe:"), to fit an abort rule offline.
+ *   CVT_PROBE_ITER k > 0 with CVT_PROBE_ABORT_BAD b >= 0: abandon an attempt
+ *     whose dual after k iterations has more than b winding-shortcut faces,
+ *     as a winding failure of that rung.  OUTPUT-CHANGING for every attempt
+ *     that would have passed (or failed topology) at the end; adopt only from
+ *     a measured A/B.
+ *   CVT_PROBE_ABORT_TOPO 1 (with CVT_PROBE_ITER k): also abandon an attempt
+ *     whose dual after k iterations already fails the topology certificate,
+ *     as a TOPOLOGY failure of that rung (the ladder's topology rule).
+ *     OUTPUT-CHANGING in the same way; an early topology change can recover
+ *     by the last iteration, so this can retain a chart that would pass.
+ *   CVT_PROBE_ABORT_TOPO 2 ("safe"): the topology abort only while a topology
+ *     retry remains -- there both failure kinds retry at the same next rung --
+ *     and afterwards abort only on winding with the topology still intact.
+ *     It never turns an accepted chart into a retained one (replay of 611
+ *     charts: 0 such; 6 accepted one rung denser; CVT -16.6% at k=3, T=20). */
+#define CVT_PROBE_TRACE              0
+#define CVT_PROBE_ITER               0
+#define CVT_PROBE_ABORT_BAD         -1
+#define CVT_PROBE_ABORT_TOPO         0
+/* CVT_MANIFOLD_GUARD 1 (2026-10-05, A/B lever; OUTPUT-CHANGING): a CVT candidate
+ * that fails the topology certificate with a non-manifold component (~59% of
+ * the measured topology failures: the restricted-Delaunay dual grew a >2-face
+ * edge or a bowtie) gets the output stage's manifold guard -- resolve >2-face
+ * edges, split pinch vertices, no reorientation -- and BOTH certificates are
+ * re-run on the guarded mesh; it is accepted only if they pass. */
+#define CVT_MANIFOLD_GUARD           0
 #define CVT_MIN_FACES_FOR_REMESH    400    /* retain already-small dense charts        */
+/* OverlapSep lifted multicut: cap on Kernighan-Lin moves per bipartition
+ * update.  0 = unlimited = the vendored andres behaviour (default).  A cap is
+ * OUTPUT-CHANGING (2026-10-05 A/B lever: big components make 9-11M moves). */
+#define MULTICUT_KL_MAX_INNER        0
+#define CVT_PARALLEL_MIN_SITES      256    /* Lloyd site loop goes OpenMP-parallel at
+                                           * or above this many sites; results are
+                                           * identical either way (2026-10-04)     */
 
 /* GRADED density (the pipeline default): the CVT target edge length varies with
  * depth into the owned box -- fine (weldable) near the cube faces, coarse in the

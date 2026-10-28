@@ -20,10 +20,32 @@
 
 typedef struct Rvd_T *Rvd_T;
 
+/* Optional phase instrumentation (diagnostics only: TSC ticks from
+ * common/cycle_timer.h plus integer counters; nothing here feeds a result).
+ * Counters accumulate across every Rvd_accumulate pass while attached. */
+typedef struct {
+    uint64_t tk_near;     /* per-face vertex nearest-site queries          */
+    uint64_t tk_cand;     /* per-face candidate ball queries (non-fast)    */
+    uint64_t tk_clip;     /* owner BFS + exact clipping (non-fast)         */
+    uint64_t n_passes;    /* Rvd_accumulate calls                          */
+    uint64_t n_faces;     /* faces visited                                 */
+    uint64_t n_fast;      /* faces wholly inside one cell (no clip)        */
+    uint64_t n_cand;      /* candidates returned, summed over non-fast     */
+    uint64_t n_sat;       /* non-fast faces whose candidate set saturated  */
+    uint64_t n_cells;     /* clip_cell calls (owner x face)                */
+    uint64_t n_planes;    /* bisector planes actually clipped against      */
+    uint64_t n_preds;     /* exact side predicates evaluated               */
+    uint64_t n_wide;      /* non-fast faces kept on the wide candidate radius
+                           * (the tight one was not provably equivalent)   */
+} RvdStats;
+
 /* Build over a triangle mesh. verts: double[nv*3] (any coord order); faces:
  * int32[nf*3], 0-based. Both are copied into the arena. */
 Rvd_T Rvd_new(Arena_T arena, const double *verts, size_t nv,
               const int32_t *faces, size_t nf);
+
+/* Attach (or, with NULL, detach) an instrumentation sink; counters are added. */
+void Rvd_set_stats(Rvd_T rvd, RvdStats *stats);
 
 /* Compute the RVD of `sites` (double[nsites*3]) and accumulate per site the
  * restricted-cell AREA (out_area[nsites]) and area-weighted CENTROID
@@ -55,5 +77,10 @@ int Rvd_accumulate(Rvd_T rvd, const double *sites, size_t nsites,
 /* Total surface area of the input mesh. The sum of all restricted-cell areas from
  * Rvd_accumulate must equal this (partition property) — the core correctness check. */
 double Rvd_mesh_area(Rvd_T rvd);
+
+/* Selftest: a pass at 1, 2, 3 and 8 threads gives bitwise-identical results
+ * (the parallel clipping replays in the serial order), and the cells partition
+ * the surface. Returns 0 on pass. */
+int Rvd_selftest(void);
 
 #endif /* RVD_CLIP_INCLUDED */

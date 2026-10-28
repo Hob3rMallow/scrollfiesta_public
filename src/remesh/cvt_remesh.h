@@ -16,9 +16,47 @@
  */
 
 #include "../common/arena.h"
+#include "rvd_clip.h"
 #include "sizing_field.h"
 #include <stddef.h>
 #include <stdint.h>
+
+/* Phase instrumentation for CVT_remesh calls (diagnostics only: TSC ticks from
+ * common/cycle_timer.h and integer counters; nothing here feeds a result).
+ * Point CvtOpts.stats at a zeroed struct to collect; counters are added. */
+typedef struct {
+    uint64_t tk_setup;      /* vertex copy, Rvd_new, centroid KD tree, area CDF */
+    uint64_t tk_bext;       /* boundary loop extraction                          */
+    uint64_t tk_seed;       /* boundary + interior seeding                       */
+    uint64_t tk_rvd;        /* Lloyd-pass Rvd_accumulate                          */
+    uint64_t tk_bnd;        /* Lloyd boundary projections                        */
+    uint64_t tk_proj;       /* Lloyd surface projections                         */
+    uint64_t tk_dual;       /* final dual pass                                   */
+    uint64_t n_calls;       /* CVT_remesh calls                                  */
+    uint64_t n_sites;       /* sites, summed over calls                          */
+    uint64_t n_iters;       /* Lloyd iterations, summed over calls               */
+    uint64_t n_bnd_segs;    /* boundary segments, summed over calls              */
+    uint64_t n_seed_tries;  /* interior seed draws                               */
+    uint64_t n_bnd_calls;   /* boundary projections (seeding + Lloyd)            */
+    uint64_t n_seg_scans;   /* boundary segments examined by those projections   */
+    uint64_t n_proj_calls;  /* surface projections                               */
+    uint64_t n_proj_cand;   /* candidate triangles examined by those projections */
+    uint64_t n_proj_cap;    /* projections whose candidate list hit its cap      */
+    RvdStats rvd;           /* restricted-Voronoi passes (Lloyd + dual)          */
+    uint64_t tk_probe;      /* mid-Lloyd probes: dual + caller's certificate     */
+    uint64_t n_probe;       /* probes run                                        */
+} CvtPhaseStats;
+
+/* dst += src, field by field. */
+void CVT_phase_stats_add(CvtPhaseStats *dst, const CvtPhaseStats *src);
+
+/* Mid-Lloyd probe.  `iter` Lloyd iterations have completed; verts/faces are
+ * the dual the attempt would emit if it stopped now (arena scratch, valid for
+ * the call only).  Return nonzero to abandon the attempt: CVT_remesh_prepared
+ * then returns CVT_RC_PROBE_ABORT with no output. */
+typedef int (*CvtProbeFn)(void *ctx, int iter, const float *verts, size_t nv,
+                          const int32_t *faces, size_t nf);
+#define CVT_RC_PROBE_ABORT (-10)
 
 typedef struct {
     int      n_iters;        /* iterations                       (default 50)  */
@@ -28,6 +66,10 @@ typedef struct {
     float    lambda_cvt_min; /* floor on lambda_CVT               (default 1e-3)*/
     uint32_t seed;           /* seeding RNG (0 => 12345u)                       */
     int      verbose;
+    CvtPhaseStats *stats;    /* optional instrumentation sink (default NULL)    */
+    CvtProbeFn probe;        /* optional mid-Lloyd probe (default NULL)          */
+    void    *probe_ctx;
+    uint64_t probe_mask;     /* bit k: probe after k+1 iterations (not the last) */
 } CvtOpts;
 
 void CVT_default_opts(CvtOpts *o);
@@ -49,10 +91,37 @@ int CVT_remesh(Arena_T arena,
                float **out_verts, size_t *out_nv,
                int32_t **out_faces, size_t *out_nf);
 
+/* Prepared form for repeated attempts on ONE chart (the certificate ladder):
+ * CVT_prepare builds the site-count-independent setup once (vertex copy, RVD
+ * object, projection KD tree, seeding CDF, boundary loops + segment BVH);
+ * CVT_remesh_prepared then runs one attempt exactly as CVT_remesh would.
+ * CVT_remesh == CVT_prepare + CVT_remesh_prepared.  The setup lives in the
+ * arena: take per-attempt marks after CVT_prepare.  `in_faces` is referenced,
+ * not copied.  On failure CVT_prepare returns NULL with *out_rc = the code
+ * CVT_remesh would have returned (-1 bad input, -2 RVD, -3 zero area). */
+typedef struct CvtPrep_T *CvtPrep_T;
+CvtPrep_T CVT_prepare(Arena_T arena,
+                      const float *in_verts, size_t in_nv,
+                      const int32_t *in_faces, size_t in_nf,
+                      const CvtField *field, CvtPhaseStats *stats, int *out_rc);
+int CVT_remesh_prepared(Arena_T arena, CvtPrep_T prep,
+                        size_t target_nsites,
+                        const CvtOpts *opts,
+                        float **out_verts, size_t *out_nv,
+                        int32_t **out_faces, size_t *out_nf);
+
 /* Self-test for the KD-tree surface projection: project_to_mesh_kd must match the
  * O(nf) brute force on every query, including meshes with wildly-varying triangle
  * sizes (validates the ball-radius superset). Returns 0 on pass, <0 on failure. */
 int CVT_projection_selftest(void);
+
+/* A non-aborting mid-Lloyd probe leaves CVT_remesh_prepared bitwise unchanged;
+ * an aborting one returns CVT_RC_PROBE_ABORT.  0 on success. */
+int CVT_probe_selftest(void);
+
+/* Self-test for the boundary-segment BVH: identical segment index and bitwise
+ * identical closest point as the brute-force scans it replaces. 0 on pass. */
+int CVT_boundary_bvh_selftest(void);
 
 /* PINNED-BOUNDARY CVT remesh -- for remeshing a PATCH of a larger mesh so the
  * result stitches back conformally (the post-weld seam-band beautification).

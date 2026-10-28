@@ -384,7 +384,12 @@ static int glue_is_wall(const Vec3 *V, const Vec3 *N, int t, int h, int v_new,
 typedef struct {
     int gz, gy, gx;
     double zmin, ymin, xmin, cell_size;
-    int *head, *next;
+    int *head, *next;      /* per-cell lists, decreasing point index (the reference order) */
+    /* The same lists as CSR, in the same order, with the coordinates beside the
+     * indices (2026-10-06): grid_query walks contiguous memory instead of chasing
+     * next[] and V[].  NULL start = allocation failed, fall back to the lists. */
+    int *start, *pidx;     /* [nc + 1], [nv] */
+    float *pz, *py, *px;   /* [nv] V[pidx[k]] */
 } Grid;
 
 static Grid *grid_build(const Vec3 *V, int nv, double cell_size)
@@ -413,9 +418,34 @@ static Grid *grid_build(const Vec3 *V, int nv, double cell_size)
         size_t c = (size_t)cz*g->gy*g->gx + (size_t)cy*g->gx + cx;
         g->next[i] = g->head[c]; g->head[c] = i;
     }
+    g->start = (int *)malloc((nc + 1) * sizeof(int));
+    g->pidx = (int *)malloc((size_t)nv * sizeof(int));
+    g->pz = (float *)malloc((size_t)nv * sizeof(float));
+    g->py = (float *)malloc((size_t)nv * sizeof(float));
+    g->px = (float *)malloc((size_t)nv * sizeof(float));
+    if (!g->start || !g->pidx || !g->pz || !g->py || !g->px) {
+        free(g->start); free(g->pidx); free(g->pz); free(g->py); free(g->px);
+        g->start = g->pidx = NULL; g->pz = g->py = g->px = NULL;
+        return g;
+    }
+    int k = 0;
+    for (size_t c = 0; c < nc; c++) {
+        g->start[c] = k;
+        for (int j = g->head[c]; j != -1; j = g->next[j]) {
+            g->pidx[k] = j; g->pz[k] = V[j].z; g->py[k] = V[j].y; g->px[k] = V[j].x;
+            k++;
+        }
+    }
+    g->start[nc] = k;
     return g;
 }
-static void grid_free(Grid *g) { if (!g) return; free(g->head); free(g->next); free(g); }
+static void grid_free(Grid *g)
+{
+    if (!g) return;
+    free(g->head); free(g->next);
+    free(g->start); free(g->pidx); free(g->pz); free(g->py); free(g->px);
+    free(g);
+}
 
 typedef int (*neighbor_cb)(int idx, void *user);
 static void grid_query(const Grid *g, double cz, double cy, double cx,
@@ -426,13 +456,33 @@ static void grid_query(const Grid *g, double cz, double cy, double cx,
     int qy = (int)floor((cy-g->ymin)/g->cell_size);
     int qx = (int)floor((cx-g->xmin)/g->cell_size);
     double r2 = radius*radius;
+    /* Skip window cells wholly outside the query box c +- (radius + pad): they
+     * hold no point within `radius` (pad >> rounding), so the callback sees the
+     * same points in the same order.  The empty-ball test (radius rho, cells
+     * 2*rho) then scans <= 8 cells instead of 27 (2026-10-05). */
+    const double pad = 1e-6;
+    int zlo = (int)floor((cz-radius-pad-g->zmin)/g->cell_size);
+    int zhi = (int)floor((cz+radius+pad-g->zmin)/g->cell_size);
+    int ylo = (int)floor((cy-radius-pad-g->ymin)/g->cell_size);
+    int yhi = (int)floor((cy+radius+pad-g->ymin)/g->cell_size);
+    int xlo = (int)floor((cx-radius-pad-g->xmin)/g->cell_size);
+    int xhi = (int)floor((cx+radius+pad-g->xmin)/g->cell_size);
     for (int dz=-reach; dz<=reach; dz++) {
-        int iz = qz+dz; if (iz<0||iz>=g->gz) continue;
+        int iz = qz+dz; if (iz<0||iz>=g->gz||iz<zlo||iz>zhi) continue;
         for (int dy=-reach; dy<=reach; dy++) {
-            int iy = qy+dy; if (iy<0||iy>=g->gy) continue;
+            int iy = qy+dy; if (iy<0||iy>=g->gy||iy<ylo||iy>yhi) continue;
             for (int dx=-reach; dx<=reach; dx++) {
-                int ix = qx+dx; if (ix<0||ix>=g->gx) continue;
+                int ix = qx+dx; if (ix<0||ix>=g->gx||ix<xlo||ix>xhi) continue;
                 int cell = (iz*g->gy + iy)*g->gx + ix;
+                if (g->start) {
+                    for (int k=g->start[cell]; k<g->start[cell+1]; k++) {
+                        double dvz=g->pz[k]-cz, dvy=g->py[k]-cy, dvx=g->px[k]-cx;
+                        double d2=dvz*dvz+dvy*dvy+dvx*dvx;
+                        if (d2 > r2) continue;
+                        if (cb(g->pidx[k], user)) return;
+                    }
+                    continue;
+                }
                 for (int j=g->head[cell]; j!=-1; j=g->next[j]) {
                     double dvz=V[j].z-cz, dvy=V[j].y-cy, dvx=V[j].x-cx;
                     double d2=dvz*dvz+dvy*dvy+dvx*dvx;
@@ -474,6 +524,42 @@ static int sphere_center(const double *a, const double *b, const double *c,
     return 1;
 }
 
+/* Both ball centres of (a,b,c) from one circumcentre computation: bitwise
+ * sphere_center(.., +1, O_plus) and sphere_center(.., -1, O_minus), whose
+ * failure conditions do not depend on the side (BallPivot_query_selftest). */
+static int sphere_center_pair(const double *a, const double *b, const double *c,
+                              double rho, double *O_plus, double *O_minus)
+{
+    double ab[3], ac[3], n[3];
+    v_sub(ab,b,a); v_sub(ac,c,a); v_cross(n,ab,ac);
+    double n_len2 = v_dot(n,n);
+    if (n_len2 < 1e-30) return 0;
+    double ab_dot = v_dot(ab,ab);
+    double ac_dot = v_dot(ac,ac);
+    double ab_ac = v_dot(ab,ac);
+    double D = ab_dot*ac_dot - ab_ac*ab_ac;
+    if (D < 1e-30) return 0;
+    double alpha = ac_dot * (ab_dot - ab_ac) / (2.0 * D);
+    double beta  = ab_dot * (ac_dot - ab_ac) / (2.0 * D);
+    double c_o[3];
+    c_o[0] = a[0] + alpha*ab[0] + beta*ac[0];
+    c_o[1] = a[1] + alpha*ab[1] + beta*ac[1];
+    c_o[2] = a[2] + alpha*ab[2] + beta*ac[2];
+    double r_c2 = dist2(c_o, a);
+    if (r_c2 > rho*rho) return 0;
+    double h = sqrt(rho*rho - r_c2);
+    double n_len = sqrt(n_len2);
+    double nhat[3] = { n[0]/n_len, n[1]/n_len, n[2]/n_len };
+    double nneg[3] = { -nhat[0], -nhat[1], -nhat[2] };
+    O_plus[0] = c_o[0] + nhat[0]*h;
+    O_plus[1] = c_o[1] + nhat[1]*h;
+    O_plus[2] = c_o[2] + nhat[2]*h;
+    O_minus[0] = c_o[0] + nneg[0]*h;
+    O_minus[1] = c_o[1] + nneg[1]*h;
+    O_minus[2] = c_o[2] + nneg[2]*h;
+    return 1;
+}
+
 typedef struct {
     const Vec3 *V;
     double O[3];
@@ -490,8 +576,10 @@ static int empty_cb(int idx, void *user)
     if (d2 < c->r2_shrunk) { c->hit = 1; return 1; }
     return 0;
 }
-static int ball_empty(const Grid *g, const Vec3 *V, const double *O,
-                       double rho, int ea, int eb, int ec)
+/* The emptiness test through the generic query (before 2026-10-06; kept as
+ * the selftest reference and the no-CSR fallback). */
+static int ball_empty_ref(const Grid *g, const Vec3 *V, const double *O,
+                          double rho, int ea, int eb, int ec)
 {
     EmptyCtx c;
     c.V=V; c.O[0]=O[0]; c.O[1]=O[1]; c.O[2]=O[2];
@@ -500,6 +588,48 @@ static int ball_empty(const Grid *g, const Vec3 *V, const double *O,
     c.ea=ea; c.eb=eb; c.ec=ec; c.hit=0;
     grid_query(g, O[0], O[1], O[2], rho, empty_cb, &c, V);
     return !c.hit;
+}
+
+/* Is the shrunk ball (rho - 1e-4) at O free of points other than ea, eb, ec?
+ * The answer does not depend on the order points are visited in, so instead of
+ * grid_query + empty_cb (window loops, an indirect call per point) this walks
+ * the CSR cells of the same window (O +- (rho + pad); the query's +-reach cells
+ * contain it) and tests the same distance against the same threshold
+ * (2026-10-06): the same boolean. */
+static int ball_empty(const Grid *g, const Vec3 *V, const double *O,
+                       double rho, int ea, int eb, int ec)
+{
+    if (!g->start) return ball_empty_ref(g, V, O, rho, ea, eb, ec);
+    double r = rho - 1e-4;
+    double r2 = r*r;
+    const double pad = 1e-6;
+    int zlo = (int)floor((O[0]-rho-pad-g->zmin)/g->cell_size);
+    int zhi = (int)floor((O[0]+rho+pad-g->zmin)/g->cell_size);
+    int ylo = (int)floor((O[1]-rho-pad-g->ymin)/g->cell_size);
+    int yhi = (int)floor((O[1]+rho+pad-g->ymin)/g->cell_size);
+    int xlo = (int)floor((O[2]-rho-pad-g->xmin)/g->cell_size);
+    int xhi = (int)floor((O[2]+rho+pad-g->xmin)/g->cell_size);
+    if (zlo < 0) zlo = 0;
+    if (ylo < 0) ylo = 0;
+    if (xlo < 0) xlo = 0;
+    if (zhi >= g->gz) zhi = g->gz - 1;
+    if (yhi >= g->gy) yhi = g->gy - 1;
+    if (xhi >= g->gx) xhi = g->gx - 1;
+    for (int iz = zlo; iz <= zhi; iz++)
+        for (int iy = ylo; iy <= yhi; iy++) {
+            int row = (iz*g->gy + iy)*g->gx;
+            for (int ix = xlo; ix <= xhi; ix++) {
+                int cell = row + ix;
+                for (int k = g->start[cell]; k < g->start[cell+1]; k++) {
+                    int j = g->pidx[k];
+                    if (j == ea || j == eb || j == ec) continue;
+                    double dz = g->pz[k]-O[0], dy = g->py[k]-O[1], dx = g->px[k]-O[2];
+                    if (dz*dz + dy*dy + dx*dx < r2) return 0;
+                }
+            }
+        }
+    (void)V;
+    return 1;
 }
 
 /* --- Mixed-dead-end margin diagnostics (BPA_DEBUG only) ------------------- */
@@ -833,8 +963,8 @@ static int pivot_cb(int idx, void *user)
     if (idx == p->va || idx == p->vb) return 0;
     double c[3]; vec3_to_d(c, &p->V[idx]);
     double O_plus[3], O_minus[3];
-    int has_p = sphere_center(p->a, p->b, c, p->rho, +1, O_plus);
-    int has_m = sphere_center(p->a, p->b, c, p->rho, -1, O_minus);
+    int has_p = sphere_center_pair(p->a, p->b, c, p->rho, O_plus, O_minus);
+    int has_m = has_p;
     if (!has_p && !has_m) return 0;
     p->n_sphere++;
     double Os[2][3]; int n_O = 0;
@@ -1186,6 +1316,135 @@ static int bpa_grow_phase_candidate(const BpaBuild *b, const Vec3 *V,
         return 0;
     *out_phase = pc;
     return 1;
+}
+
+/* Reference grid query: the full (2*reach+1)^3 window, as before 2026-10-05. */
+static void grid_query_ref(const Grid *g, double cz, double cy, double cx,
+                           double radius, neighbor_cb cb, void *user, const Vec3 *V)
+{
+    int reach = (int)ceil(radius/g->cell_size);
+    int qz = (int)floor((cz-g->zmin)/g->cell_size);
+    int qy = (int)floor((cy-g->ymin)/g->cell_size);
+    int qx = (int)floor((cx-g->xmin)/g->cell_size);
+    double r2 = radius*radius;
+    for (int dz=-reach; dz<=reach; dz++) {
+        int iz = qz+dz; if (iz<0||iz>=g->gz) continue;
+        for (int dy=-reach; dy<=reach; dy++) {
+            int iy = qy+dy; if (iy<0||iy>=g->gy) continue;
+            for (int dx=-reach; dx<=reach; dx++) {
+                int ix = qx+dx; if (ix<0||ix>=g->gx) continue;
+                int cell = (iz*g->gy + iy)*g->gx + ix;
+                for (int j=g->head[cell]; j!=-1; j=g->next[j]) {
+                    double dvz=V[j].z-cz, dvy=V[j].y-cy, dvx=V[j].x-cx;
+                    double d2=dvz*dvz+dvy*dvy+dvx*dvx;
+                    if (d2 > r2) continue;
+                    if (cb(j, user)) return;
+                }
+            }
+        }
+    }
+}
+
+typedef struct { int *seq; int n, cap, stop_after; } QuerySeq;
+static int query_seq_cb(int idx, void *user)
+{
+    QuerySeq *q = (QuerySeq *)user;
+    if (q->n < q->cap) q->seq[q->n] = idx;
+    q->n++;
+    return (q->stop_after > 0 && q->n >= q->stop_after) ? 1 : 0;
+}
+
+static double selftest_rand01(uint32_t *s)
+{
+    *s = *s * 1664525u + 1013904223u;
+    return (double)(*s >> 8) * (1.0 / 16777216.0);
+}
+
+/* grid_query (restricted window) == grid_query_ref callback sequences, and
+ * sphere_center_pair == two sphere_center calls, bitwise. */
+int BallPivot_query_selftest(void)
+{
+    const int nv = 6000;
+    Vec3 *V = (Vec3 *)malloc((size_t)nv * sizeof(Vec3));
+    int *s1 = (int *)malloc(4096 * sizeof(int));
+    int *s2 = (int *)malloc(4096 * sizeof(int));
+    uint32_t rs = 20261005u;
+    int fails = 0;
+    long n_queries = 0, n_cb = 0;
+    if (!V || !s1 || !s2) { free(V); free(s1); free(s2); return 1; }
+    /* a wavy sheet with points snapped onto cell boundaries, plus loose points */
+    for (int i = 0; i < nv; i++) {
+        double u = selftest_rand01(&rs) * 40.0, w = selftest_rand01(&rs) * 40.0;
+        double z = 20.0 + 3.0 * sin(u * 0.3) + 0.4 * selftest_rand01(&rs);
+        if (i % 7 == 0) u = floor(u / 2.4) * 2.4;
+        if (i % 11 == 0) z = floor(z / 1.2) * 1.2;
+        if (i % 13 == 0) z = 40.0 * selftest_rand01(&rs);
+        V[i].z = (float)z; V[i].y = (float)u; V[i].x = (float)w;
+    }
+    const double rho = 1.2;
+    Grid *g = grid_build(V, nv, 2.0 * rho);
+    for (int t = 0; t < 20000 && !fails; t++) {
+        const Vec3 *p = &V[(int)(selftest_rand01(&rs) * nv) % nv];
+        double cz = p->z + (selftest_rand01(&rs) - 0.5) * 3.0;
+        double cy = p->y + (selftest_rand01(&rs) - 0.5) * 3.0;
+        double cx = p->x + (selftest_rand01(&rs) - 0.5) * 3.0;
+        if (t % 5 == 0) cz = floor(cz / 2.4) * 2.4 + (t % 2 ? 1e-9 : -1e-9);
+        double radius = (t % 3 == 0) ? 2.0 * rho : (t % 3 == 1) ? rho : rho - 1e-4;
+        int stop = (t % 4 == 0) ? 1 + (t % 9) : 0;
+        QuerySeq a = { s1, 0, 4096, stop }, b = { s2, 0, 4096, stop };
+        grid_query(g, cz, cy, cx, radius, query_seq_cb, &a, V);
+        grid_query_ref(g, cz, cy, cx, radius, query_seq_cb, &b, V);
+        n_queries++; n_cb += b.n;
+        if (a.n != b.n || memcmp(s1, s2, (size_t)(a.n < 4096 ? a.n : 4096) * sizeof(int)) != 0) {
+            fprintf(stderr, "BallPivot_query_selftest FAIL: query %d (%d vs %d callbacks)\n",
+                    t, a.n, b.n);
+            fails++;
+        }
+    }
+    long n_empty = 0, n_full = 0;
+    for (int t = 0; t < 40000 && !fails; t++) {     /* emptiness: CSR walk == query + callback */
+        const Vec3 *p = &V[(int)(selftest_rand01(&rs) * nv) % nv];
+        double O[3] = { p->z + (selftest_rand01(&rs) - 0.5) * 2.0 * rho,
+                        p->y + (selftest_rand01(&rs) - 0.5) * 2.0 * rho,
+                        p->x + (selftest_rand01(&rs) - 0.5) * 2.0 * rho };
+        if (t % 7 == 0) O[0] = floor(O[0] / 2.4) * 2.4 + (t % 2 ? 1e-9 : -1e-9);
+        double rr = (t % 3 == 0) ? rho : (t % 3 == 1) ? 0.3 : rho * 1.5;
+        int ea = (int)(selftest_rand01(&rs) * nv) % nv, eb = (t % 5) ? ea : ((ea + 1) % nv);
+        int ec = (int)(selftest_rand01(&rs) * nv) % nv;
+        int e1 = ball_empty(g, V, O, rr, ea, eb, ec), e2 = ball_empty_ref(g, V, O, rr, ea, eb, ec);
+        if (e1) n_empty++; else n_full++;
+        if (e1 != e2) {
+            fprintf(stderr, "BallPivot_query_selftest FAIL: ball_empty %d vs reference %d (test %d)\n", e1, e2, t);
+            fails++;
+        }
+    }
+    if (!fails && (n_empty == 0 || n_full == 0)) {
+        fprintf(stderr, "BallPivot_query_selftest FAIL: emptiness cases not both exercised\n");
+        fails++;
+    }
+    for (int t = 0; t < 20000 && !fails; t++) {
+        double a[3], b[3], c[3], p1[3], m1[3], p2[3] = {0,0,0}, m2[3] = {0,0,0};
+        for (int d = 0; d < 3; d++) {
+            a[d] = (double)(float)(selftest_rand01(&rs) * 3.0);
+            b[d] = (double)(float)(selftest_rand01(&rs) * 3.0);
+            c[d] = (double)(float)(selftest_rand01(&rs) * 3.0);
+        }
+        if (t % 17 == 0) { c[0] = a[0]; c[1] = a[1]; c[2] = a[2]; }    /* degenerate */
+        int hp = sphere_center(a, b, c, rho, +1, p1);
+        int hm = sphere_center(a, b, c, rho, -1, m1);
+        int hpair = sphere_center_pair(a, b, c, rho, p2, m2);
+        if (hp != hpair || hm != hpair ||
+            (hpair && (memcmp(p1, p2, sizeof(p1)) != 0 || memcmp(m1, m2, sizeof(m1)) != 0))) {
+            fprintf(stderr, "BallPivot_query_selftest FAIL: sphere pair %d\n", t);
+            fails++;
+        }
+    }
+    grid_free(g);
+
+    free(V); free(s1); free(s2);
+    fprintf(stderr, "BallPivot_query_selftest: %s (%ld queries, %ld callbacks == full window; "
+            "20000 ball-centre pairs bitwise)\n", fails ? "FAIL" : "OK", n_queries, n_cb);
+    return fails ? 1 : 0;
 }
 
 int BallPivot_winding_selftest(void)

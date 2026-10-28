@@ -372,5 +372,40 @@ void ves_hard_timeout_cancel(void);
  * ================================================================ */
 
 void ves_omp_set_threads(int n);
+/* Leave the process now with exit status `code`, after fflush(NULL): no
+ * atexit handlers, no CRT/OpenMP/DLL teardown.  For a batch tool whose
+ * outputs are all written and closed.  2026-10-05: one cube_mesh in ~2,600
+ * hung at exit (output complete, 0 CPU, main + OpenMP worker + timer thread
+ * alive) -- a teardown deadlock this exit path cannot enter.  Does not return. */
+#if defined(_MSC_VER)
+#define VES_NORETURN __declspec(noreturn)
+#elif defined(__GNUC__)
+#define VES_NORETURN __attribute__((noreturn))
+#else
+#define VES_NORETURN
+#endif
+VES_NORETURN void ves_fast_exit(int code);
+
+/* Run fn(arg) on a worker thread bounded by the WORKER'S CPU time (cpu_ms) and,
+ * as a backstop for a blocked or starved worker, by wall time (wall_ms).
+ * Returns 0 when fn finished, 1 when its CPU budget ran out, 2 when the wall
+ * backstop expired -- in both cases the worker was TerminateThread'ed, so use it
+ * only for code that may be killed (no locks held while it spins) -- and -1
+ * when no thread could be started (the caller should run fn inline).  A CPU
+ * bound does not fire on a starved machine, so the outcome does not depend on
+ * the load (2026-10-05: a 10 s WALL bound in hole_fill abandoned holes and
+ * killed workers mid-flight under load).  *out_cpu_ms (optional) receives the
+ * worker's CPU time.  Windows; elsewhere it returns -1. */
+#ifdef _WIN32
+typedef unsigned (__stdcall *VesThreadFn)(void *);
+#else
+typedef unsigned (*VesThreadFn)(void *);
+#endif
+int ves_run_thread_cpu_bounded(VesThreadFn fn, void *arg, unsigned cpu_ms,
+                               unsigned wall_ms, unsigned *out_cpu_ms);
+
+/* Selftest of ves_run_thread_cpu_bounded (quick, spinning, sleeping and
+ * blocked workers).  Returns 0 on success. */
+int ves_platform_selftest(void);
 
 #endif /* VES_PLATFORM_H */

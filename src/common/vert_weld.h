@@ -88,4 +88,7 @@ void Weld_verts_filtered(Arena_T arena,
                          float **out_verts, size_t *out_nv,
                          float **out_normals);
 
+/* Selftest (cube_mesh --selftest): radix sort and run table vs qsort and binary search. */
+int Weld_selftest(void);
+
 #endif

@@ -192,4 +192,9 @@ int BallPivot_bridge(Arena_T arena,
 /* In-process regression for the cumulative winding-growth invariant. */
 int BallPivot_winding_selftest(void);
 
+/* grid_query's restricted cell window == the full window (callback order),
+ * and paired ball centres == two single-side computations, bitwise.
+ * Returns 0 on success. */
+int BallPivot_query_selftest(void);
+
 #endif

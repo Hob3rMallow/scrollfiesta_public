@@ -2,6 +2,8 @@
 
 #include <assert.h>
 #include <math.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -41,6 +43,56 @@ static int cmp_cell_entry(const void *a, const void *b)
     if (ea->vert_idx < eb->vert_idx) return -1;
     if (ea->vert_idx > eb->vert_idx) return 1;
     return 0;
+}
+
+/* Stable LSD radix sort of the entries by cell key, 8 bits per pass, passes
+ * whose byte is constant skipped (2026-10-06).  The entries arrive in vertex
+ * order and cmp_cell_entry breaks key ties by vertex index, so this yields the
+ * array qsort produced.  keys[] comes back aligned with the sorted entries. */
+static void weld_sort_entries(Arena_T arena, CellEntry *entries, uint64_t *keys, size_t nv)
+{
+    CellEntry *te = (CellEntry *)ARENA_ALLOC(arena, nv * sizeof(CellEntry));
+    uint64_t *tk = (uint64_t *)ARENA_ALLOC(arena, nv * sizeof(uint64_t));
+    size_t *cnt = (size_t *)ARENA_ALLOC(arena, 256 * sizeof(size_t));
+    for (int shift = 0; shift < 64; shift += 8) {
+        memset(cnt, 0, 256 * sizeof(size_t));
+        for (size_t i = 0; i < nv; i++) cnt[(keys[i] >> shift) & 0xFF]++;
+        if (cnt[(keys[0] >> shift) & 0xFF] == nv) continue;   /* constant byte */
+        size_t run = 0;
+        for (int b = 0; b < 256; b++) { size_t c = cnt[b]; cnt[b] = run; run += c; }
+        for (size_t i = 0; i < nv; i++) {
+            size_t d = cnt[(keys[i] >> shift) & 0xFF]++;
+            te[d] = entries[i];
+            tk[d] = keys[i];
+        }
+        memcpy(entries, te, nv * sizeof(CellEntry));
+        memcpy(keys, tk, nv * sizeof(uint64_t));
+    }
+}
+
+/* splitmix64 finalizer (as mls_project.c) for the run table below. */
+static inline uint64_t weld_hash64(uint64_t h)
+{
+    h ^= h >> 30; h *= 0xBF58476D1CE4E5B9ULL;
+    h ^= h >> 27; h *= 0x94D049BB133111EBULL;
+    h ^= h >> 31;
+    return h;
+}
+
+#define WELD_EMPTY UINT64_MAX
+
+/* First index of key's run in the sorted keys, or SIZE_MAX when absent: what
+ * the binary search found, without its ~log2(nv) steps per cell. */
+static inline size_t weld_run_find(const uint64_t *tab_key, const size_t *tab_lo,
+                                   size_t T, uint64_t key)
+{
+    size_t h = (size_t)(weld_hash64(key) & (uint64_t)(T - 1));
+    for (;;) {
+        uint64_t k = tab_key[h];
+        if (k == key) return tab_lo[h];
+        if (k == WELD_EMPTY) return SIZE_MAX;
+        h = (h + 1) & (T - 1);
+    }
 }
 
 /* Union-find with smaller-index-as-root + path compression. */
@@ -107,12 +159,25 @@ void Weld_verts_filtered(Arena_T arena,
         entries[i].cell_x = (int32_t)floorf(x * (float)inv_E);
         entries[i].vert_idx = (int32_t)i;
     }
-    qsort(entries, nv, sizeof(CellEntry), cmp_cell_entry);
-
     uint64_t *keys = (uint64_t *)ARENA_ALLOC(arena,
                         (size_t)nv * sizeof(uint64_t));
     for (size_t i = 0; i < nv; i++) {
         keys[i] = cell_key(entries[i].cell_z, entries[i].cell_y, entries[i].cell_x);
+    }
+    weld_sort_entries(arena, entries, keys, nv);
+
+    /* Run table: each distinct key -> the first index of its run. */
+    size_t T = 64;
+    while (T < nv * 2) T <<= 1;
+    uint64_t *tab_key = (uint64_t *)ARENA_ALLOC(arena, T * sizeof(uint64_t));
+    size_t *tab_lo = (size_t *)ARENA_ALLOC(arena, T * sizeof(size_t));
+    memset(tab_key, 0xFF, T * sizeof(uint64_t));   /* all WELD_EMPTY */
+    for (size_t i = 0; i < nv; i++) {
+        if (i > 0 && keys[i] == keys[i - 1]) continue;
+        size_t h = (size_t)(weld_hash64(keys[i]) & (uint64_t)(T - 1));
+        while (tab_key[h] != WELD_EMPTY) h = (h + 1) & (T - 1);
+        tab_key[h] = keys[i];
+        tab_lo[h] = i;
     }
 
     /* -------- Union-find merging -------- */
@@ -164,12 +229,8 @@ void Weld_verts_filtered(Arena_T arena,
             for (int dy = -1; dy <= 1; dy++) {
                 for (int dx = -1; dx <= 1; dx++) {
                     uint64_t target = cell_key(ciz + dz, ciy + dy, cix + dx);
-                    size_t lo = 0, hi = nv;
-                    while (lo < hi) {
-                        size_t mid = lo + (hi - lo) / 2;
-                        if (keys[mid] < target) lo = mid + 1;
-                        else hi = mid;
-                    }
+                    size_t lo = weld_run_find(tab_key, tab_lo, T, target);
+                    if (lo == SIZE_MAX) continue;
                     for (size_t k = lo; k < nv && keys[k] == target; k++) {
                         int32_t j = entries[k].vert_idx;
                         /* Each unordered pair is considered exactly once. */
@@ -336,4 +397,71 @@ void Weld_verts(Arena_T arena,
     Weld_verts_filtered(arena, verts, nv, in_normals, faces, nf, out_nf,
                         eps, guard_orient, NULL, NULL, NULL,
                         out_verts, out_nv, out_normals);
+}
+
+/* Selftest (cube_mesh --selftest): the radix sort equals qsort with
+ * cmp_cell_entry, and the run table finds exactly the binary search's first
+ * index, on random cells with heavy duplication and negative coordinates. */
+int Weld_selftest(void)
+{
+    Arena_T arena = Arena_new();
+    uint64_t s = 0x2545F4914F6CDD1DULL;
+    int fails = 0;
+    size_t checks = 0;
+    for (int trial = 0; trial < 40 && !fails; trial++) {
+        size_t nv = (size_t)(1 + trial * trial * 37);
+        int span = 1 + trial % 9;
+        Arena_Mark m = Arena_save(arena);
+        CellEntry *a = (CellEntry *)ARENA_ALLOC(arena, nv * sizeof(CellEntry));
+        CellEntry *b = (CellEntry *)ARENA_ALLOC(arena, nv * sizeof(CellEntry));
+        uint64_t *keys = (uint64_t *)ARENA_ALLOC(arena, nv * sizeof(uint64_t));
+        for (size_t i = 0; i < nv; i++) {
+            s = weld_hash64(s + 0x9E3779B97F4A7C15ULL);
+            a[i].cell_z = (int32_t)(s % (uint64_t)span) - span / 2 - (trial & 1) * 70000;
+            a[i].cell_y = (int32_t)((s >> 16) % (uint64_t)span) - span / 2;
+            a[i].cell_x = (int32_t)((s >> 32) % (uint64_t)span) + (trial & 2) * 1000;
+            a[i].vert_idx = (int32_t)i;
+            b[i] = a[i];
+            keys[i] = cell_key(a[i].cell_z, a[i].cell_y, a[i].cell_x);
+        }
+        qsort(b, nv, sizeof(CellEntry), cmp_cell_entry);
+        weld_sort_entries(arena, a, keys, nv);
+        checks++;
+        if (memcmp(a, b, nv * sizeof(CellEntry)) != 0) { fails++; break; }
+        for (size_t i = 0; i < nv; i++)
+            if (keys[i] != cell_key(a[i].cell_z, a[i].cell_y, a[i].cell_x)) { fails++; break; }
+        size_t T = 64;
+        while (T < nv * 2) T <<= 1;
+        uint64_t *tab_key = (uint64_t *)ARENA_ALLOC(arena, T * sizeof(uint64_t));
+        size_t *tab_lo = (size_t *)ARENA_ALLOC(arena, T * sizeof(size_t));
+        memset(tab_key, 0xFF, T * sizeof(uint64_t));
+        for (size_t i = 0; i < nv; i++) {
+            if (i > 0 && keys[i] == keys[i - 1]) continue;
+            size_t h = (size_t)(weld_hash64(keys[i]) & (uint64_t)(T - 1));
+            while (tab_key[h] != WELD_EMPTY) h = (h + 1) & (T - 1);
+            tab_key[h] = keys[i];
+            tab_lo[h] = i;
+        }
+        for (int q = 0; q < 400; q++) {
+            s = weld_hash64(s + 1);
+            int32_t cz = (int32_t)(s % (uint64_t)(span + 4)) - span / 2 - 2 - (trial & 1) * 70000;
+            int32_t cy = (int32_t)((s >> 16) % (uint64_t)(span + 4)) - span / 2 - 2;
+            int32_t cx = (int32_t)((s >> 32) % (uint64_t)(span + 4)) - 2 + (trial & 2) * 1000;
+            uint64_t target = cell_key(cz, cy, cx);
+            size_t lo = 0, hi = nv;
+            while (lo < hi) {
+                size_t mid = lo + (hi - lo) / 2;
+                if (keys[mid] < target) lo = mid + 1;
+                else hi = mid;
+            }
+            size_t want = (lo < nv && keys[lo] == target) ? lo : SIZE_MAX;
+            checks++;
+            if (weld_run_find(tab_key, tab_lo, T, target) != want) { fails++; break; }
+        }
+        Arena_restore(arena, m);
+    }
+    Arena_dispose(&arena);
+    fprintf(stderr, "Weld_selftest: %s (%zu radix-vs-qsort sorts and run lookups)\n",
+            fails ? "FAIL" : "OK", checks);
+    return fails ? -1 : 0;
 }

@@ -1,7 +1,11 @@
 #include "pipeline_cube.h"
 
 #include "../common/ves_platform.h"
+#include "../common/cycle_timer.h"
 #include "../remesh/cvt_remesh.h"
+#include "../common/kdtree.h"
+#include "../common/attene_predicates_wrap.h"
+#include "../split/multicut_wrap.h"
 #include "../common/mesh_trim.h"
 #include "../common/dump_obj.h"
 #include "../common/pipeline_constants.h"
@@ -20,6 +24,8 @@
 #include "../remesh/dev_gate.h"
 #include "../common/mesh_manifold.h"
 #include "../common/mls_project.h"
+#include "../common/vert_weld.h"
+#include "../remesh/normal_orient.h"
 #include "../common/halo_loader.h"
 #include "../common/tiff_io.h"
 #include "../flatten/seam_cut.h"
@@ -34,6 +40,44 @@
 
 static double now_sec(void) { return ves_clock_sec(); }
 static double elapsed_since(double t0) { return now_sec() - t0; }
+
+/* CVT_TIMING=1 adds one CVT-phase line per remesh attempt (diagnostic only). */
+static int pipeline_cvt_timing_verbose(void)
+{
+    const char *e = getenv("CVT_TIMING");
+    return e && e[0] == '1';
+}
+
+/* One line of CVT phase instrumentation; ticks are converted with `spt`
+ * (seconds per tick, measured over the span the stats cover). */
+static void pipeline_print_cvt_phases(const char *prefix, const CvtPhaseStats *s,
+                                      double spt, double cert_s, double topo_s)
+{
+    const RvdStats *r = &s->rvd;
+    double nonfast = (double)(r->n_faces - r->n_fast);
+    fprintf(stderr,
+        "%s setup=%.2f bext=%.2f seed=%.2f rvd=%.2f[near=%.2f cand=%.2f clip=%.2f] "
+        "bnd=%.2f proj=%.2f dual=%.2f cert=%.2f topo_in=%.2f s | calls=%llu "
+        "sites=%llu segs=%llu seed_tries=%llu bnd_calls=%llu seg_scans=%.3g "
+        "proj_calls=%llu cand/proj=%.1f proj_cap=%llu | rvd faces=%.3g fast=%.1f%% "
+        "cand/face=%.1f sat=%llu wide=%llu cells=%.3g planes=%.3g preds=%.3g\n",
+        prefix,
+        (double)s->tk_setup * spt, (double)s->tk_bext * spt,
+        (double)s->tk_seed * spt, (double)s->tk_rvd * spt,
+        (double)r->tk_near * spt, (double)r->tk_cand * spt,
+        (double)r->tk_clip * spt, (double)s->tk_bnd * spt,
+        (double)s->tk_proj * spt, (double)s->tk_dual * spt, cert_s, topo_s,
+        (unsigned long long)s->n_calls, (unsigned long long)s->n_sites,
+        (unsigned long long)s->n_bnd_segs, (unsigned long long)s->n_seed_tries,
+        (unsigned long long)s->n_bnd_calls, (double)s->n_seg_scans,
+        (unsigned long long)s->n_proj_calls,
+        s->n_proj_calls ? (double)s->n_proj_cand / (double)s->n_proj_calls : 0.0,
+        (unsigned long long)s->n_proj_cap, (double)r->n_faces,
+        r->n_faces ? 100.0 * (double)r->n_fast / (double)r->n_faces : 0.0,
+        nonfast > 0.0 ? (double)r->n_cand / nonfast : 0.0,
+        (unsigned long long)r->n_sat, (unsigned long long)r->n_wide, (double)r->n_cells,
+        (double)r->n_planes, (double)r->n_preds);
+}
 
 /* Physical support is a better ownership signal than tessellation density.
  * OverlapSep can put hundreds of tiny triangles on a ten-voxel duplicate crumb
@@ -206,6 +250,77 @@ static int pipeline_topology_signature_equal(
            a->nonorientable_components == b->nonorientable_components &&
            a->beta_1 == b->beta_1 && a->beta_2 == b->beta_2 &&
            a->minimal_generator_rank == b->minimal_generator_rank;
+}
+
+/* Mid-Lloyd CVT probe (pipeline_constants.h CVT_PROBE_*; A/B scaffolding):
+ * scores the dual of the current sites with the ladder's own certificates.
+ * With CVT_PROBE_TRACE the scores are kept for the per-attempt "CVT-probe:"
+ * line; with CVT_PROBE_ITER/CVT_PROBE_ABORT_BAD it may abandon the attempt. */
+#define PIPELINE_CVT_PROBE_MAX 64
+typedef struct {
+    const BpaReconGate *gate;
+    const PipelineTopologySignature *input_topology;
+    int    trace;            /* CVT_PROBE_TRACE                               */
+    int    abort_iter;       /* CVT_PROBE_ITER (0 = never abort)              */
+    long long abort_above;   /* CVT_PROBE_ABORT_BAD (< 0 = never abort)       */
+    int    abort_topo;       /* CVT_PROBE_ABORT_TOPO (0 off, 1 any, 2 safe)   */
+    size_t attempt;          /* ladder attempt index of this CVT run          */
+    size_t n;
+    int    iter[PIPELINE_CVT_PROBE_MAX];
+    size_t wind[PIPELINE_CVT_PROBE_MAX];
+    int    topo[PIPELINE_CVT_PROBE_MAX];
+    int    aborted;          /* 1 winding, 2 topology                         */
+    size_t abort_bad;
+} PipelineCvtProbe;
+
+static int pipeline_cvt_probe(void *ctx, int iter, const float *verts,
+                              size_t nv, const int32_t *faces, size_t nf)
+{
+    PipelineCvtProbe *c = (PipelineCvtProbe *)ctx;
+    double max_abs_dw = 0.0;
+    size_t bad = 0;
+    int topo_changed = 1;
+    if (!c || !c->gate) return 0;
+    if (nf > 0)
+        bad = pipeline_count_winding_shortcut_faces(verts, faces, nf, c->gate,
+                                                    c->gate->tol, &max_abs_dw);
+    int at_abort = (c->abort_iter > 0 && iter == c->abort_iter);
+    if (c->trace || (at_abort && c->abort_topo)) {
+        PipelineTopologySignature sig;
+        memset(&sig, 0, sizeof(sig));
+        if (nf > 0 && c->input_topology &&
+            pipeline_topology_signature(verts, nv, faces, nf, &sig) == 0 &&
+            pipeline_topology_signature_equal(c->input_topology, &sig))
+            topo_changed = 0;
+    }
+    if (c->trace) {
+        if (c->n < PIPELINE_CVT_PROBE_MAX) {
+            c->iter[c->n] = iter;
+            c->wind[c->n] = bad;
+            c->topo[c->n] = topo_changed;
+            c->n++;
+        }
+    }
+    if (!at_abort) return 0;
+    int wind_abort = (c->abort_above >= 0 && bad > (size_t)c->abort_above);
+    int topo_abort = (c->abort_topo != 0 && topo_changed);
+    if (c->abort_topo == 2 && c->attempt >= (size_t)CVT_TOPOLOGY_MAX_RETRIES) {
+        /* no topology retry left: an early topology change may still
+         * recover, so only a winding failure on an intact topology aborts */
+        topo_abort = 0;
+        if (topo_changed) wind_abort = 0;
+    }
+    if (topo_abort) {
+        c->aborted = 2;
+        c->abort_bad = bad;
+        return 1;
+    }
+    if (wind_abort) {
+        c->aborted = 1;
+        c->abort_bad = bad;
+        return 1;
+    }
+    return 0;
 }
 
 static int pipeline_env_double_strict(const char *name,double *out)
@@ -1233,6 +1348,11 @@ int pipeline_process_cube(Arena_T arena,
     /* ---- CVT/RVD chart remeshing ---- */
     if (!in->skip_simplify) {
         double tcvt_stage = now_sec();
+        uint64_t tk_cvt_stage = cycle_now();
+        CvtPhaseStats cvt_cube_stats;
+        double cvt_cert_s = 0.0, cvt_topo_in_s = 0.0;
+        int cvt_timing_verbose = pipeline_cvt_timing_verbose();
+        memset(&cvt_cube_stats, 0, sizeof(cvt_cube_stats));
         /* Explicit ratios are retained for controlled density ablations.  The
          * scroll default is derived per chart from physical area and pitch. */
         float cvt_ratio = CVT_TARGET_RATIO;
@@ -1265,10 +1385,13 @@ int pipeline_process_cube(Arena_T arena,
             ComponentMesh *cm = &out->meshes[i];
             if (cm->nf <= CVT_MIN_FACES_FOR_REMESH) continue;
             PipelineTopologySignature input_topology;
-            if (pipeline_topology_signature(cm->verts, cm->nv,
+            double t_topo_in = now_sec();
+            int input_topology_rc =
+                pipeline_topology_signature(cm->verts, cm->nv,
                                             cm->faces, cm->nf,
-                                            &input_topology) != 0 ||
-                !input_topology.complete) {
+                                            &input_topology);
+            cvt_topo_in_s += elapsed_since(t_topo_in);
+            if (input_topology_rc != 0 || !input_topology.complete) {
                 fprintf(stderr,
                         "    CVT: comp %zu input topology audit failed; "
                         "keeping unsimplified chart\n", i);
@@ -1327,17 +1450,61 @@ int pipeline_process_cube(Arena_T arena,
                   } }
                 int cvt_candidate_reject = 0;
                 size_t cvt_attempt = 0;
+                /* Site-count-independent setup, built once per chart and
+                 * reused by every rung of the ladder (2026-10-04).  It sits
+                 * below the per-attempt marks; a rejected chart releases it. */
+                Arena_Mark cvt_chart_mark = Arena_save(arena);
+                int cvt_prep_rc = 0;
+                CvtPrep_T cvt_prep = CVT_prepare(arena, cm->verts, cm->nv,
+                                                 cm->faces, cm->nf, fldp,
+                                                 &cvt_cube_stats, &cvt_prep_rc);
                 for (;;) {
                     Arena_Mark cvt_attempt_mark = Arena_save(arena);
                     double ta = now_sec();
+                    uint64_t tka = cycle_now();
+                    CvtPhaseStats att_stats;
+                    memset(&att_stats, 0, sizeof(att_stats));
+                    co.stats = &att_stats;
                     new_v = NULL; new_f = NULL; new_nv = 0; new_nf = 0;
-                    cvt_rc = CVT_remesh(arena, cm->verts, cm->nv,
-                                        cm->faces, cm->nf,
-                                        target_ns, &co, fldp,
-                                        &new_v, &new_nv, &new_f, &new_nf);
+                    PipelineCvtProbe cvt_probe;
+                    memset(&cvt_probe, 0, sizeof(cvt_probe));
+                    cvt_probe.gate = simplify_wind_gate_p;
+                    cvt_probe.input_topology = &input_topology;
+                    cvt_probe.trace = CVT_PROBE_TRACE;
+                    cvt_probe.abort_iter = CVT_PROBE_ITER;
+                    cvt_probe.abort_above = CVT_PROBE_ABORT_BAD;
+                    cvt_probe.abort_topo = CVT_PROBE_ABORT_TOPO;
+                    cvt_probe.attempt = cvt_attempt;
+                    co.probe = NULL; co.probe_ctx = NULL; co.probe_mask = 0;
+                    if ((cvt_probe.trace || cvt_probe.abort_iter > 0) &&
+                        simplify_wind_gate_p && !fldp) {
+                        uint64_t mask = 0;
+                        if (cvt_probe.trace)
+                            for (int k = 0; k + 1 < co.n_iters && k < 64; k++)
+                                mask |= (uint64_t)1 << k;
+                        if (cvt_probe.abort_iter > 0 &&
+                            cvt_probe.abort_iter < co.n_iters &&
+                            cvt_probe.abort_iter <= 64)
+                            mask |= (uint64_t)1 << (unsigned)(cvt_probe.abort_iter - 1);
+                        co.probe = pipeline_cvt_probe;
+                        co.probe_ctx = &cvt_probe;
+                        co.probe_mask = mask;
+                    }
+                    cvt_rc = cvt_prep
+                        ? CVT_remesh_prepared(arena, cvt_prep, target_ns, &co,
+                                              &new_v, &new_nv, &new_f, &new_nf)
+                        : cvt_prep_rc;
+                    /* a probe abort is this rung's winding failure, no output */
+                    int probe_aborted = (cvt_rc == CVT_RC_PROBE_ABORT);
+                    if (probe_aborted) {
+                        cvt_rc = 0;
+                        new_v = NULL; new_f = NULL; new_nv = 0; new_nf = 0;
+                    }
+                    double tcert = now_sec();
                     size_t bad_faces = 0;
                     double max_abs_dw = 0.0;
                     PipelineTopologySignature candidate_topology;
+                    memset(&candidate_topology, 0, sizeof(candidate_topology));
                     int topology_bad = 0;
                     if (cvt_rc == 0 && new_nf > 0 && simplify_wind_gate_p) {
                         bad_faces = pipeline_count_winding_shortcut_faces(
@@ -1351,6 +1518,110 @@ int pipeline_process_cube(Arena_T arena,
                          !pipeline_topology_signature_equal(
                              &input_topology, &candidate_topology)))
                         topology_bad = 1;
+                    if (probe_aborted) {
+                        bad_faces = cvt_probe.abort_bad;
+                        if (cvt_probe.aborted == 2) topology_bad = 1;
+                    }
+                    int manifold_guard_on = CVT_MANIFOLD_GUARD;
+                    if (manifold_guard_on && cvt_rc == 0 && new_nf > 0 &&
+                        topology_bad &&
+                        candidate_topology.invalid_surface_components > 0) {
+                        ComponentMesh gc;
+                        ManifoldGuardStats mgs;
+                        memset(&gc, 0, sizeof(gc));
+                        memset(&mgs, 0, sizeof(mgs));
+                        gc.verts = new_v; gc.faces = new_f;
+                        gc.nv = new_nv; gc.nf = new_nf;
+                        gc.comp_id = cm->comp_id;
+                        gc.self = &gc;
+                        if (ManifoldGuard_process(arena, &gc, 1, 0, &mgs) == 0 &&
+                            gc.nf > 0) {
+                            PipelineTopologySignature gsig;
+                            double gdw = 0.0;
+                            size_t gbad = 0;
+                            int gtopo_ok;
+                            memset(&gsig, 0, sizeof(gsig));
+                            if (simplify_wind_gate_p)
+                                gbad = pipeline_count_winding_shortcut_faces(
+                                    gc.verts, gc.faces, gc.nf, simplify_wind_gate_p,
+                                    simplify_wind_gate_p->tol, &gdw);
+                            gtopo_ok =
+                                pipeline_topology_signature(gc.verts, gc.nv, gc.faces,
+                                                            gc.nf, &gsig) == 0 &&
+                                pipeline_topology_signature_equal(&input_topology,
+                                                                  &gsig);
+                            fprintf(stderr,
+                                    "    CVT-guard: comp %zu att %zu N=%zu: %zu NM-edge(s) "
+                                    "(-%zu faces), %zu pinch split(s) -> topology %s, "
+                                    "%zu winding fault(s)\n",
+                                    i, cvt_attempt + 1, target_ns,
+                                    mgs.nm_edges_resolved, mgs.faces_deleted,
+                                    mgs.pinch_splits,
+                                    gtopo_ok ? "preserved" : "still changed", gbad);
+                            if (gtopo_ok) {
+                                new_v = gc.verts; new_f = gc.faces;
+                                new_nv = gc.nv; new_nf = gc.nf;
+                                topology_bad = 0;
+                                bad_faces = gbad;
+                                max_abs_dw = gdw;
+                                candidate_topology = gsig;
+                            }
+                        }
+                    }
+                    if (topology_bad && !probe_aborted) {
+                        /* which invariant changed (diagnostic only) */
+                        const PipelineTopologySignature *s0 = &input_topology;
+                        const PipelineTopologySignature *s1 = &candidate_topology;
+                        fprintf(stderr,
+                                "    CVT-topo: comp %zu att %zu N=%zu in{fc %zu disk %zu "
+                                "nondisk %zu inv %zu nonor %zu b1 %lld b2 %lld rank %zu} "
+                                "out{fc %zu disk %zu nondisk %zu inv %zu nonor %zu b1 %lld "
+                                "b2 %lld rank %zu complete %d}\n",
+                                i, cvt_attempt + 1, target_ns,
+                                s0->face_components, s0->disk_components,
+                                s0->nondisk_components, s0->invalid_surface_components,
+                                s0->nonorientable_components, (long long)s0->beta_1,
+                                (long long)s0->beta_2, s0->minimal_generator_rank,
+                                s1->face_components, s1->disk_components,
+                                s1->nondisk_components, s1->invalid_surface_components,
+                                s1->nonorientable_components, (long long)s1->beta_1,
+                                (long long)s1->beta_2, s1->minimal_generator_rank,
+                                s1->complete);
+                    }
+                    if (co.probe && (cvt_probe.trace || probe_aborted)) {
+                        char pbuf[1024];
+                        size_t pl = 0;
+                        pbuf[0] = '\0';
+                        for (size_t k = 0; k < cvt_probe.n; k++) {
+                            int w = snprintf(pbuf + pl, sizeof(pbuf) - pl,
+                                             " %d:%zu/%d", cvt_probe.iter[k],
+                                             cvt_probe.wind[k], cvt_probe.topo[k]);
+                            if (w < 0 || (size_t)w >= sizeof(pbuf) - pl) break;
+                            pl += (size_t)w;
+                        }
+                        fprintf(stderr,
+                                "    CVT-probe: comp %zu att %zu N=%zu nf=%zu "
+                                "final wind %zu topo %d%s |%s\n",
+                                i, cvt_attempt + 1, target_ns, cm->nf,
+                                bad_faces, topology_bad,
+                                probe_aborted ? " ABORTED" : "", pbuf);
+                    }
+                    {
+                        double cert_s = elapsed_since(tcert);
+                        cvt_cert_s += cert_s;
+                        CVT_phase_stats_add(&cvt_cube_stats, &att_stats);
+                        co.stats = NULL;
+                        if (cvt_timing_verbose) {
+                            uint64_t dtk = cycle_now() - tka;
+                            double spt = dtk ? elapsed_since(ta) / (double)dtk : 0.0;
+                            char prefix[128];
+                            snprintf(prefix, sizeof(prefix),
+                                     "    CVT-phase: comp %zu att %zu N=%zu nf=%zu |",
+                                     i, cvt_attempt + 1, target_ns, cm->nf);
+                            pipeline_print_cvt_phases(prefix, &att_stats, spt,
+                                                      cert_s, 0.0);
+                        }
+                    }
                     {
                         int can_retry = !fldp &&
                             ((topology_bad &&
@@ -1415,26 +1686,12 @@ int pipeline_process_cube(Arena_T arena,
                     new_v = NULL; new_f = NULL; new_nv = 0; new_nf = 0;
                     cvt_rc = -1;
                     total_cvt_source_retains++;
+                    Arena_restore(arena, cvt_chart_mark);
                 }
             }
-            if (cvt_rc == 0 && new_nf > 0) {
-                PipelineTopologySignature candidate_topology;
-                int topology_bad =
-                    pipeline_topology_signature(new_v, new_nv,
-                                                new_f, new_nf,
-                                                &candidate_topology) != 0 ||
-                    !pipeline_topology_signature_equal(
-                        &input_topology, &candidate_topology);
-                if (topology_bad) {
-                    fprintf(stderr,
-                            "    CVT: comp %zu candidate rejected: "
-                            "chart topology changed; keeping unsimplified "
-                            "topology\n", i);
-                    new_v = NULL; new_f = NULL; new_nv = 0; new_nf = 0;
-                    cvt_rc = -1;
-                    total_topology_rejects++;
-                }
-            }
+            /* An accepted candidate already passed the topology certificate
+             * inside the ladder on these very arrays; the second audit that
+             * used to run here could never reject (removed 2026-10-04). */
             if (cvt_rc == 0 && new_nf > 0) {
                 total_in_nv += cm->nv;
                 total_in_nf += cm->nf;
@@ -1477,6 +1734,16 @@ int pipeline_process_cube(Arena_T arena,
                 total_topology_rejects == 1 ? "" : "s",
                 total_cvt_source_retains,
                 total_cvt_source_retains == 1 ? "" : "s");
+        {
+            uint64_t dtk = cycle_now() - tk_cvt_stage;
+            double spt = dtk ? out->t_cvt / (double)dtk : 0.0;
+            pipeline_print_cvt_phases("  CVT phases:", &cvt_cube_stats, spt,
+                                      cvt_cert_s, cvt_topo_in_s);
+            if (cvt_cube_stats.n_probe)
+                fprintf(stderr, "  CVT probes: %llu, %.2f s\n",
+                        (unsigned long long)cvt_cube_stats.n_probe,
+                        (double)cvt_cube_stats.tk_probe * spt);
+        }
         dump_stage(arena, stage_dump_dir, in->cube_id, "step10_cvt",
                    out->meshes, out->n_meshes);
     }
@@ -1694,4 +1961,27 @@ int pipeline_process_cube(Arena_T arena,
 #endif
 
     return 0;
+}
+
+int pipeline_selftest(void)
+{
+    int fails = 0;
+    if (KDTree_selftest() != 0) fails++;
+    if (MLS_selftest() != 0) fails++;
+    if (Weld_selftest() != 0) fails++;
+    if (NormalOrient_selftest() != 0) fails++;
+    if (CVT_boundary_bvh_selftest() != 0) fails++;
+    if (CVT_projection_selftest() != 0) fails++;
+    if (CVT_probe_selftest() != 0) fails++;
+    if (AttenePred_selftest() != 0) fails++;
+    if (Rvd_selftest() != 0) fails++;
+    if (LiftedMulticut_kl_selftest() != 0) fails++;
+    if (LiftedMulticut_gaec_selftest() != 0) fails++;
+    if (MeshResplit_assign_selftest() != 0) fails++;
+    if (BallPivot_query_selftest() != 0) fails++;
+    if (HoleFill_triangle_selftest() != 0) fails++;
+    if (ves_platform_selftest() != 0) fails++;
+    fprintf(stderr, "=== cube_mesh selftest %s (%d failure%s) ===\n",
+            fails ? "FAILED" : "PASSED", fails, fails == 1 ? "" : "s");
+    return fails ? 1 : 0;
 }

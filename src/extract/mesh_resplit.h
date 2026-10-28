@@ -99,4 +99,8 @@ int MeshResplit_remesh_pieces(Arena_T arena,
 int MeshResplit_resurface_own(Arena_T arena, ComponentMesh *m,
                               const float cell_origin[3], int iters);
 
+/* Selftest: the fast point-to-piece assignment equals the original per-piece
+ * KD loop label for label (ties, interleaved and duplicated pieces). 0 = pass. */
+int MeshResplit_assign_selftest(void);
+
 #endif

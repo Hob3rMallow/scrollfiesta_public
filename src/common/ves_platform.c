@@ -5,12 +5,16 @@
  *   1. ves_run_subprocess()      — fork/exec (Linux) or CreateProcess (Windows)
  *   2. ves_hard_timeout_start()  — SIGALRM (Linux) or timer thread (Windows)
  *      ves_hard_timeout_cancel()
+ *   3. ves_fast_exit(), ves_run_thread_cpu_bounded() (2026-10-05)
  */
 #include "ves_platform.h"
 
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
+#ifdef _WIN32
+#include <process.h>   /* _beginthreadex */
+#endif
 
 /* ================================================================
  * Directory creation: ves_ensure_parent_dir()
@@ -293,6 +297,112 @@ void ves_hard_timeout_cancel(void)
     }
 }
 
+VES_NORETURN void ves_fast_exit(int code)
+{
+    /* Lock-free flushes: a thread terminated while holding a stream lock
+     * (Triangle prints to stdout) would deadlock fflush(NULL).  stderr is
+     * unbuffered; every file this tool writes is closed before this point. */
+    _fflush_nolock(stdout);
+    _fflush_nolock(stderr);
+    TerminateProcess(GetCurrentProcess(), (UINT)code);
+    ExitProcess((UINT)code);            /* not reached */
+}
+
+static unsigned ves_thread_cpu_ms(HANDLE h)
+{
+    FILETIME c, e, k, u;
+    if (!GetThreadTimes(h, &c, &e, &k, &u)) return 0;
+    ULONGLONG kt = ((ULONGLONG)k.dwHighDateTime << 32) | k.dwLowDateTime;
+    ULONGLONG ut = ((ULONGLONG)u.dwHighDateTime << 32) | u.dwLowDateTime;
+    return (unsigned)((kt + ut) / 10000ULL);          /* 100 ns units -> ms */
+}
+
+/* The worker runs fn inside this wrapper so the watchdog knows where it is:
+ * 0 = still starting (DLL_THREAD_ATTACH runs under the LOADER LOCK), 1 = in fn,
+ * 2 = fn returned (thread exit and DLL_THREAD_DETACH, again under the loader
+ * lock).  It is terminated only in state 1, checked again while suspended, so
+ * no kill can orphan the loader lock (the PHerc0211 exit-hang stacks showed
+ * exactly that: ExitProcess and a starting thread both waiting on a loader
+ * lock no live thread held, after 27 wall-clock kills of starved workers). */
+typedef struct {
+    VesThreadFn   fn;
+    void         *arg;
+    volatile LONG state;
+} VesBoundedJob;
+
+static unsigned __stdcall ves_bounded_entry(void *p)
+{
+    VesBoundedJob *j = (VesBoundedJob *)p;
+    InterlockedExchange(&j->state, 1);
+    unsigned rc = j->fn(j->arg);
+    InterlockedExchange(&j->state, 2);
+    return rc;
+}
+
+int ves_run_thread_cpu_bounded(VesThreadFn fn, void *arg, unsigned cpu_ms,
+                               unsigned wall_ms, unsigned *out_cpu_ms)
+{
+    VesBoundedJob job;
+    job.fn = fn; job.arg = arg; job.state = 0;
+    uintptr_t h = _beginthreadex(NULL, 0, ves_bounded_entry, &job, 0, NULL);
+    if (h == 0) return -1;
+    ULONGLONG t_run = 0;                  /* when fn was first seen running */
+    for (;;) {
+        DWORD w = WaitForSingleObject((HANDLE)h, 100);
+        unsigned used = ves_thread_cpu_ms((HANDLE)h);
+        if (out_cpu_ms) *out_cpu_ms = used;
+        if (w == WAIT_OBJECT_0) {
+            CloseHandle((HANDLE)h);
+            return 0;
+        }
+        if (InterlockedCompareExchange(&job.state, 0, 0) != 1)
+            continue;                     /* starting up or exiting: never kill */
+        if (t_run == 0) t_run = GetTickCount64();
+        int why = 0;
+        if (used >= cpu_ms) why = 1;
+        else if (GetTickCount64() - t_run >= (ULONGLONG)wall_ms) why = 2;
+        if (!why) continue;
+        if (SuspendThread((HANDLE)h) == (DWORD)-1) continue;
+        if (InterlockedCompareExchange(&job.state, 0, 0) == 1) {
+            TerminateThread((HANDLE)h, 1);
+            WaitForSingleObject((HANDLE)h, 2000);
+            CloseHandle((HANDLE)h);
+            return why;
+        }
+        ResumeThread((HANDLE)h);          /* fn returned meanwhile: let it exit */
+    }
+}
+
+static volatile LONG g_st_spin_stop = 0;
+static unsigned __stdcall st_quick(void *p) { *(int *)p = 7; return 0; }
+static unsigned __stdcall st_spin(void *p)
+{
+    volatile unsigned long long x = 0;
+    (void)p;
+    while (!g_st_spin_stop) x++;
+    return 0;
+}
+static unsigned __stdcall st_sleep(void *p) { Sleep(*(DWORD *)p); return 0; }
+
+int ves_platform_selftest(void)
+{
+    int fails = 0, flag = 0;
+    unsigned cpu = 0;
+    DWORD nap = 600, block = 5000;
+    int r0 = ves_run_thread_cpu_bounded(st_quick, &flag, 300, 10000, &cpu);
+    if (r0 != 0 || flag != 7) { fprintf(stderr, "ves_platform_selftest FAIL: quick %d\n", r0); fails++; }
+    int r1 = ves_run_thread_cpu_bounded(st_spin, NULL, 300, 60000, &cpu);
+    if (r1 != 1 || cpu < 300) { fprintf(stderr, "ves_platform_selftest FAIL: spin %d (%u ms)\n", r1, cpu); fails++; }
+    /* a worker that waits 600 ms but uses no CPU is NOT killed by a 300 ms CPU bound */
+    int r2 = ves_run_thread_cpu_bounded(st_sleep, &nap, 300, 60000, &cpu);
+    if (r2 != 0) { fprintf(stderr, "ves_platform_selftest FAIL: sleeper killed %d\n", r2); fails++; }
+    int r3 = ves_run_thread_cpu_bounded(st_sleep, &block, 300, 400, &cpu);
+    if (r3 != 2) { fprintf(stderr, "ves_platform_selftest FAIL: wall backstop %d\n", r3); fails++; }
+    fprintf(stderr, "ves_platform_selftest: %s (CPU-bounded worker: quick/spin/sleep/blocked)\n",
+            fails ? "FAIL" : "OK");
+    return fails;
+}
+
 #else /* POSIX */
 
 /* Linux: SIGALRM + alarm() */
@@ -323,6 +433,26 @@ void ves_hard_timeout_cancel(void)
 {
     alarm(0);
     g_timeout_flag_ptr = NULL;
+}
+
+VES_NORETURN void ves_fast_exit(int code)
+{
+    fflush(stdout);
+    fflush(stderr);
+    _exit(code);
+}
+
+int ves_run_thread_cpu_bounded(VesThreadFn fn, void *arg, unsigned cpu_ms,
+                               unsigned wall_ms, unsigned *out_cpu_ms)
+{
+    (void)fn; (void)arg; (void)cpu_ms; (void)wall_ms;
+    if (out_cpu_ms) *out_cpu_ms = 0;
+    return -1;                       /* no bounded thread here: run inline */
+}
+
+int ves_platform_selftest(void)
+{
+    return 0;
 }
 
 #endif /* _WIN32 */

@@ -47,6 +47,14 @@
  * like `verts`); NULL restores the unweighted kernel.  Read-only, not owned. */
 void MLS_set_point_weights(const float *weights);
 
+/* Selftest (cube_mesh --selftest): the exact 4t+1 fmadd, and the production
+ * span kernel against the reference kernel.  Returns 0 on success. */
+int MLS_selftest(void);
+
+/* Test hook for the selftest and scripts/extract/mls_bench.c only: 1 selects
+ * the 2026-07 reference span kernel. */
+void MLS_test_reference_kernel(int on);
+
 void MLS_project_verts(Arena_T arena,
                        const float *verts, size_t nv,
                        float radius_vox,

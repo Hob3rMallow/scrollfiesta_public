@@ -46,6 +46,14 @@ int LiftedMulticut_kernighan_lin(
  * accumulated by graph edge id rather than shifted by input position. */
 int LiftedMulticut_selftest(void);
 
+/* The fast Kernighan-Lin (multicut_kl_fast.hxx) against the vendored one on
+ * random mesh-like instances; labels must match exactly. 0 on pass. */
+int LiftedMulticut_kl_selftest(void);
+
+/* The hash-map GAEC (multicut_gaec_fast.hxx) against the vendored GAEC on
+ * tie-heavy instances up to 62.5k vertices; labels must match. 0 on pass. */
+int LiftedMulticut_gaec_selftest(void);
+
 #ifdef __cplusplus
 }
 #endif

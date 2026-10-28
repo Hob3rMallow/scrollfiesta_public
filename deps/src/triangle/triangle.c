@@ -284,6 +284,11 @@
 jmp_buf triangle_jmpbuf;
 int triangle_jmpbuf_set = 0;
 
+/* Test hook (vesuvius-c, 2026-10-05): when >= 0, every block trimalloc() hands
+ * out is first filled with this byte, standing in for a reused heap block that
+ * still holds stale data.  -1 (the default) leaves malloc'd memory untouched. */
+int triangle_malloc_fill = -1;
+
 /* Maximum number of characters in a file name (including the null).         */
 
 #define FILENAMESIZE 2048
@@ -1447,6 +1452,9 @@ int size;
   if (memptr == (VOID *) NULL) {
     printf("Error:  Out of memory.\n");
     triexit(1);
+  }
+  if (triangle_malloc_fill >= 0) {
+    memset(memptr, triangle_malloc_fill, (size_t) (unsigned int) size);
   }
   return(memptr);
 }
@@ -14066,6 +14074,18 @@ FILE **polyfile;
       setvertexmark(vertexloop, 0);
     }
     setvertextype(vertexloop, INPUTVERTEX);
+    if (b->poly) {
+      /* vesuvius-c 2026-10-05: an input vertex dropped as a duplicate is never
+       * in a triangle, so makevertexmap() never sets this pointer -- but
+       * insertsegment() reads and FOLLOWS it for every segment endpoint.  Left
+       * uninitialized it held whatever the reused heap block held (often a
+       * stale triangle of the previous triangulation), and a PSLG with a
+       * duplicate vertex then ended nondeterministically: success, "Topological
+       * inconsistency after splitting a segment", an endless loop, or writes
+       * through a stale pointer (the cube_mesh heap corruption).  NULL sends
+       * insertsegment() to point location, which finds the surviving copy. */
+      setvertex2tri(vertexloop, (triangle) NULL);
+    }
     /* Determine the smallest and largest x and y coordinates. */
     if (i == 0) {
       m->xmin = m->xmax = x;
@@ -14153,6 +14173,18 @@ int numberofpointattribs;
       setvertexmark(vertexloop, 0);
     }
     setvertextype(vertexloop, INPUTVERTEX);
+    if (b->poly) {
+      /* vesuvius-c 2026-10-05: an input vertex dropped as a duplicate is never
+       * in a triangle, so makevertexmap() never sets this pointer -- but
+       * insertsegment() reads and FOLLOWS it for every segment endpoint.  Left
+       * uninitialized it held whatever the reused heap block held (often a
+       * stale triangle of the previous triangulation), and a PSLG with a
+       * duplicate vertex then ended nondeterministically: success, "Topological
+       * inconsistency after splitting a segment", an endless loop, or writes
+       * through a stale pointer (the cube_mesh heap corruption).  NULL sends
+       * insertsegment() to point location, which finds the surviving copy. */
+      setvertex2tri(vertexloop, (triangle) NULL);
+    }
     /* Determine the smallest and largest x and y coordinates. */
     if (i == 0) {
       m->xmin = m->xmax = x;

@@ -104,6 +104,8 @@ static int loop_diag_in_mesh(int32_t va, int32_t vb, const HFEdgeIndex *eidx);
 
 /* From triangle.c: longjmp guard for triexit() */
 extern jmp_buf triangle_jmpbuf;
+/* From triangle.c: test hook, fill every trimalloc'd block with this byte (-1 off) */
+extern int triangle_malloc_fill;
 
 /* Per-hole debug tracing is gated behind HOLEFILL_DEBUG (off by default). On the
  * full-grid weld it fired thousands of times -- each with an fflush(stderr) --
@@ -786,6 +788,92 @@ static int has_repeated_point(const double *pts_2d, size_t n)
     return repeated;
 }
 
+static int safe_triangulate(char *flags, struct triangulateio *in,
+                            struct triangulateio *out);
+
+/* Regression (2026-10-05, PHerc0211 z08960_y02560_x03840, hole-fill Triangle
+ * call #12): a hole boundary that passes the same vertex twice hands Triangle
+ * a duplicate input vertex.  Triangle drops it but used to leave its
+ * vertex-to-triangle pointer uninitialized, and insertsegment() follows that
+ * pointer -- so the same 9 points, same flags, ended in success, an internal
+ * error or an endless loop depending on what the reused heap block held.  The
+ * polygon must now triangulate identically whatever Triangle's blocks held
+ * before (fill -1 = untouched, then three stale-memory patterns), for the
+ * quality flags hole_fill uses and for the plain CDT flags. */
+static unsigned long long hf_st_fnv(const void *p, size_t n, unsigned long long h)
+{
+    const unsigned char *b = (const unsigned char *)p;
+    for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 1099511628211ULL; }
+    return h;
+}
+
+int HoleFill_triangle_selftest(void)
+{
+    static const double P[18] = {
+        -0.085628357780036829, 0.94115697415436872,
+        -0.14242784662943672, -0.11702172954995969,
+        -0.17194958245449352, -1.1682267309275274,
+        0.89673651782735109, -2.1905482465400596,
+        0.93742818550506402, -1.135733546652814,
+        0.99559507378414625, -0.058493148193049613,
+        -0.085628357780036829, 0.94115697415436872,   /* == vertex 0 */
+        -1.1458391763395694, 1.9101112912798628,
+        -1.1982864561329889, 0.87759816227480913,
+    };
+    static const char *flag_sets[2] = { "pq20YDa0.717574zQS3800", "pYDzQ" };
+    static const int fills[4] = { -1, 0x00, 0xBE, 0xFF };
+    int fails = 0, ntri[2] = { -1, -1 };
+    for (int fs = 0; fs < 2; fs++) {
+        unsigned long long h_ref = 0;
+        for (int k = 0; k < 4; k++) {
+            struct triangulateio in, out;
+            memset(&in, 0, sizeof(in));
+            memset(&out, 0, sizeof(out));
+            in.numberofpoints = 9;
+            in.pointlist = (REAL *)malloc(sizeof(P));
+            in.numberofsegments = 9;
+            in.segmentlist = (int *)malloc(9 * 2 * sizeof(int));
+            if (!in.pointlist || !in.segmentlist) { free(in.pointlist); free(in.segmentlist); return 1; }
+            memcpy(in.pointlist, P, sizeof(P));
+            for (int i = 0; i < 9; i++) { in.segmentlist[2 * i] = i; in.segmentlist[2 * i + 1] = (i + 1) % 9; }
+            char flags[32];
+            snprintf(flags, sizeof(flags), "%s", flag_sets[fs]);
+            triangle_malloc_fill = fills[k];
+            int rc = safe_triangulate(flags, &in, &out);
+            triangle_malloc_fill = -1;
+            unsigned long long h = 0;
+            if (rc == 0 && out.pointlist && out.trianglelist) {
+                h = hf_st_fnv(out.pointlist, (size_t)out.numberofpoints * 2 * sizeof(REAL), 14695981039346656037ULL);
+                h = hf_st_fnv(out.trianglelist, (size_t)out.numberoftriangles * 3 * sizeof(int), h);
+            }
+            if (rc != 0 || out.numberoftriangles <= 0) {
+                fprintf(stderr, "HoleFill_triangle_selftest FAIL: flags %s fill %d rc %d tris %d\n",
+                        flag_sets[fs], fills[k], rc, out.numberoftriangles);
+                fails++;
+            } else if (k == 0) {
+                h_ref = h;
+                ntri[fs] = out.numberoftriangles;
+            } else if (h != h_ref) {
+                fprintf(stderr, "HoleFill_triangle_selftest FAIL: flags %s fill %d differs from untouched memory\n",
+                        flag_sets[fs], fills[k]);
+                fails++;
+            }
+            free(in.pointlist);
+            free(in.segmentlist);
+            if (rc == 0) {
+                if (out.pointlist) trifree((VOID *)out.pointlist);
+                if (out.trianglelist) trifree((VOID *)out.trianglelist);
+                if (out.pointmarkerlist) trifree((VOID *)out.pointmarkerlist);
+                if (out.segmentlist) trifree((VOID *)out.segmentlist);
+                if (out.segmentmarkerlist) trifree((VOID *)out.segmentmarkerlist);
+            }
+        }
+    }
+    fprintf(stderr, "HoleFill_triangle_selftest: %s (duplicate-vertex polygon, 2 flag sets x 4 heap fills "
+            "identical; %d / %d triangles)\n", fails ? "FAIL" : "OK", ntri[0], ntri[1]);
+    return fails ? 1 : 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* safe_triangulate — crash-guarded wrapper around Triangle library     */
 /*                                                                      */
@@ -814,6 +902,28 @@ static int tri_timeout_ms(void)
 
 #ifdef _MSC_VER
 #include <process.h>   /* _beginthreadex */
+#include <xmmintrin.h> /* _mm_getcsr (HOLEFILL_TRI_TRACE) */
+
+/* HOLEFILL_TRI_TRACE (diagnostics only, default off): one stderr line per
+ * Triangle call -- a hash of its exact input (flags, points, segments), the
+ * SSE control word of the calling and the worker thread, how the call ended
+ * (ok / triexit / seh / killed) and a hash of its output.  Added 2026-10-05:
+ * the same cube, same binary, sometimes hits Triangle's "Topological
+ * inconsistency after splitting a segment" and sometimes not; the trace tells
+ * whether the INPUT or Triangle's own behaviour differs between runs. */
+static int tri_trace_on(void)
+{
+    static int t = -1;
+    if (t < 0) t = getenv("HOLEFILL_TRI_TRACE") ? 1 : 0;
+    return t;
+}
+
+static unsigned long long tri_fnv(const void *p, size_t n, unsigned long long h)
+{
+    const unsigned char *b = (const unsigned char *)p;
+    for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 1099511628211ULL; }
+    return h;
+}
 
 /* SEH must be in its own function (MSVC forbids mixing __try with setjmp). */
 static int triangulate_seh(char *flags, struct triangulateio *in,
@@ -833,11 +943,14 @@ typedef struct {
     struct triangulateio *in;
     struct triangulateio *out;
     int rc;
+    int end;                 /* 0 ok, 1 triexit (longjmp), 2 SEH, 3 killed */
+    unsigned mxcsr;          /* worker's SSE control word at entry */
 } TriJob;
 
 static unsigned __stdcall tri_thread_fn(void *p)
 {
     TriJob *j = (TriJob *)p;
+    j->mxcsr = _mm_getcsr();
     /* triexit() longjmp guard, armed in THIS worker thread (triangle_jmpbuf is a
      * global; holefill runs one triangulate at a time so single-arming is safe).
      * setjmp here + __try inside triangulate_seh are in separate functions, as
@@ -846,53 +959,79 @@ static unsigned __stdcall tri_thread_fn(void *p)
     if (setjmp(triangle_jmpbuf) != 0) {
         triangle_jmpbuf_set = 0;
         j->rc = -1;
+        j->end = 1;
         return 0;
     }
     j->rc = triangulate_seh(j->flags, j->in, j->out);
+    j->end = j->rc == 0 ? 0 : 2;
     triangle_jmpbuf_set = 0;
     return 0;
 }
 
-/* Windows watchdog: run triangulate() on a worker thread, wait with a timeout.
- * On timeout we do NOT TerminateThread (Triangle may hold the CRT heap lock mid-
- * malloc -> deadlock). Instead drop the worker to IDLE priority and detach it:
- * it can no longer starve the main weld thread, the OS reclaims it at process
- * exit, and we report the hole unfilled. */
+/* Windows watchdog: run triangulate() on a worker thread bounded by the
+ * worker's CPU TIME (tri_timeout_ms of CPU), with a long wall backstop for a
+ * blocked worker (ves_run_thread_cpu_bounded).  The runaway this guards against
+ * is a geometric flip / segment-recovery cycle that burns CPU without growing
+ * memory, so killing it is safe (it holds no heap or stdio lock while it
+ * spins) and it must not survive (Triangle's globals are unsafe for two
+ * concurrent triangulations -- a detached zombie crashed a run at loop 4350).
+ * Until 2026-10-05 the bound was 10 s of WALL time: on a starved machine it
+ * fired on legitimate triangulations and killed them mid-flight -- holes were
+ * abandoned depending on the load, and a worker killed inside a CRT call left
+ * its lock held (the exit hangs and 0xC0000374 crashes seen under load).  The
+ * leaked Triangle pools of a killed runaway are a few KB. */
 static int safe_triangulate(char *flags, struct triangulateio *in,
                             struct triangulateio *out)
 {
     TriJob job;
-    job.flags = flags; job.in = in; job.out = out; job.rc = -1;
-    uintptr_t h = _beginthreadex(NULL, 0, tri_thread_fn, &job, 0, NULL);
-    if (h == 0) {
+    job.flags = flags; job.in = in; job.out = out; job.rc = -1; job.end = -1; job.mxcsr = 0;
+    unsigned ms = (unsigned)tri_timeout_ms();
+    unsigned wall_ms = ms * 50u + 100000u;     /* 600 s at the default 10 s */
+    unsigned cpu_used = 0;
+    const unsigned main_mxcsr = _mm_getcsr();
+    unsigned long long h_in = 0;
+    if (tri_trace_on()) {
+        h_in = tri_fnv(flags, strlen(flags), 14695981039346656037ULL);
+        h_in = tri_fnv(in->pointlist, (size_t)in->numberofpoints * 2 * sizeof(REAL), h_in);
+        h_in = tri_fnv(in->segmentlist, (size_t)in->numberofsegments * 2 * sizeof(int), h_in);
+    }
+    int why = ves_run_thread_cpu_bounded(tri_thread_fn, &job, ms, wall_ms, &cpu_used);
+    if (why > 0) job.end = 3;
+    if (tri_trace_on()) {
+        static unsigned long tri_calls = 0;    /* diagnostics only; hole fill is serial */
+        static const char *end_name[5] = { "spawn-failed", "ok", "triexit", "seh", "killed" };
+        unsigned long long h_out = 0;
+        if (job.end == 0 && out->pointlist && out->trianglelist) {
+            h_out = tri_fnv(out->pointlist, (size_t)out->numberofpoints * 2 * sizeof(REAL), 14695981039346656037ULL);
+            h_out = tri_fnv(out->trianglelist, (size_t)out->numberoftriangles * 3 * sizeof(int), h_out);
+        }
+        fprintf(stderr, "      [tri-trace] #%lu n=%d seg=%d flags=%s in=%016llx main_mxcsr=%04x "
+                "worker_mxcsr=%04x end=%s cpu_ms=%u out_pts=%d out_tris=%d out=%016llx\n",
+                ++tri_calls, in->numberofpoints, in->numberofsegments, flags, h_in, main_mxcsr,
+                job.mxcsr, end_name[job.end + 1], cpu_used, job.end == 0 ? out->numberofpoints : 0,
+                job.end == 0 ? out->numberoftriangles : 0, h_out);
+        if (in->numberofpoints <= 32) {        /* small inputs: the exact points, for a standalone repro */
+            fprintf(stderr, "      [tri-trace] #%lu pts", tri_calls);
+            for (int i = 0; i < in->numberofpoints; i++)
+                fprintf(stderr, " %.17g %.17g", in->pointlist[2 * i], in->pointlist[2 * i + 1]);
+            fprintf(stderr, "\n");
+        }
+    }
+    if (why < 0) {
         /* Spawn failed: run inline (no timeout protection, but better than not
          * triangulating at all). */
         tri_thread_fn(&job);
         return job.rc;
     }
-    DWORD ms = (DWORD)tri_timeout_ms();
-    DWORD w = WaitForSingleObject((HANDLE)h, ms);
-    if (w != WAIT_OBJECT_0) {
-        /* Kill the worker. It must NOT survive: Triangle's globals
-         * (triangle_jmpbuf, randomseed) are unsafe for two concurrent
-         * triangulations, so a detached-but-still-spinning zombie races the
-         * next hole's call and crashes the run (it did, at loop 4350).
-         * TerminateThread is safe here: the runaway is a geometric flip /
-         * segment-recovery cycle that does not grow memory (no OOM across 200 s
-         * of spinning), so it is not killed mid-malloc holding the CRT heap
-         * lock. Its in-progress Triangle pools leak (a few KB) -- fine for the
-         * rare abandoned hole. */
-        TerminateThread((HANDLE)h, 1);
-        WaitForSingleObject((HANDLE)h, 2000);   /* reap before next call */
-        CloseHandle((HANDLE)h);
+    if (why > 0) {
         triangle_jmpbuf_set = 0;
         fprintf(stderr,
-            "      [safe_triangulate] *** TIMEOUT after %lu ms -- killed worker, abandoning hole ***\n",
-            (unsigned long)ms);
+            "      [safe_triangulate] *** TIMEOUT after %u ms %s (worker CPU %u ms) -- killed worker, "
+            "abandoning hole ***\n",
+            why == 1 ? ms : wall_ms, why == 1 ? "CPU" : "wall", cpu_used);
         HFFLUSH();
         return -1;
     }
-    CloseHandle((HANDLE)h);
     return job.rc;
 }
 #elif defined(_WIN32)

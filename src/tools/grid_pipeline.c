@@ -64,7 +64,24 @@ typedef struct {
     double      wall_seconds;
     double      axis_y, axis_x;
     int         have_axis;
+    /* dispatch pre-scan (longest-first ordering) */
+    int         prescanned;    /* reject_kind/fg_count below are valid */
+    int         reject_kind;   /* 0 keep, 1 solid slab, 2 empty (as cube_reject_kind) */
+    size_t      fg_count;      /* foreground voxels of the cube's own 128^3 */
 } CubeJob;
+
+/* Dispatch order: most foreground first (predicted meshing cost, r=0.73 with
+ * wall time on 360 dragon21 cubes), ties by cube_id, so the slowest cubes no
+ * longer start last and set each band's tail (2026-10-04).  Per-cube outputs
+ * do not depend on the order. */
+typedef struct { size_t fg; size_t idx; } DispatchKey;
+
+static int dispatch_key_cmp(const void *pa, const void *pb)
+{
+    const DispatchKey *a = (const DispatchKey *)pa, *b = (const DispatchKey *)pb;
+    if (a->fg != b->fg) return a->fg > b->fg ? -1 : 1;
+    return a->idx < b->idx ? -1 : (a->idx > b->idx ? 1 : 0);
+}
 
 /* ---- Argument plumbing ---- */
 
@@ -768,18 +785,35 @@ static void idset_free(IdSet *s) { free(s->ids); s->ids = NULL; s->n = 0; }
  * verdict is per-cube) and run the garbage detector. Per-call arena so it is
  * thread-safe inside the OpenMP loop. Returns the reject KIND:
  *   0 = keep, 1 = solid-slab garbage, 2 = empty garbage (no meshable component). */
-static int cube_reject_kind(const char *tiff_path)
+static int cube_prescan(const char *tiff_path, int want_reject,
+                        int *out_kind, size_t *out_fg)
 {
     Arena_T a = Arena_new();
     uint8_t *vol = NULL;
     int D = 0, H = 0, W = 0;
-    int kind = 0;
+    int kind = 0, rc = -1;
+    size_t fg = 0;
     if (TiffIO_load(a, tiff_path, &vol, &D, &H, &W) == 0) {
-        PredRejectStats st;
-        if (PredReject_is_garbage(a, vol, D, H, W, &st))
-            kind = st.empty ? 2 : 1;
+        size_t nvox = (size_t)D * (size_t)H * (size_t)W;
+        for (size_t v = 0; v < nvox; v++) fg += vol[v] ? 1u : 0u;
+        if (want_reject) {
+            PredRejectStats st;
+            if (PredReject_is_garbage(a, vol, D, H, W, &st))
+                kind = st.empty ? 2 : 1;
+        }
+        rc = 0;
     }
     Arena_dispose(&a);
+    *out_kind = kind;
+    *out_fg = fg;
+    return rc;
+}
+
+static int cube_reject_kind(const char *tiff_path)
+{
+    int kind = 0;
+    size_t fg = 0;
+    (void)cube_prescan(tiff_path, 1, &kind, &fg);
     return kind;
 }
 
@@ -865,6 +899,14 @@ static int run_selftest(void)
                 growth_ok ? "explicit" : "BAD",
                 default_ok && legacy_ok && growth_ok ? "ok" : "FAIL");
         if (!default_ok || !legacy_ok || !growth_ok) fails++;
+    }
+    {
+        DispatchKey k[5] = { {10, 0}, {50, 1}, {10, 2}, {0, 3}, {50, 4} };
+        qsort(k, 5, sizeof(DispatchKey), dispatch_key_cmp);
+        int ok = k[0].idx == 1 && k[1].idx == 4 && k[2].idx == 0 && k[3].idx == 2 && k[4].idx == 3;
+        fprintf(stderr, "[selftest] %-22s %s\n", "dispatch-order",
+                ok ? "ok (fg desc, ties by name)" : "FAIL");
+        if (!ok) fails++;
     }
     remove(p_ok); remove(p_trunc); remove(p_tiny); remove(p_axis);
     fprintf(stderr, "=== grid_pipeline selftest %s (%d failure%s) ===\n",
@@ -1122,21 +1164,59 @@ int main(int argc, char *argv[])
     int n_ok = 0, n_fail = 0, n_skip = 0, n_reject = 0, n_reject_empty = 0;
     int i;
     int n_jobs_i = (int)n_jobs;
+
+    /* Longest-first dispatch: pre-scan every cube once (its foreground count
+     * and, when the garbage gate is on, its reject verdict -- reused below so
+     * no TIFF is read twice), then hand cubes out in descending foreground. */
+    size_t *order = (size_t *)malloc((n_jobs ? n_jobs : 1) * sizeof(size_t));
+    {
+        double t_scan = ves_clock_sec();
+        int k;
+        DispatchKey *keys = (DispatchKey *)malloc((n_jobs ? n_jobs : 1) * sizeof(DispatchKey));
+        if (!order || !keys) { fprintf(stderr, "ERROR: out of memory\n"); return 1; }
+        #pragma omp parallel for schedule(dynamic, 4)
+        for (k = 0; k < n_jobs_i; k++) {
+            jobs[k].prescanned = 0;
+            jobs[k].reject_kind = 0;
+            jobs[k].fg_count = 0;
+            if (opts.skip_existing) {
+                char done_path[1024];
+                step12_vmesh_path(done_path, sizeof(done_path), dump_dir, jobs[k].cube_id);
+                if (MeshBin_looks_complete(done_path)) continue;
+            }
+            int kind = 0;
+            size_t fg = 0;
+            if (cube_prescan(jobs[k].tiff_path, opts.reject_garbage && !have_rejlist,
+                             &kind, &fg) == 0) {
+                jobs[k].reject_kind = kind;
+                jobs[k].fg_count = fg;
+                jobs[k].prescanned = 1;
+            }
+        }
+        for (size_t q = 0; q < n_jobs; q++) { keys[q].fg = jobs[q].fg_count; keys[q].idx = q; }
+        qsort(keys, n_jobs, sizeof(DispatchKey), dispatch_key_cmp);
+        for (size_t q = 0; q < n_jobs; q++) order[q] = keys[q].idx;
+        free(keys);
+        fprintf(stderr, "dispatch: longest-first by foreground voxels (pre-scan %.1fs)\n",
+                ves_clock_sec() - t_scan);
+    }
+
     #pragma omp parallel for schedule(dynamic, 1) reduction(+:n_ok,n_fail,n_skip,n_reject,n_reject_empty)
     for (i = 0; i < n_jobs_i; i++) {
+        CubeJob *job = &jobs[order[i]];
         /* Resume: a cube with an already-complete authoritative VMESH is left untouched. */
         if (opts.skip_existing) {
             char done_path[1024];
-            step12_vmesh_path(done_path, sizeof(done_path), dump_dir, jobs[i].cube_id);
+            step12_vmesh_path(done_path, sizeof(done_path), dump_dir, job->cube_id);
             if (MeshBin_looks_complete(done_path)) {
-                jobs[i].exit_code = 0;
-                jobs[i].wall_seconds = 0.0;
+                job->exit_code = 0;
+                job->wall_seconds = 0.0;
                 n_ok++;
                 n_skip++;
                 #pragma omp critical (gp_log)
                 {
                     if (summary) {
-                        fprintf(summary, "%s,0,0.00\n", jobs[i].cube_id);
+                        fprintf(summary, "%s,0,0.00\n", job->cube_id);
                         fflush(summary);
                     }
                 }
@@ -1150,25 +1230,26 @@ int main(int argc, char *argv[])
          * in rejected_cubes.txt. A supplied --reject-list is treated as slab. */
         if (opts.reject_garbage) {
             int kind = have_rejlist
-                         ? (idset_has(&rejset, jobs[i].cube_id) ? 1 : 0)
-                         : cube_reject_kind(jobs[i].tiff_path);
+                         ? (idset_has(&rejset, job->cube_id) ? 1 : 0)
+                         : (job->prescanned ? job->reject_kind
+                                            : cube_reject_kind(job->tiff_path));
             if (kind) {
-                jobs[i].exit_code = GP_REJECT_CODE;
-                jobs[i].wall_seconds = 0.0;
+                job->exit_code = GP_REJECT_CODE;
+                job->wall_seconds = 0.0;
                 n_reject++;
                 if (kind == 2) n_reject_empty++;
                 #pragma omp critical (gp_log)
                 {
-                    fprintf(stderr, "  [reject] %s (%s)\n", jobs[i].cube_id,
+                    fprintf(stderr, "  [reject] %s (%s)\n", job->cube_id,
                             kind == 2 ? "empty prediction -- no meshable component"
                                       : "garbage solid-slab prediction");
                     if (summary) {
                         fprintf(summary, "%s,%d,0.00\n",
-                                jobs[i].cube_id, GP_REJECT_CODE);
+                                job->cube_id, GP_REJECT_CODE);
                         fflush(summary);
                     }
                     if (rejlog) {
-                        fprintf(rejlog, "%s\n", jobs[i].cube_id);
+                        fprintf(rejlog, "%s\n", job->cube_id);
                         fflush(rejlog);
                     }
                 }
@@ -1176,30 +1257,31 @@ int main(int argc, char *argv[])
             }
         }
         double cube_start = ves_clock_sec();
-        int rc = run_one_cube(opts.exe_path, &jobs[i],
+        int rc = run_one_cube(opts.exe_path, job,
                               opts.output_dir, dump_dir,
                               opts.halo, opts.threads_per_cube,
                               opts.skip_simplify, opts.trim_inset,
                               !opts.full_dumps, opts.cvt_target_ratio,
                               opts.cull_oracle_tangles,
                               opts.axis_table_path);
-        jobs[i].exit_code = rc;
-        jobs[i].wall_seconds = ves_clock_sec() - cube_start;
+        job->exit_code = rc;
+        job->wall_seconds = ves_clock_sec() - cube_start;
         if (rc == 0) n_ok++; else n_fail++;
         #pragma omp critical (gp_log)
         {
             fprintf(stderr, "  [%4d/%zu] %s exit=%d t=%.1fs\n",
-                    i + 1, n_jobs, jobs[i].cube_id, rc,
-                    jobs[i].wall_seconds);
+                    i + 1, n_jobs, job->cube_id, rc,
+                    job->wall_seconds);
             if (summary) {
                 fprintf(summary, "%s,%d,%.2f\n",
-                        jobs[i].cube_id, rc, jobs[i].wall_seconds);
+                        job->cube_id, rc, job->wall_seconds);
                 fflush(summary);
             }
         }
     }
     if (summary) fclose(summary);
     if (rejlog) fclose(rejlog);
+    free(order);
     idset_free(&rejset);
     double t_total = ves_clock_sec() - t_start;
 
@@ -1437,5 +1519,7 @@ int main(int argc, char *argv[])
     if (n_fail > 0)     fprintf(stderr, "Cubes failed: %d\n", n_fail);
     if (weld_audit_warn) fprintf(stderr, "grid_weld reported audit warnings (non-fatal)\n");
     if (weld_crashed)   fprintf(stderr, "grid_weld crashed -- pipeline aborted\n");
-    return (n_fail == 0 && !weld_crashed) ? 0 : 1;
+    /* Everything is written and closed: leave without process teardown, which
+     * can deadlock with the OpenMP worker pool (see ves_fast_exit). */
+    ves_fast_exit((n_fail == 0 && !weld_crashed) ? 0 : 1);
 }

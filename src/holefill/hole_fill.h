@@ -70,6 +70,10 @@ int HoleFill_process(Arena_T arena,
  *
  * cube_shape is unused (the interior test is geometric); pass NULL.
  */
+/* Triangle on a polygon with a duplicate vertex must not depend on stale heap
+ * memory (the 2026-10-05 nondeterministic hole-fill failures). 0 on pass. */
+int HoleFill_triangle_selftest(void);
+
 int HoleFill_process_ex(Arena_T arena,
                         float **verts, int32_t **faces,
                         size_t *nv, size_t *nf,

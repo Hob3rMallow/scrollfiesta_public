@@ -85,4 +85,8 @@ int pipeline_process_cube(Arena_T arena,
                           const PipelineInput *in,
                           PipelineOutput *out);
 
+/* Selftests of the mesher's exactness guards (KD-tree capped queries, CVT
+ * boundary BVH, CVT surface projection). Returns 0 when all pass. */
+int pipeline_selftest(void);
+
 #endif

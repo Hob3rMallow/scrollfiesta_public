@@ -77,12 +77,15 @@ static void usage(const char *argv0)
         "[--grow-umb-y F --grow-umb-x F] [--grow-axis-table FILE]\n"
         "   or: %s --stdin-raw <p_size> <oz> <oy> <ox> --dump-obj dir "
         "[--dump-final-only] [--halo N] [--trim-inset F] [--no-simplify] "
-        "[--cvt-ratio F] [--no-timeout]\n",
-        argv0, argv0);
+        "[--cvt-ratio F] [--no-timeout]\n"
+        "   or: %s --selftest\n",
+        argv0, argv0, argv0);
 }
 
 int main(int argc, char *argv[])
 {
+    if (argc >= 2 && strcmp(argv[1], "--selftest") == 0) return pipeline_selftest();
+
     int stdin_raw = (argc >= 2 && strcmp(argv[1], "--stdin-raw") == 0);
 
     const char *input_path  = NULL;
@@ -360,5 +363,7 @@ int main(int argc, char *argv[])
     Arena_dispose(&arena);
     BpaReconGate_clear_axis_samples();
     AxisWarp_dispose(&grow_axis);
-    return pipeline_ok ? 0 : 1;
+    /* Outputs are written and closed: leave without process teardown (see
+     * ves_fast_exit -- a rare exit-time deadlock stalled a grid band). */
+    ves_fast_exit(pipeline_ok ? 0 : 1);
 }
