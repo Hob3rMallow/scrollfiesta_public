@@ -83,7 +83,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(SolutionDir)deps\lib\win64\Debug;$(SolutionDir)deps\lib\win64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>tiff.lib;zs.lib;Clipper2.lib;Clipper2Z.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>tiff.lib;zs.lib;Clipper2.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <!-- ============================================================ -->
@@ -113,8 +113,8 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(SolutionDir)deps\lib\win64\Release;$(SolutionDir)deps\lib\win64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies Condition="'$(UseCubeClMls)'!='true'">tiff.lib;zs.lib;Clipper2.lib;Clipper2Z.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalDependencies Condition="'$(UseCubeClMls)'=='true'">mls_cubecl_import.lib;tiff.lib;zs.lib;Clipper2.lib;Clipper2Z.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies Condition="'$(UseCubeClMls)'!='true'">tiff.lib;zs.lib;Clipper2.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies Condition="'$(UseCubeClMls)'=='true'">mls_cubecl_import.lib;tiff.lib;zs.lib;Clipper2.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
     </Link>
     <PostBuildEvent Condition="'$(UseCubeClMls)'=='true'">
