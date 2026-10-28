@@ -145,6 +145,7 @@ int AsmConflict_clean(AsmRun *run, const AsmConflictOpts *o,
                       const AsmPoseOpts *pose_opts,
                       AsmConflictReport *final_report, AsmConflictStats *st);
 
+int AsmConflict_audit_selftest(void);
 int AsmConflict_selftest(void);
 
 #endif

@@ -407,13 +407,34 @@ int AsmConflict_audit(AsmRun *run, const AsmConflictOpts *o,
         }
     }
     if (diag) fclose(diag);
-    /* the report keeps its cell list in the run arena (below the mark would be freed):
-     * copy it above the restore point by allocating before restoring */
-    AsmConflictCell *keep = ARENA_ALLOC(arena, (n_cells ? n_cells : 1) * sizeof(AsmConflictCell));
-    memcpy(keep, ccells, n_cells * sizeof(AsmConflictCell));
+    /* The scratch mark owns ccells. An allocation in the same arena after that
+     * mark also dies at restore; keep an independent copy across the restore. */
+    rep->contra_cells = NULL;
+    rep->n_contra_cells = 0;
+    if (n_cells > SIZE_MAX / sizeof(AsmConflictCell)) {
+        fprintf(stderr, "[conflict audit] report cell size overflow (%zu cells)\n", n_cells);
+        Arena_restore(arena, mark);
+        RAISE(Arena_Failed);
+        return -1;  /* unreachable: match the arena allocation failure policy */
+    }
+    size_t cell_bytes = n_cells * sizeof(AsmConflictCell);
+    AsmConflictCell *keep = cell_bytes ? malloc(cell_bytes) : NULL;
+    if (cell_bytes && !keep) {
+        fprintf(stderr, "[conflict audit] cannot preserve report cells (%zu bytes)\n", cell_bytes);
+        Arena_restore(arena, mark);
+        RAISE(Arena_Failed);
+        return -1;
+    }
+    if (cell_bytes) memcpy(keep, ccells, cell_bytes);
     Arena_restore(arena, mark);
-    rep->contra_cells = ARENA_ALLOC(arena, (n_cells ? n_cells : 1) * sizeof(AsmConflictCell));
-    memcpy(rep->contra_cells, keep, n_cells * sizeof(AsmConflictCell));
+    TRY
+        if (cell_bytes) {
+            rep->contra_cells = ARENA_ALLOC(arena, cell_bytes);
+            memcpy(rep->contra_cells, keep, cell_bytes);
+        }
+    FINALLY
+        free(keep);  /* also release the owned copy if the destination raises */
+    END_TRY;
     rep->n_contra_cells = n_cells;
     return 0;
 }
@@ -1535,9 +1556,69 @@ static int ac_witness_reset_control(void)
     return fails;
 }
 
-int AsmConflict_selftest(void)
+/* Exercise the returned cells, not just scalar audit totals. In an ASan build
+ * Arena_restore poisons released allocations, including chunks retained on its
+ * free list: the former arena-backed keep buffer failed inside the audit's
+ * memcpy. Small chunks and repeated restores also exercise free-list overflow. */
+int AsmConflict_audit_selftest(void)
 {
     int fails = 0;
+    Arena_T arena = Arena_new_sized(4096);
+    AsmRun run; memset(&run, 0, sizeof run); run.arena = arena;
+    float uv[8] = {0,0, 40,0, 40,40, 0,40};
+    int32_t faces[6] = {0,1,2, 0,2,3};
+    float nrm[12] = {1,0,0, 1,0,0, 1,0,0, 1,0,0};
+    float xyz[2][12] = {{0,0,0, 0,0,40, 0,40,40, 0,40,0},
+                       {12,0,0, 12,0,40, 12,40,40, 12,40,0}};
+    AsmChart charts[2]; memset(charts, 0, sizeof charts);
+    for (int i = 0; i < 2; i++) {
+        charts[i].id = i; charts[i].nv = 4; charts[i].nf = 2;
+        charts[i].uv = uv; charts[i].faces = faces; charts[i].nrm = nrm; charts[i].xyz = xyz[i];
+        charts[i].area3d = 1600.0; charts[i].placed = 1; charts[i].component = 3;
+    }
+    run.charts = charts; run.n_charts = 2; run.layer_d_global = 12.0;
+    AsmRelation rel; memset(&rel, 0, sizeof rel); rel.a = 0; rel.b = 1;
+    run.rels = &rel; run.n_rels = 1;
+    AsmConflictOpts opts; AsmConflict_default_opts(&opts); opts.cell = 8.0;
+    AsmConflictReport saved; memset(&saved, 0, sizeof saved);
+    AsmConflictCell expected[25]; memset(expected, 0, sizeof expected);
+    for (int pass = 0; pass < 3; pass++) {
+        AsmConflictReport rep; double mass[2] = {0,0};
+        int rc = AsmConflict_audit(&run, &opts, mass, &rep);
+        int ok = rc == 0 && rep.contra_cells && rep.n_contra_cells == 25 && rep.cells == 25 &&
+                 rep.pairs == 1 && fabs(rep.contra_area - 1600.0) < 1e-9 &&
+                 fabs(rep.covered_area - 1600.0) < 1e-9 && mass[0] > 0.0 && mass[1] > 0.0 && rel.flag_mass > 0.0;
+        if (ok) for (size_t k = 0; k < 25; k++) {
+            const AsmConflictCell *c = &rep.contra_cells[k];
+            ok &= c->component == 3 && c->cy == (int32_t)(k / 5) && c->cx == (int32_t)(k % 5) &&
+                  fabs(c->w - 1.0f) < 1e-6 && fabs(c->dn - 12.0f) < 1e-6;
+        }
+        if (!ok) { fprintf(stderr, "  asm_conflict audit lifetime FAIL: report pass %d\n", pass); fails++; }
+        if (pass == 0 && ok) { saved = rep; memcpy(expected, rep.contra_cells, sizeof expected); }
+        Arena_Mark scratch = Arena_save(arena);
+        for (int k = 0; k < 32; k++) memset(ARENA_ALLOC(arena, 8192), 0xa5, 8192);
+        Arena_restore(arena, scratch);
+        if (saved.contra_cells && memcmp(saved.contra_cells, expected, sizeof expected)) {
+            fprintf(stderr, "  asm_conflict audit lifetime FAIL: prior report changed after scratch reuse\n"); fails++;
+        }
+    }
+    charts[1].pose_x = 80.0;
+    AsmConflictReport empty;
+    if (AsmConflict_audit(&run, &opts, NULL, &empty) != 0 || empty.n_contra_cells != 0 ||
+        empty.contra_cells != NULL || empty.contra_area != 0.0 || empty.pairs != 0) {
+        fprintf(stderr, "  asm_conflict audit lifetime FAIL: empty report\n"); fails++;
+    }
+    if (saved.contra_cells && memcmp(saved.contra_cells, expected, sizeof expected)) {
+        fprintf(stderr, "  asm_conflict audit lifetime FAIL: empty audit changed prior report\n"); fails++;
+    }
+    Arena_dispose(&arena);
+    fprintf(stderr, "  asm_conflict audit report lifetime: %s (%d failures)\n", fails ? "FAIL" : "ok", fails);
+    return fails;
+}
+
+int AsmConflict_selftest(void)
+{
+    int fails = AsmConflict_audit_selftest();
     /* the round budget on measured rounds: the 10x10x10's 8th round (8.3030e7 -> 8.3080e7)
      * ends cleaning at the configured 8; the layer-cut 21x21x21's (7.7675e8 -> 7.8835e8)
      * continues, but never past the round or time ceiling, and a refused round stops it */
