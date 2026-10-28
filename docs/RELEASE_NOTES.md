@@ -2,6 +2,54 @@
 
 ## October 2026
 
+### Close-ups and fibre tools
+
+Four new tools come from the development tree's close-up chain:
+`ink_closeup`, `fiber_flatten`, `closeup_strip_turn` and `vmesh_fiber_rigid`.
+See [CLOSEUPS.md](CLOSEUPS.md).
+
+- **Close-ups.** Any region of an assembled sheet becomes one continuous,
+  isometric surface. Every nearby chart is an observation, and a robust fused
+  surface fills holes and borders. SLIM flattens it with the scroll axis down
+  the rows. The render writes the 21-layer surface volume at one pixel per
+  voxel, with a CT bake and a provenance map.
+- **Growth.** A close-up grows past its box by adopting charts from pools,
+  including charts no assembly placed, and bridges gaps along the F0
+  prediction ridge. On the PHerc0139 4×5×5 reference, a 400 × 350 px seed grew
+  from 15,092 to 59,391 data nodes in 38 s.
+- **Fibre alignment.** Fibres are measured physically, from the CT's fibre
+  cross or from an inferred 3-D fibre field. The close-up is then re-flattened
+  so the fibres run along the page axes: angular local/global least squares
+  from a checked SLIM start, and XYZ never moves. `fiber_flatten` re-flattens a
+  canvas along a fibre field. `closeup_strip_turn` and `vmesh_fiber_rigid`
+  apply exact rigid turns.
+- **The development tree's engine.** `ink_closeup` is the development tree's
+  engine of record. On its hard qualification replay, all eight output files
+  are byte-identical to the record's.
+- `vmesh_tifxyz --canvas --native-grid` exports a close-up as one tifxyz at one
+  sample per voxel. `meta.json` now records `uv_origin`, which the re-UV reads.
+
+### Shared modules
+
+The close-up engine needs the development tree's current SLIM, sparse solver,
+contact walk, RAW, TIFF and Zarr readers and exception handling. Those modules
+now match the development tree, with this repository's own fixes kept.
+
+- **The mesher and weld are unchanged.** On the 4×5×5 fixture, all 1,181
+  meshes and the weld log are byte-identical to the previous build's, both with
+  the default trim and with `--trim-inset 0`.
+- **`sheet_assemble` output changes slightly.** The development tree's SLIM
+  and sparse-solver changes move chart flattenings at floating-point level.
+  They include a stable matrix assembly order: duplicate entries are now summed
+  in input order, not in the order an unstable sort left them. On the 4×5×5
+  reference the cleaned charts of 13 of the 100 cubes differ. Through audit,
+  coverage goes from 81.13% to 81.27%, overlapping triangle pairs from 213 to
+  209, strict bad faces from 73,483 to 72,255, and the singular-value range
+  from [0.023, 13.2] to [0.116, 11.4]. Unresolved seams go from 1,314 to 1,324.
+  Repeated runs are byte-identical.
+- The exception stack is thread-local, so a `RAISE` on an OpenMP worker can no
+  longer jump into another thread's frame.
+
 ### Contributed fixes
 
 Thanks to everyone who built, measured and fixed ScrollFiesta this month.
@@ -65,6 +113,9 @@ Merged in this release:
   computes what MSVC computes; this is the cause of the macOS contact-gradient
   failure reported in #25. The exact predicates get `-frounding-math
   -fno-fast-math`, as their README requires.
+- `ctest` runs the new tools' selftests, plus `ink_closeup
+  --material-contact-selftest`. All 22 tests pass in a Release build and under
+  MSVC AddressSanitizer.
 
 ### Known issues
 

@@ -33,6 +33,18 @@ them in one winding-aware parameter domain, repairs overlap and distortion,
 audits the result against the source meshes, and bakes and scores the sheet.
 See [docs/SHEET_ASSEMBLY.md](docs/SHEET_ASSEMBLY.md).
 
+Since October 2026 any region of an assembled sheet can be rebuilt as a
+**close-up**: one continuous, isometric surface. It can grow past its box into
+material the assembly left out, by adopting nearby charts and bridging gaps
+along the prediction. It can then be aligned with the papyrus fibres and
+rendered as a surface volume for ink detection:
+
+```text
+sheet_assemble -> ink_closeup -> fiber_flatten / vmesh_fiber_rigid
+```
+
+See [docs/CLOSEUPS.md](docs/CLOSEUPS.md).
+
 This repository is under active development. The public C API is versioned,
 but pipeline outputs and experimental command-line options may still change.
 For the updated research write-up, see [submission.pdf](submission.pdf).
@@ -141,6 +153,10 @@ toolchain and is what CI exercises.
 | `vmesh_tifxyz` | Export flattened pieces as VC3D tifxyz segments. |
 | `scroll_axis_track` | Derive the scroll axis (umbilicus) table from a mesh pile. |
 | `swirl_slim` | Cut radius-gated bridges in a marbled VMESH region and SLIM-refine each freed piece. |
+| `ink_closeup` | Rebuild one region of a sheet as a continuous close-up; grow it, fibre-align it, render its surface volume (October 2026). |
+| `fiber_flatten` | Re-flatten a tifxyz canvas along a 3-D fibre field. |
+| `closeup_strip_turn` | Turn a close-up rigidly onto its strip piece's frame. |
+| `vmesh_fiber_rigid` | Rotate a whole sheet onto its measured fibre axes. |
 
 Small diagnostic tools are also built when `SCROLLFIESTA_BUILD_TOOLS=ON`.
 Run a tool with no arguments for usage, or with `--selftest` where supported.
