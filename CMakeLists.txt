@@ -983,6 +983,18 @@ if(SCROLLFIESTA_BUILD_TESTS)
             set_tests_properties(${tool} PROPERTIES
                 ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
         endforeach()
+        # The mesher's suite: every exact speedup against its reference (KD
+        # tree, MLS kernel, weld, normal orientation, CVT, RVD and its
+        # predicates, both multicut solvers, resplit assignment, BPA), the
+        # Triangle duplicate-vertex polygon and the bounded-thread watchdog.
+        if(TARGET cube_mesh)
+            set(_sf_wd ${CMAKE_CURRENT_BINARY_DIR}/selftest/cube_mesh)
+            file(MAKE_DIRECTORY ${_sf_wd})
+            add_test(NAME cube_mesh_selftest COMMAND cube_mesh --selftest
+                     WORKING_DIRECTORY ${_sf_wd})
+            set_tests_properties(cube_mesh_selftest PROPERTIES
+                ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0" TIMEOUT 1800)
+        endif()
         if(TARGET sheet_assemble)
             add_test(NAME sheet_assemble_cli
                      COMMAND ${CMAKE_COMMAND}
