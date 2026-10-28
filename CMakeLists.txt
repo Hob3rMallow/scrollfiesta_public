@@ -75,6 +75,15 @@ add_compile_options(
     "$<$<AND:$<COMPILE_LANGUAGE:C>,$<C_COMPILER_ID:GNU>>:-fno-strict-aliasing>"
     "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU>>:-fno-strict-aliasing>")
 
+# MSVC's /fp:precise never contracts a*b+c into a fused multiply-add. GCC (in
+# its default gnu modes) and Clang do wherever the target has FMA: aarch64,
+# Apple silicon, or x86-64 built for a newer -march. That changes results bit
+# for bit, and on Apple silicon it gave the assembler's contact gradient a
+# wrong boundary derivative (#25). Every build computes what MSVC computes.
+add_compile_options(
+    "$<$<AND:$<COMPILE_LANGUAGE:C>,$<C_COMPILER_ID:GNU,Clang,AppleClang>>:-ffp-contract=off>"
+    "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>>:-ffp-contract=off>")
+
 # The canonical library artifact is the shared library (consumed via dlopen +
 # sf_get_api). Standalone builds default to shared unless the user says
 # otherwise; embedded builds inherit the host's BUILD_SHARED_LIBS.
@@ -400,6 +409,12 @@ set(SF_CXX_WRAP_SRC
     ${SF_DEPS}/src/attene-predicates/ieee_binary.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/gco-v3.0/GCoptimization.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/docs/research/gco-v3.0/LinkedBlockList.cpp)
+# The exact predicates compute their interval filter under
+# fesetround(FE_UPWARD). Their README requires -frounding-math -fno-fast-math
+# on GCC and Clang for the wrapper (MSVC scopes it with fenv_access). Without
+# them x86-64 builds take the SSE2 interval path with folded roundings.
+set_source_files_properties(${SF_SRC}/common/attene_predicates_wrap.cpp PROPERTIES
+    COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-frounding-math;-fno-fast-math>")
 
 add_library(scrollfiesta_core STATIC
     ${SF_COMMON_SRC} ${SF_EXTRACT_SRC} ${SF_SPLIT_SRC} ${SF_REMESH_SRC}

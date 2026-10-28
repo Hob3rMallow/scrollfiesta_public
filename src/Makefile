@@ -33,12 +33,12 @@ CXX      = g++
 #     make release                # warnings print, build proceeds
 #     SF_WERROR=1 make release    # the strict build CI runs
 WERROR   = $(if $(filter 1,$(SF_WERROR)),-Werror,)
-CFLAGS   = -std=gnu99 -Wall -Wextra -Wshadow -Wformat=2 $(WERROR) -Wconversion
+CFLAGS   = -std=gnu99 -Wall -Wextra -Wshadow -Wformat=2 $(WERROR) -Wconversion -ffp-contract=off
 # -include limits: the vendored andres/graph headers use std::numeric_limits
 # without including <limits>. libstdc++ used to pull it in transitively; since
 # GCC 15 it does not, so greedy-additive.hxx and kernighan-lin.hxx fail to
 # compile. Forcing the include here leaves the vendored tree untouched.
-CXXFLAGS = -std=c++17 -O2 -Wno-register -include limits
+CXXFLAGS = -std=c++17 -O2 -Wno-register -include limits -ffp-contract=off
 
 # System libs + local deps (pre-installed on the target; see CLAUDE.md).
 # The vendored libtiff that build-deps.sh stages into deps/prefix is preferred;
@@ -200,7 +200,7 @@ grid_weld: tools/grid_weld.o remesh/ball_pivot.o remesh/pinhole_fill.o remesh/or
 	$(CC) $(CFLAGS) $(BUILD_FLAGS) $^ -o $@ $(LDFLAGS) $(EXT_LIB)
 
 common/attene_predicates_wrap.o: common/attene_predicates_wrap.cpp
-	$(CXX) $(CXXFLAGS) -I../deps/src/attene-predicates -c $< -o $@
+	$(CXX) $(CXXFLAGS) -frounding-math -fno-fast-math -I../deps/src/attene-predicates -c $< -o $@
 ../deps/src/attene-predicates/%.o: ../deps/src/attene-predicates/%.cpp
 	$(CXX) $(CXXFLAGS) -I../deps/src/attene-predicates -c $< -o $@
 
