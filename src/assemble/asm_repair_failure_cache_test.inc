@@ -20,18 +20,22 @@ static int afc_selftest(void)
     uint8_t core[]={0,1,0};AsmRepairOpts opts;AsmRepair_defaults(&opts);
     opts.compact=1;opts.iterations=opts.clearance_iterations=opts.closure_iterations=0;opts.admission_rounds=1;
     opts.regional=opts.source_trials=0;opts.deadline=ves_clock_sec()+10;
+    /* Explicitly leave contact polishing incomplete. Whether the real
+     * quarter-second polisher finishes depends on machine load; either
+     * outcome is valid and must not decide this cache-policy assertion. */
+    opts.admission_skip_contact_polish=1;
     ApaFailureCache cache;afc_init(&cache,arena,16);opts.admission_failure_cache=&cache;
     AsmChart before[3];memcpy(before,run.charts,sizeof before);
     for(int repeat=0;repeat<2;repeat++){
         size_t anchors=0;AsmRepairStats stats={0};ApaReport report={0};const char *reason="";
         int accepted=apa_attempt(&run,&opts,core,&anchors,&stats,&reason,NULL,boxes,parent,NULL,&report,4);
-        /* The physical polisher now works until its short deadline; that
-         * unfinished work must remain retryable instead of being cached. */
+        /* Unperformed work must remain retryable instead of being cached. */
         int okay=!accepted && !strcmp(reason,"new_material_contact_failed") && !report.cache_hit &&
             !memcmp(before,run.charts,sizeof before) && !cache.count && !cache.hits;
         if(!okay)fprintf(stderr,"  cache repeat %d: accepted %d reason %s hit %d entries %zu hits %zu\n",repeat,accepted,reason,report.cache_hit,cache.count,cache.hits);
         failures+=!okay;
     }
+    opts.admission_skip_contact_polish=0;
     /* A complete failed seam still caches. Conflicting recorded boundary
      * observations cannot all fit in this zero-iteration pose trial.  The
      * perturbed fit starts the candidate more than the same-surface distance

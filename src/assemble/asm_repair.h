@@ -35,6 +35,7 @@ typedef struct AsmRepairOpts {
     const uint8_t *admission_targets; /* optional scheduling scope; exterior charts remain collision context */
     const uint8_t *admission_moving; /* registered neighbors freed with a new chart; replacement overlay keeps current UVs */
     int admission_incident_sources; /* diagnostic: also close eligible deferred source runs incident to the core */
+    int admission_skip_contact_polish; /* controls only: no endpoint contact polish passes (core or neighbours) */
     const char *admission_trace_dir; /* optional original-face endpoint export for a bounded diagnostic */
     struct ApaFailureCache *admission_failure_cache; /* sequence-local completed local refusals only */
     struct ApaFeedback *admission_feedback; /* measured blockers for the automatic neighborhood scheduler */

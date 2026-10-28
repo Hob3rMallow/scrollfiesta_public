@@ -322,7 +322,7 @@ static const char *apa_qualification(AsmField *f,const uint8_t *moving,const uin
 static size_t apa_contact_polish(AsmField *f,const uint8_t *core,const AsmRepairOpts *opts,FILE *trace,int *complete)
 {
     if(complete)*complete=0;
-    if(apr_expired(opts))return 0;
+    if(apr_expired(opts) || opts->admission_skip_contact_polish)return 0;
     size_t chart=SIZE_MAX;
     for(size_t c=0;c<f->run->n_charts;c++)if(core[c]){
         if(chart!=SIZE_MAX)return 0;
@@ -385,7 +385,7 @@ static size_t apa_neighbor_polish(AsmField *f,const uint8_t *moving,const uint8_
                                    const AsmRepairOpts *opts,FILE *trace,int *complete)
 {
     if(complete)*complete=1;
-    if(!opts->admission_moving || apr_expired(opts))return 0;
+    if(!opts->admission_moving || apr_expired(opts) || opts->admission_skip_contact_polish)return 0;
     Arena_T arena=Arena_new();size_t nc=f->run->n_charts,steps=0;
     double *area=ARENA_CALLOC(arena,nc,sizeof *area);
     uint8_t *active=ARENA_CALLOC(arena,f->nf,1),*selected=ARENA_CALLOC(arena,nc,1);
