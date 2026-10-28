@@ -8,9 +8,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#ifdef _OPENMP
-#include <omp.h>
-#endif
+#include "../common/ves_omp.h"
 
 /* Clip-polygon vertex: an AttenePt id + a tag for the edge that FOLLOWS it
  * (vertex i -> i+1). etag 0 = edge lies on a mesh edge with explicit endpoints

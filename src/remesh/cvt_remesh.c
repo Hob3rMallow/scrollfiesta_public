@@ -9,9 +9,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#ifdef _OPENMP
-#include <omp.h>
-#endif
+#include "../common/ves_omp.h"
 
 /* Per-thread Lloyd scratch: the projection candidate buffer and instrument
  * counters (summed into CvtPhaseStats after each pass). Padded so threads
