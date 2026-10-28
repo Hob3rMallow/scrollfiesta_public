@@ -63,6 +63,12 @@ def reorder_welded_to_xyz(src_obj, dst_obj) -> None:
     winding (the axis reversal is a reflection, so reordering the triangle keeps
     normals pointing outward). ``o``/``g``/``usemtl``/``mtllib`` lines pass
     through.
+
+    Texture coordinates survive: ``vt`` lines pass through unchanged (UVs are
+    not spatial axes), ``vn`` normals are reordered like vertices, and face
+    tokens keep their ``v/vt/vn`` indices. The atlas exports
+    (``atlas/atlas_bake.obj``) carry the solved page as UVs; without them
+    villa's ``vc_obj2tifxyz`` refuses the file ("UVs: 0").
     """
     with open(src_obj) as fi, open(dst_obj, "w") as fo:
         fo.write("# scrollfiesta welded mesh: (z,y,x)->(x,y,z), winding flipped, "
@@ -72,9 +78,14 @@ def reorder_welded_to_xyz(src_obj, dst_obj) -> None:
                 t = ln.split()
                 rest = (" " + " ".join(t[4:])) if len(t) > 4 else ""   # keep r g b
                 fo.write(f"v {t[3]} {t[2]} {t[1]}{rest}\n")
+            elif ln.startswith("vt "):
+                fo.write(ln)                                            # UVs are not axes
+            elif ln.startswith("vn "):
+                t = ln.split()
+                fo.write(f"vn {t[3]} {t[2]} {t[1]}\n")
             elif ln.startswith("f "):
                 t = ln.split()
-                a, b, c = (tok.split("/")[0] for tok in t[1:4])
+                a, b, c = t[1:4]                                        # keep v/vt/vn tokens
                 fo.write(f"f {a} {c} {b}\n")                            # flip winding
             elif ln.startswith(("o ", "g ", "usemtl ", "mtllib ")):
                 fo.write(ln)
