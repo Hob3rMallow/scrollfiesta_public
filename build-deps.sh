@@ -2,18 +2,18 @@
 #
 # build-deps.sh -- Build the vendored C/C++ dependencies for ScrollFiesta (Linux).
 #
-# Linux analog of build-deps.ps1. Produces the three static libraries that
+# Linux analog of build-deps.ps1. Produces the static libraries that
 # src/Makefile links from deps/lib/:
 #
 #     deps/lib/libtriangle.a    (Shewchuk's Triangle CDT, compiled from source)
-#     deps/lib/libClipper2.a    (Clipper2 polygon boolean ops)
-#     deps/lib/libClipper2Z.a   (Clipper2 with the Z coordinate, USINGZ)
+#     deps/lib/libClipper2.a    (Clipper2 polygon boolean ops, 2-D ABI)
 #
-# Unlike the Windows build, zlib and libtiff are NOT built here: the Makefile's
-# `-ltiff` links the *system* libtiff (libtiff-dev; headers under the multiarch
-# /usr/include/<triple>/ that GCC searches by default). Install it with:
+# It also stages deps/lib/libClipper2Z.a (Clipper2 with USINGZ), which nothing
+# links any more: every build uses the one 2-D Clipper2 ABI.
 #
-#     sudo apt-get install libtiff-dev
+# libtiff: the system package (libtiff-dev) is used when the host has one.
+# Otherwise the vendored zlib and libtiff are built into deps/prefix, without
+# root, and both CMakeLists.txt and src/Makefile take them from there.
 #
 # Run this ONCE before building the binaries:
 #

@@ -11,7 +11,8 @@ and vendored research code. They do not all have the same stability.
 | [`PIPELINE.md`](PIPELINE.md) | Supported whole-scroll stages and required run artifacts. |
 | [`SHEET_ASSEMBLY.md`](SHEET_ASSEMBLY.md) | The native sheet assembler (September 2026): stages, configuration, artifacts and finishing tools. |
 | [`configs/default.json`](../configs/default.json) | The shared public configuration, calibrated from the PHerc0139 4×5×5 profiles. |
-| [`CONTRIBUTING.md`](../CONTRIBUTING.md) | Development profiles, validation expectations, and merge checklist. |
+| [`RELEASE_NOTES.md`](RELEASE_NOTES.md) | What each release changed, with its evidence and known issues. |
+| [`CONTRIBUTING.md`](../CONTRIBUTING.md) | Development profiles, validation expectations, how updates from the development tree arrive, and merge checklist. |
 | [`include/scrollfiesta.h`](../include/scrollfiesta.h) | Authoritative public C API, ownership, errors, ABI, and coordinate conventions. |
 | [`output/canonical_best/README.md`](../output/canonical_best/README.md) | Curated result bundle and artifact contract. |
 | [`THIRD_PARTY_LICENSES.md`](../THIRD_PARTY_LICENSES.md) | Dependency inventory and redistribution constraints. |

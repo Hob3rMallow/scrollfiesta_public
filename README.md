@@ -78,7 +78,9 @@ msbuild scrollfiesta.sln -p:Configuration=Release -p:Platform=x64 -m
 ```
 
 On Linux, install a C/C++ toolchain, libtiff and a BLAS/LAPACK
-(`liblapack-dev`), then run:
+(`liblapack-dev`). Without root or a libtiff package, `./build-deps.sh` builds
+the vendored zlib and libtiff into `deps/prefix`, where CMake finds them. Then
+run:
 
 ```bash
 cmake -S . -B build -G Ninja \

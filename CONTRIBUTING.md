@@ -89,6 +89,15 @@ runtime loading, and a hostile embedding-consumer configuration.
   [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) and preserve upstream
   notices.
 
+## Updates from the development tree
+
+ScrollFiesta is developed in a larger private tree, and its improvements reach
+this repository as periodic updates. An update is a three-way merge onto this
+repository's `main`, file by file, with the private tree's state at the previous
+update as the base. Commits merged here, including community pull requests,
+therefore survive every update; an update never replaces this repository's
+history. Each update's commit message names the private commits it carries.
+
 ## Pull-request checklist
 
 - [ ] The change has a focused purpose and no unrelated generated files.
