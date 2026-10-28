@@ -52,9 +52,15 @@ Merged in this release:
 
 ### Builds and CI
 
-- The ASan job, red since the September release, failed a cache-policy
-  control in the assembler's selftest that depended on machine load. The
-  control no longer depends on it.
+- CI's ASan job had failed since the September release. The assembler's
+  local-failure cache keyed each attempt partly on the address of a per-call
+  stack object, which ASan moves on every call, so identical attempts never
+  hit the cache. The key ignores that address now, and the cache's selftest
+  checks it.
+- The same job found two memory errors, both fixed: the conflict audit read
+  its report cells after the arena restore that released them, and Triangle's
+  exact arithmetic loaded one element past the end of an expansion (results
+  unchanged).
 - GCC and Clang no longer fuse `a*b+c` (`-ffp-contract=off`), so every build
   computes what MSVC computes; this is the cause of the macOS contact-gradient
   failure reported in #25. The exact predicates get `-frounding-math
