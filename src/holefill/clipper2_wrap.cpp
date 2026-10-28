@@ -8,6 +8,7 @@
 #include "clipper2/clipper.h"
 
 #include <cstdlib>
+#include <cstdio>
 #include <cstdint>
 #include <cmath>
 #include <vector>
@@ -32,6 +33,8 @@ int Clipper2_union(const double *pts_xy, size_t n,
     *out_pts     = nullptr;
     *out_counts  = nullptr;
     *out_n_polys = 0;
+
+    try {
 
     /* Build int64 path from input doubles */
     Path64 subject;
@@ -89,4 +92,12 @@ int Clipper2_union(const double *pts_xy, size_t n,
     *out_counts  = counts;
     *out_n_polys = n_polys;
     return 0;
+
+    } catch (const std::exception &e) {
+        fprintf(stderr, "  [Clipper2_union] exception: %s\n", e.what());
+        return -1;
+    } catch (...) {
+        fprintf(stderr, "  [Clipper2_union] unknown exception\n");
+        return -1;
+    }
 }
