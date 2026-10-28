@@ -216,6 +216,30 @@ static void nearest_rec(const KDNode *nodes, size_t n,
     }
 }
 
+size_t KDTree_nearest_bounded(const KDTree_T tree, const float query[3],
+                              float max_dist_sq, float *out_dist_sq)
+{
+    assert(tree && tree->self == tree);
+    assert(tree->n > 0);
+    assert(query);
+
+    size_t best_idx = tree->n;          /* a value nearest_rec can never write */
+    float best_dsq = max_dist_sq;
+
+    nearest_rec(tree->nodes, tree->n, 0, 0, query, &best_idx, &best_dsq);
+
+    if (best_idx >= tree->n) {          /* nothing in this tree beat the bound */
+        if (out_dist_sq) {
+            *out_dist_sq = FLT_MAX;
+        }
+        return (size_t)-1;
+    }
+    if (out_dist_sq) {
+        *out_dist_sq = best_dsq;
+    }
+    return (size_t)tree->nodes[best_idx].orig_index;
+}
+
 size_t KDTree_nearest(const KDTree_T tree, const float query[3],
                       float *out_dist_sq)
 {
