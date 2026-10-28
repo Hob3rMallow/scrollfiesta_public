@@ -97,6 +97,12 @@ static int afc_selftest(void)
         if(variant==12)core[0]^=1;
         afc_key(field,&opts,core,reference,4,changed);failures+=strcmp(key,changed)!=0;
     }
+    /* Pointer identities are not inputs: the certificate context's address
+     * alone must not change the key (ASan's fake stack moves it per call). */
+    {
+        AsmRepairOpts other=opts;int marker=0;other.contact_merit_context=&marker;
+        afc_key(field,&other,core,reference,4,changed);failures+=strcmp(key,changed)!=0;
+    }
     failures+=afc_reason("new_material_contact_failed",0,0) || afc_reason("new_material_contact_failed",1,1) ||
         afc_reason("contact_walk_over_budget",1,0) || afc_reason("external_probe_failed",1,0);
     ApaFailureCache small;afc_init(&small,arena,1);
