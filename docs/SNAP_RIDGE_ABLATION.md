@@ -9,6 +9,14 @@ targets differ: the ridge is the intensity maximum; the recto objective is the
 outward dark-to-bright boundary. Workflows that require the latter can opt in
 with `--snap-recto-iters 4`.
 
+The sections from "Data and frozen protocol" to "Qualitative checks" were
+measured in August 2026 on this branch before it was merged with the October
+release, i.e. on the pre-release base `4f43cfc`. The same protocol was re-run
+on the October 2026 release; see
+[Re-run on the October 2026 release](#re-run-on-the-october-2026-release). In
+that run the placement fails the release's own audit, and two further
+measurements are less favourable to the new default.
+
 ## Data and frozen protocol
 
 The real-data fixture is the aligned PHerc0139 4x5x5 block at z
@@ -19,9 +27,9 @@ The real-data fixture is the aligned PHerc0139 4x5x5 block at z
 
 The 100 RAW and 100 prediction cubes are uint8 128-cube TIFFs. The decoded
 first RAW TIFF was byte-identical to S3 chunk `0/34/24/20` (MD5/ETag
-`76ec6610bd726589a1b74dcd27acbda4`). Placement processed all 100 cubes; its
-independent audit passed with 6,441 adjacent pairs, 2.903% turn-off (5% limit),
-and 82.86% at |du| < 2 (50% floor).
+`76ec6610bd726589a1b74dcd27acbda4`). With the August pre-release code,
+placement processed all 100 cubes; its independent audit passed with 6,441
+adjacent pairs, 2.903% turn-off (5% limit), and 82.86% at |du| < 2 (50% floor).
 
 The split and metric were frozen before any arm ran:
 
@@ -37,11 +45,12 @@ The split and metric were frozen before any arm ran:
 - required held-out improvement over the previous 4-iteration default: at
   least 0.05 voxel with the paired 95% interval excluding zero.
 
-Every arm preserved exactly 113,112 vertices, 191,889 faces, face indices,
-registered UVs, and cube vertex ranges. Fill stayed 0.2269, multi-coverage
-0.2845, seam ratio 1.003-1.008, and v-seam ratio 1.137-1.150.
+On the August pre-release mesher, every arm preserved exactly 113,112
+vertices, 191,889 faces, face indices, registered UVs, and cube vertex ranges.
+Fill stayed 0.2269, multi-coverage 0.2845, seam ratio 1.003-1.008, and v-seam
+ratio 1.137-1.150.
 
-## Results
+## Results (August 2026, pre-release mesher)
 
 | arm | development median | held-out median |
 |---|---:|---:|
@@ -64,7 +73,7 @@ SHA-256 digests are respectively
 `495b6cbbafd744aa628a253ed91b77cdb43692fc25b750fc09222e285e6bbd1a` and
 `157d240f09ae26aedb87c2089000ffb05555aed3fa38c020e2df900e1e057916`.
 
-## Untouched adjacent-slab replication
+## Untouched adjacent-slab replication (August 2026, pre-release mesher)
 
 The same fixed comparison was then run without tuning on the first 128-voxel
 slab immediately after the published block: z `[4864,4992)`, with the same
@@ -107,7 +116,7 @@ layers without an obvious cross-sheet jump. It is a qualitative check only.
 The PNG SHA-256 is
 `7d207a53b500e8081687fe24cb6b6b90cbd6641a39c7da9262b7727e1ba176d5`.
 
-## Qualitative checks
+## Qualitative checks (August 2026 meshes)
 
 The fixed held-out-band midpoint, z=4800, was chosen without searching slices.
 The following plot assembles all 25 RAW tiles at that z and intersects both
@@ -131,6 +140,125 @@ one arm or that either image establishes text legibility.
 The two PNG SHA-256 digests are respectively
 `d3a255296d20a8837cd91f589251aabf218553848595afaf5db255e103b64244`
 and `b2e138e6a451117e7ca2e0cdf1f2dbb084da9f376f1670ef0c4a7a7cd1952001`.
+
+## Re-run on the October 2026 release
+
+Added 29 October 2026. This branch was merged with upstream `main` at
+`44b30eab652a50a31f5f3be64388445b3f77ad18`, the October 2026 release (merge
+commit `bb05c52`; 41 upstream commits after `4f43cfc`; conflicts only in
+`README.txt` and `src/tools/scroll_unroll.c`). The frozen protocol above was
+then run once more on the merged build (Windows, MSVC) from a re-carved
+fixture. Its first RAW cube MD5 and its sigma-1 CT-cache SHA-256
+(`18d3685e759f532da53eb535802189968074098dd941bdcabfbe8a5214d1a12d`) equal the
+frozen values. Concurrency was capped at four (`--max-concurrent 4`,
+`--threads 4`), and the carver and scorer ran from an existing Python
+environment instead of `uv run`.
+
+**The release's own placement audit fails on this run.**
+`scroll_whole --reregister --audit` exits 1 with `quality gate: FAIL`:
+corr(u,phi) is 0.8262, below the release's new 0.90 floor. Its other gates
+pass (turn-off 0.00%, |du|<2 91.83%, |du|<10 97.99%). These values also meet
+the input gate of the adjacent-slab preregistration (turn-off at most 5%,
+|du|<2 at least 75%). The reregister log warns:
+
+```text
+[reregister] WARNING: edge-dr gate 3.50 rejected 0 of 1213 edges -- the contact-edge discriminator never fired; wrap stacking is not being prevented (default gate is 1.75)
+[reregister] WARNING: no absolute du gauge applied -- each of 31 component(s) keeps an arbitrary additive u offset; --physical-du-gauge is the recommended anchor
+```
+
+[`PIPELINE.md`](PIPELINE.md) says to treat a failing registration audit as a
+failed run, so every score below is conditional on a placement that the
+release rejects. No run with `--physical-du-gauge` was made.
+
+Differences seen on this fixture with the August command lines:
+
+- `grid_pipeline --halo 13 --umb-y 3405 --umb-x 2878 --wrap-pitch 9.5` (the
+  geometry values that the August weld log shows) now also makes CVT target a
+  4.18-voxel spacing (0.44 pitch) and check a winding certificate per chart;
+  44 charts in 34 cubes failed it and kept their unsimplified source mesh. The
+  unroll input has 2,566,790 vertices and 5,019,122 kept faces (August:
+  113,112 and 191,889).
+- `grid_weld` fails its exact chart disk certificate (762 of 781 charts are
+  disks) and writes no `welded.obj`, the known issue in the release notes.
+  Placement does not read the weld.
+- `scroll_whole` pins spiral sense +1 and reregisters with the radius k-gauge
+  and anchor 0 (August: raw k-gauge, automatic anchor). Its audit adds the
+  |du|<10 and corr(u,phi) floors.
+
+Median absolute ridge offset in voxels, with the cube as the unit:
+
+| | dev, Oct | dev, Aug | test, Oct | test, Aug |
+|---|---:|---:|---:|---:|
+| pre-snap stage 2 | 1.7398 | 1.7101 | 1.6623 | 1.6297 |
+| repair only (new default) | 1.6162 | 1.4465 | 1.5329 | 1.4648 |
+| recto iterations 4 (previous default) | 2.2321 | 2.2408 | 2.2062 | 2.1664 |
+| paired improvement | 0.6172 | 0.7608 | 0.5480 | 0.7462 |
+| paired bootstrap 95% CI | [0.5529, 0.6744] | [0.7191, 0.7945] | [0.3377, 0.7108] | [0.6915, 0.7946] |
+| cubes improved | 71/75 | 75/75 | 24/25 | 25/25 |
+| smallest per-cube improvement | -0.4031 | 0.1995 | -0.0439 | 0.4347 |
+| common bracketed vertices | 1,104,465 | 47,405 | 460,384 | 15,415 |
+
+The October dev score intersects three arms. The August dev score also
+intersected recto iterations 1 and 2, which were not re-run because each
+October OBJ is about 607 MB, so only the test columns are like-for-like. Repair
+only scored worse on dev cubes `z04608_y03328_x02816` (-0.4031),
+`z04480_y03328_x02944` (-0.1280), `z04352_y03200_x02944` (-0.0264) and
+`z04480_y03456_x02816` (-0.0181), and on test cube `z04736_y03328_x02688`
+(-0.0439).
+
+The frozen decision rule (held-out improvement of at least 0.05 voxel, with the
+95% interval excluding zero) passes: 0.5480, `[0.3377, 0.7108]`. Two other
+measurements are less favourable to the new default:
+
+- **Darkness.** The stage-4 dark-texture fraction that `scroll_unroll` reports
+  is 2.88% with repair only and 1.24% with four recto iterations (August:
+  1.20% and 1.22%). On the October mesh, 338,239 of 802,334 dark vertices
+  (42%) are classed as cracks (August: 2,218 of 31,606, 7%); repair moved
+  252,318 vertices, with 464,095 classed fixable (August: 28,954 and 29,388).
+  Seam ratios are closer to 1 with repair only: 1.044 against 1.048, and v-seam
+  1.144 against 1.171 (August: 1.004 and 1.137 against 1.003 and 1.150).
+- **Bracketing (not preregistered).** The frozen score keeps only vertices
+  with an interior ridge peak in all three arms. On the October test band that
+  drops 229,197 of 689,581 eligible vertices (33%), and repair only lacks an
+  interior peak more often than four iterations (23.4% against 20.6% of
+  eligible vertices; August test: 17.5% against 20.6%). Keeping every eligible
+  vertex and scoring one whose window maximum lies on the +/-4-voxel edge as
+  4.0 voxel gives a test improvement of 0.3690 `[0.0717, 0.4941]` with 19/25
+  cubes improved, and 0.3082 `[0.1881, 0.4285]` with 60/75 on dev. August test
+  scored the same way gives 0.5289 `[0.4608, 0.5675]`, 25/25. This check uses
+  a separate re-implementation of the frozen metric that reproduces every
+  October per-cube row exactly; it is not part of this PR.
+
+**Byte identity on the same placed input.** With `--snap-recto-iters 4`, the
+merged build reproduces upstream `main` (`44b30ea`, whose stage-4 default is
+four recto iterations): the 15 stage rasters and the seam-column file are
+byte-identical, the four stats JSONs differ only in their timing fields, and
+the logs differ only by the `--export-mesh` line. The merged no-flag default
+and an explicit `--snap-recto-iters 0` run agree in the same way, and their
+exported OBJs are byte-identical (606,838,761 bytes, SHA-256
+`fb98e67c40c2e33ec6e8a99b5279033da843166f2cdf6762ead30febdb26ce76`).
+
+The complete per-cube outputs are committed as
+[`results/pherc0139_snap_dev_oct_release.json`](results/pherc0139_snap_dev_oct_release.json)
+and
+[`results/pherc0139_snap_test_oct_release.json`](results/pherc0139_snap_test_oct_release.json).
+Their SHA-256 digests are respectively
+`983b138b3566c38396bc4586a42097bbc6ddf0123cc135c7f6a9c47da8ddf1cc` and
+`fe3bb90fd3c4bc8bb65fc5b638f6ecc06a96ff22678c3633d3f94b024eda5f91`. In both
+files the arm named `iter0_r3` is the no-flag default export. Scoring each
+split a second time gave byte-identical files.
+
+These digests, like those of the other JSON files in this document, are of the
+files with Windows CRLF line endings, as the scorer wrote them and as Git for
+Windows checks them out by default. With LF line endings (a Linux checkout, or
+`git show`) the digests are
+`3a7bea5587d753a3602fe02cc0b75bac4bdddb5cbd3374d6a96da8b5ff562466` and
+`77e333fb9c9ecd9d36b613d76be281861d80f64ec2867ebc9e62aae134a5184e` for these
+two files, `388f8932d3fde56624851214c4ed74e616850ddb1ab9911238e287030c643002`
+and `c1e8cf8ceb9e51f4037bf655e04a265f95ae1f576d3974988952bf23cc02e360` for the
+August development and held-out files, and
+`46bdc58454435bccda686ca337a9ab03f9868bb09f776d1911d314b51b11c022` for the
+adjacent-slab file.
 
 ## Reproduce
 
@@ -213,3 +341,9 @@ Dark-region repair remains the default stage-4 geometry change. The distinct,
 still-experimental recto-boundary refinement is retained but opt-in. This is a
 conservative default change supported by real data, not a claim that a ridge
 and a recto boundary are interchangeable.
+
+On the October 2026 release the frozen rule still passes, but that run's
+placement fails the release's own audit, repair only leaves more dark stage-4
+texture than four recto iterations, and the effect is smaller when vertices
+without an interior ridge peak are counted. These open points are described in
+[Re-run on the October 2026 release](#re-run-on-the-october-2026-release).
