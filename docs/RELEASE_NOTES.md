@@ -1,12 +1,13 @@
 # Release notes
 
-## October 2026
+## October 2026 update: close-ups, fibre tools, a better mesher
 
 ### Close-ups and fibre tools
 
-Four new tools come from the development tree's close-up chain:
-`ink_closeup`, `fiber_flatten`, `closeup_strip_turn` and `vmesh_fiber_rigid`.
-See [CLOSEUPS.md](CLOSEUPS.md).
+Seven new tools come from the development tree's close-up chain:
+`ink_closeup`, `fiber_flatten`, `closeup_strip_turn`, `vmesh_fiber_rigid`,
+`closeup_repair`, `tifxyz_snap` and `vcr_gpu`, along with `sheet_strip
+--closeup-window`. See [CLOSEUPS.md](CLOSEUPS.md).
 
 - **Close-ups.** Any region of an assembled sheet becomes one continuous,
   isometric surface. Every nearby chart is an observation, and a robust fused
@@ -23,11 +24,53 @@ See [CLOSEUPS.md](CLOSEUPS.md).
   from a checked SLIM start, and XYZ never moves. `fiber_flatten` re-flattens a
   canvas along a fibre field. `closeup_strip_turn` and `vmesh_fiber_rigid`
   apply exact rigid turns.
-- **The development tree's engine.** `ink_closeup` is the development tree's
-  engine of record. On its hard qualification replay, all eight output files
-  are byte-identical to the record's.
+- **Repair and snap.** `closeup_repair` removes duplicate fill, wrong-side
+  fill and flaps from a close-up surface. `tifxyz_snap` snaps any tifxyz
+  segment onto the papyrus recto edge read in the RAW CT. On the 4×5×5 demo
+  close-up, 82.3% of nodes find the edge, and the median offset from it falls
+  from +0.44 to +0.01 voxels.
+- **Surface volumes on the GPU.** `vcr_gpu` renders villa's
+  `vc_render_tifxyz` surface volume on an NVIDIA GPU and refuses any option it
+  does not reproduce. On the demo close-up, its 21 layers are voxel-identical
+  to `vc_render_tifxyz`'s, in 0.3 s against 6 s. It loads the CUDA driver and
+  NVRTC at run time, so building it needs no CUDA toolkit.
+- **Back into the strip.** `sheet_strip --closeup-window` places a close-up
+  back into its reading strip at native scale, clear of stationary fragments.
+  `sheet_strip` also reads its blocks from a list file (`@blocks.txt`), turns
+  pieces, and can bound each line's pixels.
+- **The development tree's engines.** On its engine of record's hard
+  qualification replay, `ink_closeup` reproduces all eight outputs byte for
+  byte. `vcr_gpu`'s output is byte-identical to the development tree's. All
+  130 recorded close-up window jobs plan identically to the record engine's.
 - `vmesh_tifxyz --canvas --native-grid` exports a close-up as one tifxyz at one
   sample per voxel. `meta.json` now records `uv_origin`, which the re-UV reads.
+
+### Mesher: radius 8, clip-at-box and B2G
+
+The per-cube mesher now matches the development tree's mesher of record. Its
+meshes change.
+
+- The step-0 MLS kernel radius goes from 12 to 8 voxels. At 12 it reached the
+  neighbouring sheet where bands are thin and close together, and projected
+  two sheets onto one surface in the gap.
+- With a halo, the final trim cuts every chart at the exact cube box, so
+  adjacent cubes' charts end on the same plane. `--trim-inset` now only sets
+  how far the step-0 cloud reaches into the halo.
+- The B2G CVT defaults: three topology retries, early probe aborts and the
+  manifold guard. Earlier releases left them out to keep their meshes
+  byte-identical.
+- `cube_mesh` writes only final meshes unless given `--full-dumps`. An opt-in
+  `--surface f0-inner` places the surface on the prediction's inner boundary.
+- On the 4×5×5 fixture with production flags (`--halo 13 --trim-inset 0`), all
+  1,201 meshes are byte-identical to the record executable's.
+- Against the previous mesher on the same fixture: mesh area within 1 voxel
+  of a predicted band centre goes from 94.1% to 97.4%, area 2+ voxels off from
+  1.08% to 0.13%, and stacked duplicates at cube faces from 0.09% to 0.01%.
+- `sheet_assemble` on the new meshes, through audit: coverage goes from 81.3%
+  to 88.9%, placed charts from 590 to 645, overlapping triangle pairs from 209
+  to 59, strict bad faces from 72,255 to 6,226, and unresolved seams from 1,324
+  to 814. One chart still fails the metric audit, and its worst face is now far
+  more stretched: the largest singular value goes from 11.4 to 558.
 
 ### Shared modules
 
@@ -35,20 +78,42 @@ The close-up engine needs the development tree's current SLIM, sparse solver,
 contact walk, RAW, TIFF and Zarr readers and exception handling. Those modules
 now match the development tree, with this repository's own fixes kept.
 
-- **The mesher and weld are unchanged.** On the 4×5×5 fixture, all 1,181
-  meshes and the weld log are byte-identical to the previous build's, both with
-  the default trim and with `--trim-inset 0`.
+- **On their own, they leave the mesher and weld unchanged.** On the 4×5×5
+  fixture, all 1,181 meshes and the weld log were byte-identical to the
+  previous build's, both with the default trim and with `--trim-inset 0`.
 - **`sheet_assemble` output changes slightly.** The development tree's SLIM
   and sparse-solver changes move chart flattenings at floating-point level.
   They include a stable matrix assembly order: duplicate entries are now summed
   in input order, not in the order an unstable sort left them. On the 4×5×5
-  reference the cleaned charts of 13 of the 100 cubes differ. Through audit,
-  coverage goes from 81.13% to 81.27%, overlapping triangle pairs from 213 to
-  209, strict bad faces from 73,483 to 72,255, and the singular-value range
-  from [0.023, 13.2] to [0.116, 11.4]. Unresolved seams go from 1,314 to 1,324.
-  Repeated runs are byte-identical.
+  reference, with the previous meshes, the cleaned charts of 13 of the 100
+  cubes differ. Through audit, coverage goes from 81.13% to 81.27%,
+  overlapping triangle pairs from 213 to 209, strict bad faces from 73,483 to
+  72,255, and the singular-value range from [0.023, 13.2] to [0.116, 11.4].
+  Unresolved seams go from 1,314 to 1,324. Repeated runs are byte-identical.
 - The exception stack is thread-local, so a `RAISE` on an OpenMP worker can no
   longer jump into another thread's frame.
+
+### Tests
+
+- `ctest` runs every new tool's selftest, plus `ink_closeup
+  --material-contact-selftest`; 25 tests in all. They pass in a Release build
+  and under MSVC AddressSanitizer. `vcr_gpu`'s GPU selftest needs an NVIDIA
+  driver, so `ctest` runs its storage selftest unless the build sets
+  `-DSCROLLFIESTA_GPU_TESTS=ON`. Its GPU selftest passes on an RTX PRO 6000.
+
+### Known issues
+
+- `grid_weld`'s exact chart disk certificate still fails on the 4×5×5
+  fixture with the new mesher (787 of 807 charts are disks; 762 of 781
+  before), so the weld writes no `welded.obj`. `sheet_assemble` and
+  `scroll_whole` read the per-cube meshes and are unaffected.
+- The default `sheet_strip` page mode needs a review layout with
+  `ribbon_layout.json`, which this repository writes only from a qualified
+  layout (`sheet_assemble --winding-order`). The updated `sheet_strip` was
+  therefore checked by its selftest and the 130 close-up window replays, not
+  on a real strip page.
+
+## October 2026
 
 ### Contributed fixes
 
@@ -113,9 +178,6 @@ Merged in this release:
   computes what MSVC computes; this is the cause of the macOS contact-gradient
   failure reported in #25. The exact predicates get `-frounding-math
   -fno-fast-math`, as their README requires.
-- `ctest` runs the new tools' selftests, plus `ink_closeup
-  --material-contact-selftest`. All 22 tests pass in a Release build and under
-  MSVC AddressSanitizer.
 
 ### Known issues
 

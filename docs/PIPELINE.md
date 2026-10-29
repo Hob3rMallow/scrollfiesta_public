@@ -29,12 +29,14 @@ outputs include:
 
 Use `--skip-existing` to resume an interrupted grid run.
 
-The zero inset is important for whole-scroll registration: registration pairs
-skins across cube seams, so charts must reach the cube faces. `--trim-inset 1` is an
-explicit legacy choice for weld-focused experiments where the seam bridge
-expects a gap. On the PHerc0139 4×5×5 fixture, the zero
-inset produced 6,441 seam pairs and 2.98% whole-turn error; a one-voxel inset
-reduced the evidence to 2,713 pairs and raised the error to 15.78%.
+Whole-scroll registration pairs skins across cube seams, so charts must reach
+the cube faces. Since October 2026 the mesher guarantees it: with a halo (the
+default 13), the final trim cuts every chart at the exact cube box, and
+`--trim-inset` only sets how far the step-0 cloud reaches into the halo (at
+least 6 voxels). Before that, the inset trimmed the charts themselves. On the
+PHerc0139 4×5×5 fixture a zero inset then produced 6,441 seam pairs and
+2.98% whole-turn error, and a one-voxel inset reduced the evidence to 2,713
+pairs and raised the error to 15.78%.
 
 The per-cube multi-winding BPA growth gate is optional and requires scroll
 geometry. For PHerc0139, the current calibration is:

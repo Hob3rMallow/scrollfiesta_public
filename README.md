@@ -40,7 +40,8 @@ along the prediction. It can then be aligned with the papyrus fibres and
 rendered as a surface volume for ink detection:
 
 ```text
-sheet_assemble -> ink_closeup -> fiber_flatten / vmesh_fiber_rigid
+sheet_assemble -> ink_closeup -> closeup_repair / fiber_flatten / vmesh_fiber_rigid
+               -> vcr_gpu (surface volume) -> sheet_strip --closeup-window
 ```
 
 See [docs/CLOSEUPS.md](docs/CLOSEUPS.md).
@@ -110,6 +111,11 @@ and the Intel and Apple Silicon Homebrew libomp prefixes. For a custom
 runtime location, set `SF_LIBOMP_INCLUDE_DIR` and `SF_LIBOMP_LIBRARY`.
 Use `-DSCROLLFIESTA_OPENMP=OFF` for a serial build without libomp.
 
+`vcr_gpu` builds without a CUDA toolkit: it loads the NVIDIA driver and NVRTC
+when it runs. `ctest` runs its storage selftest; configure with
+`-DSCROLLFIESTA_GPU_TESTS=ON` on a machine with an NVIDIA GPU to add the GPU
+selftest (NVRTC beside `vcr_gpu`, see [docs/CLOSEUPS.md](docs/CLOSEUPS.md)).
+
 For a dependency-light library and API test build, disable the CLI and TIFF:
 
 ```bash
@@ -157,6 +163,9 @@ toolchain and is what CI exercises.
 | `fiber_flatten` | Re-flatten a tifxyz canvas along a 3-D fibre field. |
 | `closeup_strip_turn` | Turn a close-up rigidly onto its strip piece's frame. |
 | `vmesh_fiber_rigid` | Rotate a whole sheet onto its measured fibre axes. |
+| `closeup_repair` | Remove duplicate fill, wrong-side fill and flaps from a close-up surface. |
+| `tifxyz_snap` | Snap any tifxyz segment onto the papyrus recto edge in the RAW CT. |
+| `vcr_gpu` | Render villa's `vc_render_tifxyz` surface volume on an NVIDIA GPU, voxel for voxel. |
 
 Small diagnostic tools are also built when `SCROLLFIESTA_BUILD_TOOLS=ON`.
 Run a tool with no arguments for usage, or with `--selftest` where supported.

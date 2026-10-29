@@ -12,9 +12,13 @@ These tools come from the development tree's October 2026 close-up chain:
 | Executable | Purpose |
 |---|---|
 | `ink_closeup` | Build, grow, re-flatten, fibre-align and render a close-up. |
+| `closeup_repair` | Remove duplicate fill, wrong-side fill and flaps from a close-up surface. |
+| `tifxyz_snap` | Snap a tifxyz segment onto the papyrus recto edge in the RAW CT. |
+| `vcr_gpu` | Render villa's `vc_render_tifxyz` surface volume on an NVIDIA GPU. |
 | `fiber_flatten` | Re-flatten a tifxyz canvas along a 3-D fibre field. |
 | `closeup_strip_turn` | Turn a close-up rigidly onto its strip piece's frame. |
 | `vmesh_fiber_rigid` | Rotate a whole sheet onto its measured fibre axes. |
+| `sheet_strip --closeup-window` | Place a close-up back into its reading strip. |
 
 ```text
 grid_pipeline ──> sheet_assemble ──> sheet_assemble --review ──> ink_closeup ──> surface volume
@@ -189,6 +193,44 @@ scroll prize's published fibre fields. `fiber_volume` also expects an
 provenance. The development tree produces fields with villa's 3-D fibre model
 (`scrollprize/lasagna-fiber`); that inference is not part of this repository.
 
+## Repair, snap, render and place
+
+- `closeup_repair <in_dir> <stem> <axis.csv> <out_dir>` reads a close-up
+  surface (`<in_dir>/<stem>_surface.vmesh` and its sidecars). It removes three
+  defects. **Duplicates** are fill laid over papyrus the surface already covers
+  elsewhere: a vertex within `CLOSEUP_REPAIR_DUP_VOX` in 3-D of one more than
+  `CLOSEUP_REPAIR_DUP_PX` away on the surface. **Wrong-side fill** faces away
+  from the scroll axis. **Flaps** are observed patches facing away from the
+  axis, and go to the extras rather than being deleted. It writes the repaired
+  surface with its sidecars, a per-vertex reason map and a report.
+- `tifxyz_snap <in_seg_dir> <raw_root> <out_seg_dir>` moves every node of a
+  tifxyz segment onto the papyrus recto edge it reads in the RAW CT. It
+  measures the edge on profiles along each node's normal, rejects nodes whose
+  band is out of reach, and solves a smooth, robust correction. The input can
+  be a segment from any tool, not only this repository's.
+  - `--inset` stops the surface just inside the papyrus, and `--midline`
+    targets the band's middle instead of its edge.
+  - `--smooth` keeps only the slow drift and drops the fibre weave.
+  - `--prior` reuses the parameters measured on another segment of the same
+    scroll, and `--window` processes a range of columns.
+
+  On the 4×5×5 demo close-up, 82.3% of nodes found the edge, and the median
+  offset from it fell from +0.44 to +0.01 voxels in 0.5 s.
+- `vcr_gpu` takes `vc_render_tifxyz`'s options (`--volume`, `--segmentation`,
+  `--num-slices`, `--slice-step`, `--flip-normals`, `--zarr-output` or the
+  composite `--tif-output`) and refuses any it does not reproduce. A segment
+  is therefore rendered exactly as `vc_render_tifxyz` renders it, or not at
+  all. It needs an NVIDIA driver and NVRTC: put `nvrtc64_*.dll` and
+  `nvrtc-builtins64_*.dll` (Windows) beside `vcr_gpu`, or have `libnvrtc.so`
+  on the library path (Linux). `CUDA_VISIBLE_DEVICES` picks the card. On the
+  demo close-up's 21 layers it is voxel-identical to `vc_render_tifxyz`, in
+  0.3 s against 6 s.
+- `sheet_strip --closeup-window <placement.json>` plans where a close-up goes
+  back into its reading strip. The plan keeps the matched pieces at native
+  scale and every renderable cell of the close-up. It also moves the expanded
+  crop clear of the line's stationary fragments, which include close-ups
+  accepted earlier. It prints the window and page rectangle as JSON.
+
 ## Example: PHerc0139 4×5×5
 
 From the 100-cube reference assembly (`sheet_assemble` with
@@ -221,6 +263,15 @@ The growth stopped when a read placed nothing more. Its data nodes rose from
   identities, inference identity and component log. The report matches apart
   from timings and paths. The fibre RMS is 10.124408°, which is still above
   the 10° target, as the record's is, so both exit 1.
+- `vcr_gpu`'s output on the demo close-up is byte-identical to the development
+  tree's `vcr_gpu`, and its decoded voxels equal `vc_render_tifxyz`'s (6,362,874
+  voxels; villa compresses its chunks, `vcr_gpu` does not).
+- All 130 close-up window plans recorded by the development tree replay
+  identically through this `sheet_strip`, the record engine and the
+  development tree's main build.
+- `closeup_repair` and `tifxyz_snap` have no frozen engine to compare against;
+  they are the development tree's main sources, checked by their selftests and,
+  for `tifxyz_snap`, the demo run above.
 - `fiber_flatten` is the development tree's main line (25 October), which the
   close-up engine also uses. It is not byte-identical to the older 16 October
   `fiber_flatten` engine. On one real close-up job the two give equivalent
