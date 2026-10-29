@@ -14,8 +14,9 @@ measured in August 2026 on this branch before it was merged with the October
 release, i.e. on the pre-release base `4f43cfc`. The same protocol was re-run
 on the October 2026 release; see
 [Re-run on the October 2026 release](#re-run-on-the-october-2026-release). In
-that run the placement fails the release's own audit, and two further
-measurements are less favourable to the new default.
+that run the placement fails the release's own audit, also when repeated with
+`--physical-du-gauge`, and two further measurements are less favourable to the
+new default.
 
 ## Data and frozen protocol
 
@@ -168,7 +169,10 @@ the input gate of the adjacent-slab preregistration (turn-off at most 5%,
 
 [`PIPELINE.md`](PIPELINE.md) says to treat a failing registration audit as a
 failed run, so every score below is conditional on a placement that the
-release rejects. No run with `--physical-du-gauge` was made.
+release rejects. A second placement from the same meshing output with
+`--physical-du-gauge` gauges all 31 components but also fails (corr(u,phi)
+0.8158), so no arm was run on it; see
+[Sensitivity: placement with `--physical-du-gauge`](#sensitivity-placement-with---physical-du-gauge-not-preregistered).
 
 Differences seen on this fixture with the August command lines:
 
@@ -260,6 +264,51 @@ August development and held-out files, and
 `46bdc58454435bccda686ca337a9ab03f9868bb09f776d1911d314b51b11c022` for the
 adjacent-slab file.
 
+### Sensitivity: placement with `--physical-du-gauge` (not preregistered)
+
+Added 29 October 2026. The default placement fails the audit, and the
+reregister log recommends `--physical-du-gauge` as the anchor, so the
+placement was repeated once with that flag. This was not part of the frozen
+protocol. The same merged binaries placed the same meshing output again:
+
+```text
+scroll_whole DUMP PLACED --max-concurrent 4
+scroll_whole PLACED --reregister --audit --physical-du-gauge --max-concurrent 4
+```
+
+All 700 per-cube files written before reregistration (meshes, raw UV/phase
+and skin samples, group and keep masks) are byte-identical to the first
+placement's, so only the du gauge differs.
+
+**The audit fails again.** The second command exits 1 with
+`quality gate: FAIL`: corr(u,phi) is 0.8158 against the 0.90 floor (0.8262
+with the default gauge). The other gates pass with the values above (turn-off
+0 of 86,554 pairs, |du|<2 91.83%, |du|<10 97.99%, no collisions). The edge-dr
+warning quoted above is unchanged; the "no absolute du gauge" warning is
+replaced by:
+
+```text
+[reregister] solve (forest; k-gauge=radius, du-gauge=physical, anchor=0): 31 component(s), energy=0.0, frustrated=0 edges, moves=0 (0.0s)
+[reregister] du-prior residual vs the analytic spiral: median 4293.6 p95 12727.0 max 30042.6 vox (31 gauged component(s))
+```
+
+The physical gauge adds one constant to each connected component: the
+weighted median, over the component's nodes, of the analytic spiral target
+minus the solved du (`src/whole/group_graph.c`). The residual it leaves is
+therefore spread inside components, where no per-component constant can
+remove it; with the default gauge the same residual was median 4,323.0 and
+p95 12,968.7 voxels. Gauging the components does not restore the correlation
+on this fixture. The warning that remains concerns wrap stacking:
+`scroll_whole` sets the edge-dr gate to 3.5, above the 1.75 default that the
+warning cites, and a placement with `--edge-dr-gate 1.75` has not been tried.
+On the August pre-release placement, the audit computed the same correlation
+as 0.9812 but did not gate on it.
+
+Because the gate failed, no arm was run on this placement. There are no ridge
+scores, darkness figures or all-vertex numbers for it, and no result files
+were added. Every October score above remains conditional on a placement that
+the release rejects.
+
 ## Reproduce
 
 Carve the aligned fixture using the repository's existing Zarr-to-grid tool:
@@ -342,8 +391,10 @@ still-experimental recto-boundary refinement is retained but opt-in. This is a
 conservative default change supported by real data, not a claim that a ridge
 and a recto boundary are interchangeable.
 
-On the October 2026 release the frozen rule still passes, but that run's
-placement fails the release's own audit, repair only leaves more dark stage-4
-texture than four recto iterations, and the effect is smaller when vertices
-without an interior ridge peak are counted. These open points are described in
+On the October 2026 release the frozen rule still passes, but the placement
+of this fixture fails the release's own audit both with the default du gauge
+and with `--physical-du-gauge`, so no October score rests on a placement that
+the release accepts. Repair only also leaves more dark stage-4 texture than
+four recto iterations, and the effect is smaller when vertices without an
+interior ridge peak are counted. These open points are described in
 [Re-run on the October 2026 release](#re-run-on-the-october-2026-release).
