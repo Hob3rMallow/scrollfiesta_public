@@ -49,8 +49,8 @@ static int close_d2(float a, float b) {
 /* ---- one random configuration: build tree, hammer nearest + ball vs brute ---- */
 static void test_config(Arena_T a, const float *pts, size_t n, float lo, float hi, int nq) {
     KDTree_T kd = KDTree_new(a, pts, n);
-    int32_t *kbuf = (int32_t*)ARENA_ALLOC(a, (long)((n+1)*sizeof(int32_t)));
-    int32_t *bbuf = (int32_t*)ARENA_ALLOC(a, (long)((n+1)*sizeof(int32_t)));
+    int32_t *kbuf = (int32_t*)ARENA_ALLOC(a, (size_t)((n+1)*sizeof(int32_t)));
+    int32_t *bbuf = (int32_t*)ARENA_ALLOC(a, (size_t)((n+1)*sizeof(int32_t)));
 
     for (int t=0;t<nq;t++) {
         /* query: mostly inside the box, sometimes well outside */
@@ -103,7 +103,7 @@ int main(void) {
     for (size_t si=0; si<sizeof(sizes)/sizeof(sizes[0]); si++) {
         size_t n = sizes[si];
         for (int trial=0; trial<8; trial++) {
-            float *pts = (float*)ARENA_ALLOC(a, (long)(n*3*sizeof(float)));
+            float *pts = (float*)ARENA_ALLOC(a, (size_t)(n*3*sizeof(float)));
             for (size_t i=0;i<n*3;i++) pts[i] = frr(-50.0f, 50.0f);
             int nq = n < 1000 ? 400 : 80;
             test_config(a, pts, n, -50.0f, 50.0f, nq);
@@ -113,38 +113,38 @@ int main(void) {
     /* Suite 2: degenerate distributions */
     {
         /* all identical points */
-        size_t n=200; float *pts=(float*)ARENA_ALLOC(a,(long)(n*3*sizeof(float)));
+        size_t n=200; float *pts=(float*)ARENA_ALLOC(a,(size_t)(n*3*sizeof(float)));
         for (size_t i=0;i<n;i++){pts[i*3]=3.0f;pts[i*3+1]=-1.0f;pts[i*3+2]=2.0f;}
         test_config(a, pts, n, -5.0f, 5.0f, 300);
     }
     {
         /* collinear points along X */
-        size_t n=500; float *pts=(float*)ARENA_ALLOC(a,(long)(n*3*sizeof(float)));
+        size_t n=500; float *pts=(float*)ARENA_ALLOC(a,(size_t)(n*3*sizeof(float)));
         for (size_t i=0;i<n;i++){pts[i*3]=0.0f;pts[i*3+1]=0.0f;pts[i*3+2]=(float)i*0.1f;}
         test_config(a, pts, n, -1.0f, 51.0f, 400);
     }
     {
         /* coplanar grid (z=0) */
-        int M=40; size_t n=(size_t)M*M; float *pts=(float*)ARENA_ALLOC(a,(long)(n*3*sizeof(float)));
+        int M=40; size_t n=(size_t)M*M; float *pts=(float*)ARENA_ALLOC(a,(size_t)(n*3*sizeof(float)));
         for (int i=0;i<M;i++)for(int j=0;j<M;j++){size_t k=(size_t)i*M+j; pts[k*3]=0.0f; pts[k*3+1]=(float)i; pts[k*3+2]=(float)j;}
         test_config(a, pts, n, -2.0f, 42.0f, 500);
     }
     {
         /* tightly-clustered points (dense, many near-ties) */
-        size_t n=800; float *pts=(float*)ARENA_ALLOC(a,(long)(n*3*sizeof(float)));
+        size_t n=800; float *pts=(float*)ARENA_ALLOC(a,(size_t)(n*3*sizeof(float)));
         for (size_t i=0;i<n*3;i++) pts[i]=frr(0.0f, 0.01f);
         test_config(a, pts, n, 0.0f, 0.01f, 500);
     }
     {
         /* huge coordinate magnitudes (float precision stress) */
-        size_t n=400; float *pts=(float*)ARENA_ALLOC(a,(long)(n*3*sizeof(float)));
+        size_t n=400; float *pts=(float*)ARENA_ALLOC(a,(size_t)(n*3*sizeof(float)));
         for (size_t i=0;i<n*3;i++) pts[i]=frr(-1e6f, 1e6f);
         test_config(a, pts, n, -1e6f, 1e6f, 400);
     }
 
     /* Suite 3: determinism — identical build+query twice must agree exactly */
     {
-        size_t n=2000; float *pts=(float*)ARENA_ALLOC(a,(long)(n*3*sizeof(float)));
+        size_t n=2000; float *pts=(float*)ARENA_ALLOC(a,(size_t)(n*3*sizeof(float)));
         for (size_t i=0;i<n*3;i++) pts[i]=frr(-10.0f,10.0f);
         KDTree_T k1=KDTree_new(a,pts,n), k2=KDTree_new(a,pts,n);
         for (int t=0;t<500;t++){

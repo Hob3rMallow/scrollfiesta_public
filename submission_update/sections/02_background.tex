@@ -1,0 +1,111 @@
+\section{Background: The Object, the Data, and the Coordinates}
+\label{sec:background}
+
+This section fixes the vocabulary used throughout the paper, in both directions. Sections~\ref{sec:physical} and~\ref{sec:data} describe the physical object and its digital representation for a reader who arrives from geometry processing and has never handled a scroll. Section~\ref{sec:gp} restates the same problem in the language of surface reconstruction and parameterization for a reader who knows the scrolls but not that literature, and says precisely which standard assumptions this object violates. Section~\ref{sec:coords} defines the three coordinate systems both audiences need, and Section~\ref{sec:failures} names the four failures the rest of the paper is built to prevent. A reader fluent in both fields can go to Section~\ref{sec:related} and use Table~\ref{tab:terms} as a reference.
+
+\subsection{The Physical Object}
+\label{sec:physical}
+
+A Herculaneum book is one continuous papyrus sheet, tens of centimetres tall and several metres long, rolled around a central void. Carbonization has left it as brittle carbon at nearly the density of the surrounding matrix, so in CT the sheet appears as a faint, thin, low-contrast structure rather than an obviously separable material.
+
+We use the following physical terms consistently.
+
+\begin{description}
+  \setlength{\itemsep}{2pt}
+  \item[Wrap (turn).] One circuit of the sheet around the roll. The whole scroll is one sheet visiting many wraps in succession. Two points can be a fraction of a millimetre apart in space and metres apart along the sheet if they sit on adjacent wraps. This is the central difficulty of the problem.
+  \item[Pitch.] The radial distance from one wrap to the next, measured outward from the centre. On PHerc0139 the calibrated pitch is approximately 9.5 coarse voxels and the physical clearance between neighbouring wraps is approximately 7 voxels. Pitch is not constant: it varies with radius, with local crushing, and with delamination, which is why the system measures it locally rather than assuming one global value.
+  \item[Umbilicus.] The central axis of the roll, and the origin from which radius is measured. Near it the wraps are crushed together, the pitch is not measurable, and the prediction is unreliable; ScrollFiesta excludes material inside radius 64 for this reason.
+  \item[Recto and verso.] The two faces of the sheet. Only one carries the writing of interest, so the reconstruction must be \emph{single-sided} and consistently oriented. A surface that flips from recto to verso partway along is unusable even when it is geometrically perfect.
+  \item[Delamination.] The sheet has split through its thickness into two nearly coincident plies. Both are real papyrus and both may carry evidence, so they must be separated and kept, not averaged into one blurred layer.
+  \item[Fusion.] Two \emph{different} wraps have been pressed into contact, or the segmenter has connected them. This is the catastrophic failure: a fused pair reads as a single sheet, and every downstream stage inherits the error.
+  \item[Dropout.] The papyrus is present but the segmenter failed to report it, typically across a few voxels of a faint region. A dropout should be repaired. A genuine tear should not.
+\end{description}
+
+\subsection{The Data}
+\label{sec:data}
+
+\paragraph{CT volumes.} Two resolutions are used. The \emph{coarse} production volumes are at 7.91 or 9.362~$\mu$m per voxel; these are the grids on which meshing, unwrapping, and texture read-back are performed, and one coarse voxel is the unit of length throughout this paper unless stated otherwise. A \emph{fine} volume at 2.399~$\mu$m per voxel exists for parts of some scrolls. Fine CT holds roughly sixty times more samples per unit volume, so it is never a production substrate, and the geometry described in this paper never reads it. It is used as \emph{privileged evidence} by the companion \emph{Socratic Method} pipeline, which judges its prediction-volume decisions against it before that volume reaches us.
+
+\paragraph{Prediction volume.} A 3-D U-Net --- the publicly released ``M7'' recto-surface model --- assigns every coarse voxel a probability of lying on the recto surface. Thresholding that field gives the \emph{prediction}, a binary volume which is our primary input. It is not a surface. It is several voxels thick where the model is confident, absent where it is not, and occasionally welded across wraps.
+
+\paragraph{RAW.} The unmodified CT intensity volume, as distinct from the prediction. RAW is the authority on what the papyrus actually looks like and is the source sampled to produce the final readable image. Throughout the pipeline it is held back from stages that would otherwise fit to it, and consulted afterwards as an independent check.
+
+\paragraph{Cube grid.} The volumes are far larger than memory, so the region of interest is partitioned into a regular grid of cubes, each processed independently with a small overlapping \emph{halo} of shared voxels so that neighbouring cubes agree along their common boundary. Grid sizes in this paper are written $4\times5\times5$, $10\times10\times10$, $4\times21\times21$, and $21\times21\times21$. These form the ladder of scales on which every result is reported, and a rung must pass before the next is attempted.
+
+\subsection{The Same Problem in Geometry-Processing Terms}
+\label{sec:gp}
+
+Stated as a reconstruction and parameterization problem, the scroll violates six assumptions that most of the standard toolchain is built on. Naming them is the fastest way to see why so much of this paper is spent on an explicit winding coordinate rather than on energies.
+
+\begin{enumerate}
+  \setlength{\itemsep}{3pt}
+  \item \textbf{The target is an open, single-sided manifold, not a closed boundary.} We are recovering one side of a sheet with a genuine free boundary (its torn edges), embedded in $\mathbb{R}^3$. Isosurface and indicator-function methods~\cite{lorensen1998marching,kazhdan2006poisson} return a watertight two-sided surface, which here means recto welded to verso around every rim. There is also no ``inside'' to define, so an implicit formulation has no sign to fit.
+
+  \item \textbf{Proximity is not adjacency, and the gap is smaller than the noise.} The surface passes within roughly 7 voxels of \emph{itself}, once per turn, over its entire extent. Every neighbourhood query, ball radius, normal estimate, and Hausdorff-style tolerance is therefore adversarial: the nearest point in space is very often the wrong point on the sheet. Radii cannot be tuned generously, because the safe band is bounded above by the inter-wrap clearance and below by the sample spacing, and those two bounds are within a factor of a few of each other.
+
+  \item \textbf{The decisive error is invisible to every geometric quality measure.} A triangle strip bridging two adjacent wraps has good aspect ratio, consistent orientation, small dihedral angles, low curvature, and no self-intersection. Edge length, degeneracy, manifoldness, normal-flip, and Euler-characteristic checks all pass it. In one measured case, 130,499 interpolation cells were generated across such a bridge, 24.4\% of them spanning more than a full inter-sheet pitch. The correctness of a connection is simply not a function of local geometry, which is why this system carries a separate winding coordinate (Section~\ref{sec:coords}) rather than trusting a mesh-quality score.
+
+  \item \textbf{The parameterization carries an integer degree of freedom per component.} Local flattening determines each connected chart up to a whole number of turns. That integer is not recoverable by any continuous relaxation --- the energy landscape is flat between admissible values and steeply wrong between them --- so winding must be assigned by discrete inference over measured relations. Historically we attacked it with local search; the current system assigns it from radial evidence and a maximum-support forest instead (Section~\ref{sec:sheetbooks}), for reasons Section~\ref{sec:deadends} makes measurable.
+
+  \item \textbf{The map wanted is isometric, not conformal, and its domain is extreme.} The horizontal coordinate must be true developed arc length, because a reader is comparing letter shapes and fibre continuity across metres of sheet; angle-preserving distortion of a few percent accumulates into unreadable drift. The output domain is a strip of extreme aspect ratio --- $31{,}127\times508$ pixels for a $4\times5\times5$ region, $33{,}338\times1{,}276$ for $10\times10\times10$ --- which no conventional atlas packer is designed to produce, and which is not free to be repacked, because horizontal position \emph{is} the answer.
+
+  \item \textbf{The data do not fit in memory, and correctness must survive being cut up.} A production volume is on the order of $10^{11}$ voxels. Everything is computed per cube and composed, so every operator must be local enough that two cubes sharing a halo produce matching geometry along their seam --- a constraint that rules out several otherwise attractive projections and simplifiers, and that motivates the compact-support choices in Section~\ref{sec:percube}.
+\end{enumerate}
+
+Two consequences run through the whole design. First, because no geometric measure can see the decisive error, the system carries non-geometric information --- winding phase above all --- alongside the mesh, and decides on that. Second, because the safe operating band is narrow and bounded by physical constants of the object, most parameters here are not tuned for appearance; they are derived from measured pitch and clearance, and Appendix~\ref{app:terms} records them with the measurement that fixed each one.
+
+\subsection{Three Coordinate Systems}
+\label{sec:coords}
+
+Nearly every decision in this paper is a statement in one of three coordinate systems, and most confusion about scroll reconstruction comes from moving a quantity between them without saying so.
+
+\paragraph{World coordinates $(x,y,z)$.} Voxel positions in the scan. The axis of the roll lies close to $z$, so $z$ runs along the height of the scroll and a slice at constant $z$ cuts the roll into a spiral cross-section. World distance is the wrong measure of separation on the sheet: two points one voxel apart may belong to different wraps.
+
+\paragraph{Cylindrical coordinates $(r,\theta,z)$.} Radius from the umbilicus, angle about it, and height. These express \emph{where in the coil} a point sits. The important derived quantity is the winding number: for a local pitch $p$ and winding sense $s\in\{-1,+1\}$,
+\begin{equation}
+  w \;=\; s\,\frac{r}{p} \;-\; \frac{\theta}{2\pi},
+  \label{eq:winding}
+\end{equation}
+lifted continuously rather than wrapped into a principal range. Read plainly, the first term counts how many turns' worth of radius a point has climbed and the second subtracts how far around the roll it has travelled. On an ideal spiral the two cancel, so $w$ is constant along one wrap and increases by exactly $1$ each time one steps outward to the next. Equation~\eqref{eq:winding} is therefore the basic instrument for distinguishing a same-wrap relationship from a next-wrap one, and it reappears as a guard in the mesher (Section~\ref{sec:percube}), the welder (Section~\ref{sec:weld}), and the sheet assembler (Section~\ref{sec:sheetbooks}). Between consecutive samples $i,j$ the branch-cut-free increment is
+\begin{equation*}
+  \delta w_{ij} \;=\; s\,\frac{r_j-r_i}{p} \;-\; \frac{\operatorname{unwrap}(\theta_j-\theta_i)}{2\pi},
+\end{equation*}
+which is zero along a correct spiral ramp and accumulates $\pm 1$ for every wrap a fusion crosses. Accumulating $\delta w$ along a path, rather than testing each step in isolation, is what catches the failure that actually occurs in practice: a surface front that climbs a through-thickness wall gradually, every individual step innocent, gaining whole turns over a long distance.
+
+\paragraph{Developed coordinates $(u,v)$.} The flattened page. Here $u$ is \emph{developed arc length} --- the distance one would travel along the unrolled sheet, so that a full turn costs the local circumference --- and $v$ is position along the scroll axis. Producing a correct $u$ is what virtual unwrapping means. Two requirements make this harder than ordinary surface parameterization: different wraps must never occupy the same $(u,v)$, and disconnected observations of the same wrap must share one metric frame. Conventional atlas packing~\cite{limper2018box}, which is free to place charts anywhere empty space allows, can express neither.
+
+\subsection{What Failure Looks Like}
+\label{sec:failures}
+
+Three named failures recur throughout the paper. Each needs a different instrument, which is why the system measures several independent quantities rather than one quality score.
+
+A \emph{full-turn fusion} is a connection whose accumulated $\delta w$ reaches $\pm 1$ or more: two different wraps have been joined into one surface. It is invisible to every geometric quality test, because a bridge paved between two wraps is smooth, non-degenerate, and orientation-consistent. Only winding phase, or an explicit record of which triangles were generated rather than measured, can see it. We detect it with the accumulated-phase tests of Sections~\ref{sec:percube} and~\ref{sec:weld} and with an independent full-turn mesh scan.
+
+A \emph{phantom} is fitted geometry that lands where there is no papyrus at all, typically a prediction artifact lifted into a plausible-looking sheet. It is detected by sampling held-out RAW \emph{after} the geometry has been frozen: a phantom sits over black CT and fails to correlate better than a null placement.
+
+\emph{Fabrication} is generated material presented as observation --- a hole closed by a smooth interpolant, a raster void painted over, a continuation drawn across a region where the source itself had fused two wraps. Fabrication cannot be detected after the fact, so it is instead kept visible: direct, interpolated, filled, and moved-by-CT labels ride on every vertex and pixel, so a coverage statistic cannot be improved by inventing material.
+
+\begin{table}[t]
+  \caption{Terms used throughout the paper.}
+  \label{tab:terms}
+  \small
+  \begin{tabular}{@{}p{0.27\linewidth}p{0.66\linewidth}@{}}
+    \toprule
+    Term & Meaning \\
+    \midrule
+    Prediction & Thresholded U-Net surface-probability volume; the primary input, and not yet a surface. \\
+    RAW & Unmodified CT intensity volume; authority for the final image, held out from construction. \\
+    Voxel & One coarse CT sample (7.91 or 9.362~$\mu$m); the unit of length in this paper. \\
+    Cube / halo & Unit of divide-and-conquer processing / the shared border that makes neighbouring cubes agree. \\
+    Winding number $w$ & Eq.~\eqref{eq:winding}: constant along one wrap, $+1$ per wrap outward. \\
+    Track & One piece of material followed across slices; the unit of identity. \\
+    Sheet & A track lifted into a single-valued 3-D surface and checked against held-out RAW. \\
+    Sheet book & The collection of accepted sheets, kept separate rather than fused into one mesh. \\
+    Chart / component & One connected piece of mesh. \\
+    Quad ribbon & The regular quadrilateral lattice fitted to accepted material; the flattening substrate. \\
+    Developed length $u$ & Arc length along the unrolled sheet; the horizontal axis of the final page. \\
+    Sander distortion & Per-triangle measure of stretch introduced by flattening; $1.0$ is isometric. \\
+    Quarantine & Suspension of a track's \emph{order} relation while its geometry is retained. \\
+    \bottomrule
+  \end{tabular}
+\end{table}

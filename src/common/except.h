@@ -13,7 +13,20 @@ typedef struct {
 extern const Except_T Arena_Failed;
 extern const Except_T IO_Failed;
 extern const Except_T Timeout;
-extern const Except_T Sf_Cancelled;   /* raised by run_ctx cancel/deadline polls */
+
+/* Thread-local storage keyword, for the per-call state the public API keeps
+ * isolated between concurrent callers (src/common/run_ctx.c).  C11 spells it
+ * _Thread_local, MSVC accepts __declspec(thread) in every mode, and GCC/Clang
+ * take __thread; a compiler with none degrades to a plain global. */
+#if defined(_MSC_VER)
+#  define EXCEPT_THREAD_LOCAL __declspec(thread)
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L &&       !defined(__STDC_NO_THREADS__)
+#  define EXCEPT_THREAD_LOCAL _Thread_local
+#elif defined(__GNUC__)
+#  define EXCEPT_THREAD_LOCAL __thread
+#else
+#  define EXCEPT_THREAD_LOCAL
+#endif
 
 /* Exception frame - linked stack */
 typedef struct Except_Frame {
@@ -32,18 +45,7 @@ enum {
     Except_finalized = 3
 };
 
-/* The frame stack is thread-local so independent threads (e.g. an embedding
- * application calling the library from a worker thread while its own code
- * runs elsewhere) cannot corrupt each other's TRY chains. __thread /
- * __declspec(thread) rather than C11 _Thread_local because the Linux build
- * is -std=c99. */
-#if defined(_MSC_VER)
-  #define EXCEPT_THREAD_LOCAL __declspec(thread)
-#else
-  #define EXCEPT_THREAD_LOCAL __thread
-#endif
-
-extern EXCEPT_THREAD_LOCAL Except_Frame *Except_stack;
+extern Except_Frame *Except_stack;
 
 void Except_raise(const Except_T *e, const char *file, int line);
 

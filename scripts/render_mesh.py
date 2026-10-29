@@ -16,7 +16,7 @@ Flags: --components colours each connected component from a fixed palette
 (instead of normal shading); --vcolors uses OBJ per-vertex RGB (e.g. the
 canonical_best groups_xyz.obj atlas-group colours); --min-comp=N drops
 components below N faces; --box=z,y,x,size crops faces to a cube-aligned box
-before rendering.
+before rendering; --bg=RRGGBB sets the background colour (default white).
 
 The submission figures were produced with:
   render_mesh.py output/repro_10x_preserved_production/atlas_bake.obj \
@@ -26,6 +26,10 @@ The submission figures were produced with:
   render_mesh.py --components --min-comp=100 --box=4480,3328,2688,128 \
       output/pherc0139_4x5x5/1_mesh/welded.obj \
       submission_update/figures/pipe_cube_sheets.png 1100 980 "0.60,-0.55,-0.50" 1.0 4.0
+
+Figure 1's geometry panels are rendered on the dark strip background and then
+tight-cropped; see scripts/render_fig1_panels.py for the exact pair of calls
+and for the atlas panels it generates itself.
 """
 import sys, glob, math, time
 import numpy as np
@@ -89,10 +93,11 @@ def face_components(faces, nv):
 
 
 class Renderer:
-    def __init__(self, W, H, ss=2):
+    def __init__(self, W, H, ss=2, bg=(1.0, 1.0, 1.0)):
         self.W, self.H, self.ss = W * ss, H * ss, ss
         self.zbuf = np.full(self.W * self.H, np.inf, np.float32)
-        self.rgb = np.ones((self.W * self.H, 3), np.float32)
+        self.rgb = np.empty((self.W * self.H, 3), np.float32)
+        self.rgb[:] = np.asarray(bg, np.float32)
 
     def set_camera(self, cam_dir, up_hint, center, half_w, half_h):
         d = np.asarray(cam_dir, np.float64)
@@ -225,8 +230,13 @@ def main():
         sys.argv.remove('--vcolors')
     min_comp_faces = 0
     box = None
+    bg = (1.0, 1.0, 1.0)
     for arg in list(sys.argv):
-        if arg.startswith('--min-comp='):
+        if arg.startswith('--bg='):
+            h = arg.split('=')[1].lstrip('#')
+            bg = tuple(int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+            sys.argv.remove(arg)
+        elif arg.startswith('--min-comp='):
             min_comp_faces = int(arg.split('=')[1])
             sys.argv.remove(arg)
         elif arg.startswith('--box='):
@@ -257,7 +267,7 @@ def main():
         lo = np.array(box[:3]); hi = lo + box[3]
     zmax = lo[0] + zcut * (hi[0] - lo[0])
     hi_c = hi.copy(); hi_c[0] = min(hi[0], zmax)
-    rn = Renderer(W, H, ss=2)
+    rn = Renderer(W, H, ss=2, bg=bg)
     c, hw, hh = fit_camera(rn, corners(lo, hi_c), cd, (1.0, 0, 0))
     rn.set_camera(cd, (1.0, 0, 0), c, hw, hh)
 

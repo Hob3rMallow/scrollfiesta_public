@@ -37,6 +37,7 @@ typedef struct {
     int    sense;                /* winding sense (+/-1); k = floor(sense*phi/2pi) */
     float  axis_point[3];        /* (z,y,x) umbilicus */
     float  axis_dir[3];          /* (z,y,x) scroll axis (unit) */
+    char   axis_table[1024];     /* optional sampled curved umbilicus CSV */
 } ScaffoldCalib;
 
 /* 0139 defaults (umbilicus (0,3405,2878), pitch 9.5, sense -1). */

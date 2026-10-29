@@ -32,7 +32,54 @@ struct Arena_T {
     struct Arena_chunk *current;
     struct Arena_chunk *freelist;
     int                 free_count;
+    size_t              chunk_size;   /* data bytes of an ordinary chunk */
 };
+
+/* The smallest chunk an Arena_new_sized arena uses */
+#define MIN_CHUNK_SIZE ((size_t)4096)
+
+/* AddressSanitizer builds (MSVC /fsanitize=address, gcc/clang -fsanitize=address):
+ * to ASan a chunk is one big malloc block, so a read or write past an arena
+ * array, into its alignment padding, or into memory already released by
+ * Arena_restore/Arena_free would go unseen.  Here every allocation is followed
+ * by a poisoned red zone and all unallocated or released chunk space is
+ * poisoned, so ASan reports those accesses at the faulting instruction
+ * (2026-10-05, hunting the nondeterministic heap corruption).  Ordinary builds
+ * are unchanged: no red zone, the helpers compile to nothing. */
+#if defined(__SANITIZE_ADDRESS__)
+#  define ARENA_ASAN 1
+#elif defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+#    define ARENA_ASAN 1
+#  endif
+#endif
+#ifndef ARENA_ASAN
+#  define ARENA_ASAN 0
+#endif
+#if ARENA_ASAN
+#  include <sanitizer/asan_interface.h>
+#  define ARENA_REDZONE ((size_t)32)
+#else
+#  define ARENA_REDZONE ((size_t)0)
+#endif
+
+static inline void arena_poison(const void *p, size_t n)
+{
+#if ARENA_ASAN
+    ASAN_POISON_MEMORY_REGION(p, n);
+#else
+    (void)p; (void)n;
+#endif
+}
+
+static inline void arena_unpoison(const void *p, size_t n)
+{
+#if ARENA_ASAN
+    ASAN_UNPOISON_MEMORY_REGION(p, n);
+#else
+    (void)p; (void)n;
+#endif
+}
 
 /* Round a byte count up to ALIGNMENT. size_t throughout so >2 GB requests do
  * not truncate on LLP64 (Win64). */
@@ -45,10 +92,10 @@ static size_t roundup(size_t nbytes)
     return nbytes;
 }
 
-static struct Arena_chunk *chunk_new(size_t min_bytes)
+static struct Arena_chunk *chunk_new(size_t min_bytes, size_t chunk_size)
 {
     size_t header_size = roundup(sizeof(struct Arena_chunk));
-    size_t data_size = min_bytes > CHUNK_SIZE ? min_bytes : CHUNK_SIZE;
+    size_t data_size = min_bytes > chunk_size ? min_bytes : chunk_size;
     size_t total = header_size + data_size;
     struct Arena_chunk *c = malloc(total);
     if (c == NULL) {
@@ -57,7 +104,34 @@ static struct Arena_chunk *chunk_new(size_t min_bytes)
     c->prev  = NULL;
     c->avail = (char *)c + header_size;
     c->limit = (char *)c + total;
+    arena_poison(c->avail, data_size);
     return c;
+}
+
+/* Reset a chunk for reuse from a free list: everything after the header is
+ * unallocated again. */
+static void chunk_reset(struct Arena_chunk *c)
+{
+    size_t header_size = roundup(sizeof(struct Arena_chunk));
+    c->avail = (char *)c + header_size;
+    arena_poison(c->avail, (size_t)(c->limit - c->avail));
+}
+
+/* Hand a chunk back to malloc (unpoisoned, as ASan expects of a live block). */
+static void chunk_free(struct Arena_chunk *c)
+{
+    arena_unpoison(c, (size_t)(c->limit - (char *)c));
+    free(c);
+}
+
+/* Carve `nbytes` (already rounded, red zone included) from chunk c; only the
+ * caller's `req` bytes become addressable. */
+static void *chunk_carve(struct Arena_chunk *c, size_t nbytes, size_t req)
+{
+    void *ptr = c->avail;
+    c->avail += nbytes;
+    arena_unpoison(ptr, req);
+    return ptr;
 }
 
 Arena_T Arena_new(void)
@@ -70,6 +144,14 @@ Arena_T Arena_new(void)
     arena->current    = NULL;
     arena->freelist   = NULL;
     arena->free_count = 0;
+    arena->chunk_size = CHUNK_SIZE;
+    return arena;
+}
+
+Arena_T Arena_new_sized(size_t chunk_bytes)
+{
+    Arena_T arena = Arena_new();
+    arena->chunk_size = roundup(chunk_bytes > MIN_CHUNK_SIZE ? chunk_bytes : MIN_CHUNK_SIZE);
     return arena;
 }
 
@@ -82,7 +164,7 @@ void Arena_dispose(Arena_T *ap)
     struct Arena_chunk *c = (*ap)->freelist;
     while (c != NULL) {
         struct Arena_chunk *prev = c->prev;
-        free(c);
+        chunk_free(c);
         c = prev;
     }
 
@@ -99,13 +181,12 @@ void Arena_free(Arena_T arena)
         struct Arena_chunk *prev = c->prev;
         if (arena->free_count < MAX_FREE_CHUNKS) {
             /* Reset chunk for reuse */
-            size_t header_size = roundup(sizeof(struct Arena_chunk));
-            c->avail = (char *)c + header_size;
+            chunk_reset(c);
             c->prev  = arena->freelist;
             arena->freelist = c;
             arena->free_count++;
         } else {
-            free(c);
+            chunk_free(c);
         }
         c = prev;
     }
@@ -121,14 +202,13 @@ void *Arena_alloc(Arena_T arena, size_t nbytes, const char *file, int line)
      * dereferenced. Rule 18: handle empty input gracefully, never crash. */
     if (nbytes == 0) { nbytes = 1; }
 
-    nbytes = roundup(nbytes);
+    const size_t req = nbytes;                    /* bytes the caller may touch */
+    nbytes = roundup(nbytes) + ARENA_REDZONE;
 
     /* Try current chunk (avail <= limit always, so the diff is non-negative) */
     struct Arena_chunk *c = arena->current;
     if (c != NULL && (size_t)(c->limit - c->avail) >= nbytes) {
-        void *ptr = c->avail;
-        c->avail += nbytes;
-        return ptr;
+        return chunk_carve(c, nbytes, req);
     }
 
     /* Try free list */
@@ -142,15 +222,13 @@ void *Arena_alloc(Arena_T arena, size_t nbytes, const char *file, int line)
             /* Push onto active list */
             fc->prev = arena->current;
             arena->current = fc;
-            void *ptr = fc->avail;
-            fc->avail += nbytes;
-            return ptr;
+            return chunk_carve(fc, nbytes, req);
         }
         pp = &(*pp)->prev;
     }
 
     /* Allocate new chunk */
-    struct Arena_chunk *nc = chunk_new(nbytes);
+    struct Arena_chunk *nc = chunk_new(nbytes, arena->chunk_size);
     if (nc == NULL) {
         if (file) {
             fprintf(stderr, "Arena_alloc: OOM at %s:%d (%zu bytes)\n",
@@ -161,9 +239,7 @@ void *Arena_alloc(Arena_T arena, size_t nbytes, const char *file, int line)
     }
     nc->prev = arena->current;
     arena->current = nc;
-    void *ptr = nc->avail;
-    nc->avail += nbytes;
-    return ptr;
+    return chunk_carve(nc, nbytes, req);
 }
 
 void *Arena_calloc(Arena_T arena, size_t count, size_t size,
@@ -192,7 +268,7 @@ Arena_Mark Arena_save(Arena_T arena)
     assert(arena);
     if (arena->current == NULL) {
         /* Force a chunk so we have something to save */
-        struct Arena_chunk *nc = chunk_new(0);
+        struct Arena_chunk *nc = chunk_new(0, arena->chunk_size);
         if (nc == NULL) {
             RAISE(Arena_Failed);
         }
@@ -214,14 +290,14 @@ void Arena_restore(Arena_T arena, Arena_Mark mark)
         arena->current = c->prev;
         /* Move to free list or free */
         if (arena->free_count < MAX_FREE_CHUNKS) {
-            size_t header_size = roundup(sizeof(struct Arena_chunk));
-            c->avail = (char *)c + header_size;
+            chunk_reset(c);
             c->prev  = arena->freelist;
             arena->freelist = c;
             arena->free_count++;
         } else {
-            free(c);
+            chunk_free(c);
         }
     }
+    arena_poison(mark.avail, (size_t)(arena->current->avail - mark.avail));
     arena->current->avail = mark.avail;
 }

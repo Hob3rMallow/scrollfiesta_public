@@ -189,7 +189,10 @@ int AtlasStrip_build(Arena_T arena,
     size_t nprior = 0;
     if (p->prior_u != NULL && o->lambda_prior > 0.0)
         for (size_t i = 0; i < p->nsamples; i++)
-            if (isfinite(p->prior_u[i])) nprior++;
+            if (isfinite(p->prior_u[i]) &&
+                (p->prior_weight == NULL ||
+                 (isfinite(p->prior_weight[i]) && p->prior_weight[i] > 0.0)))
+                nprior++;
     ncoeff += nprior;
     size_t nrows = nedge + nactive_member + nlength + nactive_continuation +
                    nprior;
@@ -359,12 +362,15 @@ int AtlasStrip_build(Arena_T arena,
      */
     if (p->prior_u != NULL && o->lambda_prior > 0.0) {
         for (size_t i = 0; i < p->nsamples; i++) {
-            if (!isfinite(p->prior_u[i])) continue;
+            double prior_weight = p->prior_weight != NULL
+                                ? p->prior_weight[i] : 1.0;
+            if (!isfinite(p->prior_u[i]) || !isfinite(prior_weight) ||
+                prior_weight <= 0.0) continue;
             MonotoneQpRow *row = &rows[nr++];
             row->first = nk;
             row->count = 1;
             row->target = p->prior_u[i];
-            row->weight = o->lambda_prior;
+            row->weight = o->lambda_prior * prior_weight;
             row->kind = ATLAS_STRIP_ROW_PRIOR;
             row->owner = (int32_t)i;
             coeff[nk].var = (int32_t)i;
@@ -517,10 +523,14 @@ void AtlasStrip_measure(const AtlasStripProblem *p,
     if (p->prior_u != NULL && o->lambda_prior > 0.0) {
         double prior_r2 = 0.0;
         for (size_t i = 0; i < p->nsamples; i++) {
-            if (!isfinite(p->prior_u[i])) continue;
+            double prior_weight = p->prior_weight != NULL
+                                ? p->prior_weight[i] : 1.0;
+            if (!isfinite(p->prior_u[i]) || !isfinite(prior_weight) ||
+                prior_weight <= 0.0) continue;
             double residual = x[i] - p->prior_u[i];
-            m->energy_prior += 0.5 * o->lambda_prior * residual * residual;
-            prior_r2 += residual * residual;
+            m->energy_prior += 0.5 * o->lambda_prior * prior_weight *
+                               residual * residual;
+            prior_r2 += prior_weight * residual * residual;
             m->active_priors++;
         }
         m->rms_prior_row = m->active_priors
@@ -650,8 +660,12 @@ int AtlasStrip_solve_robust(Arena_T arena,
     const MonotoneQpOptions *qo = input_qp_opts != NULL
                                 ? input_qp_opts : &qp_defaults;
 
-    if (validate_strip_problem(p, so) != 0 ||
-        so->mode != ATLAS_STRIP_RELAXED ||
+    if (validate_strip_problem(p, so) != 0) {
+        if (qo->verbose)
+            fprintf(stderr, "[atlas_strip] robust problem validation failed\n");
+        return -1;
+    }
+    if (so->mode != ATLAS_STRIP_RELAXED ||
         ro->l1_iterations < 0 || ro->likelihood_iterations < 0 ||
         ro->l1_iterations > 1000 || ro->likelihood_iterations > 1000 ||
         !isfinite(ro->initial_likelihood) ||
@@ -661,8 +675,11 @@ int AtlasStrip_solve_robust(Arena_T arena,
         !isfinite(ro->likelihood_floor) ||
         ro->likelihood_floor <= 0.0 || ro->likelihood_floor > 1.0 ||
         !isfinite(ro->convergence_tolerance) ||
-        ro->convergence_tolerance < 0.0)
+        ro->convergence_tolerance < 0.0) {
+        if (qo->verbose)
+            fprintf(stderr, "[atlas_strip] robust option validation failed\n");
         return -1;
+    }
 
     AtlasStripRobustStats local_stats;
     memset(&local_stats, 0, sizeof local_stats);
@@ -731,6 +748,10 @@ int AtlasStrip_solve_robust(Arena_T arena,
         Arena_Mark round_mark = Arena_save(arena);
         AtlasStripSystem system;
         if (AtlasStrip_build(arena, &work, so, &system) != 0) {
+            if (qo->verbose)
+                fprintf(stderr,
+                        "[atlas_strip] system build failed at robust round %d\n",
+                        round);
             Arena_restore(arena, round_mark);
             rc = -1;
             break;

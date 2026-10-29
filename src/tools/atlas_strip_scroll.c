@@ -102,7 +102,6 @@ typedef struct {
 static int build_boxcut_quality_filtered_piece_set(
     Arena_T arena, const ScrollConfig *cfg, const PieceSet *source,
     const ScaffoldCalib *cal, const double *first_u, PieceSet *filtered);
-static int sheet_in_target(int32_t target, int32_t support);
 
 static int as_path(char path[AS_PATH_CAP], const char *dir, const char *name)
 {

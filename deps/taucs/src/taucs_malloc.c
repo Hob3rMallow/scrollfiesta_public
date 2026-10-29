@@ -7,10 +7,63 @@
 #undef realloc
 #undef free
 
+#if defined(_WIN32) && defined(SPARSE_TAUCS_THREAD_SAFE) && !defined(TAUCS_PROCESS_HEAP)
+/* vesuvius-c: sheet_assemble runs many factorizations at once, and TAUCS
+ * allocates and frees blocks per supernode; on the process heap they queued
+ * on its lock (PHerc0139 21^3, 2026-09-27). Each thread allocates from a
+ * private heap. A 16-byte header names the block's heap, so any thread may
+ * free or resize it, and blocks keep the heap's 16-byte alignment. Memory
+ * handed out by TAUCS must return through taucs_free (sparse_solve.c does). */
+#include <windows.h>
+#define TAUCS_HEAP_HEADER 16
+static __declspec(thread) HANDLE taucs_thread_heap;
+static HANDLE taucs_heap(void)
+{
+  if (!taucs_thread_heap) taucs_thread_heap = HeapCreate(0, 0, 0);
+  return taucs_thread_heap;
+}
+static void* taucs_heap_block(HANDLE h, char* p)
+{
+  if (!p) return NULL;
+  *(HANDLE*) p = h;
+  return p + TAUCS_HEAP_HEADER;
+}
+void* taucs_malloc_stub (size_t size)
+{
+  HANDLE h = taucs_heap();
+  if (!h || size > (size_t)-1 - TAUCS_HEAP_HEADER) return NULL;
+  return taucs_heap_block(h, (char*) HeapAlloc(h, 0, size + TAUCS_HEAP_HEADER));
+}
+void* taucs_calloc_stub (size_t nmemb, size_t size)
+{
+  HANDLE h = taucs_heap();
+  if (!h || (size && nmemb > ((size_t)-1 - TAUCS_HEAP_HEADER) / size)) return NULL;
+  return taucs_heap_block(h, (char*) HeapAlloc(h, HEAP_ZERO_MEMORY, nmemb * size + TAUCS_HEAP_HEADER));
+}
+void  taucs_free_stub   (void* ptr)
+{
+  char* p;
+  if (!ptr) return;
+  p = (char*) ptr - TAUCS_HEAP_HEADER;
+  HeapFree(*(HANDLE*) p, 0, p);
+}
+void* taucs_realloc_stub(void* ptr, size_t size)
+{
+  char* p;
+  HANDLE h;
+  if (!ptr) return taucs_malloc_stub(size);
+  if (!size) { taucs_free_stub(ptr); return NULL; }
+  if (size > (size_t)-1 - TAUCS_HEAP_HEADER) return NULL;
+  p = (char*) ptr - TAUCS_HEAP_HEADER; h = *(HANDLE*) p;
+  p = (char*) HeapReAlloc(h, 0, p, size + TAUCS_HEAP_HEADER);
+  return p ? p + TAUCS_HEAP_HEADER : NULL;
+}
+#else
 void* taucs_malloc_stub (size_t size)               { return malloc(size); }
 void* taucs_calloc_stub (size_t nmemb, size_t size) { return calloc(nmemb,size); }
 void* taucs_realloc_stub(void* ptr, size_t size)    { return realloc(ptr,size); }
 void  taucs_free_stub   (void* ptr)                 { free(ptr); }
+#endif
 
 #if !defined(TAUCS_MEMORY_TEST_yes)
 

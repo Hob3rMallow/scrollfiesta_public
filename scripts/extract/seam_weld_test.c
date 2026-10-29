@@ -310,7 +310,7 @@ static void build_faces(int32_t *f, size_t *nf_io, int c0, int c1)
  * are the pre-weld reference counts (identical for every peel depth). */
 /* merge_gate: when 0, the full-MERGE gates (G2 components, G6 loops) are advisory
  * (printed, not counted). The peel path's two BPA fronts fully zip on dense real
- * seams (2x1x1 closes ~91%, manifold, 0 foldovers -- see run_pipeline_grid.ps1
+ * seams (2x1x1 closes ~91%, manifold, 0 foldovers -- see grid_pipeline
  * -Cubes) but on this deliberately SPARSE 6-row synthetic grid the meeting can
  * leave the two covers vertex-adjacent only, so G2/G6 don't fully close. The
  * invariants that must ALWAYS hold (G1 bridge, G3 edge-manifold, G4 no foldovers,
@@ -369,7 +369,7 @@ static int run_gates(Arena_T arena, const float *verts, int nv,
     if (!(comps_post < comps_pre && comps_post == 1)) {
         if (merge_gate) { printf("  FAIL G2: sheets did not merge to one\n"); failures++; }
         else printf("  KNOWN-LIMITATION G2: %d comps (sparse synthetic peel meeting; "
-                    "real dense seams ~91%%, see run_pipeline_grid.ps1 -Cubes)\n", comps_post);
+                    "real dense seams ~91%%, see grid_pipeline --max-cubes)\n", comps_post);
     }
     else printf("  ok G2: merged to a single component\n");
 

@@ -20,10 +20,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include "common/arena.h"
+#include "common/intrinsic_angle.h"
 #include "common/obj_io.h"
 #include "holefill/hole_fill.h"
+#include "remesh/pinhole_fill.h"
 
 /* Exposed (non-static) from hole_fill.c for direct unit testing -- no public
  * prototype, so declare it here. Decomposes a self-pinching "<><>" boundary
@@ -144,10 +147,186 @@ static void add_grid_block_hole(float *V, int32_t *F, size_t *pnv, size_t *pnf,
 
 #define CHECK(cond,msg) do { if(!(cond)){ printf("    FAIL: %s\n", msg); fail++; } } while(0)
 
+/* An "underpass" loop (from #22): simple in 3-D, but its projections onto the
+ * PCA plane and onto XY, XZ and YZ all self-intersect, which sends
+ * fill_one_hole down its fallback paths, Clipper2_union included. */
+static void build_underpass_loop(double pts3d[][3], int n, double R)
+{
+    for (int i = 0; i < n; i++) {
+        double t = 2.0 * 3.14159265358979323846 * (double)i / (double)n;
+        pts3d[i][0] = R * cos(t);
+        pts3d[i][1] = R * (0.35*sin(t) + 0.9*sin(3.0*t));
+        pts3d[i][2] = R * 0.5 * sin(2.0*t);
+    }
+}
+
+/* The underpass loop as the inner boundary of a planar annulus. Filling it or
+ * refusing it are both acceptable; the test is that hole filling returns. */
+static int test_underpass_loop_mesh_fill(void)
+{
+    enum { N = 24 };
+    const double Rout = 4.0;
+    Arena_T arena = Arena_new();
+    float *V = ARENA_ALLOC(arena, 2 * (size_t)N * 3 * sizeof(float));
+    int32_t *F = ARENA_ALLOC(arena, 2 * (size_t)N * 3 * sizeof(int32_t));
+    double pts3d[N][3];
+    size_t nv = 2 * (size_t)N, nf = 0;
+
+    build_underpass_loop(pts3d, N, 1.0);
+    for (int i = 0; i < N; i++) {
+        double t = 2.0 * 3.14159265358979323846 * (double)i / (double)N;
+        V[(size_t)i*3+0] = (float)(Rout*cos(t));
+        V[(size_t)i*3+1] = (float)(Rout*sin(t));
+        V[(size_t)i*3+2] = 0.0f;
+        for (int k = 0; k < 3; k++)
+            V[(size_t)(N+i)*3+(size_t)k] = (float)pts3d[i][k];
+    }
+    for (int i = 0; i < N; i++) {
+        int32_t o0 = i, o1 = (i+1) % N, n0 = N+i, n1 = N+(i+1) % N;
+        F[nf*3+0] = o0; F[nf*3+1] = o1; F[nf*3+2] = n0; nf++;
+        F[nf*3+0] = o1; F[nf*3+1] = n1; F[nf*3+2] = n0; nf++;
+    }
+
+    size_t bnd_before = count_boundary_edges(F, nf);
+    size_t nl = 0, ni = 0, nfil = 0;
+    HoleFill_process_ex(arena, &V, &F, &nv, &nf, NULL, 1, &nl, &ni, &nfil);
+    printf("  underpass loop as a mesh hole: bnd %zu->%zu loops=%zu interior=%zu filled=%zu (%s, no crash)\n",
+           bnd_before, count_boundary_edges(F, nf), nl, ni, nfil, nfil ? "filled" : "refused");
+    Arena_dispose(&arena);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     int fail = 0;
     Arena_T arena = Arena_new();
+
+    /* A chart cap must fit the original surface metric. Closing a missing
+     * face at the tip of a sharp cone is combinatorially a disk but requires
+     * unbounded distortion as the cone sharpens. Keep that opening; do still
+     * close the corresponding planar holes. Exercise 3/4-cycles, two sampling
+     * densities, several scales and a rigid transform. No saved scroll data. */
+    for(int ring=4;ring<=8;ring+=4)for(int missing=1;missing<=2;missing++)
+    for(int curvature=0;curvature<3;curvature++)for(int variant=0;variant<3;variant++) {
+        int sharp=curvature==2;
+        Arena_Mark mark=Arena_save(arena);
+        size_t nv=(size_t)(2*ring+1),nf=0;
+        float *v=ARENA_CALLOC(arena,nv*3,sizeof(float));
+        int32_t *f=ARENA_ALLOC(arena,(size_t)ring*9*sizeof(int32_t));
+        for(int k=0;k<ring;k++){
+            double theta=INTRINSIC_ANGLE_TAU*k/ring;
+            v[k*3]=(float)(3*cos(theta));v[k*3+1]=(float)(3*sin(theta));
+            v[(ring+k)*3]=(float)cos(theta);v[(ring+k)*3+1]=(float)sin(theta);
+            int j=(k+1)%ring;
+            const int32_t triangles[3][3]={{k,j,ring+j},{k,ring+j,ring+k},
+                                          {2*ring,ring+k,ring+j}};
+            for(int t=0;t<3;t++)if(t<2||k>=missing){
+                memcpy(&f[nf*3],triangles[t],3*sizeof(int32_t));nf++;
+            }
+        }
+        v[(nv-1)*3+2]=sharp?6.0f:curvature?0.35f:0.0f;
+        double scale=variant==0?0.25:variant==1?1.0:11.0;
+        for(size_t k=0;k<nv;k++){
+            double x=v[k*3],y=v[k*3+1],z=v[k*3+2];
+            if(variant==2){
+                double rx=cos(0.37)*x-sin(0.37)*y;
+                double ry=sin(0.37)*x+cos(0.37)*y;
+                x=rx;y=cos(0.61)*ry-sin(0.61)*z;z=sin(0.61)*ry+cos(0.61)*z;
+            }
+            v[k*3]=(float)(scale*x+variant*7);
+            v[k*3+1]=(float)(scale*y-variant*4);
+            v[k*3+2]=(float)(scale*z+variant*9);
+        }
+        size_t nv0=nv,nf0=nf,nl=0,ni=0,filled=0;
+        float *saved_v=ARENA_ALLOC(arena,nv*3*sizeof(float));
+        int32_t *saved_f=ARENA_ALLOC(arena,nf*3*sizeof(int32_t));
+        memcpy(saved_v,v,nv*3*sizeof(float));memcpy(saved_f,f,nf*3*sizeof(int32_t));
+        int rc=HoleFill_process_ex(arena,&v,&f,&nv,&nf,NULL,2,&nl,&ni,&filled);
+        CHECK(rc==0,"chart metric cap: processing failed");
+        CHECK(nl==2&&ni==1,"chart metric cap: expected one interior opening");
+        CHECK(filled==(size_t)!sharp,"chart metric cap: only feasible hole should close");
+        CHECK(nv>=nv0&&nf>=nf0,"chart metric cap: source material was lost");
+        CHECK(memcmp(saved_v,v,nv0*3*sizeof(float))==0,"chart metric cap: source points moved");
+        CHECK(memcmp(saved_f,f,nf0*3*sizeof(int32_t))==0,"chart metric cap: source faces changed");
+        CHECK(manifold_ok(f,nf),"chart metric cap: nonmanifold output");
+        if(sharp)CHECK(nv==nv0&&nf==nf0,"incompatible cap must retain the exact input");
+        if(missing==1&&variant<2){
+            /* The earlier micro-hole path must obey the same rule. These
+             * fixtures fit its existing diameter/altitude gates, so a refusal
+             * cannot be attributed to a physical size threshold. */
+            ComponentMesh cm={0};
+            cm.nv=nv0;cm.nf=nf0;cm.self=&cm;
+            cm.verts=ARENA_ALLOC(arena,nv0*3*sizeof(float));
+            cm.faces=ARENA_ALLOC(arena,nf0*3*sizeof(int32_t));
+            memcpy(cm.verts,saved_v,nv0*3*sizeof(float));
+            memcpy(cm.faces,saved_f,nf0*3*sizeof(int32_t));
+            size_t splits=0,added=0,skipped=0;
+            PinholeFill_process(arena,&cm,1,0,&splits,&filled,&added,&skipped);
+            CHECK(splits==0,"micro metric cap: unexpected source split");
+            CHECK(filled==(size_t)!sharp&&added==(size_t)!sharp,
+                  "micro metric cap: only feasible hole should close");
+            CHECK(cm.nv==nv0&&cm.nf==nf0+(size_t)!sharp,
+                  "micro metric cap: incorrect material counts");
+            CHECK(memcmp(cm.verts,saved_v,nv0*3*sizeof(float))==0,
+                  "micro metric cap: source points moved");
+            CHECK(memcmp(cm.faces,saved_f,nf0*3*sizeof(int32_t))==0,
+                  "micro metric cap: source faces changed");
+        }
+        Arena_restore(arena,mark);
+    }
+
+    /* Independent check of the analytic interval against actual anisotropic
+     * triangle maps at many orientations. K=1 must reduce to the source angle;
+     * degenerate corners and invalid condition bounds are never certified. */
+    {
+        const float a[3]={0,0,0};
+        for(int t=1;t<16;t++)for(int orient=0;orient<32;orient++){
+            double theta=3.14159265358979323846*t/16;
+            double angle=INTRINSIC_ANGLE_TAU*orient/32;
+            float b[3]={(float)cos(angle),(float)sin(angle),0};
+            float c[3]={(float)cos(angle+theta),(float)sin(angle+theta),0};
+            double lo,hi,K=HOLEFILL_CHART_MAX_CONDITION;
+            CHECK(IntrinsicAngle_corner_bounds(a,b,c,K,&lo,&hi),"angle bounds: finite corner refused");
+            double mapped=atan2(fabs(K*(double)b[0]*c[1]-K*(double)b[1]*c[0]),
+                                K*K*(double)b[0]*c[0]+(double)b[1]*c[1]);
+            CHECK(mapped>=lo-1e-12&&mapped<=hi+1e-12,"angle bounds: actual map outside interval");
+            CHECK(IntrinsicAngle_corner_bounds(a,b,c,1,&lo,&hi)&&fabs(lo-hi)<1e-14,
+                  "angle bounds: isometry interval must be exact");
+        }
+        double lo,hi;
+        const float b[3]={1,0,0},c[3]={2,0,0},d[3]={0,1,0};
+        CHECK(!IntrinsicAngle_corner_bounds(a,b,c,2,&lo,&hi),"angle bounds: zero-area corner certified");
+        CHECK(!IntrinsicAngle_corner_bounds(a,b,d,0.5,&lo,&hi),"angle bounds: invalid condition certified");
+        CHECK(!IntrinsicAngle_closed_fan_possible(NAN,NAN),"angle bounds: nonfinite fan certified");
+    }
+
+    /* A densely sampled small hole inside a coarse exterior must still fill.
+     * The old global-largest-vertex-count skip suppressed the hole even after
+     * chart/geometric classification had correctly identified the perimeter. */
+    for(int mode=1;mode<=2;mode++){
+        Arena_Mark mark=Arena_save(arena);
+        float *v=ARENA_CALLOC(arena,12*3,sizeof(float));
+        int32_t *f=ARENA_ALLOC(arena,12*3*sizeof(int32_t));
+        size_t nv=12,nf=0,loops=0,interior=0,filled=0;
+        for(int i=0;i<4;i++){
+            double t=INTRINSIC_ANGLE_TAU*i/4;
+            v[i*3]=(float)(3*cos(t));v[i*3+1]=(float)(3*sin(t));
+        }
+        for(int i=0;i<8;i++){
+            double t=INTRINSIC_ANGLE_TAU*i/8;
+            v[(4+i)*3]=(float)cos(t);v[(4+i)*3+1]=(float)sin(t);
+        }
+        for(int i=0;i<4;i++){
+            int j=(i+1)%4,a=4+2*i,b=4+(2*i+1)%8,c=4+(2*i+2)%8;
+            const int32_t tri[3][3]={{i,j,c},{i,c,b},{i,b,a}};
+            memcpy(&f[nf*3],tri,sizeof(tri));nf+=3;
+        }
+        int rc=HoleFill_process_ex(arena,&v,&f,&nv,&nf,NULL,mode,&loops,&interior,&filled);
+        CHECK(rc==0&&loops==2&&interior==1&&filled==1,"dense hole: wrong perimeter classification");
+        CHECK(count_boundary_edges(f,nf)==4,"dense hole: interior left open or exterior capped");
+        CHECK(manifold_ok(f,nf),"dense hole: nonmanifold fill");
+        Arena_restore(arena,mark);
+    }
 
     /* G1: single sheet, one interior hole. */
     {
@@ -364,6 +543,7 @@ int main(int argc, char **argv)
     }
 
     Arena_dispose(&arena);
+    fail += test_underpass_loop_mesh_fill();
     printf("HOLEFILL INTERIOR SELFTEST %s\n", fail ? "FAILED" : "PASSED");
     return fail ? 1 : 0;
 }

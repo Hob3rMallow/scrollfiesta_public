@@ -47,6 +47,16 @@ typedef struct RectoRefineOpts {
     double max_total;       /* from second-pass input, vox */
     double occ_thresh;
     double local_r;
+    int    midline;         /* 1: target the CENTER of the bright papyrus
+                             * band (midpoint of the rising and the next
+                             * falling crossing along the outward line)
+                             * instead of the recto edge.  One unambiguous
+                             * target per sheet; the recto edge measured
+                             * harmful on the 5x3x3 core (2026-09-02:
+                             * depth-seams 1.95% -> 5.39%) because adjacent
+                             * patches snapped to different local edges. */
+    double midline_min_thick; /* vox, default 1.0 */
+    double midline_max_thick; /* vox, default 6.0 */
     int outer_iters;
     int inner_iters;
     double tol;

@@ -15,12 +15,20 @@
 #endif
 
 #include "../common/obj_io.h"
-#include "../common/raw_sample.h"   /* vertex_normals */
+#include "../common/mesh_bin.h"
+#include "../common/mesh_normals.h"
 #include "piece_set.h"
 
 /* ---- id enumeration (from *_uvphi.f32) ------------------------------------ */
 
 typedef struct { char id[48]; } PsId;
+
+/* Directory enumeration order is filesystem-dependent; sorting the ids is
+ * what makes every PieceSet-derived result byte-reproducible. */
+static int ps_id_cmp(const void *a, const void *b)
+{
+    return strcmp((const char *)a, (const char *)b);
+}
 
 static int ps_scan_ids(Arena_T arena, const char *dir, long z_lo, long z_hi,
                        PsId **out, size_t *out_n)
@@ -81,6 +89,7 @@ static int ps_scan_ids(Arena_T arena, const char *dir, long z_lo, long z_hi,
     }
     closedir(d);
 #endif
+    if (n > 1) qsort(ids, n, sizeof(PsId), ps_id_cmp);
     *out = ids;
     *out_n = n;
     return n > 0 ? 0 : -1;
@@ -183,10 +192,15 @@ int PieceSet_build_z(Arena_T arena, const char *placed_dir,
         float *mv = NULL;
         int32_t *mf = NULL;
         size_t mnv = 0, mnf = 0;
-        snprintf(path, sizeof(path), "%s/%s_mesh.obj", placed_dir, ids[c].id);
-        if (ObjIO_read(arena, path, &mv, &mnv, &mf, &mnf) != 0 ||
-            mnv != nv || mnf != kb) {
-            fprintf(stderr, "piece_set: WARN %s mesh/sidecar mismatch "
+        snprintf(path, sizeof(path), "%s/%s_mesh.vmesh", placed_dir, ids[c].id);
+        MeshBinData mesh;
+        int mesh_rc = MeshBin_read_arena(arena, path, &mesh);
+        if (mesh_rc == 0) {
+            mv = mesh.verts; mf = mesh.faces;
+            mnv = mesh.nv; mnf = mesh.nf;
+        }
+        if (mesh_rc != 0 || mnv != nv || mnf != kb) {
+            fprintf(stderr, "piece_set: WARN %s binary-mesh/sidecar mismatch "
                     "(nv %zu vs %zu, nf %zu vs %zu) -- skipped\n",
                     ids[c].id, mnv, nv, mnf, kb);
             Arena_restore(arena, mark);
@@ -220,7 +234,7 @@ int PieceSet_build_z(Arena_T arena, const char *placed_dir,
                 q++;
                 if (q >= nkept) break;
             }
-            float *nrm = vertex_normals(mv, nv, kf, nkept);   /* malloc'd */
+            float *nrm = MeshNormals_compute(mv, nv, kf, nkept);
             if (nrm != NULL) {
                 memcpy(&out->normals[voff * 3], nrm, nv * 3 * sizeof(float));
                 free(nrm);
@@ -307,7 +321,7 @@ void PieceSet_refresh_normals(PieceSet *ps)
     assert(ps);
     if (ps->nv == 0)
         return;
-    float *nrm = vertex_normals(ps->verts, ps->nv, ps->faces, ps->nf);
+    float *nrm = MeshNormals_compute(ps->verts, ps->nv, ps->faces, ps->nf);
     if (nrm != NULL) {
         memcpy(ps->normals, nrm, ps->nv * 3 * sizeof(float));
         free(nrm);
@@ -353,6 +367,9 @@ int PieceSet_selftest(void)
         int32_t f[2 * 3] = { 0, 1, 2, 1, 3, 2 };
         snprintf(path, sizeof(path), "%s/%s_mesh.obj", dir, cid[c]);
         ps_check(ObjIO_write(path, v, 4, f, 2) == 0, "write mesh", &fails);
+        snprintf(path, sizeof(path), "%s/%s_mesh.vmesh", dir, cid[c]);
+        ps_check(MeshBin_write(path, v, 4, f, 2, NULL) == 0,
+                 "write binary mesh", &fails);
         float uvphi[4 * 3];
         for (int i = 0; i < 4; i++) {
             uvphi[i * 3 + 0] = (float)(100 * c) + v[i * 3 + 2];  /* u */

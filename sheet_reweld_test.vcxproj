@@ -94,11 +94,11 @@
     <ClCompile Include="src\remesh\seam_planes.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\remesh\ball_pivot.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\kdtree.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\pitch_table.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\union_find.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\arena.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\except.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
-      <ClCompile Include="src\common\run_ctx.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
-</ItemGroup>
+  </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\remesh\sheet_reweld.h" />
     <ClInclude Include="src\remesh\seam_weld.h" />

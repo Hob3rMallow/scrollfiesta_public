@@ -14,8 +14,8 @@
  * seam; near the seam it leaves thin "sliver" triangles, the occasional
  * zero-area face, and T-junctions (a bridge vertex landing on the interior of a
  * coarse component triangle's edge). These are NOT topological defects -- the
- * weld stays edge-manifold -- but they are geometric blemishes the per-cube QEM
- * never sees, because QEM runs BEFORE the weld and grid_weld is the terminal
+ * weld stays edge-manifold -- but they are geometric blemishes the per-cube CVT
+ * never sees, because CVT runs BEFORE the weld and grid_weld is the terminal
  * step. This is the missing post-weld edge-collapse.
  *
  * Strategy (Surazhsky-Gotsman flip first, guarded collapse for the residue):
@@ -85,8 +85,7 @@ int WeldCleanup_process(Arena_T arena, ComponentMesh *cm,
  *
  * Boundary loops (grid edges, unbridged holes, a hierarchical level's outer
  * faces) exit with their vertex set, positions, and cyclic order BIT-IDENTICAL
- * -- simultaneously the no-reopened-seam guarantee and the requirement that
- * level L+1 of hierarchical_weld sees exactly the boundaries level L was given.
+ * -- preserving seams when a welded block is subsequently welded again.
  *
  * Vertices are never created or moved (collapsed verts orphaned, caller
  * per-vertex arrays stay index-valid). cm->faces/nf updated as in
@@ -122,5 +121,19 @@ int WeldCleanup_recoarsen_seam(Arena_T arena, ComponentMesh *cm,
  * flip pass. Returns total flips. */
 size_t WeldCleanup_flip_rounds(Arena_T arena, const float *verts, size_t nv,
                                int32_t *faces, size_t nf, int max_rounds);
+
+/* As above, but a marked face and every edge incident to it are immutable. */
+size_t WeldCleanup_flip_rounds_masked(
+    Arena_T arena, const float *verts, size_t nv,
+    int32_t *faces, size_t nf, int max_rounds,
+    const uint8_t *face_frozen);
+
+/* Seam-refinement form: only edges touching an active vertex are indexed.
+ * A candidate whose replacement diagonal has no active endpoint is left
+ * unchanged, keeping the edge-existence guard exact at the band border. */
+size_t WeldCleanup_flip_rounds_active_masked(
+    Arena_T arena, const float *verts, size_t nv,
+    int32_t *faces, size_t nf, int max_rounds,
+    const uint8_t *face_frozen, const uint8_t *vertex_active);
 
 #endif

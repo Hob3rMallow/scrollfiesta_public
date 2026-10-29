@@ -3,7 +3,7 @@
  *   mesh_quality <mesh.obj>
  *   mesh_quality --selftest
  *
- * Reports the metrics that separate a CVT/RVD remesh from a QEM decimation:
+ * Reports CVT/RVD remesh quality metrics:
  *   - min-angle histogram (the sliver signature): worst angle, mean/median of
  *     per-triangle minimum angle, and the fraction of triangles below 10/20/30 deg.
  *   - radius-ratio q = 2*r_in/r_circ in [0,1] (1 = equilateral, ->0 = sliver): mean.
@@ -65,17 +65,21 @@ static int report(const char *name, const float *V, size_t nv,
                   const int32_t *F, size_t nf, Arena_T arena) {
     if (nf == 0) { printf("=== mesh_quality: %s ===\n  (no faces)\n", name); return 0; }
 
-    double *mins = (double *)ARENA_ALLOC(arena, (long)(nf*sizeof(double)));
+    double *mins = (double *)ARENA_ALLOC(arena, (size_t)(nf*sizeof(double)));
     int hist[6] = {0,0,0,0,0,0};   /* [0,10)[10,20)[20,30)[30,40)[40,50)[50,60] */
     int n_degen = 0;
     double worst = 180.0, sum_min = 0.0, sum_q = 0.0;
+    size_t worst_face = 0, degen_face[8], ndegen_face = 0;
     size_t lt10 = 0, lt20 = 0, lt30 = 0;
     for (size_t t = 0; t < nf; t++) {
         double ma, q;
         tri_metrics(V, F[t*3+0], F[t*3+1], F[t*3+2], &ma, &q);
         mins[t] = ma; sum_min += ma; sum_q += q;
-        if (ma <= 0.0) n_degen++;
-        if (ma < worst) worst = ma;
+        if (ma <= 0.0) {
+            n_degen++;
+            if (ndegen_face < 8) degen_face[ndegen_face++] = t;
+        }
+        if (ma < worst) { worst = ma; worst_face = t; }
         if (ma < 10.0) lt10++;
         if (ma < 20.0) lt20++;
         if (ma < 30.0) lt30++;
@@ -89,12 +93,12 @@ static int report(const char *name, const float *V, size_t nv,
      * Build undirected edge multiplicity: an edge used by exactly 1 triangle is
      * a boundary edge; its endpoints are boundary vertices. Valence = # distinct
      * neighbours; we approximate with incident undirected-edge count via a hash. */
-    size_t *val = (size_t *)ARENA_CALLOC(arena, (long)nv, (long)sizeof(size_t));
-    unsigned char *is_bnd = (unsigned char *)ARENA_CALLOC(arena, (long)nv, (long)sizeof(unsigned char));
+    size_t *val = (size_t *)ARENA_CALLOC(arena, (size_t)nv, sizeof(size_t));
+    unsigned char *is_bnd = (unsigned char *)ARENA_CALLOC(arena, (size_t)nv, sizeof(unsigned char));
     /* edge hash: open-addressing on (min<<32|max) -> use count table sized 2*3*nf */
     size_t ecap = 1; while (ecap < nf*6 + 16) ecap <<= 1;
-    int64_t *ekey = (int64_t *)ARENA_ALLOC(arena, (long)(ecap*sizeof(int64_t)));
-    int32_t *ecnt = (int32_t *)ARENA_CALLOC(arena, (long)ecap, (long)sizeof(int32_t));
+    int64_t *ekey = (int64_t *)ARENA_ALLOC(arena, (size_t)(ecap*sizeof(int64_t)));
+    int32_t *ecnt = (int32_t *)ARENA_CALLOC(arena, (size_t)ecap, sizeof(int32_t));
     for (size_t i = 0; i < ecap; i++) ekey[i] = -1;
     for (size_t t = 0; t < nf; t++) {
         int32_t v[3] = { F[t*3+0], F[t*3+1], F[t*3+2] };
@@ -125,6 +129,43 @@ static int report(const char *name, const float *V, size_t nv,
     printf("  V=%zu  F=%zu  degenerate=%d\n", nv, nf, n_degen);
     printf("  min-angle: worst=%.2f  mean=%.2f  median=%.2f (deg)\n",
            worst, sum_min/(double)nf, median);
+    printf("  worst-face: %zu (%d,%d,%d)\n", worst_face,
+           F[worst_face*3],F[worst_face*3+1],F[worst_face*3+2]);
+    for(size_t d=0;d<ndegen_face;d++){
+        size_t f=degen_face[d];
+        int32_t a=F[f*3],b=F[f*3+1],c=F[f*3+2];
+        printf("  degenerate-face[%zu]: f=%zu idx=(%d,%d,%d) "
+               "bbox=[%.6g %.6g %.6g]-[%.6g %.6g %.6g]\n",d,f,a,b,c,
+               fmin(fmin(V[(size_t)a*3],V[(size_t)b*3]),V[(size_t)c*3]),
+               fmin(fmin(V[(size_t)a*3+1],V[(size_t)b*3+1]),V[(size_t)c*3+1]),
+               fmin(fmin(V[(size_t)a*3+2],V[(size_t)b*3+2]),V[(size_t)c*3+2]),
+               fmax(fmax(V[(size_t)a*3],V[(size_t)b*3]),V[(size_t)c*3]),
+               fmax(fmax(V[(size_t)a*3+1],V[(size_t)b*3+1]),V[(size_t)c*3+1]),
+               fmax(fmax(V[(size_t)a*3+2],V[(size_t)b*3+2]),V[(size_t)c*3+2]));
+        printf("    xyz: A=(%.9g %.9g %.9g) B=(%.9g %.9g %.9g) "
+               "C=(%.9g %.9g %.9g)\n",
+               V[(size_t)a*3],V[(size_t)a*3+1],V[(size_t)a*3+2],
+               V[(size_t)b*3],V[(size_t)b*3+1],V[(size_t)b*3+2],
+               V[(size_t)c*3],V[(size_t)c*3+1],V[(size_t)c*3+2]);
+        {
+            size_t shown=0;
+            for(size_t qf=0;qf<nf&&shown<12;qf++)if(qf!=f){
+                int shared=0;
+                for(int qi=0;qi<3;qi++){
+                    int32_t qv=F[qf*3+(size_t)qi];
+                    if(qv==a||qv==b||qv==c)shared++;
+                }
+                if(shared>=2){
+                    double qma,qq;
+                    tri_metrics(V,F[qf*3],F[qf*3+1],F[qf*3+2],&qma,&qq);
+                    printf("    edge-neighbor: f=%zu idx=(%d,%d,%d) "
+                           "min-angle=%.6g\n",qf,F[qf*3],F[qf*3+1],
+                           F[qf*3+2],qma);
+                    shown++;
+                }
+            }
+        }
+    }
     printf("  slivers:   <10deg=%.2f%%  <20deg=%.2f%%  <30deg=%.2f%%\n",
            100.0*(double)lt10/(double)nf, 100.0*(double)lt20/(double)nf,
            100.0*(double)lt30/(double)nf);

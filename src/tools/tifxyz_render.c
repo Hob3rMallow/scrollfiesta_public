@@ -277,8 +277,8 @@ int main(int argc, char **argv)
 
         size_t np = (size_t)W * (size_t)H;
         /* native (z,y,x) verts for the sampler + bbox. */
-        float *P = (float *)ARENA_ALLOC(ar, (long)(np * 3 * sizeof(float)));
-        uint8_t *valid = (uint8_t *)ARENA_ALLOC(ar, (long)np);
+        float *P = (float *)ARENA_ALLOC(ar, (size_t)(np * 3 * sizeof(float)));
+        uint8_t *valid = (uint8_t *)ARENA_ALLOC(ar, (size_t)np);
         for (size_t i = 0; i < np; i++) {
             float xx = X[i], yy = Y[i], zz = Z[i];
             valid[i] = (xx > 0.0f && zz > 0.0f && !(xx != xx)) ? 1 : 0;   /* z<=0 dropped */

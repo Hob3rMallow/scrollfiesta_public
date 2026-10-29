@@ -68,7 +68,11 @@ extern "C" {
 
 /* Bumped on ANY breaking change to a struct, enum, or signature in this
  * header. sf_get_api(N) returns NULL unless the library implements ABI N. */
-#define SCROLLFIESTA_ABI_VERSION   1u
+/* 2 (2026-09): QEM decimation retired; CVT/RVD variational remeshing is
+ * the only simplifier.  sf_pipeline_config.qem_target_ratio/skip_qem and
+ * sf_pipeline_report.t_qem became cvt_target_ratio/skip_simplify/t_cvt,
+ * and sf_decimate now resamples (it cannot honour an input pin mask). */
+#define SCROLLFIESTA_ABI_VERSION   2u
 
 #if defined(_WIN32) && defined(SCROLLFIESTA_SHARED)
   #if defined(SCROLLFIESTA_BUILD)
@@ -356,8 +360,8 @@ typedef struct sf_pipeline_config {
     int     cube_size;          /* owned region edge (default 128)           */
     int     halo_voxels;        /* neighbour padding (default 13)            */
     int64_t origin_xyz[3];      /* owned-cube world origin, (x,y,z)          */
-    float   qem_target_ratio;   /* <=0 -> default 0.075                      */
-    int     skip_qem;
+    float   cvt_target_ratio;   /* <=0 -> pitch-aware default when axis known */
+    int     skip_simplify;      /* dense diagnostic mode; production is CVT   */
     int     enable_depth_peel;  /* default 1                                 */
     int     enable_dev_cut;     /* default 1                                 */
     int     enable_sever;       /* short-handle sever (default 1)            */
@@ -365,7 +369,7 @@ typedef struct sf_pipeline_config {
 } sf_pipeline_config;
 
 typedef struct sf_pipeline_report {
-    double t_extract, t_qem, t_trim, t_dump;
+    double t_extract, t_cvt, t_trim, t_dump;
     size_t n_bad_sheets;        /* components flagged by the dev gate        */
 } sf_pipeline_report;
 

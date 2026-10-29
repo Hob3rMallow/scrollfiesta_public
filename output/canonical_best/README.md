@@ -24,11 +24,12 @@ under `snap_relax/`:
   final light UV relaxation; the full TIF, readable strip, and
   `canonical_step5_relax_stats.json` preserve the result at review resolution.
 
-`scripts/run_canonical_grid.ps1` generates these files, links them from the
-run's `CANONICAL_OUTPUTS.md`, records their paths in `logs/SUMMARY.txt`, and
-fails the run if any of them is missing or empty. Keep the previews and metrics
-when curating a generated run into this directory; they are part of the
-canonical artifact contract, not optional diagnostics.
+`scroll_unroll` writes these files at steps 4 and 5 (for example
+`--steps 12345 --id canonical`; see [docs/PIPELINE.md](../../docs/PIPELINE.md)).
+Check that each one is present and nonempty before curating a run into this
+directory, and keep the previews and metrics; they are part of the canonical
+artifact contract, not optional diagnostics. Historical bundles may also carry
+a generated `CANONICAL_OUTPUTS.md` or `SUMMARY.txt` index.
 
 ## Artifact contract
 

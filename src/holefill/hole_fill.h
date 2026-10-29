@@ -11,6 +11,18 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* Legacy displacement allowance for lineage readers of older hole-fill
+ * artifacts. Current chart filling retains source coordinates and vertex IDs;
+ * an uncertifiable cycle stays open. */
+#define HOLEFILL_CHART_PINCH_MAX_STEP_VOX 0.25f
+
+/* Chart fills must not create a closed source fan that already makes the
+ * assembler's 0.75..1.25 stretch band impossible. This is a necessary angle
+ * bound, independent of triangulation density, coordinate axes, and UV seeds.
+ * An incompatible opening stays open; original material is never discarded
+ * merely to make a generated cap pass. */
+#define HOLEFILL_CHART_MAX_CONDITION (1.25 / 0.75)
+
 /*
  * HoleFill_process — detect and fill interior holes in a triangle mesh.
  *
@@ -36,20 +48,32 @@ int HoleFill_process(Arena_T arena,
                      size_t *out_n_filled);
 
 /*
- * HoleFill_process_ex — same as HoleFill_process, with an interior_only switch.
+ * HoleFill_process_ex — same as HoleFill_process, with a classification mode.
  *
- *   interior_only != 0 : fill ONLY geometrically-interior holes (loops the
+ *   interior_only == 1 : fill ONLY geometrically-interior holes (loops the
  *                        surface surrounds), determined by a signed-area /
  *                        winding test relative to the averaged incident-face
  *                        normal. Outer perimeters and still-open boundary bays
  *                        are left untouched. Correct for multi-component meshes
  *                        (each component's own perimeter is recognised), so it
  *                        is the mode the post-weld joined mesh wants.
+ *   interior_only == 2 : chart mode.  Treat each connected component as one
+ *                        source chart, preserve that chart's longest boundary
+ *                        loop as its perimeter, and fill every other cleanly-
+ *                        fillable loop. New interior fans must also pass the
+ *                        necessary bound HOLEFILL_CHART_MAX_CONDITION. This is
+ *                        the post-weld mode when chart
+ *                        provenance is authoritative and avoids misclassifying
+ *                        steep 3-D punctures by projected winding.
  *   interior_only == 0 : fill every cleanly-fillable closed 4+ loop
  *                        (HoleFill_process wraps this).
  *
  * cube_shape is unused (the interior test is geometric); pass NULL.
  */
+/* Triangle on a polygon with a duplicate vertex must not depend on stale heap
+ * memory (the 2026-10-05 nondeterministic hole-fill failures). 0 on pass. */
+int HoleFill_triangle_selftest(void);
+
 int HoleFill_process_ex(Arena_T arena,
                         float **verts, int32_t **faces,
                         size_t *nv, size_t *nf,

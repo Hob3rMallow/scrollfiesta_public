@@ -31,9 +31,17 @@
  * degrades to a no-op / plain getenv.
  */
 
+#include "except.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Raised by RunCtx_check()/RunCtx_progress_check() when the host asked the
+ * call to stop, and caught at the API boundary by SF_EXCEPT_TAIL (see
+ * src/api/sf_internal.h).  Declared here because run_ctx.c raises it; the
+ * definition lives beside it in run_ctx.c. */
+extern const Except_T Sf_Cancelled;
 
 typedef int  (*SfRunProgressFn)(void *user, const char *stage, double fraction);
 typedef void (*SfRunLogFn)(void *user, const char *line);

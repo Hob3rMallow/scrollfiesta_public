@@ -1,7 +1,7 @@
 # ScrollFiesta Python utilities
 
 The supported submission workflow is the native pipeline documented in the
-repository `README.txt`:
+[repository README](../README.md):
 
 ```text
 grid_pipeline -> scroll_whole -> scroll_unroll

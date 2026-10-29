@@ -41,6 +41,8 @@ typedef struct {
     double  du;          /* SOLVED residual u shift */
     double  prior;       /* radius prior for the ABSOLUTE turn (mean of
                             (r-a)/b - phi_raw/2pi over the group's skin) */
+    double  du_prior;    /* analytic spiral gauge: median/mean target
+                            F(phi_raw)-u_raw, independent of integer k */
     int32_t n_prior;     /* skin verts behind the prior */
     int32_t comp;        /* forest component id */
 } GGNode;
@@ -69,6 +71,8 @@ typedef struct {
     int32_t  moves_applied;
     double   edge_redundancy;        /* non-tree edges / forest edges */
     double   anchor_weight_effective;
+    int32_t  du_gauge_components;
+    double   du_prior_resid_median, du_prior_resid_p95, du_prior_resid_max;
     size_t   pairs_used, pairs_rej_radius, pairs_rej_frac;
     size_t   edges_rej_prior, edges_rej_dr;
 } GroupGraph;
@@ -109,6 +113,9 @@ typedef struct {
                                    to Ribbon's shared raw k=0 chart */
     int    raw_du_gauge;      /* preserve Ribbon's shared raw continuous chart:
                                 leave every solved du at zero */
+    int    physical_du_gauge; /* preserve relative seam translations, then fix
+                                each component's additive gauge against
+                                F(phi_raw)-u_raw (recommended) */
     double anchor_weight;     /* soft per-node radius anchor in collective
                                 min-cut moves; 0 disables (default) */
     double anchor_redundancy_ref; /* >0 scales anchor_weight by
@@ -139,6 +146,9 @@ int GroupGraph_solve(Arena_T arena, GroupGraph *g, const GroupGraphOpts *opts);
  * (n_prior-weighted majority) correction. Arena-allocated. */
 int GroupGraph_cube_reg(Arena_T arena, const GroupGraph *g, size_t cube,
                         PlacedReg *out);
+
+/* Node id of (cube, gid), or -1 (nodes are gid-sorted per cube). */
+int32_t GroupGraph_node_of(const GroupGraph *g, size_t cube, int32_t gid);
 
 /* In-process unit tests (consistent cycle, branch-cut ring only a segment
  * flip repairs, two-component gauge, build filters, du recovery, empty).

@@ -19,7 +19,7 @@ mkdir -p "$PNG"
 
 stages=(step0_mls step1_bpa step2_cc step3_mls step4_bpa step5_cc \
         step6_cc_mls step7_cc_bpa step8_holefill step9_sever \
-        step10_qem step11_kibble step12_final)
+        step10_cvt step11_kibble step12_final)
 
 cubeid="$(basename "$DUMP")"
 MAXJ=24

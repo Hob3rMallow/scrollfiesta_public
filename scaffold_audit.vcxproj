@@ -101,8 +101,10 @@
     <ClCompile Include="src\common\arena.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\except.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\obj_io.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\mesh_bin.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\ves_platform.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\raw_sample.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\mesh_normals.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\tiff_io.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -10,8 +10,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Thread-local so concurrent API calls on different threads are isolated.
- * Same keyword strategy as Except_stack (see except.h). */
+const Except_T Sf_Cancelled = { "Operation cancelled by host" };
+
+/* Thread-local so concurrent API calls on different threads are isolated
+ * (EXCEPT_THREAD_LOCAL picks the portable keyword; see except.h). */
 static EXCEPT_THREAD_LOCAL SfRunCtx *g_run_ctx = NULL;
 
 void RunCtx_push(SfRunCtx *ctx)

@@ -305,7 +305,7 @@ int main(void)
         sf_pipeline_config cfg = sf_pipeline_config_default();
         cfg.cube_size = cube;
         cfg.halo_voxels = halo;
-        cfg.skip_qem = 1;   /* keep the smoke test fast */
+        cfg.skip_simplify = 1;   /* keep the smoke test fast */
         sf_mesh_list full, trimmed;
         sf_pipeline_report rep;
         sf_status rc = sf_pipeline_run(&v, &cfg, &full, &trimmed, &rep);

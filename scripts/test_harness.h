@@ -6,15 +6,13 @@
  * entry points so test_harness.c can call them all.
  *
  * After the May-2026 cleanup, tests are scoped to the active code path:
- *   Step 0 marching cubes + LOP + per-vert cull + QEM(pinned) + weld.
+ *   Step 0 marching cubes + LOP + per-vert cull + CVT/RVD + weld.
  * Tests for quarantined steps live alongside their step in attic/.
  */
 #ifndef TEST_HARNESS_H
 #define TEST_HARNESS_H
 
 int test_common_main(void);
-int qem_test_main(void);
-int qem_pin_test_main(void);
 int mesh_trim_pin_test_main(void);
 int pipeline_cube_smoke_test_main(void);
 int mls_iter_test_main(void);

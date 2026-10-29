@@ -56,7 +56,7 @@ int HaloLoader_load(Arena_T arena,
     *out_p_size = p;
 
     size_t pvol = (size_t)p * (size_t)p * (size_t)p;
-    uint8_t *padded = (uint8_t *)ARENA_CALLOC(arena, (long)pvol, 1L);
+    uint8_t *padded = (uint8_t *)ARENA_CALLOC(arena, (size_t)pvol, 1L);
     *out_vol = padded;
 
     /* Scratch arena for per-neighbor TIFF loads; reset between neighbors. */

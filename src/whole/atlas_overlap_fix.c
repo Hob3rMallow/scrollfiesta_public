@@ -6,6 +6,7 @@
 #include "cube_register.h"
 
 #include "../common/union_find.h"
+#include "../common/ves_png.h"
 
 #include <float.h>
 #include <math.h>
@@ -34,6 +35,11 @@ void AtlasOverlapFixOptions_default(AtlasOverlapFixOptions *opts)
     opts->neighbour_min_shared = 3;
     opts->max_shift_wraps = 4;
     opts->overlap_cell_size = 4.0;
+    opts->tabu_exact_loop = 0;
+    opts->tabu_cross_group_only = 1;
+    opts->tabu_no_tear_lateral = 0;
+    opts->tabu_mask_cell = 1.0;
+    opts->tabu_mask_png = NULL;
     opts->park_margin = 16.0;
     opts->park_unplaceable = 1;
     opts->wind_correct = 1;
@@ -1233,7 +1239,10 @@ static int aof_compare_order(const void *pa, const void *pb)
 enum {
     AOF_TABU_EPOCH = 50,          /* iterations between happiness refreshes */
     AOF_TABU_AUDIT_EVERY = 256,   /* incremental-vs-recount self check */
-    AOF_TABU_VERIFY_MAX = 64,     /* diverse archived states SAT-verified */
+    AOF_TABU_VERIFY_MAX = 64,     /* diverse archived states archived */
+    AOF_TABU_VERIFY_SCAN = 6,     /* of those, how many get a full atlas
+                                   * rescan -- the rest are eliminated by the
+                                   * search's own raster score first */
     AOF_TABU_CONTACT_CAP = 32     /* weld contacts counted per edge, max */
 };
 
@@ -1391,6 +1400,20 @@ typedef struct {
 
     /* Legacy sparse occupancy remains only as a proposal diagnostic while the
      * exact engine owns acceptance and the canonical collision energy. */
+    int      exact_loop;      /* AOF_TABU_EXACT_LOOP=1: exact SAT in the sweep */
+    int      cross_group_only;/* collision term ignores same-group pairs */
+    int      no_tear_lateral; /* reject moves that break a lateral pair */
+    /* Per-chart occupancy bitmaps, scan-converted once over each chart's own
+     * (u, v) box at cell resolution.  v never shifts, so rows are built once;
+     * a depth move is a shift along u, i.e. a bit shift of each row.  Overlap
+     * is then AND + popcount, which is what the deliverable actually measures
+     * (multi-cover pixels) rather than continuous triangle intersection. */
+    double   mcell;           /* raster occupancy cell, vox */
+    uint64_t *mbits;          /* concatenated row words for every chart */
+    size_t   *moff;           /* [ncharts + 1] word offset per chart */
+    int32_t  *mu0, *mv0;      /* box origin, cell units */
+    int32_t  *mwu, *mhv;      /* box size, cells / rows */
+    size_t   *mstride;        /* words per row */
     uint64_t *ckey;           /* base cells, sorted + deduped per chart */
     size_t  *coff;            /* [ncharts + 1] */
 
@@ -1503,6 +1526,11 @@ static int aof_tabu_potential_sweep(
                 if (bo->vmax <= bc->vmin || bc->vmax <= bo->vmin) continue;
                 int canonical_vb = bo->vmin > bc->vmin ? bo->vb0 : bc->vb0;
                 if (vb != canonical_vb) continue;
+                /* Two charts in one welded group move together or not at all;
+                 * their mutual overlap is a local fold the winding search
+                 * cannot fix, and counting it only rewards tearing the weld. */
+                if (T->cross_group_only && T->chart_group != NULL &&
+                    T->chart_group[c] == T->chart_group[other]) continue;
 
                 if (degree != NULL) {
                     if (degree[c] == SIZE_MAX || degree[other] == SIZE_MAX)
@@ -1685,11 +1713,114 @@ static int aof_tabu_exact_aabb_separate(const AofTabu *T, int32_t ca, int ka,
            ba[3] <= bb[2] || bb[3] <= ba[2];
 }
 
+/* Scan-convert one triangle into a chart mask.  Half-open pixel rule: a cell
+ * belongs to the triangle whose interior contains the cell CENTRE, so two
+ * charts that merely abut never share a cell and the count really can reach
+ * zero.  The old proxy stamped 3 vertices + a centroid per face instead, which
+ * both under-covered faces wider than a cell and made touching charts collide
+ * forever -- the reason the exact engine was reached for at all. */
+static void aof_mask_triangle(uint64_t *bits, size_t stride,
+                              int32_t u0, int32_t v0, int32_t wu, int32_t hv,
+                              const double *uu, const double *vv, double cell)
+{
+    double lo_u = uu[0], hi_u = uu[0], lo_v = vv[0], hi_v = vv[0];
+    for (int i = 1; i < 3; i++) {
+        if (uu[i] < lo_u) lo_u = uu[i];
+        if (uu[i] > hi_u) hi_u = uu[i];
+        if (vv[i] < lo_v) lo_v = vv[i];
+        if (vv[i] > hi_v) hi_v = vv[i];
+    }
+    int32_t cu0 = (int32_t)floor(lo_u / cell) - u0;
+    int32_t cu1 = (int32_t)floor(hi_u / cell) - u0;
+    int32_t cv0 = (int32_t)floor(lo_v / cell) - v0;
+    int32_t cv1 = (int32_t)floor(hi_v / cell) - v0;
+    if (cu0 < 0) cu0 = 0;
+    if (cv0 < 0) cv0 = 0;
+    if (cu1 >= wu) cu1 = wu - 1;
+    if (cv1 >= hv) cv1 = hv - 1;
+    double e0 = (uu[1] - uu[0]) * (vv[2] - vv[0]) -
+                (uu[2] - uu[0]) * (vv[1] - vv[0]);
+    int flip = e0 < 0.0;
+    for (int32_t cv = cv0; cv <= cv1; cv++) {
+        double py = ((double)(cv + v0) + 0.5) * cell;
+        for (int32_t cu = cu0; cu <= cu1; cu++) {
+            double px = ((double)(cu + u0) + 0.5) * cell;
+            int inside = 1;
+            for (int i = 0; i < 3 && inside; i++) {
+                int j = (i + 1) % 3;
+                double cr = (uu[j] - uu[i]) * (py - vv[i]) -
+                            (px - uu[i]) * (vv[j] - vv[i]);
+                if (flip) cr = -cr;
+                if (cr < 0.0) inside = 0;
+            }
+            if (!inside) continue;
+            size_t w = (size_t)cv * stride + (size_t)(cu >> 6);
+            bits[w] |= (uint64_t)1 << (cu & 63);
+        }
+    }
+}
+
+/* Shared cells between two charts at the given u shifts.  v is unshifted, so
+ * rows line up by a fixed integer; u is a bit offset.  O(overlap area / 64). */
+static uint32_t aof_mask_overlap(const AofTabu *T, int32_t ca, double sa,
+                                 int32_t cb, double sb)
+{
+    int32_t da = (int32_t)floor(sa / T->mcell + 0.5);
+    int32_t db = (int32_t)floor(sb / T->mcell + 0.5);
+    int32_t au = T->mu0[ca] + da, bu = T->mu0[cb] + db;
+    int32_t av = T->mv0[ca],      bv = T->mv0[cb];
+    int32_t v_lo = av > bv ? av : bv;
+    int32_t v_hi = (av + T->mhv[ca]) < (bv + T->mhv[cb])
+                 ? (av + T->mhv[ca]) : (bv + T->mhv[cb]);
+    if (v_hi <= v_lo) return 0;
+    int32_t shift = au - bu;         /* A cell i aligns with B cell i + shift */
+    const uint64_t *A = &T->mbits[T->moff[ca]];
+    const uint64_t *B = &T->mbits[T->moff[cb]];
+    size_t sA = T->mstride[ca], sB = T->mstride[cb];
+    /* Clip to the u cells the two boxes actually share -- without this the
+     * scan walks A's whole row even when the boxes barely touch, which is the
+     * narrowing the old face sweep got from its binary search. */
+    int32_t o_lo = au > bu ? au : bu;
+    int32_t o_hi = (au + T->mwu[ca]) < (bu + T->mwu[cb])
+                 ? (au + T->mwu[ca]) : (bu + T->mwu[cb]);
+    if (o_hi <= o_lo) return 0;
+    size_t w_lo = (size_t)((o_lo - au) >> 6);
+    size_t w_hi = (size_t)(((o_hi - 1 - au) >> 6) + 1);
+    if (w_hi > sA) w_hi = sA;
+    uint32_t count = 0;
+    for (int32_t v = v_lo; v < v_hi; v++) {
+        const uint64_t *ra = &A[(size_t)(v - av) * sA];
+        const uint64_t *rb = &B[(size_t)(v - bv) * sB];
+        for (size_t w = w_lo; w < w_hi; w++) {
+            uint64_t x = ra[w];
+            if (x == 0) continue;
+            /* bit (w*64 + t) of A sits at bit (w*64 + t + shift) of B */
+            int64_t base = (int64_t)w * 64 + shift;
+            int64_t wb = base >> 6;
+            int32_t off = (int32_t)(base & 63);
+            uint64_t m = 0;
+            if (wb >= 0 && (size_t)wb < sB) m |= rb[wb] >> off;
+            if (off && wb + 1 >= 0 && (size_t)(wb + 1) < sB)
+                m |= rb[wb + 1] << (64 - off);
+            uint64_t hit = x & m;
+            while (hit) { count++; hit &= hit - 1; }
+        }
+    }
+    return count;
+}
+
 static uint32_t aof_tabu_exact_pair_uncached(AofTabu *T, int32_t ca, int ka,
                                              int32_t cb, int kb)
 {
     double sa = aof_tabu_shift_at(T, ca, ka);
     double sb = aof_tabu_shift_at(T, cb, kb);
+    /* Raster occupancy is the question the deliverable actually asks: the bake
+     * counts multi-cover PIXELS, and an overlap that never lands on one does
+     * not exist downstream.  AND + popcount over the two chart masks answers
+     * it in O(area / 64) instead of a face-vs-face SAT sweep.  Set
+     * AOF_TABU_EXACT_LOOP=1 to fall back to the triangle test. */
+    if (!T->exact_loop)
+        return aof_mask_overlap(T, ca, sa, cb, sb);
     size_t na = T->frow[(size_t)ca + 1] - T->frow[ca];
     size_t nb = T->frow[(size_t)cb + 1] - T->frow[cb];
     if (na > nb) {
@@ -1935,6 +2066,42 @@ static int64_t aof_tabu_rad_total(const AofTabu *T)
  * happiness-downweighted edge weights; that variant only ranks moves -- the
  * canonical term (steer = 0) owns best-tracking, aspiration and stopping,
  * because a state-dependent energy would make iterations incomparable. */
+/* Would this placement break a lateral pair that is currently satisfied?
+ *
+ * A lateral edge says two charts are the same sheet lying side by side.  If the
+ * search separates them, the ribbon fit's junction gate (RIB_MERGE_DU_MAX,
+ * 8 vox of carried-U agreement) rejects the join and the material is DROPPED
+ * rather than stitched -- measured on the 10x10x10 as 150,553 -> 121,683
+ * junctions and 2.6M fewer painted pixels.  That is a hard loss, so this is a
+ * hard constraint; pricing it did nothing (lateral_w 8 -> 64 left the tear
+ * count at ~1,090 either way). */
+static int aof_tabu_tears_lateral(const AofTabu *T, const int32_t *member,
+                                  const int8_t *new_k, size_t nmember,
+                                  int32_t *moved)
+{
+    if (!T->no_tear_lateral) return 0;
+    for (size_t i = 0; i < nmember; i++) moved[member[i]] = (int32_t)i + 1;
+    int tears = 0;
+    for (size_t i = 0; i < nmember && !tears; i++) {
+        int32_t c = member[i];
+        for (size_t a = T->erow[c]; a < T->erow[(size_t)c + 1]; a++) {
+            size_t ei = (size_t)T->eadj[a];
+            if (ei < T->first_lateral) continue;         /* weld, priced above */
+            const AofTabuEdge *e = &T->edge[ei];
+            int32_t other = e->a == c ? e->b : e->a;
+            int mo = moved[other];
+            int ka = new_k[i];
+            int kb = mo ? new_k[mo - 1] : T->k[other];
+            if (e->a != c) { int t = ka; ka = kb; kb = t; }
+            int dc = T->k[e->a] - T->k[e->b] - e->target;
+            int dn = ka - kb - e->target;
+            if (dc == 0 && dn != 0) { tears = 1; break; }
+        }
+    }
+    for (size_t i = 0; i < nmember; i++) moved[member[i]] = 0;
+    return tears;
+}
+
 static int64_t aof_tabu_nb_delta(const AofTabu *T, int32_t c, int k, int steer)
 {
     int64_t delta = 0;
@@ -1968,6 +2135,214 @@ static void aof_tabu_chart_cells(AofTabu *T, int64_t *out)
         out[c] = aof_tabu_probe(T, (int32_t)c, T->k[c]);
         aof_tabu_insert(T, (int32_t)c, T->k[c]);
     }
+}
+
+/* Composite every chart mask at its current depth into two viewable PNGs.
+ *
+ *   _occupancy.png   grey = one occupant, ORANGE/RED = two/three-plus.  Multi
+ *                    cover is the defect this stage exists to remove, so it is
+ *                    the thing that must be visible.
+ *   _provenance.png  each pixel coloured by its source cube (z,y,x) -> RGB.  A
+ *                    correct atlas shows smooth spatial gradients following the
+ *                    spiral; a scrambled one shows confetti, which no summary
+ *                    statistic communicates.
+ *
+ * Accumulates straight into the downsampled raster, so a 255k-cell-wide atlas
+ * never needs a full-resolution buffer. */
+static void aof_tabu_dump_mask_png(const AofTabu *T, const PieceSet *ps,
+                                   const char *stem)
+{
+    if (stem == NULL || T->ncharts == 0) return;
+    int32_t lo_u = 0, hi_u = 0, lo_v = 0, hi_v = 0;
+    int seen = 0;
+    for (size_t c = 0; c < T->ncharts; c++) {
+        if (T->mstride[c] == 0) continue;
+        int32_t d = (int32_t)floor(aof_tabu_shift_at(T, (int32_t)c, T->k[c])
+                                   / T->mcell + 0.5);
+        int32_t u0 = T->mu0[c] + d, u1 = u0 + T->mwu[c];
+        int32_t v0 = T->mv0[c],     v1 = v0 + T->mhv[c];
+        if (!seen) { lo_u = u0; hi_u = u1; lo_v = v0; hi_v = v1; seen = 1; }
+        else {
+            if (u0 < lo_u) lo_u = u0;
+            if (u1 > hi_u) hi_u = u1;
+            if (v0 < lo_v) lo_v = v0;
+            if (v1 > hi_v) hi_v = v1;
+        }
+    }
+    if (!seen || hi_u <= lo_u || hi_v <= lo_v) return;
+    size_t span_u = (size_t)(hi_u - lo_u), span_v = (size_t)(hi_v - lo_v);
+    /* Downsample u hard (the atlas is enormously wide) and v barely: a strip
+     * squashed equally on both axes shows nothing.  Reduce by MAX, never by
+     * sum, or every output pixel of a 16x block reads as multi-cover. */
+    size_t ds_u = 1, ds_v = 1;
+    while (span_u / ds_u > 4000) ds_u++;
+    while (span_v / ds_v > 1600) ds_v++;
+    int w = (int)(span_u / ds_u + 1), h = (int)(span_v / ds_v + 1);
+    if (w <= 0 || h <= 0) return;
+    size_t np = (size_t)w * (size_t)h;
+    uint8_t *occ  = (uint8_t *)calloc(np, 1);
+    uint8_t *prov = (uint8_t *)calloc(np * 3, 1);
+    uint8_t *rowc = (uint8_t *)calloc(span_u + 64, 1);
+    uint8_t *rowp = (uint8_t *)calloc((span_u + 64) * 3, 1);
+    if (!occ || !prov || !rowc || !rowp) {
+        free(occ); free(prov); free(rowc); free(rowp); return;
+    }
+    /* Normalise provenance to the grid we are actually running on, so the
+     * colour is a readable GRADIENT: for a 4x5x5 section R runs 0->1 across
+     * the four x cubes, G across the five y, B across the five z.  A
+     * scatter/hash palette makes spatially adjacent cubes land on unrelated
+     * hues, which hides the very coherence this view exists to show. */
+    long org_lo[3] = {0, 0, 0}, org_hi[3] = {0, 0, 0};
+    int have_org = 0;
+    if (ps->cube_org != NULL) {
+        for (size_t q = 0; q < ps->n_cubes; q++) {
+            for (int ax = 0; ax < 3; ax++) {
+                long o = ps->cube_org[q][ax];
+                if (!have_org) { org_lo[ax] = o; org_hi[ax] = o; }
+                else {
+                    if (o < org_lo[ax]) org_lo[ax] = o;
+                    if (o > org_hi[ax]) org_hi[ax] = o;
+                }
+            }
+            have_org = 1;
+        }
+    }
+    size_t single = 0, multi = 0;
+    for (int32_t gv = lo_v; gv < hi_v; gv++) {
+        int py = (int)(((size_t)(gv - lo_v)) / ds_v);
+        if (py < 0 || py >= h) continue;
+        memset(rowc, 0, span_u + 64);
+        memset(rowp, 0, (span_u + 64) * 3);
+        for (size_t c = 0; c < T->ncharts; c++) {
+            if (T->mstride[c] == 0) continue;
+            int32_t r = gv - T->mv0[c];
+            if (r < 0 || r >= T->mhv[c]) continue;
+            int32_t d = (int32_t)floor(aof_tabu_shift_at(T, (int32_t)c, T->k[c])
+                                       / T->mcell + 0.5);
+            uint8_t rr = 128, gg = 128, bb = 128;
+            int32_t cu = T->chart_cube[c];
+            if (cu >= 0 && have_org) {
+                long o[3];
+                o[0] = ps->cube_org[cu][0];   /* z -> B */
+                o[1] = ps->cube_org[cu][1];   /* y -> G */
+                o[2] = ps->cube_org[cu][2];   /* x -> R */
+                uint8_t ch[3];
+                for (int ax = 0; ax < 3; ax++) {
+                    long lo = org_lo[ax], hi = org_hi[ax];
+                    double t = hi > lo ? (double)(o[ax] - lo) /
+                                         (double)(hi - lo) : 0.5;
+                    ch[ax] = (uint8_t)(24.0 + t * 231.0);
+                }
+                bb = ch[0]; gg = ch[1]; rr = ch[2];
+            }
+            const uint64_t *row = &T->mbits[T->moff[c] +
+                                            (size_t)r * T->mstride[c]];
+            for (size_t wd = 0; wd < T->mstride[c]; wd++) {
+                uint64_t x = row[wd];
+                while (x) {
+                    uint64_t low = x & (uint64_t)(-(int64_t)x);
+                    int bit = 0;
+                    while ((low >> bit) != 1u) bit++;
+                    x &= x - 1;
+                    int64_t gu = (int64_t)T->mu0[c] + d
+                               + (int64_t)(wd * 64 + (size_t)bit) - lo_u;
+                    if (gu < 0 || (size_t)gu >= span_u) continue;
+                    if (rowc[gu] < 255) rowc[gu]++;
+                    rowp[gu * 3 + 0] = rr;
+                    rowp[gu * 3 + 1] = gg;
+                    rowp[gu * 3 + 2] = bb;
+                }
+            }
+        }
+        for (size_t gu = 0; gu < span_u; gu++) {
+            if (rowc[gu] == 0) continue;
+            int px = (int)(gu / ds_u);
+            if (px < 0 || px >= w) continue;
+            size_t o = (size_t)py * (size_t)w + (size_t)px;
+            if (rowc[gu] > occ[o]) occ[o] = rowc[gu];   /* MAX, not sum */
+            prov[o * 3 + 0] = rowp[gu * 3 + 0];
+            prov[o * 3 + 1] = rowp[gu * 3 + 1];
+            prov[o * 3 + 2] = rowp[gu * 3 + 2];
+        }
+    }
+    uint8_t *rgb = (uint8_t *)calloc(np * 3, 1);
+    if (rgb != NULL) {
+        for (size_t i = 0; i < np; i++) {
+            uint8_t n = occ[i];
+            if (n == 0) { rgb[i*3+0]=16; rgb[i*3+1]=16; rgb[i*3+2]=24; }
+            else if (n == 1) { single++;
+                rgb[i*3+0]=205; rgb[i*3+1]=205; rgb[i*3+2]=205; }
+            else if (n == 2) { multi++;
+                rgb[i*3+0]=255; rgb[i*3+1]=150; rgb[i*3+2]=0; }
+            else { multi++;
+                rgb[i*3+0]=255; rgb[i*3+1]=32; rgb[i*3+2]=32; }
+        }
+        char path[1024];
+        snprintf(path, sizeof path, "%s_occupancy.png", stem);
+        VesPng_write_rgb(path, rgb, w, h);
+        snprintf(path, sizeof path, "%s_provenance.png", stem);
+        VesPng_write_rgb(path, prov, w, h);
+        fprintf(stderr,
+                "[overlap_fix]     mask dump: %dx%d px (u 1:%zu, v 1:%zu), "
+                "%zu single, %zu multi -> %s_{occupancy,provenance}.png",
+                w, h, ds_u, ds_v, single, multi, stem);
+        fputc(10, stderr);
+        free(rgb);
+    }
+    free(occ); free(prov); free(rowc); free(rowp);
+}
+
+/* Cheap collision change for a compound placement, from the occupancy proxy.
+ *
+ * This is the primitive the header prescribes: "the exact test is the final
+ * verifier, never the inner loop."  Cost is O(cells of the moved charts) --
+ * a few hundred hash probes -- against aof_tabu_exact_delta's O(potential
+ * pairs) chart tests, each of which can fall through to a face-vs-face SAT
+ * sweep.  Measured on a 10x10x10: the exact loop issued 53,959,610,416 chart
+ * queries and 12,852,489,498 triangle SAT tests for one 80-iteration solve.
+ *
+ * Side-effect free: every chart is lifted out, scored at its new depth, and
+ * put back, so the hash is identical on return.  Integer arithmetic only. */
+static int64_t aof_tabu_proxy_delta(AofTabu *T, const int32_t *member,
+                                    const int8_t *new_k, size_t nmember)
+{
+    /* PROBE, never insert.  Inserting at every trial depth adds keys the
+     * table was never sized for -- one sweep tries ~33 depths per chart, so
+     * the occupancy hash saturates within a single iteration and open
+     * addressing degenerates into a linear scan of the whole table.  probe()
+     * is read-only by construction and is what this evaluation wants. */
+    int64_t before = 0, after = 0;
+    for (size_t i = 0; i < nmember; i++)
+        aof_tabu_remove(T, member[i], T->k[member[i]]);
+    for (size_t i = 0; i < nmember; i++) {
+        before += aof_tabu_probe(T, member[i], T->k[member[i]]);
+        after  += aof_tabu_probe(T, member[i], new_k[i]);
+    }
+    for (size_t i = 0; i < nmember; i++)
+        aof_tabu_insert(T, member[i], T->k[member[i]]);
+    return after - before;
+}
+
+/* The search energy.  Set AOF_TABU_EXACT_LOOP=1 to put exact SAT back in the
+ * move sweep (the pre-2026-08-17 behaviour) for A/B measurement. */
+static int aof_tabu_exact_loop(void)
+{
+    const char *e = getenv("AOF_TABU_EXACT_LOOP");
+    return e != NULL && e[0] == '1';
+}
+
+/* One collision currency for the whole search.  aof_tabu_exact_delta walks the
+ * sparse potential-pair graph and memoizes per (chart, k, chart, k); its
+ * primitive is aof_tabu_exact_pair_uncached, which is the raster AND+popcount
+ * unless AOF_TABU_EXACT_LOOP asks for triangles.  Routing the sweep through a
+ * SECOND model (the occupancy hash) was a mistake: it scored moves in a
+ * different currency from the one the leaderboard verifies, and it was coarser.
+ * The hash proxy remains for happiness and the chart-cell diagnostics. */
+static int64_t aof_tabu_collide_delta(AofTabu *T, const int32_t *member,
+                                      const int8_t *new_k, size_t nmember,
+                                      int32_t *moved)
+{
+    return aof_tabu_exact_delta(T, member, new_k, nmember, moved);
 }
 
 /* The incremental bookkeeping re-derived from scratch must agree exactly --
@@ -2241,7 +2616,11 @@ static int aof_tabu_prepare(Arena_T arena, const PieceSet *ps,
     T->vertex_chart = vertex_chart;
     T->Lov = (int64_t)floor(opts->lambda_ov * AOF_TABU_FIX + 0.5);
     T->cell = opts->tabu_cell;
+    T->mcell = opts->tabu_mask_cell > 0.0 ? opts->tabu_mask_cell : 1.0;
     T->chart_group = chart_group;
+    /* must precede aof_tabu_build_potential_pairs, which consults it */
+    T->cross_group_only = opts->tabu_cross_group_only;
+    T->no_tear_lateral = opts->tabu_no_tear_lateral;
     size_t nk = (size_t)T->nk;
 
     /* Group membership CSR (needed below for the radial recentring). */
@@ -2676,6 +3055,74 @@ static int aof_tabu_prepare(Arena_T arena, const PieceSet *ps,
               sizeof(AofTabuFaceBox), aof_tabu_compare_face_box);
     }
 
+    /* ---- per-chart occupancy bitmaps ------------------------------------
+     * Two passes: size every chart box from its kept faces, then scan-convert
+     * into one flat word array.  Everything is in base (unshifted) u; a depth
+     * move becomes a bit offset at query time. */
+    T->moff    = (size_t  *)ARENA_ALLOC(arena, (ncharts + 1) * sizeof(size_t));
+    T->mu0     = (int32_t *)ARENA_ALLOC(arena, ncharts * sizeof(int32_t));
+    T->mv0     = (int32_t *)ARENA_ALLOC(arena, ncharts * sizeof(int32_t));
+    T->mwu     = (int32_t *)ARENA_ALLOC(arena, ncharts * sizeof(int32_t));
+    T->mhv     = (int32_t *)ARENA_ALLOC(arena, ncharts * sizeof(int32_t));
+    T->mstride = (size_t  *)ARENA_ALLOC(arena, ncharts * sizeof(size_t));
+    {
+        size_t words = 0;
+        for (size_t c = 0; c < ncharts; c++) {
+            double lo_u = 0.0, hi_u = 0.0, lo_v = 0.0, hi_v = 0.0;
+            int seen = 0;
+            for (size_t q = frow[c]; q < frow[c + 1]; q++) {
+                const AofTabuFaceBox *fb = &T->fbox[q];
+                if (!seen) {
+                    lo_u = fb->umin; hi_u = fb->umax;
+                    lo_v = fb->vmin; hi_v = fb->vmax; seen = 1;
+                } else {
+                    if (fb->umin < lo_u) lo_u = fb->umin;
+                    if (fb->umax > hi_u) hi_u = fb->umax;
+                    if (fb->vmin < lo_v) lo_v = fb->vmin;
+                    if (fb->vmax > hi_v) hi_v = fb->vmax;
+                }
+            }
+            if (!seen) {
+                T->mu0[c] = 0; T->mv0[c] = 0;
+                T->mwu[c] = 0; T->mhv[c] = 0; T->mstride[c] = 0;
+                T->moff[c] = words;
+                continue;
+            }
+            int32_t u0 = (int32_t)floor(lo_u / T->mcell);
+            int32_t v0 = (int32_t)floor(lo_v / T->mcell);
+            int32_t u1 = (int32_t)floor(hi_u / T->mcell);
+            int32_t v1 = (int32_t)floor(hi_v / T->mcell);
+            T->mu0[c] = u0; T->mv0[c] = v0;
+            T->mwu[c] = u1 - u0 + 1;
+            T->mhv[c] = v1 - v0 + 1;
+            T->mstride[c] = (size_t)((T->mwu[c] + 63) / 64);
+            T->moff[c] = words;
+            words += T->mstride[c] * (size_t)T->mhv[c];
+        }
+        T->moff[ncharts] = words;
+        T->mbits = (uint64_t *)ARENA_CALLOC(
+            arena, words ? words : 1, sizeof(uint64_t));
+        for (size_t c = 0; c < ncharts; c++) {
+            if (T->mstride[c] == 0) continue;
+            uint64_t *bits = &T->mbits[T->moff[c]];
+            for (size_t q = frow[c]; q < frow[c + 1]; q++) {
+                size_t f = (size_t)T->fbox[q].face;
+                double uu[3], vv[3];
+                for (int corner = 0; corner < 3; corner++) {
+                    int32_t vertex = ps->faces[f * 3 + (size_t)corner];
+                    uu[corner] = u[vertex];
+                    vv[corner] = v[vertex];
+                }
+                aof_mask_triangle(bits, T->mstride[c], T->mu0[c], T->mv0[c],
+                                  T->mwu[c], T->mhv[c], uu, vv, T->mcell);
+            }
+        }
+        fprintf(stderr,
+                "[overlap_fix]     chart masks: %zu words (%.1f MB) at "
+                "cell %.2f vox\n",
+                words, (double)words * 8.0 / 1048576.0, T->mcell);
+    }
+
     T->ckey = (uint64_t *)ARENA_ALLOC(
         arena, (nkept ? nkept * 4 : 1) * sizeof(uint64_t));
     T->coff = (size_t *)ARENA_ALLOC(arena, (ncharts + 1) * sizeof(size_t));
@@ -3029,9 +3476,9 @@ static int aof_tabu_prepare(Arena_T arena, const PieceSet *ps,
             if (all_seen && span_bins >= 1 && span_bins <= 100) {
                 for (size_t m = m0; m < m1; m++) {
                     int32_t c = T->gmember[m];
-                    int32_t b = (int32_t)floor(w_rel[c] - lo_w + 0.5);
-                    if (b < 0) b = 0;
-                    T->gbin[c] = (int8_t)(b > 127 ? 127 : b);
+                    int32_t bin = (int32_t)floor(w_rel[c] - lo_w + 0.5);
+                    if (bin < 0) bin = 0;
+                    T->gbin[c] = (int8_t)(bin > 127 ? 127 : bin);
                 }
                 T->graded_group[g] = 1;
             }
@@ -3061,9 +3508,9 @@ static int aof_tabu_prepare(Arena_T arena, const PieceSet *ps,
             int lo = 127, hi = -127;
             for (size_t m = m0; m < m1; m++) {
                 int32_t c = T->gmember[m];
-                int b = (int)T->phase_bin[c];
-                if (b < lo) lo = b;
-                if (b > hi) hi = b;
+                int bin = (int)T->phase_bin[c];
+                if (bin < lo) lo = bin;
+                if (bin > hi) hi = bin;
             }
             if (hi - lo < 1 || hi - lo > 100) continue;
             for (size_t m = m0; m < m1; m++) {
@@ -3166,8 +3613,12 @@ static int aof_tabu_prepare(Arena_T arena, const PieceSet *ps,
 
     T->k = (int8_t *)ARENA_CALLOC(arena, ncharts, sizeof(int8_t));
     T->happy = (uint8_t *)ARENA_ALLOC(arena, ncharts * sizeof(uint8_t));
-    aof_tabu_rebuild(T);
+    T->exact_loop = opts->tabu_exact_loop || aof_tabu_exact_loop();
+    aof_tabu_rebuild(T);      /* sets e_ov to the proxy shared-cell count */
     T->rebuilds = 0;          /* the initial fill is not a rebuild */
+    /* The search energy must be in ONE currency.  The proxy is canonical in
+     * the loop; the exact engine still owns the leaderboard verification and
+     * the reported before/after overlap, which is where it belongs. */
     T->e_ov = aof_tabu_exact_total(T);
     T->e_nb = aof_tabu_nb_total(T);
     T->e_rad = aof_tabu_rad_total(T);
@@ -3259,8 +3710,11 @@ static int aof_tabu_run(Arena_T arena, AofTabu *T,
         if (iter % AOF_TABU_EPOCH == 0 && steer_on)
             aof_tabu_exact_refresh_happy(T);
         if (iter % AOF_TABU_AUDIT_EVERY == 0) {
-            int64_t exact = aof_tabu_exact_total(T);
-            if (exact != T->e_ov || aof_tabu_nb_total(T) != T->e_nb ||
+            /* Re-derive the collision term from scratch in whatever currency
+             * the loop is using and demand exact agreement -- the arithmetic
+             * is all integer, so any difference is a bug, not drift. */
+            int64_t recount = aof_tabu_exact_total(T);
+            if (recount != T->e_ov || aof_tabu_nb_total(T) != T->e_nb ||
                 aof_tabu_rad_total(T) != T->e_rad)
                 return -1;
         }
@@ -3283,7 +3737,9 @@ static int aof_tabu_run(Arena_T arena, AofTabu *T,
             for (int k = T->kmin[c]; k <= T->span; k++) {
                 if (k == cur) continue;
                 exact_k[0] = (int8_t)k;
-                int64_t d_pairs = aof_tabu_exact_delta(
+                if (aof_tabu_tears_lateral(T, exact_member, exact_k, 1,
+                                           exact_moved)) continue;
+                int64_t d_pairs = aof_tabu_collide_delta(
                     T, exact_member, exact_k, 1, exact_moved);
                 int64_t d_ov = T->Lov * d_pairs;
                 int64_t d_nb = aof_tabu_nb_delta(T, (int32_t)c, k, 0);
@@ -3329,7 +3785,9 @@ static int aof_tabu_run(Arena_T arena, AofTabu *T,
                         T->radE[(size_t)c * nk + (size_t)(T->k[c] + T->span)];
                 }
                 if (!ok) continue;
-                int64_t d_pairs = aof_tabu_exact_delta(
+                if (aof_tabu_tears_lateral(T, exact_member, exact_k, nmember,
+                                           exact_moved)) continue;
+                int64_t d_pairs = aof_tabu_collide_delta(
                     T, exact_member, exact_k, nmember, exact_moved);
                 int64_t d_ov = T->Lov * d_pairs;
                 /* Weld edges never cross a group boundary, but LATERAL
@@ -3411,7 +3869,9 @@ static int aof_tabu_run(Arena_T arena, AofTabu *T,
                         T->radE[(size_t)c * nk + (size_t)(T->k[c] + T->span)];
                 }
                 if (!ok) continue;
-                int64_t d_pairs = aof_tabu_exact_delta(
+                if (aof_tabu_tears_lateral(T, exact_member, exact_k, nmember,
+                                           exact_moved)) continue;
+                int64_t d_pairs = aof_tabu_collide_delta(
                     T, exact_member, exact_k, nmember, exact_moved);
                 int64_t d_ov = T->Lov * d_pairs;
                 int64_t d_nb = 0, d_nb_st = 0;
@@ -3479,7 +3939,9 @@ static int aof_tabu_run(Arena_T arena, AofTabu *T,
                         T->radE[(size_t)c * nk + (size_t)(T->k[c] + T->span)];
                 }
                 if (!ok || !any) continue;
-                int64_t d_pairs = aof_tabu_exact_delta(
+                if (aof_tabu_tears_lateral(T, exact_member, exact_k, nmember,
+                                           exact_moved)) continue;
+                int64_t d_pairs = aof_tabu_collide_delta(
                     T, exact_member, exact_k, nmember, exact_moved);
                 int64_t d_ov = T->Lov * d_pairs;
                 int64_t d_nb = 0, d_nb_st = 0;
@@ -3562,7 +4024,9 @@ static int aof_tabu_run(Arena_T arena, AofTabu *T,
                     }
                 }
                 if (!ok || !any) continue;
-                int64_t d_pairs = aof_tabu_exact_delta(
+                if (aof_tabu_tears_lateral(T, exact_member, exact_k, nmember,
+                                           exact_moved)) continue;
+                int64_t d_pairs = aof_tabu_collide_delta(
                     T, exact_member, exact_k, nmember, exact_moved);
                 int64_t d_ov = T->Lov * d_pairs;
                 int64_t d_nb = 0, d_nb_st = 0;
@@ -4276,6 +4740,11 @@ static int aof_tabu_place(Arena_T arena, const PieceSet *ps,
                          &T, &excluded) != 0)
         return -1;
     stats->tabu_edges_excluded = excluded;
+    if (opts->tabu_mask_png != NULL) {
+        char stem[1024];
+        snprintf(stem, sizeof stem, "%s_before", opts->tabu_mask_png);
+        aof_tabu_dump_mask_png(&T, ps, stem);
+    }
     stats->tabu_ladder_step = T.ladder_step;
     stats->tabu_ladder_u0 = T.ladder_u0;
     stats->tabu_ladder_fixed = T.ladder_fixed;
@@ -4318,16 +4787,53 @@ static int aof_tabu_place(Arena_T arena, const PieceSet *ps,
                      archive_cap, &narchive, stats) != 0)
         return -1;
 
-    size_t verify[AOF_TABU_VERIFY_MAX];
+    size_t verify[AOF_TABU_VERIFY_MAX];   /* after-dump follows the apply */
     size_t nverify = aof_tabu_choose_verify(
         &T, moves, nmoves, archive_k, archive_e, archive_ov, archive_nb,
         archive_rad, narchive, stats->tabu_best_iter, verify);
     stats->tabu_archive_states = narchive;
 
-    /* Independently re-scan the archived states with the production UV index.
-     * The search itself is exact now, so this is both leaderboard attribution
-     * (cross versus intra) and an assertion that its separate AABB/sweep broad
-     * phase never missed a SAT face pair. */
+    /* Pre-rank the leaderboard with the search's own collision model before
+     * paying for full atlas rescans.
+     *
+     * Each verification below rebuilds the production UV index over every face
+     * and rescans it: ~55 s on a 1000-cube grid, and up to 64 candidates is an
+     * hour of work to choose among states the search has already scored.  The
+     * mask engine scores a candidate in O(potential pairs) with memoization,
+     * so rank on that, keep a handful, and spend the exact scan where it earns
+     * its cost -- on the finalists.  Candidate 0 is the round's input and is
+     * always retained, so a round still cannot regress what it was given. */
+    if (nverify > AOF_TABU_VERIFY_SCAN) {
+        int8_t *k_save = (int8_t *)ARENA_ALLOC(arena, ncharts * sizeof(int8_t));
+        memcpy(k_save, T.k, ncharts * sizeof(int8_t));
+        int64_t *score = (int64_t *)ARENA_ALLOC(
+            arena, nverify * sizeof(int64_t));
+        for (size_t V = 0; V < nverify; V++) {
+            memcpy(T.k, &archive_k[verify[V] * ncharts],
+                   ncharts * sizeof(int8_t));
+            score[V] = aof_tabu_exact_total(&T);
+        }
+        memcpy(T.k, k_save, ncharts * sizeof(int8_t));
+        /* selection sort into rank order, candidate 0 pinned at the front */
+        for (size_t i = 1; i < nverify; i++) {
+            size_t best = i;
+            for (size_t j = i + 1; j < nverify; j++)
+                if (score[j] < score[best]) best = j;
+            if (best != i) {
+                int64_t ts = score[i]; score[i] = score[best]; score[best] = ts;
+                size_t tv = verify[i]; verify[i] = verify[best];
+                verify[best] = tv;
+            }
+        }
+        fprintf(stderr,
+                "[overlap_fix]     leaderboard: %zu candidates pre-ranked by "
+                "raster score, scanning %d\n", nverify, AOF_TABU_VERIFY_SCAN);
+        nverify = AOF_TABU_VERIFY_SCAN;
+    }
+
+    /* Independently re-scan the finalists with the production UV index: this
+     * is leaderboard attribution (cross versus intra) and an independent check
+     * on the search's own broad phase. */
     size_t nk = (size_t)T.nk;
     double *try_u = (double *)ARENA_ALLOC(arena, ps->nv * sizeof(double));
     size_t *exact_pairs = (size_t *)ARENA_ALLOC(
@@ -4374,7 +4880,13 @@ static int aof_tabu_place(Arena_T arena, const PieceSet *ps,
         exact_cross[V] = vcount.cross_pairs;
         exact_intra[V] = vcount.intra_pairs;
         exact_pairs[V] = exact_cross[V] + exact_intra[V];
-        if (archive_ov[A] < 0 || (uint64_t)archive_ov[A] != exact_pairs[V])
+        /* The archived value is the SEARCH energy.  It equals the exact face
+         * pair count only when the loop itself was exact; with the raster
+         * occupancy loop it is a cell count in a different currency.  The
+         * leaderboard still ranks candidates by exact_pairs[V] below -- this
+         * check just cannot demand the two agree. */
+        if (archive_ov[A] < 0) return -1;
+        if (T.exact_loop && (uint64_t)archive_ov[A] != exact_pairs[V])
             return -1;
         double sum_abs = 0.0, sum_sq = 0.0, max_abs = 0.0;
         for (size_t e = 0; e < T.first_lateral; e++) {
@@ -4528,6 +5040,11 @@ static int aof_tabu_place(Arena_T arena, const PieceSet *ps,
 
     /* Re-derive the final bookkeeping at the winning assignment. */
     memcpy(T.k, win_k, ncharts);
+    if (opts->tabu_mask_png != NULL) {
+        char stem[1024];
+        snprintf(stem, sizeof stem, "%s_after", opts->tabu_mask_png);
+        aof_tabu_dump_mask_png(&T, ps, stem);
+    }
     T.e_ov = aof_tabu_exact_total(&T);
     T.e_nb = aof_tabu_nb_total(&T);
     T.e_rad = aof_tabu_rad_total(&T);
@@ -5369,6 +5886,9 @@ static int aof_tabu_return_home_selftest(void)
 
     AtlasOverlapFixOptions opts;
     AtlasOverlapFixOptions_default(&opts);
+    /* These fixtures are sub-cell synthetic geometry and assert exact
+     * placement, so they exercise the exact engine explicitly. */
+    opts.tabu_exact_loop = 1;
     opts.tabu = 1;
     opts.wind_correct = 0;       /* isolate the tabu repair */
     opts.tabu_span = 2;
@@ -5479,6 +5999,9 @@ static int aof_rounds_handoff_selftest(void)
 
     AtlasOverlapFixOptions opts;
     AtlasOverlapFixOptions_default(&opts);
+    /* These fixtures are sub-cell synthetic geometry and assert exact
+     * placement, so they exercise the exact engine explicitly. */
+    opts.tabu_exact_loop = 1;
     opts.tabu = 1;
     opts.wind_correct = 0;
     opts.tabu_span = 2;
@@ -5568,6 +6091,9 @@ static int aof_tabu_stay_put_selftest(void)
 
     AtlasOverlapFixOptions opts;
     AtlasOverlapFixOptions_default(&opts);
+    /* These fixtures are sub-cell synthetic geometry and assert exact
+     * placement, so they exercise the exact engine explicitly. */
+    opts.tabu_exact_loop = 1;
     opts.tabu = 1;
     opts.wind_correct = 0;
     opts.tabu_span = 2;
@@ -5652,6 +6178,9 @@ static int aof_tabu_radial_outer_selftest(void)
 
     AtlasOverlapFixOptions opts;
     AtlasOverlapFixOptions_default(&opts);
+    /* These fixtures are sub-cell synthetic geometry and assert exact
+     * placement, so they exercise the exact engine explicitly. */
+    opts.tabu_exact_loop = 1;
     opts.tabu = 1;
     opts.tabu_span = 2;
     opts.tabu_tenure = 5;
@@ -5823,6 +6352,9 @@ static int aof_tabu_audit_selftest(void)
 
     AtlasOverlapFixOptions opts;
     AtlasOverlapFixOptions_default(&opts);
+    /* These fixtures are sub-cell synthetic geometry and assert exact
+     * placement, so they exercise the exact engine explicitly. */
+    opts.tabu_exact_loop = 1;
     opts.tabu = 1;
     opts.tabu_span = 2;
 
@@ -5930,6 +6462,9 @@ static int aof_tabu_tenure_selftest(void)
 
     AtlasOverlapFixOptions opts;
     AtlasOverlapFixOptions_default(&opts);
+    /* These fixtures are sub-cell synthetic geometry and assert exact
+     * placement, so they exercise the exact engine explicitly. */
+    opts.tabu_exact_loop = 1;
     opts.tabu = 1;
     opts.tabu_span = 1;
     opts.tabu_tenure = 3;
@@ -6031,6 +6566,13 @@ static int aof_tabu_graded_selftest(void)
 
     AtlasOverlapFixOptions opts;
     AtlasOverlapFixOptions_default(&opts);
+    /* Graded rewind repairs a COLLAPSED GROUP -- an intra-group
+     * phenomenon -- so this fixture needs the intra-group collision
+     * signal that production deliberately excludes. */
+    opts.tabu_cross_group_only = 0;
+    /* These fixtures are sub-cell synthetic geometry and assert exact
+     * placement, so they exercise the exact engine explicitly. */
+    opts.tabu_exact_loop = 1;
     opts.tabu = 1;
     opts.graded_targets = 1;
     opts.lock_graded = 1;
@@ -6161,6 +6703,9 @@ static int aof_tabu_relayout_selftest(void)
 
     AtlasOverlapFixOptions opts;
     AtlasOverlapFixOptions_default(&opts);
+    /* These fixtures are sub-cell synthetic geometry and assert exact
+     * placement, so they exercise the exact engine explicitly. */
+    opts.tabu_exact_loop = 1;
     opts.tabu = 1;
     opts.wind_correct = 0;
     opts.tabu_span = 2;
@@ -6259,6 +6804,9 @@ static int aof_tabu_lateral_selftest(void)
 
     AtlasOverlapFixOptions opts;
     AtlasOverlapFixOptions_default(&opts);
+    /* These fixtures are sub-cell synthetic geometry and assert exact
+     * placement, so they exercise the exact engine explicitly. */
+    opts.tabu_exact_loop = 1;
     opts.tabu = 1;
     opts.tabu_span = 2;
     opts.tabu_tenure = 5;

@@ -22,8 +22,6 @@ typedef struct {
 
 static const TestEntry tests[] = {
     { "test_common",                test_common_main                },
-    { "qem_test",                   qem_test_main                   },
-    { "qem_pin_test",               qem_pin_test_main               },
     { "mesh_trim_pin_test",         mesh_trim_pin_test_main         },
     { "pipeline_cube_smoke_test",   pipeline_cube_smoke_test_main   },
     { "mls_iter_test",              mls_iter_test_main              },

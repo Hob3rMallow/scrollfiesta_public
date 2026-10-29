@@ -204,7 +204,7 @@ int PredReject_is_garbage(Arena_T arena, const uint8_t *vol,
     Arena_Mark mark = Arena_save(arena);
 
     /* Local binary copy (vol is const; any nonzero -> 1). */
-    uint8_t *bin = (uint8_t *)ARENA_ALLOC(arena, (long)st.n_vox);
+    uint8_t *bin = (uint8_t *)ARENA_ALLOC(arena, (size_t)st.n_vox);
     size_t fg = 0;
     for (size_t i = 0; i < st.n_vox; i++) {
         uint8_t v = (uint8_t)(vol[i] ? 1 : 0);
@@ -224,8 +224,8 @@ int PredReject_is_garbage(Arena_T arena, const uint8_t *vol,
      * forms one component well above the floor). ---- */
     {
         Arena_Mark cc_mark = Arena_save(arena);
-        uint8_t *cc_vis = (uint8_t *)ARENA_ALLOC(arena, (long)st.n_vox);
-        int32_t *cc_stk = (int32_t *)ARENA_ALLOC(arena, (long)(st.n_vox * sizeof(int32_t)));
+        uint8_t *cc_vis = (uint8_t *)ARENA_ALLOC(arena, (size_t)st.n_vox);
+        int32_t *cc_stk = (int32_t *)ARENA_ALLOC(arena, (size_t)(st.n_vox * sizeof(int32_t)));
         st.largest_cc = largest_cc6(bin, D, H, W, cc_vis, cc_stk);
         Arena_restore(arena, cc_mark);
     }
@@ -239,8 +239,8 @@ int PredReject_is_garbage(Arena_T arena, const uint8_t *vol,
     }
 
     /* ---- Signal 1: 3D erosion-survival (thickness). ---- */
-    uint8_t *cur = (uint8_t *)ARENA_ALLOC(arena, (long)st.n_vox);
-    uint8_t *nxt = (uint8_t *)ARENA_ALLOC(arena, (long)st.n_vox);
+    uint8_t *cur = (uint8_t *)ARENA_ALLOC(arena, (size_t)st.n_vox);
+    uint8_t *nxt = (uint8_t *)ARENA_ALLOC(arena, (size_t)st.n_vox);
     memcpy(cur, bin, st.n_vox);
     size_t cur_count = fg;
     st.max_thickness = 1;            /* depth 1 = "is foreground" */
@@ -259,9 +259,9 @@ int PredReject_is_garbage(Arena_T arena, const uint8_t *vol,
     size_t max_slice = (size_t)H * (size_t)W;
     if ((size_t)D * (size_t)W > max_slice) max_slice = (size_t)D * (size_t)W;
     if ((size_t)D * (size_t)H > max_slice) max_slice = (size_t)D * (size_t)H;
-    uint8_t *slc     = (uint8_t *)ARENA_ALLOC(arena, (long)max_slice);
-    uint8_t *visited = (uint8_t *)ARENA_ALLOC(arena, (long)max_slice);
-    int32_t *stack   = (int32_t *)ARENA_ALLOC(arena, (long)(max_slice * sizeof(int32_t)));
+    uint8_t *slc     = (uint8_t *)ARENA_ALLOC(arena, (size_t)max_slice);
+    uint8_t *visited = (uint8_t *)ARENA_ALLOC(arena, (size_t)max_slice);
+    int32_t *stack   = (int32_t *)ARENA_ALLOC(arena, (size_t)(max_slice * sizeof(int32_t)));
 
     int any_rect_pass = 0;
     st.rect_axis = 0;

@@ -27,7 +27,7 @@ int MeshTopo_analyze(Arena_T arena, const float *verts, size_t nv,
 
     /* Pack undirected edges as sortable keys lo*nv + hi (lo<hi<nv). */
     size_t ne3 = nf * 3;
-    uint64_t *keys = (uint64_t *)ARENA_ALLOC(arena, (long)(ne3 * sizeof(uint64_t)));
+    uint64_t *keys = (uint64_t *)ARENA_ALLOC(arena, (size_t)(ne3 * sizeof(uint64_t)));
     size_t kk = 0;
     for (size_t t = 0; t < nf; t++) {
         int32_t v[3] = { faces[t*3+0], faces[t*3+1], faces[t*3+2] };
@@ -42,7 +42,7 @@ int MeshTopo_analyze(Arena_T arena, const float *verts, size_t nv,
     qsort(keys, kk, sizeof(uint64_t), cmp_u64);
 
     UnionFind uf = UF_new(arena, (int32_t)nv);   /* boundary graph */
-    char *isb = (char *)ARENA_CALLOC(arena, (long)nv, 1L);
+    char *isb = (char *)ARENA_CALLOC(arena, (size_t)nv, 1L);
 
     long nedges = 0, nbe = 0, nman = 0, nnm = 0;
     size_t i = 0;
@@ -68,7 +68,7 @@ int MeshTopo_analyze(Arena_T arena, const float *verts, size_t nv,
 
     /* Boundary loops = connected components of the boundary graph. */
     long nloops = 0;
-    char *seen = (char *)ARENA_CALLOC(arena, (long)nv, 1L);
+    char *seen = (char *)ARENA_CALLOC(arena, (size_t)nv, 1L);
     for (size_t v = 0; v < nv; v++) {
         if (!isb[v]) continue;
         int32_t r = uf_find(&uf, (int32_t)v);
@@ -76,7 +76,7 @@ int MeshTopo_analyze(Arena_T arena, const float *verts, size_t nv,
     }
 
     /* Unreferenced vertices. */
-    char *used = (char *)ARENA_CALLOC(arena, (long)nv, 1L);
+    char *used = (char *)ARENA_CALLOC(arena, (size_t)nv, 1L);
     for (size_t t = 0; t < nf; t++)
         for (int e = 0; e < 3; e++) {
             int32_t a = faces[t*3+e];
@@ -110,7 +110,7 @@ static void build_grid(Arena_T arena, int nu, int nh, int wrap,
     size_t nvv = (size_t)nu * (size_t)nh;
     int ucols = wrap ? nu : nu - 1;
     size_t nff = (size_t)ucols * (size_t)(nh - 1) * 2;
-    int32_t *f = (int32_t *)ARENA_ALLOC(arena, (long)(nff * 3 * sizeof(int32_t)));
+    int32_t *f = (int32_t *)ARENA_ALLOC(arena, (size_t)(nff * 3 * sizeof(int32_t)));
     size_t fi = 0;
     for (int j = 0; j < nh - 1; j++) {
         for (int i = 0; i < ucols; i++) {

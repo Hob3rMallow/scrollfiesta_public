@@ -64,7 +64,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(SolutionDir)deps\lib\win64\Debug;$(SolutionDir)deps\lib\win64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>Clipper2.lib;Clipper2Z.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Clipper2.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -87,13 +87,14 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(SolutionDir)deps\lib\win64\Release;$(SolutionDir)deps\lib\win64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>Clipper2.lib;Clipper2Z.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Clipper2.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="scripts\holefill\holefill_interior_test.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\holefill\hole_fill.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\remesh\pinhole_fill.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\arena.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\obj_io.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\except.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
@@ -109,8 +110,7 @@
       <PreprocessorDefinitions>TRILIBRARY;ANSI_DECLARATORS;NO_TIMER;REAL=double;VOID=int;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <WarningLevel>Level1</WarningLevel>
     </ClCompile>
-      <ClCompile Include="src\common\run_ctx.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
-</ItemGroup>
+  </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\holefill\hole_fill.h" />
     <ClInclude Include="src\common\arena.h" />

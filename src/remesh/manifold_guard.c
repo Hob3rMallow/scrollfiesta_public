@@ -40,12 +40,12 @@ static void resolve_nm_edges(Arena_T arena, ComponentMesh *cm,
     int32_t *F = cm->faces;
     const float *V = cm->verts;
 
-    double *area = (double *)ARENA_ALLOC(arena, (size_t)(nf * sizeof(double)));
+    double *area = (double *)ARENA_ALLOC(arena, (nf * sizeof(double)));
     for (size_t f = 0; f < nf; f++)
         area[f] = tri_area(V, F[f*3+0], F[f*3+1], F[f*3+2]);
 
     size_t hn = nf * 3;
-    HEF *he = (HEF *)ARENA_ALLOC(arena, (size_t)(hn * sizeof(HEF)));
+    HEF *he = (HEF *)ARENA_ALLOC(arena, (hn * sizeof(HEF)));
     size_t k = 0;
     for (size_t f = 0; f < nf; f++) {
         int32_t v[3] = { F[f*3+0], F[f*3+1], F[f*3+2] };
@@ -59,7 +59,7 @@ static void resolve_nm_edges(Arena_T arena, ComponentMesh *cm,
     }
     qsort(he, hn, sizeof(HEF), cmp_hef);
 
-    uint8_t *mark = (uint8_t *)ARENA_CALLOC(arena, (size_t)nf, (size_t)sizeof(uint8_t));
+    uint8_t *mark = (uint8_t *)ARENA_CALLOC(arena, nf, sizeof(uint8_t));
     size_t i = 0, nm = 0;
     while (i < hn) {
         size_t j = i + 1;
@@ -95,8 +95,10 @@ static void resolve_nm_edges(Arena_T arena, ComponentMesh *cm,
     if (io_del) *io_del += del;
 }
 
-int ManifoldGuard_process(Arena_T arena, ComponentMesh *meshes, size_t n_meshes,
-                          int reorient, ManifoldGuardStats *out) {
+int ManifoldGuard_process_ex(Arena_T arena,
+                             ComponentMesh *meshes, size_t n_meshes,
+                             int reorient, int allow_vertex_splits,
+                             ManifoldGuardStats *out) {
     ManifoldGuardStats st;
     memset(&st, 0, sizeof st);
 
@@ -106,7 +108,8 @@ int ManifoldGuard_process(Arena_T arena, ComponentMesh *meshes, size_t n_meshes,
         resolve_nm_edges(arena, &meshes[i], &st.nm_edges_resolved, &st.faces_deleted);
     }
     /* 2. vertex-manifold (split bowties), now that input is edge-manifold */
-    PinholeFill_split_pinches(arena, meshes, n_meshes, &st.pinch_splits);
+    if (allow_vertex_splits)
+        PinholeFill_split_pinches(arena, meshes, n_meshes, &st.pinch_splits);
     /* 3. re-assert consistent winding (caller's choice -- resolve+split above
      * preserve winding, so a caller that already oriented can skip this). */
     if (reorient) {
@@ -123,14 +126,20 @@ int ManifoldGuard_process(Arena_T arena, ComponentMesh *meshes, size_t n_meshes,
     return 0;
 }
 
+int ManifoldGuard_process(Arena_T arena, ComponentMesh *meshes, size_t n_meshes,
+                          int reorient, ManifoldGuardStats *out) {
+    return ManifoldGuard_process_ex(arena, meshes, n_meshes,
+                                    reorient, 1, out);
+}
+
 /* ---- selftest ---- */
 static ComponentMesh mk_mesh(Arena_T a, const float *V, size_t nv,
                              const int32_t *Fin, size_t nf) {
     ComponentMesh cm;
     memset(&cm, 0, sizeof cm);
-    cm.verts = (float *)ARENA_ALLOC(a, (size_t)(nv * 3 * sizeof(float)));
+    cm.verts = (float *)ARENA_ALLOC(a, (nv * 3 * sizeof(float)));
     memcpy(cm.verts, V, nv * 3 * sizeof(float));
-    cm.faces = (int32_t *)ARENA_ALLOC(a, (size_t)(nf * 3 * sizeof(int32_t)));
+    cm.faces = (int32_t *)ARENA_ALLOC(a, (nf * 3 * sizeof(int32_t)));
     memcpy(cm.faces, Fin, nf * 3 * sizeof(int32_t));
     cm.nv = nv; cm.nf = nf; cm.comp_id = 1;
     return cm;

@@ -142,6 +142,41 @@ typedef struct {
     int    tabu_max_iters;       /* hard iteration cap (2000) */
     int    tabu_stall;           /* stop after this many non-improving (300) */
     double tabu_cell;            /* collision-proxy cell size, vox (4) */
+    double tabu_mask_cell;       /* raster occupancy cell, vox (1).  This is
+                                  * the resolution the SEARCH sees collisions
+                                  * at, and it should track the deliverable
+                                  * raster (obj_bake_raw runs du=2 dv=1), not
+                                  * the coarser tabu_cell hash used for the
+                                  * happiness diagnostics. */
+    const char *tabu_mask_png;   /* if set, write <path>_occupancy.png and
+                                  * <path>_provenance.png from the raster
+                                  * occupancy the search actually uses.  Look
+                                  * at these; do not trust word counts. */
+    int    tabu_no_tear_lateral;  /* 1: a move that breaks a currently-satisfied
+                                  * LATERAL pair is inadmissible, not merely
+                                  * expensive.  Laterals encode "same sheet,
+                                  * side by side"; the ribbon fit then refuses
+                                  * the junction (RIB_MERGE_DU_MAX = 8 vox) and
+                                  * DISCARDS the material, so a torn lateral
+                                  * costs recovered surface, not just tidiness.
+                                  * Weighting does not work: lateral_w 8 -> 64
+                                  * left the tear count unchanged at ~1,090. */
+    int    tabu_cross_group_only; /* 1 (default): the collision term counts only
+                                  * pairs in DIFFERENT welded groups.
+                                  * Intra-group overlap is a local
+                                  * parameterization fold, not a wrong-turn
+                                  * error -- a winding depth cannot legitimately
+                                  * change the relative placement of two charts
+                                  * that are welded together, so counting it
+                                  * only pays the search to tear the weld. */
+    int    tabu_exact_loop;      /* 1: exact triangle SAT in the move sweep.
+                                  * The shipped search uses raster occupancy --
+                                  * the winding solve is a SEED for the ribbon
+                                  * fit and quad ribbon, which optimize further,
+                                  * so sub-cell overlap is acceptable and the
+                                  * exact test is ~3 orders of magnitude of
+                                  * over-precision.  Set only by fixtures that
+                                  * assert exact placement, or AOF_TABU_EXACT_LOOP=1. */
     int    tabu_ladder_override; /* reuse one global field-ladder calibration
                                   * across independently solved atlas tiles */
     double tabu_ladder_step;     /* signed du / (2*pi*r) per outward wind */

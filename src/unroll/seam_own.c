@@ -608,7 +608,6 @@ int SeamOwn_run(Arena_T arena, PieceSet *ps,
                 int32_t fa = clist[i], fb = clist[j];
                 double dr = fabs((double)rf[fa] - (double)rf[fb]);
                 if (ps->face_cube[fa] == ps->face_cube[fb]) {
-                    if (dr <= gate) continue;   /* one sheet: self-gates */
                     /* adjacency exemption (fold hinge line) */
                     int32_t lo = fa < fb ? fa : fb, hi = fa < fb ? fb : fa;
                     uint64_t key = ((uint64_t)(uint32_t)lo << 32)
@@ -620,6 +619,21 @@ int SeamOwn_run(Arena_T arena, PieceSet *ps,
                         else his = m;
                     }
                     if (los < nadj && akeys[los] == key) continue;
+                    /* Radius alone misses tangential folds: two non-adjacent
+                     * faces can have nearly equal radius yet be far apart in
+                     * 3D and collide in UV.  Near pairs are ordinary same-
+                     * sheet raster overlap; far pairs are true layer
+                     * conflicts and enter the same ownership graph. */
+                    if (dr <= gate) {
+                        double d2 = 0.0;
+                        for (int d = 0; d < 3; d++) {
+                            double dd = (double)fc3[fa * 3 + d]
+                                      - (double)fc3[fb * 3 + d];
+                            d2 += dd * dd;
+                        }
+                        if (d2 <= gate3d2) continue;
+                        out->n_mystery_pairs++; /* promoted tangential fold */
+                    }
                     so_pl_push(&tp, fa, fb);
                     is_true[fa] = 1;
                     is_true[fb] = 1;
@@ -659,7 +673,15 @@ int SeamOwn_run(Arena_T arena, PieceSet *ps,
                             is_seam[fb] = 1;
                             cell_multi = 1;
                         } else {
+                            /* Far cross-cube overlap is not a stitch: promote
+                             * it to a true conflict instead of leaving an
+                             * unresolved "mystery" that survives into the
+                             * tifxyz atlas. */
                             out->n_mystery_pairs++;
+                            so_pl_push(&tp, fa, fb);
+                            is_true[fa] = 1;
+                            is_true[fb] = 1;
+                            cell_multi = 1;
                         }
                     }
                 }
@@ -1506,7 +1528,6 @@ int SeamOwn_run(Arena_T arena, PieceSet *ps,
                 if (!out->face_keep[fb]) continue;
                 double dr = fabs((double)rf[fa] - (double)rf[fb]);
                 if (ps->face_cube[fa] == ps->face_cube[fb]) {
-                    if (dr <= gate) continue;
                     /* mirror the before-count's adjacency exemption */
                     int32_t lo = fa < fb ? fa : fb, hi = fa < fb ? fb : fa;
                     uint64_t key = ((uint64_t)(uint32_t)lo << 32)
@@ -1518,6 +1539,15 @@ int SeamOwn_run(Arena_T arena, PieceSet *ps,
                         else his = m;
                     }
                     if (los < nadj && akeys[los] == key) continue;
+                    if (dr <= gate) {
+                        double d2 = 0.0;
+                        for (int d = 0; d < 3; d++) {
+                            double dd = (double)fc3[fa * 3 + d]
+                                      - (double)fc3[fb * 3 + d];
+                            d2 += dd * dd;
+                        }
+                        if (d2 <= gate3d2) continue;
+                    }
                     hm = 1;
                     break;
                 } else {
@@ -1536,13 +1566,11 @@ int SeamOwn_run(Arena_T arena, PieceSet *ps,
                         hm = 1;
                         break;
                     }
-                    double d2 = 0.0;
-                    for (int d = 0; d < 3; d++) {
-                        double dd = (double)fc3[fa * 3 + d]
-                                  - (double)fc3[fb * 3 + d];
-                        d2 += dd * dd;
-                    }
-                    if (d2 <= gate3d2) { hm = 1; break; }
+                    /* near = seam double-paint, far = promoted true overlap;
+                     * either is a multi-cover cell until ownership removes
+                     * one side. */
+                    hm = 1;
+                    break;
                 }
             }
         }
@@ -1556,7 +1584,7 @@ int SeamOwn_run(Arena_T arena, PieceSet *ps,
                 "layers=%zu max=%zu picks v/e/l=%zu/%zu/%zu mc=%zu "
                 "skip cap/grid=%zu/%zu | kept=%zu dropped=%zu | seams=%zu "
                 "abut=%zu skip=%zu drop=%zu restore=%zu | cells %zu->%zu "
-                "E=%.2f tex=%d gate=%.2f\n",
+                "E=%.2f tex=%d gate=%.2f cell=%.2f\n",
                 out->n_true_pairs, out->n_seam_pairs, out->n_mystery_pairs,
                 out->n_regions, out->n_layers_total, out->max_region_faces,
                 out->n_vote_picks, out->n_energy_picks, out->n_largest_picks,
@@ -1565,7 +1593,8 @@ int SeamOwn_run(Arena_T arena, PieceSet *ps,
                 out->n_seam_regions, out->n_seams_abut_only,
                 out->n_seams_skipped, out->n_seam_dropped,
                 out->n_seam_restored, out->multi_cells_before,
-                out->multi_cells_after, out->energy_mean, have_ct, gate);
+                out->multi_cells_after, out->energy_mean, have_ct, gate,
+                cell);
     }
 
     free(rf); free(fu); free(fv); free(fc3);
@@ -1862,6 +1891,30 @@ int SeamOwn_selftest(void)
         fprintf(stderr, "[seam_own selftest] t4 fold: pairs=%zu mc=%zu "
                 "layers=%zu dropped=%zu\n", r.n_true_pairs,
                 r.n_multicut_fallbacks, r.n_layers_total, r.n_dropped);
+    }
+
+    /* t4b: tangential intra-cube fold -- two vertex-disjoint slabs at y=+20
+     * and y=-20 have identical radius and identical UV, but are 40 voxels
+     * apart in 3D.  Radius-only ownership used to self-gate this exact defect;
+     * the far-centroid rule must promote and resolve it. */
+    {
+        size_t nv = 0, nf = 0;
+        st_grid(20.0f, 0.0f, 0.0f, GN, 0, verts, uv, gid, faces, face_cube,
+                &nv, &nf);
+        st_grid(-20.0f, 0.0f, 0.0f, GN, 0, verts, uv, gid, faces, face_cube,
+                &nv, &nf);
+        cube_voff[1] = nv;
+        PieceSet ps;
+        st_wire(&ps, verts, uv, normals, gid, faces, face_cube, nv, nf,
+                cube_voff, org, 1);
+        SeamOwnResult r;
+        int rc = SeamOwn_run(arena, &ps, &o, &r);
+        so_check(rc == 0, "t4b rc", &fails);
+        so_check(r.n_mystery_pairs > 0 && r.n_true_pairs > 0,
+                 "t4b equal-radius far pair promoted", &fails);
+        so_check(r.n_dropped > 0, "t4b one tangential ply dropped", &fails);
+        so_check(r.multi_cells_after < r.multi_cells_before,
+                 "t4b tangential multi cells drop", &fails);
     }
 
     /* t5: no RAW -- t2 geometry, raw_dir NULL: vote still resolves, seam DP

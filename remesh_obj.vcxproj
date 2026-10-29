@@ -99,8 +99,7 @@
     <ClCompile Include="src\common\csr.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\mls_project.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\ves_platform.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
-      <ClCompile Include="src\common\run_ctx.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
-</ItemGroup>
+  </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\remesh\isotropic_remesh.h" />
     <ClInclude Include="src\common\arena.h" />

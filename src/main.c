@@ -2,10 +2,10 @@
  * main.c -- Vesuvius C Pipeline per-cube driver.
  *
  * Two input modes:
- *   1) TIFF:       ./cube_mesh input.tif output.tif [--dump-obj dir] [--no-qem]
+ *   1) TIFF:       ./cube_mesh input.tif output.tif [--dump-obj dir] [--no-simplify]
  *                                                    [--no-timeout] [--halo N]
  *   2) stdin-raw:  ./cube_mesh --stdin-raw <p_size> <oz> <oy> <ox>
- *                              --dump-obj dir [--halo N] [--no-qem] [--no-timeout]
+ *                              --dump-obj dir [--halo N] [--no-simplify] [--no-timeout]
  *      Reads p_size^3 uint8 bytes (C order z,y,x) from stdin -- a padded cube
  *      whose index (0,0,0) is world voxel (oz-halo, oy-halo, ox-halo), exactly
  *      like HaloLoader_load. Lets a caller stream a cube straight from a remote
@@ -19,7 +19,7 @@
  *
  * --dump-obj dir:  write OBJ meshes under dir/<cube_id>/<cube_id>_<stage>/
  * --halo N:        load N voxels of safety boundary from neighbor cubes
- * --no-qem:        skip per-component decimation (raw MC+LOP only)
+ * --no-simplify:   skip CVT remeshing (dense MC+LOP diagnostic)
  * --no-timeout:    disable the hard wall-clock timeout
  *
  * output.tif (TIFF mode) is a positional placeholder; this binary emits OBJs only.
@@ -36,7 +36,12 @@
 #include "common/dump_obj.h"
 #include "common/mls_project.h"
 #include "pipeline/pipeline_cube.h"
+#include "remesh/ball_pivot.h"
+#include "whole/axis_warp.h"
 
+#ifdef _OPENMP
+#include "common/ves_omp.h"
+#endif
 
 #define HARD_TIMEOUT_SEC   1e9     /* effectively infinite */
 
@@ -53,32 +58,62 @@ static int get_thread_count(void)
     return (n > 0) ? n : 2;
 }
 
+static void set_env_double(const char *name, double value)
+{
+    char text[64];
+    snprintf(text, sizeof(text), "%.12g", value);
+#ifdef _WIN32
+    _putenv_s(name, text);
+#else
+    setenv(name, text, 1);
+#endif
+}
+
 static void usage(const char *argv0)
 {
     fprintf(stderr,
         "Usage: %s input.tif output.tif [--dump-obj dir] [--dump-final-only] "
-        "[--no-qem] [--simplify qem|cvt] [--no-timeout] [--halo N] [--trim-inset F]\n"
+        "[--no-simplify] [--cvt-ratio F] [--cull-oracle-tangles] [--no-timeout] [--halo N] [--trim-inset F] "
+        "[--grow-umb-y F --grow-umb-x F] [--grow-axis-table FILE]\n"
         "   or: %s --stdin-raw <p_size> <oz> <oy> <ox> --dump-obj dir "
-        "[--dump-final-only] [--halo N] [--trim-inset F] [--no-qem] "
-        "[--simplify qem|cvt] [--no-timeout]\n",
-        argv0, argv0);
+        "[--dump-final-only] [--halo N] [--trim-inset F] [--no-simplify] "
+        "[--cvt-ratio F] [--no-timeout]\n"
+        "   or: %s --selftest\n",
+        argv0, argv0, argv0);
 }
 
 int main(int argc, char *argv[])
 {
+    if (argc >= 2 && strcmp(argv[1], "--selftest") == 0) return pipeline_selftest();
+
     int stdin_raw = (argc >= 2 && strcmp(argv[1], "--stdin-raw") == 0);
 
     const char *input_path  = NULL;
     const char *output_path = NULL;
     const char *dump_dir    = NULL;
-    int skip_qem    = 0;
-    int simplify_engine = 1;    /* 1 = CVT/RVD (default), 0 = QEM (--simplify qem) */
+    int skip_simplify = 0;
     int dump_final_only = 0;
+    int cull_oracle_tangles = 0;
     int no_timeout  = 0;
     int halo_voxels = 0;
-    float trim_inset = -1.0f;   /* < 0 = BPA_OWNED_TRIM_INSET default */
+    float cvt_target_ratio = 0.0f; /* 0 = pitch-aware scroll default */
+    float trim_inset = -1000.0f; /* <= -999 = BPA_OWNED_TRIM_INSET default.
+                                  * NEGATIVE values are the OVERLAP PILE
+                                  * (2026-09-01): the owned box EXPANDS into
+                                  * the halo by |inset| vox, so adjacent
+                                  * cubes' meshes share a ring of
+                                  * halo-converged geometry -- the exact
+                                  * co-location evidence the winding
+                                  * register needs to chain the pile
+                                  * without any weld. */
+    double grow_umb_y = 0.0, grow_umb_x = 0.0;
+    int have_grow_umb_y = 0, have_grow_umb_x = 0;
+    const char *grow_axis_table_path = NULL;
+    AxisWarp grow_axis;
     int p_size = 0, oz = 0, oy = 0, ox = 0;
     int opt_start = 0;
+
+    AxisWarp_init(&grow_axis);
 
     if (stdin_raw) {
         if (argc < 6) { usage(argv[0]); return 1; }
@@ -95,15 +130,14 @@ int main(int argc, char *argv[])
     for (int i = opt_start; i < argc; i++) {
         if (strcmp(argv[i], "--dump-obj") == 0 && i + 1 < argc) {
             dump_dir = argv[++i];
-        } else if (strcmp(argv[i], "--no-qem") == 0) {
-            skip_qem = 1;
-        } else if (strcmp(argv[i], "--qem") == 0) {
-            skip_qem = 0;
-        } else if (strcmp(argv[i], "--simplify") == 0 && i + 1 < argc) {
-            const char *e = argv[++i];
-            if      (strcmp(e, "cvt") == 0) simplify_engine = 1;
-            else if (strcmp(e, "qem") == 0) simplify_engine = 0;
-            else { fprintf(stderr, "ERROR: --simplify must be qem|cvt\n"); return 1; }
+        } else if (strcmp(argv[i], "--no-simplify") == 0) {
+            skip_simplify = 1;
+        } else if (strcmp(argv[i], "--cvt-ratio") == 0 && i + 1 < argc) {
+            cvt_target_ratio = (float)atof(argv[++i]);
+            if (!(cvt_target_ratio > 0.0f && cvt_target_ratio <= 1.0f)) {
+                fprintf(stderr, "ERROR: --cvt-ratio must be in (0, 1]\n");
+                return 1;
+            }
         } else if (strcmp(argv[i], "--dump-final-only") == 0) {
             /* Write only step12_final (the grid_weld input); skip the
              * intermediate stage dumps. Fleet default via grid_pipeline —
@@ -111,6 +145,8 @@ int main(int argc, char *argv[])
              * concurrent grid runs. Re-run one cube without this flag to
              * regenerate its stage dumps for seam debugging. */
             dump_final_only = 1;
+        } else if (strcmp(argv[i], "--cull-oracle-tangles") == 0) {
+            cull_oracle_tangles = 1;
         } else if (strcmp(argv[i], "--no-timeout") == 0) {
             no_timeout = 1;
         } else if (strcmp(argv[i], "--halo") == 0 && i + 1 < argc) {
@@ -121,14 +157,51 @@ int main(int argc, char *argv[])
             }
         } else if (strcmp(argv[i], "--trim-inset") == 0 && i + 1 < argc) {
             trim_inset = (float)atof(argv[++i]);
-            if (trim_inset < 0.0f || trim_inset > 8.0f) {
-                fprintf(stderr, "ERROR: --trim-inset must be in [0, 8]\n");
+            if (trim_inset < -12.0f || trim_inset > 8.0f) {
+                fprintf(stderr, "ERROR: --trim-inset must be in [-12, 8] "
+                                "(negative = overlap ring)\n");
                 return 1;
             }
+        } else if (strcmp(argv[i], "--grow-umb-y") == 0 && i + 1 < argc) {
+            grow_umb_y = atof(argv[++i]);
+            have_grow_umb_y = 1;
+        } else if (strcmp(argv[i], "--grow-umb-x") == 0 && i + 1 < argc) {
+            grow_umb_x = atof(argv[++i]);
+            have_grow_umb_x = 1;
+        } else if (strcmp(argv[i], "--grow-axis-table") == 0 && i + 1 < argc) {
+            grow_axis_table_path = argv[++i];
         } else {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);
             return 1;
         }
+    }
+
+    if (have_grow_umb_y != have_grow_umb_x) {
+        fprintf(stderr,
+                "ERROR: --grow-umb-y and --grow-umb-x must be supplied together\n");
+        return 1;
+    }
+    if (have_grow_umb_y) {
+        /* Per-child command-line values override inherited static values. This
+         * lets grid_pipeline assign a z-dependent umbilicus without mutating
+         * the parent environment from concurrent spawn threads. */
+        set_env_double("BPA_GROW_UMBILICUS_Y", grow_umb_y);
+        set_env_double("BPA_GROW_UMBILICUS_X", grow_umb_x);
+        fprintf(stderr, "  per-cube growth umbilicus: (y%.3f,x%.3f)\n",
+                grow_umb_y, grow_umb_x);
+    }
+    if (grow_axis_table_path) {
+        if (AxisWarp_load_csv(&grow_axis, grow_axis_table_path) != 0) {
+            fprintf(stderr, "ERROR: cannot load --grow-axis-table %s\n",
+                    grow_axis_table_path);
+            return 1;
+        }
+        BpaReconGate_set_axis_samples(grow_axis.z, grow_axis.y,
+                                      grow_axis.x, grow_axis.n);
+        fprintf(stderr,
+                "  curved growth umbilicus: %s (%zu samples, z %.1f..%.1f)\n",
+                grow_axis_table_path, grow_axis.n, grow_axis.z[0],
+                grow_axis.z[grow_axis.n - 1]);
     }
 
     if (stdin_raw) {
@@ -186,7 +259,7 @@ int main(int argc, char *argv[])
      * budget as everything else: VESUVIUS_THREADS. grid orchestrators pass
      * threads-per-cube (usually 1 -- the fleet fills the cores); a bare
      * single-cube run gets the whole machine. */
-    ves_omp_set_threads(n_threads);
+    omp_set_num_threads(n_threads);
 #endif
 
     char cube_id[128] = {0};
@@ -221,13 +294,6 @@ int main(int argc, char *argv[])
                 MLS_cubecl_last_error());
         return 5;
     }
-#ifdef VESUVIUS_MLS_CUBECL
-    {
-        const char *backend = getenv("MLS_BACKEND");
-        fprintf(stderr, "cube_mesh: CubeCL MLS preflight OK (backend=%s)\n",
-                (backend && backend[0]) ? backend : "auto");
-    }
-#endif
 
     double t_total = ves_clock_sec();
     double hard_timeout = no_timeout ? 1e9 : HARD_TIMEOUT_SEC;
@@ -242,7 +308,7 @@ int main(int argc, char *argv[])
         int input_ok = 1;
         if (stdin_raw) {
             size_t n = (size_t)p_size * (size_t)p_size * (size_t)p_size;
-            raw_buf = (uint8_t *)ARENA_CALLOC(arena, (long)n, 1L);
+            raw_buf = (uint8_t *)ARENA_CALLOC(arena, (size_t)n, 1L);
             size_t got = 0, r = 0;
             while (got < n && (r = fread(raw_buf + got, 1, n - got, stdin)) > 0)
                 got += r;
@@ -262,12 +328,12 @@ int main(int argc, char *argv[])
                 .cube_H           = 128,
                 .cube_W           = 128,
                 .n_threads        = n_threads,
-                .qem_target_ratio = 0.0f,  /* use default */
+                .cvt_target_ratio = cvt_target_ratio,
                 .trim_inset       = trim_inset,
                 .dump_dir         = dump_dir,
-                .skip_qem         = skip_qem,
-                .simplify_engine  = simplify_engine,
+                .skip_simplify    = skip_simplify,
                 .dump_final_only  = dump_final_only,
+                .cull_oracle_tangles = cull_oracle_tangles,
                 .vol_in           = raw_buf,
                 .p_size_in        = stdin_raw ? p_size : 0,
                 .cube_origin_zyx  = { oz, oy, ox },
@@ -289,11 +355,15 @@ int main(int argc, char *argv[])
 
     double total_time = ves_clock_sec() - t_total;
     fprintf(stderr,
-        "  Timings: extract=%.3f qem=%.3f trim=%.3f dump=%.3f total=%.3fs"
+        "  Timings: extract=%.3f cvt=%.3f trim=%.3f dump=%.3f total=%.3fs"
         "  Status: %s\n",
-        out.t_extract, out.t_qem, out.t_trim, out.t_dump, total_time,
+        out.t_extract, out.t_cvt, out.t_trim, out.t_dump, total_time,
         pipeline_ok ? "OK" : "FAILED");
 
     Arena_dispose(&arena);
-    return pipeline_ok ? 0 : 1;
+    BpaReconGate_clear_axis_samples();
+    AxisWarp_dispose(&grow_axis);
+    /* Outputs are written and closed: leave without process teardown (see
+     * ves_fast_exit -- a rare exit-time deadlock stalled a grid band). */
+    ves_fast_exit(pipeline_ok ? 0 : 1);
 }

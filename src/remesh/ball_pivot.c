@@ -12,7 +12,7 @@
  */
 #define _USE_MATH_DEFINES
 #include "ball_pivot.h"
-#include "../common/run_ctx.h"
+#include "../common/pitch_table.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -157,7 +157,24 @@ static double g_wind_tol   = 0.0;   /* tolerance in TURNS (0 = off) */
 static double g_wind_hard  = 0.0;   /* unconditional cap in TURNS (0 = off) */
 static double g_wrap_pitch = 0.0;   /* radius per turn (wrap spacing, vox) */
 static double g_umb_y = 0.0, g_umb_x = 0.0;
+static const double *g_axis_z = NULL, *g_axis_y = NULL, *g_axis_x = NULL;
+static size_t g_axis_n = 0;
 static long   g_dbg_wind = 0;
+
+/* Borrowed process-wide curve used by the per-cube reconstruction path.  It is
+ * intentionally distinct from the bridge globals above: cube_mesh configures
+ * this once before any pipeline work, while BallPivot_bridge scopes its own
+ * gate to one weld call. */
+static const double *g_recon_axis_z = NULL;
+static const double *g_recon_axis_y = NULL;
+static const double *g_recon_axis_x = NULL;
+static size_t g_recon_axis_n = 0;
+
+static int bpa_double_cmp(const void *aa, const void *bb)
+{
+    double a = *(const double *)aa, b = *(const double *)bb;
+    return a < b ? -1 : a > b ? 1 : 0;
+}
 /* Relax the Bernardini case-2 vertex-manifold guard in per-cube growth: allow a
  * pivot onto an on-front vertex even when the new triangle glues to neither of
  * its incident edges. This is the legal BPA "join" that splits the front into two
@@ -174,6 +191,109 @@ static long   g_dbg_wind = 0;
 static int    g_relax_case2 = 1;
 
 typedef struct { float z, y, x; } Vec3;
+
+static void bpa_axis_curve_eval(const double *az, const double *ay,
+                                const double *ax, size_t n, double z,
+                                double fallback_y, double fallback_x,
+                                double *out_y, double *out_x)
+{
+    if (az == NULL || ay == NULL || ax == NULL || n < 2) {
+        *out_y = fallback_y;
+        *out_x = fallback_x;
+        return;
+    }
+    size_t lo = 0, hi = 1;
+    if (z <= az[0]) {
+        lo = 0; hi = 1;
+    } else if (z >= az[n-1]) {
+        lo = n - 2; hi = n - 1;
+    } else {
+        size_t left = 0, right = n - 1;
+        while (right - left > 1) {
+            size_t mid = left + (right - left) / 2;
+            if (az[mid] <= z) left = mid;
+            else right = mid;
+        }
+        lo = left; hi = right;
+    }
+    double dz = az[hi] - az[lo];
+    if (!(dz > 0.0) || !isfinite(dz)) {
+        *out_y = fallback_y;
+        *out_x = fallback_x;
+        return;
+    }
+    double t = (z - az[lo]) / dz;
+    *out_y = ay[lo] + t * (ay[hi] - ay[lo]);
+    *out_x = ax[lo] + t * (ax[hi] - ax[lo]);
+}
+
+void BpaReconGate_set_axis_samples(const double *z, const double *y,
+                                   const double *x, size_t n)
+{
+    if (z == NULL || y == NULL || x == NULL || n < 2) {
+        BpaReconGate_clear_axis_samples();
+        return;
+    }
+    g_recon_axis_z = z;
+    g_recon_axis_y = y;
+    g_recon_axis_x = x;
+    g_recon_axis_n = n;
+}
+
+void BpaReconGate_clear_axis_samples(void)
+{
+    g_recon_axis_z = g_recon_axis_y = g_recon_axis_x = NULL;
+    g_recon_axis_n = 0;
+}
+
+void BpaReconGate_attach_axis(BpaReconGate *gate)
+{
+    if (gate == NULL) return;
+    gate->axis_z = g_recon_axis_z;
+    gate->axis_y = g_recon_axis_y;
+    gate->axis_x = g_recon_axis_x;
+    gate->axis_n = g_recon_axis_n;
+}
+
+void BpaReconGate_axis_at(const BpaReconGate *gate, double world_z,
+                          double *out_y, double *out_x)
+{
+    if (gate == NULL) {
+        *out_y = 0.0;
+        *out_x = 0.0;
+        return;
+    }
+    bpa_axis_curve_eval(gate->axis_z, gate->axis_y, gate->axis_x,
+                        gate->axis_n, world_z, gate->umb_y, gate->umb_x,
+                        out_y, out_x);
+}
+
+void BpaBridgeGate_axis_at(const BpaBridgeGate *gate, double z,
+                           double *out_y, double *out_x)
+{
+    if (gate == NULL) {
+        *out_y = 0.0; *out_x = 0.0;
+        return;
+    }
+    bpa_axis_curve_eval(gate->axis_z, gate->axis_y, gate->axis_x,
+                        gate->axis_n, z, gate->umb_y, gate->umb_x,
+                        out_y, out_x);
+}
+
+static void bpa_global_axis_at(double z, double *out_y, double *out_x)
+{
+    bpa_axis_curve_eval(g_axis_z, g_axis_y, g_axis_x, g_axis_n, z,
+                        g_umb_y, g_umb_x, out_y, out_x);
+}
+
+static double bpa_vertex_winding(const Vec3 *V, int v)
+{
+    double uy, ux;
+    bpa_global_axis_at((double)V[v].z, &uy, &ux);
+    double y = (double)V[v].y - uy;
+    double x = (double)V[v].x - ux;
+    return hypot(y, x) / g_wrap_pitch - atan2(y, x) / (2.0 * M_PI);
+}
 
 static inline void v_sub(double *r, const double *a, const double *b)
 { r[0]=a[0]-b[0]; r[1]=a[1]-b[1]; r[2]=a[2]-b[2]; }
@@ -264,7 +384,12 @@ static int glue_is_wall(const Vec3 *V, const Vec3 *N, int t, int h, int v_new,
 typedef struct {
     int gz, gy, gx;
     double zmin, ymin, xmin, cell_size;
-    int *head, *next;
+    int *head, *next;      /* per-cell lists, decreasing point index (the reference order) */
+    /* The same lists as CSR, in the same order, with the coordinates beside the
+     * indices (2026-10-06): grid_query walks contiguous memory instead of chasing
+     * next[] and V[].  NULL start = allocation failed, fall back to the lists. */
+    int *start, *pidx;     /* [nc + 1], [nv] */
+    float *pz, *py, *px;   /* [nv] V[pidx[k]] */
 } Grid;
 
 static Grid *grid_build(const Vec3 *V, int nv, double cell_size)
@@ -293,9 +418,34 @@ static Grid *grid_build(const Vec3 *V, int nv, double cell_size)
         size_t c = (size_t)cz*g->gy*g->gx + (size_t)cy*g->gx + cx;
         g->next[i] = g->head[c]; g->head[c] = i;
     }
+    g->start = (int *)malloc((nc + 1) * sizeof(int));
+    g->pidx = (int *)malloc((size_t)nv * sizeof(int));
+    g->pz = (float *)malloc((size_t)nv * sizeof(float));
+    g->py = (float *)malloc((size_t)nv * sizeof(float));
+    g->px = (float *)malloc((size_t)nv * sizeof(float));
+    if (!g->start || !g->pidx || !g->pz || !g->py || !g->px) {
+        free(g->start); free(g->pidx); free(g->pz); free(g->py); free(g->px);
+        g->start = g->pidx = NULL; g->pz = g->py = g->px = NULL;
+        return g;
+    }
+    int k = 0;
+    for (size_t c = 0; c < nc; c++) {
+        g->start[c] = k;
+        for (int j = g->head[c]; j != -1; j = g->next[j]) {
+            g->pidx[k] = j; g->pz[k] = V[j].z; g->py[k] = V[j].y; g->px[k] = V[j].x;
+            k++;
+        }
+    }
+    g->start[nc] = k;
     return g;
 }
-static void grid_free(Grid *g) { if (!g) return; free(g->head); free(g->next); free(g); }
+static void grid_free(Grid *g)
+{
+    if (!g) return;
+    free(g->head); free(g->next);
+    free(g->start); free(g->pidx); free(g->pz); free(g->py); free(g->px);
+    free(g);
+}
 
 typedef int (*neighbor_cb)(int idx, void *user);
 static void grid_query(const Grid *g, double cz, double cy, double cx,
@@ -306,13 +456,33 @@ static void grid_query(const Grid *g, double cz, double cy, double cx,
     int qy = (int)floor((cy-g->ymin)/g->cell_size);
     int qx = (int)floor((cx-g->xmin)/g->cell_size);
     double r2 = radius*radius;
+    /* Skip window cells wholly outside the query box c +- (radius + pad): they
+     * hold no point within `radius` (pad >> rounding), so the callback sees the
+     * same points in the same order.  The empty-ball test (radius rho, cells
+     * 2*rho) then scans <= 8 cells instead of 27 (2026-10-05). */
+    const double pad = 1e-6;
+    int zlo = (int)floor((cz-radius-pad-g->zmin)/g->cell_size);
+    int zhi = (int)floor((cz+radius+pad-g->zmin)/g->cell_size);
+    int ylo = (int)floor((cy-radius-pad-g->ymin)/g->cell_size);
+    int yhi = (int)floor((cy+radius+pad-g->ymin)/g->cell_size);
+    int xlo = (int)floor((cx-radius-pad-g->xmin)/g->cell_size);
+    int xhi = (int)floor((cx+radius+pad-g->xmin)/g->cell_size);
     for (int dz=-reach; dz<=reach; dz++) {
-        int iz = qz+dz; if (iz<0||iz>=g->gz) continue;
+        int iz = qz+dz; if (iz<0||iz>=g->gz||iz<zlo||iz>zhi) continue;
         for (int dy=-reach; dy<=reach; dy++) {
-            int iy = qy+dy; if (iy<0||iy>=g->gy) continue;
+            int iy = qy+dy; if (iy<0||iy>=g->gy||iy<ylo||iy>yhi) continue;
             for (int dx=-reach; dx<=reach; dx++) {
-                int ix = qx+dx; if (ix<0||ix>=g->gx) continue;
+                int ix = qx+dx; if (ix<0||ix>=g->gx||ix<xlo||ix>xhi) continue;
                 int cell = (iz*g->gy + iy)*g->gx + ix;
+                if (g->start) {
+                    for (int k=g->start[cell]; k<g->start[cell+1]; k++) {
+                        double dvz=g->pz[k]-cz, dvy=g->py[k]-cy, dvx=g->px[k]-cx;
+                        double d2=dvz*dvz+dvy*dvy+dvx*dvx;
+                        if (d2 > r2) continue;
+                        if (cb(g->pidx[k], user)) return;
+                    }
+                    continue;
+                }
                 for (int j=g->head[cell]; j!=-1; j=g->next[j]) {
                     double dvz=V[j].z-cz, dvy=V[j].y-cy, dvx=V[j].x-cx;
                     double d2=dvz*dvz+dvy*dvy+dvx*dvx;
@@ -354,6 +524,42 @@ static int sphere_center(const double *a, const double *b, const double *c,
     return 1;
 }
 
+/* Both ball centres of (a,b,c) from one circumcentre computation: bitwise
+ * sphere_center(.., +1, O_plus) and sphere_center(.., -1, O_minus), whose
+ * failure conditions do not depend on the side (BallPivot_query_selftest). */
+static int sphere_center_pair(const double *a, const double *b, const double *c,
+                              double rho, double *O_plus, double *O_minus)
+{
+    double ab[3], ac[3], n[3];
+    v_sub(ab,b,a); v_sub(ac,c,a); v_cross(n,ab,ac);
+    double n_len2 = v_dot(n,n);
+    if (n_len2 < 1e-30) return 0;
+    double ab_dot = v_dot(ab,ab);
+    double ac_dot = v_dot(ac,ac);
+    double ab_ac = v_dot(ab,ac);
+    double D = ab_dot*ac_dot - ab_ac*ab_ac;
+    if (D < 1e-30) return 0;
+    double alpha = ac_dot * (ab_dot - ab_ac) / (2.0 * D);
+    double beta  = ab_dot * (ac_dot - ab_ac) / (2.0 * D);
+    double c_o[3];
+    c_o[0] = a[0] + alpha*ab[0] + beta*ac[0];
+    c_o[1] = a[1] + alpha*ab[1] + beta*ac[1];
+    c_o[2] = a[2] + alpha*ab[2] + beta*ac[2];
+    double r_c2 = dist2(c_o, a);
+    if (r_c2 > rho*rho) return 0;
+    double h = sqrt(rho*rho - r_c2);
+    double n_len = sqrt(n_len2);
+    double nhat[3] = { n[0]/n_len, n[1]/n_len, n[2]/n_len };
+    double nneg[3] = { -nhat[0], -nhat[1], -nhat[2] };
+    O_plus[0] = c_o[0] + nhat[0]*h;
+    O_plus[1] = c_o[1] + nhat[1]*h;
+    O_plus[2] = c_o[2] + nhat[2]*h;
+    O_minus[0] = c_o[0] + nneg[0]*h;
+    O_minus[1] = c_o[1] + nneg[1]*h;
+    O_minus[2] = c_o[2] + nneg[2]*h;
+    return 1;
+}
+
 typedef struct {
     const Vec3 *V;
     double O[3];
@@ -370,8 +576,10 @@ static int empty_cb(int idx, void *user)
     if (d2 < c->r2_shrunk) { c->hit = 1; return 1; }
     return 0;
 }
-static int ball_empty(const Grid *g, const Vec3 *V, const double *O,
-                       double rho, int ea, int eb, int ec)
+/* The emptiness test through the generic query (before 2026-10-06; kept as
+ * the selftest reference and the no-CSR fallback). */
+static int ball_empty_ref(const Grid *g, const Vec3 *V, const double *O,
+                          double rho, int ea, int eb, int ec)
 {
     EmptyCtx c;
     c.V=V; c.O[0]=O[0]; c.O[1]=O[1]; c.O[2]=O[2];
@@ -380,6 +588,48 @@ static int ball_empty(const Grid *g, const Vec3 *V, const double *O,
     c.ea=ea; c.eb=eb; c.ec=ec; c.hit=0;
     grid_query(g, O[0], O[1], O[2], rho, empty_cb, &c, V);
     return !c.hit;
+}
+
+/* Is the shrunk ball (rho - 1e-4) at O free of points other than ea, eb, ec?
+ * The answer does not depend on the order points are visited in, so instead of
+ * grid_query + empty_cb (window loops, an indirect call per point) this walks
+ * the CSR cells of the same window (O +- (rho + pad); the query's +-reach cells
+ * contain it) and tests the same distance against the same threshold
+ * (2026-10-06): the same boolean. */
+static int ball_empty(const Grid *g, const Vec3 *V, const double *O,
+                       double rho, int ea, int eb, int ec)
+{
+    if (!g->start) return ball_empty_ref(g, V, O, rho, ea, eb, ec);
+    double r = rho - 1e-4;
+    double r2 = r*r;
+    const double pad = 1e-6;
+    int zlo = (int)floor((O[0]-rho-pad-g->zmin)/g->cell_size);
+    int zhi = (int)floor((O[0]+rho+pad-g->zmin)/g->cell_size);
+    int ylo = (int)floor((O[1]-rho-pad-g->ymin)/g->cell_size);
+    int yhi = (int)floor((O[1]+rho+pad-g->ymin)/g->cell_size);
+    int xlo = (int)floor((O[2]-rho-pad-g->xmin)/g->cell_size);
+    int xhi = (int)floor((O[2]+rho+pad-g->xmin)/g->cell_size);
+    if (zlo < 0) zlo = 0;
+    if (ylo < 0) ylo = 0;
+    if (xlo < 0) xlo = 0;
+    if (zhi >= g->gz) zhi = g->gz - 1;
+    if (yhi >= g->gy) yhi = g->gy - 1;
+    if (xhi >= g->gx) xhi = g->gx - 1;
+    for (int iz = zlo; iz <= zhi; iz++)
+        for (int iy = ylo; iy <= yhi; iy++) {
+            int row = (iz*g->gy + iy)*g->gx;
+            for (int ix = xlo; ix <= xhi; ix++) {
+                int cell = row + ix;
+                for (int k = g->start[cell]; k < g->start[cell+1]; k++) {
+                    int j = g->pidx[k];
+                    if (j == ea || j == eb || j == ec) continue;
+                    double dz = g->pz[k]-O[0], dy = g->py[k]-O[1], dx = g->px[k]-O[2];
+                    if (dz*dz + dy*dy + dx*dx < r2) return 0;
+                }
+            }
+        }
+    (void)V;
+    return 1;
 }
 
 /* --- Mixed-dead-end margin diagnostics (BPA_DEBUG only) ------------------- */
@@ -713,8 +963,8 @@ static int pivot_cb(int idx, void *user)
     if (idx == p->va || idx == p->vb) return 0;
     double c[3]; vec3_to_d(c, &p->V[idx]);
     double O_plus[3], O_minus[3];
-    int has_p = sphere_center(p->a, p->b, c, p->rho, +1, O_plus);
-    int has_m = sphere_center(p->a, p->b, c, p->rho, -1, O_minus);
+    int has_p = sphere_center_pair(p->a, p->b, c, p->rho, O_plus, O_minus);
+    int has_m = has_p;
     if (!has_p && !has_m) return 0;
     p->n_sphere++;
     double Os[2][3]; int n_O = 0;
@@ -880,7 +1130,18 @@ typedef struct {
     double grow_pitch;
     double grow_tol;
     double grow_umb_y, grow_umb_x;
-    double grow_origin_y, grow_origin_x;
+    double grow_origin_z, grow_origin_y, grow_origin_x;
+    const double *grow_axis_z, *grow_axis_y, *grow_axis_x;
+    size_t grow_axis_n;
+
+    /* Weighted union-find over a bridge growth component. The potential is
+     * branch-cut-free winding relative to the component root; root min/max
+     * bound the TOTAL phase excursion, so several locally-safe 0.2-turn joins
+     * cannot accumulate into a one-turn staircase. NULL means gate-off. */
+    int *span_parent, *span_size;
+    double *span_weight, *span_min, *span_max;
+    double span_tol;
+    long dbg_span;
 } BpaBuild;
 
 static void bpa_build_init(BpaBuild *b, int n)
@@ -898,26 +1159,104 @@ static void bpa_build_init(BpaBuild *b, int n)
     b->grow_phase = NULL;
     b->grow_pitch = b->grow_tol = 0.0;
     b->grow_umb_y = b->grow_umb_x = 0.0;
-    b->grow_origin_y = b->grow_origin_x = 0.0;
+    b->grow_origin_z = b->grow_origin_y = b->grow_origin_x = 0.0;
+    b->grow_axis_z = b->grow_axis_y = b->grow_axis_x = NULL;
+    b->grow_axis_n = 0;
+    b->span_parent = b->span_size = NULL;
+    b->span_weight = b->span_min = b->span_max = NULL;
+    b->span_tol = 0.0; b->dbg_span = 0;
 }
 static void bpa_build_free(BpaBuild *b)
 {
     free(b->F); free(b->queue); free(b->grow_phase);
+    free(b->span_parent); free(b->span_size); free(b->span_weight);
+    free(b->span_min); free(b->span_max);
 }
 
 /* Branch-cut-free analytic winding increment from vertex a to b. The vertices
  * are cube-local, while the umbilicus is in source/world coordinates. */
 static double bpa_grow_phase_step(const BpaBuild *b, const Vec3 *V, int a, int c)
 {
-    double ay = b->grow_origin_y + (double)V[a].y - b->grow_umb_y;
-    double ax = b->grow_origin_x + (double)V[a].x - b->grow_umb_x;
-    double cy = b->grow_origin_y + (double)V[c].y - b->grow_umb_y;
-    double cx = b->grow_origin_x + (double)V[c].x - b->grow_umb_x;
+    double auy = b->grow_umb_y, aux = b->grow_umb_x;
+    double cuy = b->grow_umb_y, cux = b->grow_umb_x;
+    bpa_axis_curve_eval(b->grow_axis_z, b->grow_axis_y, b->grow_axis_x,
+                        b->grow_axis_n, b->grow_origin_z + (double)V[a].z,
+                        b->grow_umb_y, b->grow_umb_x, &auy, &aux);
+    bpa_axis_curve_eval(b->grow_axis_z, b->grow_axis_y, b->grow_axis_x,
+                        b->grow_axis_n, b->grow_origin_z + (double)V[c].z,
+                        b->grow_umb_y, b->grow_umb_x, &cuy, &cux);
+    double ay = b->grow_origin_y + (double)V[a].y - auy;
+    double ax = b->grow_origin_x + (double)V[a].x - aux;
+    double cy = b->grow_origin_y + (double)V[c].y - cuy;
+    double cx = b->grow_origin_x + (double)V[c].x - cux;
     double dth = atan2(cy, cx) - atan2(ay, ax);
     while (dth >  M_PI) dth -= 2.0*M_PI;
     while (dth < -M_PI) dth += 2.0*M_PI;
-    return (hypot(cy, cx) - hypot(ay, ax)) / b->grow_pitch
+    return PitchTable_dturns(PitchTable_from_env(), hypot(ay, ax),
+                             hypot(cy, cx), b->grow_pitch)
          - dth / (2.0*M_PI);
+}
+
+static int bpa_span_find(BpaBuild *b, int v)
+{
+    int p = b->span_parent[v];
+    if (p != v) {
+        int root = bpa_span_find(b, p);
+        b->span_weight[v] += b->span_weight[p];
+        b->span_parent[v] = root;
+    }
+    return b->span_parent[v];
+}
+
+/* Test/commit phase(b)-phase(a)=d in the weighted DSU. Each root interval is
+ * expressed in its own gauge; `shift` maps root-b's interval into root-a's. */
+static int bpa_span_can_union(BpaBuild *b, int a, int c, double d)
+{
+    int ra, rc;
+    double wa, wc, shift, lo, hi;
+    if (b->span_parent == NULL) return 1;
+    ra = bpa_span_find(b, a); rc = bpa_span_find(b, c);
+    wa = b->span_weight[a]; wc = b->span_weight[c];
+    if (ra == rc)
+        return fabs((wc - wa) - d) <= b->span_tol + 1e-12;
+    shift = d + wa - wc;
+    lo = b->span_min[ra] < b->span_min[rc] + shift ?
+         b->span_min[ra] : b->span_min[rc] + shift;
+    hi = b->span_max[ra] > b->span_max[rc] + shift ?
+         b->span_max[ra] : b->span_max[rc] + shift;
+    return isfinite(lo) && isfinite(hi) && hi - lo <= b->span_tol + 1e-12;
+}
+
+static void bpa_span_union(BpaBuild *b, int a, int c, double d)
+{
+    int ra, rc;
+    double wa, wc, shift;
+    if (b->span_parent == NULL) return;
+    ra = bpa_span_find(b, a); rc = bpa_span_find(b, c);
+    wa = b->span_weight[a]; wc = b->span_weight[c];
+    if (ra == rc) return;
+    shift = d + wa - wc; /* phase(root-c)-phase(root-a) */
+    if (b->span_size[ra] < b->span_size[rc]) {
+        b->span_parent[ra] = rc;
+        b->span_weight[ra] = -shift;
+        b->span_size[rc] += b->span_size[ra];
+        {
+            double lo = b->span_min[ra] - shift;
+            double hi = b->span_max[ra] - shift;
+            if (lo < b->span_min[rc]) b->span_min[rc] = lo;
+            if (hi > b->span_max[rc]) b->span_max[rc] = hi;
+        }
+    } else {
+        b->span_parent[rc] = ra;
+        b->span_weight[rc] = shift;
+        b->span_size[ra] += b->span_size[rc];
+        {
+            double lo = b->span_min[rc] + shift;
+            double hi = b->span_max[rc] + shift;
+            if (lo < b->span_min[ra]) b->span_min[ra] = lo;
+            if (hi > b->span_max[ra]) b->span_max[ra] = hi;
+        }
+    }
 }
 
 /* Start one disconnected BPA growth at phase zero. Centering the three seed
@@ -934,6 +1273,30 @@ static void bpa_grow_phase_seed(BpaBuild *b, const Vec3 *V, int a, int c, int d)
     b->grow_phase[a] = pa - mean;
     b->grow_phase[c] = pc - mean;
     b->grow_phase[d] = pd - mean;
+}
+
+/* Seed a bridge front edge at zero accumulated winding. Unlike a reconstructed
+ * component, a seam bridge starts from boundary half-edges rather than a seed
+ * triangle. Shared boundary vertices propagate the same gauge along a front;
+ * disconnected fronts each receive their own zero gauge. A later staircase
+ * cannot hide behind individually-small steps: its accumulated phase leaves
+ * [-grow_tol,+grow_tol] and bpa_grow_phase_candidate rejects the pivot. */
+static void bpa_grow_phase_seed_edge(BpaBuild *b, const Vec3 *V, int a, int c)
+{
+    double d, pa, pc;
+    if (b->grow_phase == NULL) return;
+    d = bpa_grow_phase_step(b, V, a, c);
+    if (!isfinite(d)) return;
+    pa = b->grow_phase[a];
+    pc = b->grow_phase[c];
+    if (!isfinite(pa) && !isfinite(pc)) {
+        b->grow_phase[a] = -0.5 * d;
+        b->grow_phase[c] =  0.5 * d;
+    } else if (isfinite(pa) && !isfinite(pc)) {
+        b->grow_phase[c] = pa + d;
+    } else if (!isfinite(pa) && isfinite(pc)) {
+        b->grow_phase[a] = pc - d;
+    }
 }
 
 /* Infer a candidate's accumulated phase from both front endpoints. A true
@@ -953,6 +1316,278 @@ static int bpa_grow_phase_candidate(const BpaBuild *b, const Vec3 *V,
         return 0;
     *out_phase = pc;
     return 1;
+}
+
+/* Reference grid query: the full (2*reach+1)^3 window, as before 2026-10-05. */
+static void grid_query_ref(const Grid *g, double cz, double cy, double cx,
+                           double radius, neighbor_cb cb, void *user, const Vec3 *V)
+{
+    int reach = (int)ceil(radius/g->cell_size);
+    int qz = (int)floor((cz-g->zmin)/g->cell_size);
+    int qy = (int)floor((cy-g->ymin)/g->cell_size);
+    int qx = (int)floor((cx-g->xmin)/g->cell_size);
+    double r2 = radius*radius;
+    for (int dz=-reach; dz<=reach; dz++) {
+        int iz = qz+dz; if (iz<0||iz>=g->gz) continue;
+        for (int dy=-reach; dy<=reach; dy++) {
+            int iy = qy+dy; if (iy<0||iy>=g->gy) continue;
+            for (int dx=-reach; dx<=reach; dx++) {
+                int ix = qx+dx; if (ix<0||ix>=g->gx) continue;
+                int cell = (iz*g->gy + iy)*g->gx + ix;
+                for (int j=g->head[cell]; j!=-1; j=g->next[j]) {
+                    double dvz=V[j].z-cz, dvy=V[j].y-cy, dvx=V[j].x-cx;
+                    double d2=dvz*dvz+dvy*dvy+dvx*dvx;
+                    if (d2 > r2) continue;
+                    if (cb(j, user)) return;
+                }
+            }
+        }
+    }
+}
+
+typedef struct { int *seq; int n, cap, stop_after; } QuerySeq;
+static int query_seq_cb(int idx, void *user)
+{
+    QuerySeq *q = (QuerySeq *)user;
+    if (q->n < q->cap) q->seq[q->n] = idx;
+    q->n++;
+    return (q->stop_after > 0 && q->n >= q->stop_after) ? 1 : 0;
+}
+
+static double selftest_rand01(uint32_t *s)
+{
+    *s = *s * 1664525u + 1013904223u;
+    return (double)(*s >> 8) * (1.0 / 16777216.0);
+}
+
+/* grid_query (restricted window) == grid_query_ref callback sequences, and
+ * sphere_center_pair == two sphere_center calls, bitwise. */
+int BallPivot_query_selftest(void)
+{
+    const int nv = 6000;
+    Vec3 *V = (Vec3 *)malloc((size_t)nv * sizeof(Vec3));
+    int *s1 = (int *)malloc(4096 * sizeof(int));
+    int *s2 = (int *)malloc(4096 * sizeof(int));
+    uint32_t rs = 20261005u;
+    int fails = 0;
+    long n_queries = 0, n_cb = 0;
+    if (!V || !s1 || !s2) { free(V); free(s1); free(s2); return 1; }
+    /* a wavy sheet with points snapped onto cell boundaries, plus loose points */
+    for (int i = 0; i < nv; i++) {
+        double u = selftest_rand01(&rs) * 40.0, w = selftest_rand01(&rs) * 40.0;
+        double z = 20.0 + 3.0 * sin(u * 0.3) + 0.4 * selftest_rand01(&rs);
+        if (i % 7 == 0) u = floor(u / 2.4) * 2.4;
+        if (i % 11 == 0) z = floor(z / 1.2) * 1.2;
+        if (i % 13 == 0) z = 40.0 * selftest_rand01(&rs);
+        V[i].z = (float)z; V[i].y = (float)u; V[i].x = (float)w;
+    }
+    const double rho = 1.2;
+    Grid *g = grid_build(V, nv, 2.0 * rho);
+    for (int t = 0; t < 20000 && !fails; t++) {
+        const Vec3 *p = &V[(int)(selftest_rand01(&rs) * nv) % nv];
+        double cz = p->z + (selftest_rand01(&rs) - 0.5) * 3.0;
+        double cy = p->y + (selftest_rand01(&rs) - 0.5) * 3.0;
+        double cx = p->x + (selftest_rand01(&rs) - 0.5) * 3.0;
+        if (t % 5 == 0) cz = floor(cz / 2.4) * 2.4 + (t % 2 ? 1e-9 : -1e-9);
+        double radius = (t % 3 == 0) ? 2.0 * rho : (t % 3 == 1) ? rho : rho - 1e-4;
+        int stop = (t % 4 == 0) ? 1 + (t % 9) : 0;
+        QuerySeq a = { s1, 0, 4096, stop }, b = { s2, 0, 4096, stop };
+        grid_query(g, cz, cy, cx, radius, query_seq_cb, &a, V);
+        grid_query_ref(g, cz, cy, cx, radius, query_seq_cb, &b, V);
+        n_queries++; n_cb += b.n;
+        if (a.n != b.n || memcmp(s1, s2, (size_t)(a.n < 4096 ? a.n : 4096) * sizeof(int)) != 0) {
+            fprintf(stderr, "BallPivot_query_selftest FAIL: query %d (%d vs %d callbacks)\n",
+                    t, a.n, b.n);
+            fails++;
+        }
+    }
+    long n_empty = 0, n_full = 0;
+    for (int t = 0; t < 40000 && !fails; t++) {     /* emptiness: CSR walk == query + callback */
+        const Vec3 *p = &V[(int)(selftest_rand01(&rs) * nv) % nv];
+        double O[3] = { p->z + (selftest_rand01(&rs) - 0.5) * 2.0 * rho,
+                        p->y + (selftest_rand01(&rs) - 0.5) * 2.0 * rho,
+                        p->x + (selftest_rand01(&rs) - 0.5) * 2.0 * rho };
+        if (t % 7 == 0) O[0] = floor(O[0] / 2.4) * 2.4 + (t % 2 ? 1e-9 : -1e-9);
+        double rr = (t % 3 == 0) ? rho : (t % 3 == 1) ? 0.3 : rho * 1.5;
+        int ea = (int)(selftest_rand01(&rs) * nv) % nv, eb = (t % 5) ? ea : ((ea + 1) % nv);
+        int ec = (int)(selftest_rand01(&rs) * nv) % nv;
+        int e1 = ball_empty(g, V, O, rr, ea, eb, ec), e2 = ball_empty_ref(g, V, O, rr, ea, eb, ec);
+        if (e1) n_empty++; else n_full++;
+        if (e1 != e2) {
+            fprintf(stderr, "BallPivot_query_selftest FAIL: ball_empty %d vs reference %d (test %d)\n", e1, e2, t);
+            fails++;
+        }
+    }
+    if (!fails && (n_empty == 0 || n_full == 0)) {
+        fprintf(stderr, "BallPivot_query_selftest FAIL: emptiness cases not both exercised\n");
+        fails++;
+    }
+    for (int t = 0; t < 20000 && !fails; t++) {
+        double a[3], b[3], c[3], p1[3], m1[3], p2[3] = {0,0,0}, m2[3] = {0,0,0};
+        for (int d = 0; d < 3; d++) {
+            a[d] = (double)(float)(selftest_rand01(&rs) * 3.0);
+            b[d] = (double)(float)(selftest_rand01(&rs) * 3.0);
+            c[d] = (double)(float)(selftest_rand01(&rs) * 3.0);
+        }
+        if (t % 17 == 0) { c[0] = a[0]; c[1] = a[1]; c[2] = a[2]; }    /* degenerate */
+        int hp = sphere_center(a, b, c, rho, +1, p1);
+        int hm = sphere_center(a, b, c, rho, -1, m1);
+        int hpair = sphere_center_pair(a, b, c, rho, p2, m2);
+        if (hp != hpair || hm != hpair ||
+            (hpair && (memcmp(p1, p2, sizeof(p1)) != 0 || memcmp(m1, m2, sizeof(m1)) != 0))) {
+            fprintf(stderr, "BallPivot_query_selftest FAIL: sphere pair %d\n", t);
+            fails++;
+        }
+    }
+    grid_free(g);
+
+    free(V); free(s1); free(s2);
+    fprintf(stderr, "BallPivot_query_selftest: %s (%ld queries, %ld callbacks == full window; "
+            "20000 ball-centre pairs bitwise)\n", fails ? "FAIL" : "OK", n_queries, n_cb);
+    return fails ? 1 : 0;
+}
+
+int BallPivot_winding_selftest(void)
+{
+    int failures = 0;
+    BpaBuild b;
+    double phase = 0.0;
+    bpa_build_init(&b, 8);
+    b.grow_phase = (double *)malloc(3 * sizeof(double));
+    if (b.grow_phase == NULL) {
+        bpa_build_free(&b);
+        fprintf(stderr, "[ball_pivot selftest] cumulative winding: OOM\n");
+        return 1;
+    }
+    b.grow_pitch = 18.5;
+    b.grow_tol = 0.25;
+    b.grow_umb_y = b.grow_umb_x = 0.0;
+    b.grow_origin_z = b.grow_origin_y = b.grow_origin_x = 0.0;
+
+    /* Three radial steps: every local increment is <=0.20 turn, but the new
+     * vertex is 0.30 turn from the centered seed edge and must be rejected. */
+    {
+        Vec3 V[3] = {
+            {0.0f, 50.0f, 0.0f},
+            {0.0f, 53.7f, 0.0f},
+            {0.0f, 57.4f, 0.0f}
+        };
+        for (int i = 0; i < 3; i++) b.grow_phase[i] = NAN;
+        bpa_grow_phase_seed_edge(&b, V, 0, 1);
+        if (bpa_grow_phase_candidate(&b, V, 0, 1, 2, &phase)) {
+            fprintf(stderr,
+                    "[ball_pivot selftest] gradual radial staircase accepted\n");
+            failures++;
+        }
+    }
+
+    /* An Archimedean spiral advances in radius and angle together, keeping
+     * w=r/pitch-theta/(2pi) constant; the same cumulative gate must accept it. */
+    {
+        Vec3 V[3];
+        for (int i = 0; i < 3; i++) {
+            double theta = 0.2 * (double)i;
+            double radius = 50.0 + 18.5 * theta / (2.0 * M_PI);
+            V[i].z = 0.0f;
+            V[i].y = (float)(radius * sin(theta));
+            V[i].x = (float)(radius * cos(theta));
+            b.grow_phase[i] = NAN;
+        }
+        bpa_grow_phase_seed_edge(&b, V, 0, 1);
+        if (!bpa_grow_phase_candidate(&b, V, 0, 1, 2, &phase) ||
+            fabs(phase) > 1e-4) {
+            fprintf(stderr,
+                    "[ball_pivot selftest] true spiral rejected (phase %.6f)\n",
+                    phase);
+            failures++;
+        }
+    }
+
+    /* Two independently seeded fronts must not reset the cumulative gauge.
+     * Their direct join is only 0.2 turn, but together they would create a
+     * 0.6-turn connected staircase and must fail the component-span test. */
+    b.span_parent = (int *)malloc(4 * sizeof(int));
+    b.span_size = (int *)malloc(4 * sizeof(int));
+    b.span_weight = (double *)calloc(4, sizeof(double));
+    b.span_min = (double *)calloc(4, sizeof(double));
+    b.span_max = (double *)calloc(4, sizeof(double));
+    if (b.span_parent == NULL || b.span_size == NULL ||
+        b.span_weight == NULL || b.span_min == NULL || b.span_max == NULL) {
+        fprintf(stderr, "[ball_pivot selftest] span DSU OOM\n");
+        failures++;
+    } else {
+        Vec3 radial[4] = {
+            {0.0f, 50.0f, 0.0f}, {0.0f, 53.7f, 0.0f},
+            {0.0f, 57.4f, 0.0f}, {0.0f, 61.1f, 0.0f}
+        };
+        b.span_tol = 0.58;
+        for (int i = 0; i < 4; i++) {
+            b.span_parent[i] = i; b.span_size[i] = 1;
+            b.span_weight[i] = b.span_min[i] = b.span_max[i] = 0.0;
+        }
+        bpa_span_union(&b, 0, 1, bpa_grow_phase_step(&b, radial, 0, 1));
+        bpa_span_union(&b, 2, 3, bpa_grow_phase_step(&b, radial, 2, 3));
+        if (bpa_span_can_union(&b, 1, 2,
+                               bpa_grow_phase_step(&b, radial, 1, 2))) {
+            fprintf(stderr,
+                    "[ball_pivot selftest] transitive 0.6-turn span accepted\n");
+            failures++;
+        }
+        {
+            Vec3 spiral[4];
+            for (int i = 0; i < 4; i++) {
+                double theta = 0.2 * (double)i;
+                double radius = 50.0 + 18.5 * theta / (2.0 * M_PI);
+                spiral[i].z = 0.0f;
+                spiral[i].y = (float)(radius * sin(theta));
+                spiral[i].x = (float)(radius * cos(theta));
+                b.span_parent[i] = i; b.span_size[i] = 1;
+                b.span_weight[i] = b.span_min[i] = b.span_max[i] = 0.0;
+            }
+            bpa_span_union(&b, 0, 1,
+                           bpa_grow_phase_step(&b, spiral, 0, 1));
+            bpa_span_union(&b, 2, 3,
+                           bpa_grow_phase_step(&b, spiral, 2, 3));
+            if (!bpa_span_can_union(&b, 1, 2,
+                                    bpa_grow_phase_step(&b, spiral, 1, 2))) {
+                fprintf(stderr,
+                        "[ball_pivot selftest] split true-spiral fronts rejected\n");
+                failures++;
+            }
+        }
+    }
+
+    /* Curved-axis regression: two vertices at the same local polar coordinate
+     * while the umbilicus translates with z have zero winding increment. The
+     * endpoint evaluation also deliberately exercises tangent extrapolation. */
+    {
+        double az[2] = {0.0, 10.0};
+        double ay[2] = {0.0, 10.0};
+        double ax[2] = {0.0, 20.0};
+        Vec3 moving[2] = {
+            {0.0f, 50.0f, 0.0f},
+            {10.0f, 60.0f, 20.0f}
+        };
+        BpaBridgeGate gate;
+        double uy = 0.0, ux = 0.0;
+        memset(&gate, 0, sizeof(gate));
+        gate.axis_z = az; gate.axis_y = ay; gate.axis_x = ax; gate.axis_n = 2;
+        BpaBridgeGate_axis_at(&gate, 20.0, &uy, &ux);
+        b.grow_axis_z = az; b.grow_axis_y = ay; b.grow_axis_x = ax;
+        b.grow_axis_n = 2;
+        if (fabs(bpa_grow_phase_step(&b, moving, 0, 1)) > 1e-5 ||
+            fabs(uy - 20.0) > 1e-9 || fabs(ux - 40.0) > 1e-9) {
+            fprintf(stderr,
+                    "[ball_pivot selftest] curved-axis phase/extrapolation failed\n");
+            failures++;
+        }
+        b.grow_axis_z = b.grow_axis_y = b.grow_axis_x = NULL;
+        b.grow_axis_n = 0;
+    }
+    bpa_build_free(&b);
+    fprintf(stderr, "[ball_pivot selftest] cumulative winding -> %s\n",
+            failures ? "FAIL" : "ok");
+    return failures;
 }
 
 static void bpa_add_face(BpaBuild *b, int a, int v, int c)
@@ -1087,6 +1722,19 @@ static int bpa_try_candidate(const Vec3 *V, EdgeStore *es, uint8_t *used,
         abort_pivot = 1;
         b->dbg_grow_wind++;
     }
+    /* Bridge-component span guard: prospective union is evaluated in the
+     * weighted winding gauge of the entire connected growth, not just on this
+     * triangle. This is the non-local test that stops transitive staircases. */
+    double span_d_tv = NAN, span_d_hv = NAN;
+    if (!abort_pivot && b->span_parent != NULL) {
+        span_d_tv = bpa_grow_phase_step(b, V, t, v_new);
+        span_d_hv = bpa_grow_phase_step(b, V, h, v_new);
+        if (!isfinite(span_d_tv) || !isfinite(span_d_hv) ||
+            !bpa_span_can_union(b, t, v_new, span_d_tv)) {
+            abort_pivot = 1;
+            b->dbg_span++;
+        }
+    }
 
     /* Winding gate (seam bridge): glue the front edge (t,h) to the candidate v_new
      * only if they are the SAME wrap -- same winding about the umbilicus. The phase
@@ -1106,16 +1754,21 @@ static int bpa_try_candidate(const Vec3 *V, EdgeStore *es, uint8_t *used,
      * 3D chord into radial (dr), axial (cz) and tangential (the rest); exempt
      * only when tangential dominates, i.e. dr^2 + cz^2 < 0.5*|chord|^2. */
     if (!abort_pivot && g_wind_tol > 0.0 && g_wrap_pitch > 0.0) {
-        double my = 0.5*((double)V[t].y + (double)V[h].y) - g_umb_y;
-        double mx = 0.5*((double)V[t].x + (double)V[h].x) - g_umb_x;
         double mz = 0.5*((double)V[t].z + (double)V[h].z);
-        double vy = (double)V[v_new].y - g_umb_y;
-        double vx = (double)V[v_new].x - g_umb_x;
+        double muy, mux, vuy, vux;
+        bpa_global_axis_at(mz, &muy, &mux);
+        bpa_global_axis_at((double)V[v_new].z, &vuy, &vux);
+        double my = 0.5*((double)V[t].y + (double)V[h].y) - muy;
+        double mx = 0.5*((double)V[t].x + (double)V[h].x) - mux;
+        double vy = (double)V[v_new].y - vuy;
+        double vx = (double)V[v_new].x - vux;
         double dr  = hypot(vy, vx) - hypot(my, mx);
         double dth = atan2(vy, vx) - atan2(my, mx);
         while (dth >  M_PI) dth -= 2.0*M_PI;     /* shortest angular difference */
         while (dth < -M_PI) dth += 2.0*M_PI;
-        double dw = dr/g_wrap_pitch - dth/(2.0*M_PI);
+        double dw = PitchTable_dturns(PitchTable_from_env(), hypot(my, mx),
+                                      hypot(vy, vx), g_wrap_pitch)
+                  - dth/(2.0*M_PI);
         if (fabs(dw) > g_wind_tol) {
             double cy = vy - my, cx = vx - mx;
             double cz = (double)V[v_new].z - mz;
@@ -1130,6 +1783,10 @@ static int bpa_try_candidate(const Vec3 *V, EdgeStore *es, uint8_t *used,
     if (abort_pivot) return 0;
     /* Accept. */
     bpa_add_face(b, t, v_new, h);
+    if (b->span_parent != NULL) {
+        bpa_span_union(b, t, v_new, span_d_tv);
+        bpa_span_union(b, h, v_new, span_d_hv);
+    }
     used[v_new] = 1;
     if (b->grow_phase && !isfinite(b->grow_phase[v_new]))
         b->grow_phase[v_new] = grow_phase_new;
@@ -1165,10 +1822,7 @@ static void bpa_grow(const Grid *g, const Vec3 *V, const Vec3 *N, double rho,
                      EdgeStore *es, uint8_t *used, int *vfront, BpaBuild *b,
                      int relax_bowtie)
 {
-    unsigned poll_tick = 0;
     while (b->qh < b->qt) {
-        if (((++poll_tick) & 1023u) == 0)
-            RunCtx_check();
         int ei = b->queue[b->qh++];
         if (es->e[ei].state != ES_FRONT) continue;
         int va = es->e[ei].va, vb = es->e[ei].vb;       /* sorted: pivot geometry */
@@ -1436,7 +2090,7 @@ static int fill_pinholes(EdgeStore *es, const Grid *g, const Vec3 *V, const Vec3
 
 static int bpa_env_double(const char *name, double *out)
 {
-    const char *s = sf_env(name);
+    const char *s = getenv(name);
     char *end = NULL;
     if (!s || !*s) return 0;
     double v = strtod(s, &end);
@@ -1458,9 +2112,11 @@ int BpaReconGate_from_env(BpaReconGate *out, const float origin_zyx[3])
         return 0;
     }
     if (origin_zyx) {
+        out->origin_z = (double)origin_zyx[0];
         out->origin_y = (double)origin_zyx[1];
         out->origin_x = (double)origin_zyx[2];
     }
+    BpaReconGate_attach_axis(out);
     return 1;
 }
 
@@ -1482,35 +2138,35 @@ int BallPivot_reconstruct_gated(Arena_T arena,
      * recompiling, to test whether a larger ball reduces front-collision
      * pinholes. Falls back to the caller's rho. Caller still owns the
      * inter-wrap-clearance guarantee — do not set this above the safe cap. */
-    { const char *e = sf_env("BPA_RHO"); if (e) { double r = atof(e); if (r > 0.0) rho = r; } }
-    g_no_normal_gate = (sf_env("BPA_NO_NORMAL_GATE") != NULL);
+    { const char *e = getenv("BPA_RHO"); if (e) { double r = atof(e); if (r > 0.0) rho = r; } }
+    g_no_normal_gate = (getenv("BPA_NO_NORMAL_GATE") != NULL);
     g_normal_tol = 0.0;
-    { const char *e = sf_env("BPA_NORMAL_TOL"); if (e) { double t = atof(e); if (t >= 0.0 && t < 1.0) g_normal_tol = t; } }
+    { const char *e = getenv("BPA_NORMAL_TOL"); if (e) { double t = atof(e); if (t >= 0.0 && t < 1.0) g_normal_tol = t; } }
     /* Part 2 anti-parallel filter: on by default; BPA_NO_ANTIPARALLEL disables,
      * BPA_ANTIPARALLEL_COS sweeps the threshold (clamped [-1.0, 0.0]). */
-    g_antiparallel = (sf_env("BPA_NO_ANTIPARALLEL") == NULL);
+    g_antiparallel = (getenv("BPA_NO_ANTIPARALLEL") == NULL);
     g_antiparallel_cos = BPA_ANTIPARALLEL_COS;
-    { const char *e = sf_env("BPA_ANTIPARALLEL_COS");
+    { const char *e = getenv("BPA_ANTIPARALLEL_COS");
       if (e) { double c = atof(e); if (c >= -1.0 && c <= 0.0) g_antiparallel_cos = c; } }
     g_dbg_antiparallel = 0;
     g_face_coh_cos = BPA_FACE_COH_COS;
-    { const char *e = sf_env("BPA_FACE_COH_COS");
+    { const char *e = getenv("BPA_FACE_COH_COS");
       if (e) { double c = atof(e); if (c >= -1.0 && c <= 1.0) g_face_coh_cos = c; } }
     g_dbg_facecoh = 0;
     /* Wall-guard (anti-fusion): on by default; BPA_NO_WALL_GUARD disables;
      * BPA_WALL_GUARD_COS / BPA_WALL_MIN_EDGE_VOX sweep the thresholds. */
-    g_wall_guard_cos = (sf_env("BPA_NO_WALL_GUARD") != NULL) ? -2.0 : BPA_WALL_GUARD_COS;
-    { const char *e = sf_env("BPA_WALL_GUARD_COS");
+    g_wall_guard_cos = (getenv("BPA_NO_WALL_GUARD") != NULL) ? -2.0 : BPA_WALL_GUARD_COS;
+    { const char *e = getenv("BPA_WALL_GUARD_COS");
       if (e) { double c = atof(e); if (c >= -1.0 && c <= 1.0) g_wall_guard_cos = c; } }
     g_wall_min_edge = BPA_WALL_MIN_EDGE_VOX;
-    { const char *e = sf_env("BPA_WALL_MIN_EDGE_VOX");
+    { const char *e = getenv("BPA_WALL_MIN_EDGE_VOX");
       if (e) { double m = atof(e); if (m > 0.0) g_wall_min_edge = m; } }
     g_dbg_wall = 0;
     g_wind_tol = 0.0; g_wind_hard = 0.0;   /* winding gate is seam-bridge-only */
-    g_relax_case2 = (sf_env("BPA_STRICT_CASE2") == NULL);
+    g_relax_case2 = (getenv("BPA_STRICT_CASE2") == NULL);
     g_ko_empty = 0; g_ko_normal = 0;
     g_dead_gap = g_dead_empty = g_dead_normal = g_dead_mixed = g_dead_theta = 0;
-    g_dead_measure = (sf_env("BPA_DEBUG") != NULL);
+    g_dead_measure = (getenv("BPA_DEBUG") != NULL);
     g_mix_erej = g_mix_anti = g_mix_nrej = 0;
     g_depth_sum = g_past90_sum = 0; g_absh_sum = 0;
     for (int i = 0; i < NBD; i++) { g_hd_all[i] = 0; g_hd_anti[i] = 0; }
@@ -1530,20 +2186,27 @@ int BallPivot_reconstruct_gated(Arena_T arena,
     if (gate && isfinite(gate->pitch) && isfinite(gate->tol) &&
         gate->pitch > 0.0 && gate->tol > 0.0 && gate->tol < 0.5 &&
         isfinite(gate->umb_y) && isfinite(gate->umb_x) &&
-        isfinite(gate->origin_y) && isfinite(gate->origin_x)) {
+        isfinite(gate->origin_z) && isfinite(gate->origin_y) &&
+        isfinite(gate->origin_x)) {
         b.grow_phase = (double *)malloc((size_t)n * sizeof(double));
         for (int i = 0; i < n; i++) b.grow_phase[i] = NAN;
         b.grow_pitch = gate->pitch;
         b.grow_tol = gate->tol;
         b.grow_umb_y = gate->umb_y;
         b.grow_umb_x = gate->umb_x;
+        b.grow_origin_z = gate->origin_z;
         b.grow_origin_y = gate->origin_y;
         b.grow_origin_x = gate->origin_x;
+        b.grow_axis_z = gate->axis_z;
+        b.grow_axis_y = gate->axis_y;
+        b.grow_axis_x = gate->axis_x;
+        b.grow_axis_n = gate->axis_n;
         fprintf(stderr,
-                "    BPA growth winding anchor ON: umbilicus=(y%.1f,x%.1f) "
-                "origin=(y%.0f,x%.0f) pitch=%.2f tol=%.2f turn\n",
-                b.grow_umb_y, b.grow_umb_x, b.grow_origin_y,
-                b.grow_origin_x, b.grow_pitch, b.grow_tol);
+                "    BPA growth winding anchor ON: %s umbilicus=(y%.1f,x%.1f) "
+                "origin=(z%.0f,y%.0f,x%.0f) pitch=%.2f tol=%.2f turn\n",
+                b.grow_axis_n >= 2 ? "curved" : "constant",
+                b.grow_umb_y, b.grow_umb_x, b.grow_origin_z,
+                b.grow_origin_y, b.grow_origin_x, b.grow_pitch, b.grow_tol);
     }
 
 
@@ -1604,13 +2267,13 @@ int BallPivot_reconstruct_gated(Arena_T arena,
      * float empty-ball test mis-rejects). Topology-safe: empty ball on a single
      * layer => no inter-wrap bridge; each filled edge goes boundary->interior.
      * Disable with BPA_NO_REARM. */
-    if (!sf_env("BPA_NO_REARM")) {
+    if (!getenv("BPA_NO_REARM")) {
         int pf = fill_pinholes(es, g, V, N, rho, &b, vfront, n);
-        if (sf_env("BPA_DEBUG"))
+        if (getenv("BPA_DEBUG"))
             fprintf(stderr, "[bpa_recon] pinhole-fill: closed %d single-triangle holes\n", pf);
     }
 
-    if (sf_env("BPA_DEBUG")) {
+    if (getenv("BPA_DEBUG")) {
         int n_front = 0, n_int = 0, n_bnd = 0;
         for (int i = 0; i < es->n; i++) {
             if (es->e[i].state == ES_FRONT) n_front++;
@@ -1687,14 +2350,18 @@ int BallPivot_reconstruct(Arena_T arena,
  * (the divot "wall" that connects a sheet UP to the next wrap at a Z-seam). */
 static int bpa_edge_cross_wrap(const Vec3 *V, int32_t a, int32_t b)
 {
-    double ay = (double)V[a].y - g_umb_y, ax = (double)V[a].x - g_umb_x;
-    double by = (double)V[b].y - g_umb_y, bx = (double)V[b].x - g_umb_x;
+    double auy, aux, buy, bux;
+    bpa_global_axis_at((double)V[a].z, &auy, &aux);
+    bpa_global_axis_at((double)V[b].z, &buy, &bux);
+    double ay = (double)V[a].y - auy, ax = (double)V[a].x - aux;
+    double by = (double)V[b].y - buy, bx = (double)V[b].x - bux;
     double ra = hypot(ay, ax), rb = hypot(by, bx);
     double dr = rb - ra;
     double dth = atan2(by, bx) - atan2(ay, ax);
     while (dth >  M_PI) dth -= 2.0*M_PI;
     while (dth < -M_PI) dth += 2.0*M_PI;
-    double dw = dr/g_wrap_pitch - dth/(2.0*M_PI);
+    double dw = PitchTable_dturns(PitchTable_from_env(), ra, rb, g_wrap_pitch)
+              - dth/(2.0*M_PI);
     if (fabs(dw) <= g_wind_tol) return 0;
     double cy = by - ay, cx = bx - ax, cz = (double)V[b].z - (double)V[a].z;
     double chord2 = cy*cy + cx*cx + cz*cz;
@@ -1724,7 +2391,7 @@ int BallPivot_bridge(Arena_T arena,
     const Vec3 *V = (const Vec3 *)verts;
     const Vec3 *N = (const Vec3 *)normals;
     int n = (int)nv;
-    g_bpa_trace = (sf_env("BPA_TRACE") != NULL);
+    g_bpa_trace = (getenv("BPA_TRACE") != NULL);
     g_no_normal_gate = 0;   /* the seam bridge always honors the normal gate */
     g_normal_tol = 0.0;
     /* The seam bridge legitimately zips two fronts that may carry opposite local
@@ -1741,17 +2408,76 @@ int BallPivot_bridge(Arena_T arena,
      * wraps by WINDING about the umbilicus (phase = r/pitch - theta/2pi). Now a
      * caller parameter (BpaBridgeGate) rather than env-read, so a restricted-
      * cloud permissive re-weld can pass NULL / pitch<=0 to disable it while the
-     * primary weld passes the env-derived gate. ARMED only when pitch > 0 and an
-     * umbilicus is supplied. */
+     * primary weld passes the env-derived gate. ARMED only when pitch > 0 and a
+     * constant or sampled umbilicus is supplied. */
     g_wind_tol = 0.0; g_wind_hard = 0.0;
     g_wrap_pitch = 0.0; g_umb_y = 0.0; g_umb_x = 0.0; g_dbg_wind = 0;
-    if (gate && gate->pitch > 0.0 && (gate->umb_y != 0.0 || gate->umb_x != 0.0)) {
+    g_axis_z = g_axis_y = g_axis_x = NULL; g_axis_n = 0;
+    if (gate && gate->pitch > 0.0 &&
+        ((gate->axis_z != NULL && gate->axis_y != NULL &&
+          gate->axis_x != NULL && gate->axis_n >= 2) ||
+         gate->umb_y != 0.0 || gate->umb_x != 0.0)) {
         g_umb_y = gate->umb_y; g_umb_x = gate->umb_x; g_wrap_pitch = gate->pitch;
+        g_axis_z = gate->axis_z; g_axis_y = gate->axis_y;
+        g_axis_x = gate->axis_x; g_axis_n = gate->axis_n;
         g_wind_tol = (gate->tol > 0.0) ? gate->tol : SEAM_WIND_TOL_DEFAULT_TURNS;
         g_wind_hard = (gate->hard > 0.0) ? gate->hard : 0.0;
-        fprintf(stderr, "  [bridge] winding gate ON: umbilicus=(y%.1f,x%.1f) pitch=%.1f vox "
-                "tol=%.2f turn (hard cap %.2f)\n",
-                g_umb_y, g_umb_x, g_wrap_pitch, g_wind_tol, g_wind_hard);
+        if (g_axis_n >= 2)
+            fprintf(stderr, "  [bridge] winding gate ON: curved umbilicus (%zu samples, "
+                    "z %.1f..%.1f) pitch=%.1f vox tol=%.2f turn (hard cap %.2f)\n",
+                    g_axis_n, g_axis_z[0], g_axis_z[g_axis_n-1],
+                    g_wrap_pitch, g_wind_tol, g_wind_hard);
+        else
+            fprintf(stderr, "  [bridge] winding gate ON: umbilicus=(y%.1f,x%.1f) pitch=%.1f vox "
+                    "tol=%.2f turn (hard cap %.2f)\n",
+                    g_umb_y, g_umb_x, g_wrap_pitch, g_wind_tol, g_wind_hard);
+    }
+
+    /* The fractional part of w should be common to all turns of an
+     * Archimedean sheet. Report its robust circular concentration on the
+     * actual seam-front vertices; this tells us whether a periodic phase-band
+     * guard is supported by the specimen rather than assumed a priori. */
+    if (g_wind_tol > 0.0 && g_wrap_pitch > 0.0 && n_init > 0) {
+        double sine = 0.0, cosine = 0.0;
+        size_t samples = 0;
+        for (size_t k = 0; k < n_init; k++) {
+            int vv[2] = { init_edges[k].va, init_edges[k].vb };
+            for (int j = 0; j < 2; j++) if (vv[j] >= 0 && vv[j] < n) {
+                double w = bpa_vertex_winding(V, vv[j]);
+                sine += sin(2.0 * M_PI * w);
+                cosine += cos(2.0 * M_PI * w);
+                samples++;
+            }
+        }
+        if (samples > 0) {
+            double center = atan2(sine, cosine) / (2.0 * M_PI);
+            double resultant = hypot(sine, cosine) / (double)samples;
+            double *residual = (double *)malloc(samples * sizeof(double));
+            size_t nr = 0, over15 = 0, over20 = 0, over25 = 0;
+            if (residual != NULL) {
+                for (size_t k = 0; k < n_init; k++) {
+                    int vv[2] = { init_edges[k].va, init_edges[k].vb };
+                    for (int j = 0; j < 2; j++) if (vv[j] >= 0 && vv[j] < n) {
+                        double d = bpa_vertex_winding(V, vv[j]) - center;
+                        d = fabs(d - nearbyint(d));
+                        residual[nr++] = d;
+                        if (d > 0.15) over15++;
+                        if (d > 0.20) over20++;
+                        if (d > 0.25) over25++;
+                    }
+                }
+                qsort(residual, nr, sizeof(double), bpa_double_cmp);
+                fprintf(stderr,
+                        "  [bridge] seam phase modulo-turn: center=%+.3f R=%.3f "
+                        "abs-residual p50=%.3f p90=%.3f p95=%.3f p99=%.3f "
+                        "max=%.3f >.15=%zu >.20=%zu >.25=%zu / %zu\n",
+                        center, resultant, residual[(nr-1)*50/100],
+                        residual[(nr-1)*90/100], residual[(nr-1)*95/100],
+                        residual[(nr-1)*99/100], residual[nr-1], over15,
+                        over20, over25, nr);
+                free(residual);
+            }
+        }
     }
 
     Grid *g = grid_build(V, n, 2.0*rho);
@@ -1767,6 +2493,52 @@ int BallPivot_bridge(Arena_T arena,
     uint8_t *used = (uint8_t *)calloc((size_t)n, 1);
     int *vfront = (int *)calloc((size_t)n, sizeof(int));
     BpaBuild b; bpa_build_init(&b, (int)n_init * 2);
+    if (g_wind_tol > 0.0 && g_wrap_pitch > 0.0 &&
+        getenv("SEAM_BRIDGE_GROW_WIND") != NULL) {
+        b.grow_phase = (double *)malloc((size_t)n * sizeof(double));
+        if (b.grow_phase != NULL) {
+            for (int i = 0; i < n; i++) b.grow_phase[i] = NAN;
+            b.grow_pitch = g_wrap_pitch;
+            b.grow_tol = g_wind_tol;
+            b.grow_umb_y = g_umb_y;
+            b.grow_umb_x = g_umb_x;
+            b.grow_origin_z = b.grow_origin_y = b.grow_origin_x = 0.0;
+            b.grow_axis_z = g_axis_z; b.grow_axis_y = g_axis_y;
+            b.grow_axis_x = g_axis_x; b.grow_axis_n = g_axis_n;
+            fprintf(stderr,
+                    "  [bridge] cumulative growth winding anchor ON (tol %.2f turn)\n",
+                    b.grow_tol);
+        }
+    }
+    if (gate != NULL && gate->span > 0.0 && g_wrap_pitch > 0.0) {
+        b.span_parent = (int *)malloc((size_t)n * sizeof(int));
+        b.span_size = (int *)malloc((size_t)n * sizeof(int));
+        b.span_weight = (double *)calloc((size_t)n, sizeof(double));
+        b.span_min = (double *)calloc((size_t)n, sizeof(double));
+        b.span_max = (double *)calloc((size_t)n, sizeof(double));
+        if (b.span_parent == NULL || b.span_size == NULL ||
+            b.span_weight == NULL || b.span_min == NULL ||
+            b.span_max == NULL) {
+            free(b.span_parent); free(b.span_size); free(b.span_weight);
+            free(b.span_min); free(b.span_max);
+            b.span_parent = b.span_size = NULL;
+            b.span_weight = b.span_min = b.span_max = NULL;
+        } else {
+            for (int i = 0; i < n; i++) {
+                b.span_parent[i] = i;
+                b.span_size[i] = 1;
+            }
+            b.span_tol = gate->span;
+            b.grow_pitch = g_wrap_pitch;
+            b.grow_umb_y = g_umb_y; b.grow_umb_x = g_umb_x;
+            b.grow_origin_y = b.grow_origin_x = 0.0;
+            b.grow_axis_z = g_axis_z; b.grow_axis_y = g_axis_y;
+            b.grow_axis_x = g_axis_x; b.grow_axis_n = g_axis_n;
+            fprintf(stderr,
+                    "  [bridge] connected-growth winding span gate ON (%.2f turn)\n",
+                    b.span_tol);
+        }
+    }
 
     /* Prime the front with every supplied boundary half-edge. The hinge
      * ball center O_prev is reconstructed from the edge's single existing
@@ -1794,6 +2566,11 @@ int BallPivot_bridge(Arena_T arena,
         double O_prev[3];
         if (!sphere_center(a, bb_, c, rho, sign, O_prev)) continue;
         int eid = edges_insert(es, vfront, va, vb, vo, O_prev);
+        bpa_grow_phase_seed_edge(&b, V, va, vb);
+        if (b.span_parent != NULL) {
+            double d = bpa_grow_phase_step(&b, V, va, vb);
+            bpa_span_union(&b, va, vb, d);
+        }
         bpa_enqueue(&b, eid);
     }
 
@@ -1823,7 +2600,7 @@ int BallPivot_bridge(Arena_T arena,
      * split then amplified into >2-face edges. The trade is a few seam edges the
      * strict guard declines to bridge (left as clean boundary for hole-fill).
      * SEAM_RELAX_BRIDGE=1 restores the old relaxed zip for comparison. */
-    int bridge_relax = (sf_env("SEAM_RELAX_BRIDGE") != NULL) ? 1 : 0;
+    int bridge_relax = (getenv("SEAM_RELAX_BRIDGE") != NULL) ? 1 : 0;
     for (int lvl = 0; lvl < n_rho; lvl++) {
         double r = radii[lvl];
         for (int pass = 0; pass < 16; pass++) {
@@ -1847,8 +2624,14 @@ int BallPivot_bridge(Arena_T arena,
     if (g_wind_tol > 0.0)
         fprintf(stderr, "  [bridge] winding gate: %ld cross-wrap weld candidate(s) "
                 "rejected (tol %.2f turn)\n", g_dbg_wind, g_wind_tol);
+    if (b.grow_phase != NULL)
+        fprintf(stderr, "  [bridge] cumulative winding anchor: %ld gradual "
+                "cross-wrap candidate(s) rejected\n", b.dbg_grow_wind);
+    if (b.span_parent != NULL)
+        fprintf(stderr, "  [bridge] connected winding span gate: %ld "
+                "transitive/cycle candidate(s) rejected\n", b.dbg_span);
 
-    if (sf_env("BPA_DEBUG")) {
+    if (getenv("BPA_DEBUG")) {
         int n_front = 0, n_int = 0, n_bnd = 0;
         for (int i = 0; i < es->n; i++) {
             if (es->e[i].state == ES_FRONT) n_front++;

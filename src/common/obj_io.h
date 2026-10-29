@@ -51,6 +51,12 @@ int ObjIO_read(Arena_T arena, const char *path,
 int ObjIO_write_uv(const char *path, const float *verts, size_t nv,
                    const int32_t *faces, size_t nf, const float *uv);
 
+/* Double-precision UV interchange.  Large intrinsic charts can contain valid
+ * triangles below float mantissa resolution; OBJ text supports these values
+ * without changing the 3-D float mesh representation. */
+int ObjIO_write_uv_double(const char *path, const float *verts, size_t nv,
+                          const int32_t *faces, size_t nf, const double *uv);
+
 /* ObjIO_write_uv with a face mask: emit only faces where keep[t] != 0
  * (keep NULL = all faces). All vertices are always emitted so face indices
  * and any per-vertex sidecar arrays stay aligned with the input.

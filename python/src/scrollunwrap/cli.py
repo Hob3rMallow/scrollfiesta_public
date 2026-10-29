@@ -63,7 +63,8 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("--cube-timeout", type=float, default=600.0,
                    help="per-cube mesher timeout in seconds (default 600; 0 = no "
                         "timeout). A cube exceeding it is skipped, not allowed to hang")
-    r.add_argument("--no-qem", action="store_true")
+    r.add_argument("--no-simplify", action="store_true",
+                   help="dense diagnostic mode: skip CVT remeshing")
     r.add_argument("--adaptive-bpa", action="store_true",
                    help="audit BPA winding topology and rerun flagged cubes at "
                         "rho 1.10 then 1.00")
@@ -201,7 +202,8 @@ def _process_roi(args, roi: Roi, roi_dir: Path, bins: dict) -> dict:
     mesh_res = run_mesher(
         vol, cubes, roi_dir / "mesh",
         cube_mesh_bin=bins["cube_mesh"], grid_weld_bin=bins["grid_weld"],
-        halo=args.halo, threshold=args.threshold, skip_qem=args.no_qem,
+        halo=args.halo, threshold=args.threshold,
+        skip_simplify=args.no_simplify,
         max_concurrent=args.max_concurrent, threads_per_cube=args.threads_per_cube,
         cube_timeout=(None if args.cube_timeout <= 0 else args.cube_timeout),
         adaptive_bpa=adaptive, mls_backend=args.mls_backend)

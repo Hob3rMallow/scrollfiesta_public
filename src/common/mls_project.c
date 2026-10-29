@@ -1,5 +1,4 @@
 #include "mls_project.h"
-#include "run_ctx.h"
 
 #include "pipeline_constants.h"
 
@@ -262,6 +261,67 @@ static void bucket_sort_pos(float *bz, float *by, float *bx, int32_t *bidx,
     }
 }
 
+/* One existing neighbour cell of an occupied cell: offset and CSR span. */
+typedef struct {
+    int32_t start, cnt;
+    int8_t  dz, dy, dx, pad;
+} MlsNb;
+
+static inline int32_t cell_key_axis(uint64_t key, int shift)
+{
+    return (int32_t)((key >> shift) & 0x1FFFFF) - (1 << 20);
+}
+
+static const float *g_mls_point_weight = NULL;
+
+void MLS_set_point_weights(const float *weights)
+{
+    g_mls_point_weight = weights;
+}
+
+/* Test hook (MLS_selftest, scripts/extract/mls_bench.c): 1 = the 2026-07
+ * reference span kernel (float loads, tail mask on every batch, every sum with
+ * two roundings, queries in index order).  Production never sets it. */
+static int g_mls_reference_kernel = 0;
+
+void MLS_test_reference_kernel(int on) { g_mls_reference_kernel = on; }
+
+#if defined(__AVX2__)
+/* r^2 = dz*dz + dy*dy + dx*dx of 4 lanes; with MLS_FMA_ACCUMULATE as two FMAs
+ * (see pipeline_constants.h), else in the scalar order ((dz*dz + dy*dy) + dx*dx). */
+static inline __m256d mls_r2_4(__m256d dz, __m256d dy, __m256d dx)
+{
+#if MLS_FMA_ACCUMULATE
+    return _mm256_fmadd_pd(dx, dx, _mm256_fmadd_pd(dy, dy, _mm256_mul_pd(dz, dz)));
+#else
+    return _mm256_add_pd(_mm256_add_pd(_mm256_mul_pd(dz, dz), _mm256_mul_pd(dy, dy)),
+                         _mm256_mul_pd(dx, dx));
+#endif
+}
+
+/* acc + a*b of 4 lanes (FMA under MLS_FMA_ACCUMULATE, else two roundings). */
+static inline __m256d mls_madd4(__m256d a, __m256d b, __m256d acc)
+{
+#if MLS_FMA_ACCUMULATE
+    return _mm256_fmadd_pd(a, b, acc);
+#else
+    return _mm256_add_pd(acc, _mm256_mul_pd(a, b));
+#endif
+}
+
+/* Wendland weight of 4 lanes in wendland()'s op order: t = r/R, s = 1-t,
+ * w = (s*s)*(s*s) * (4t + 1).  4t + 1 is ONE fmadd, which is exact: 4t is an
+ * exact power-of-two scaling, so RN(4t + 1) == RN(RN(4t) + 1). */
+static inline __m256d mls_wendland4(__m256d r2v, __m256d Rv)
+{
+    __m256d tv = _mm256_div_pd(_mm256_sqrt_pd(r2v), Rv);
+    __m256d sv = _mm256_sub_pd(_mm256_set1_pd(1.0), tv);
+    __m256d s2 = _mm256_mul_pd(sv, sv);
+    return _mm256_mul_pd(_mm256_mul_pd(s2, s2),
+                         _mm256_fmadd_pd(_mm256_set1_pd(4.0), tv, _mm256_set1_pd(1.0)));
+}
+#endif
+
 void MLS_project_verts(Arena_T arena,
                        const float *verts, size_t nv,
                        float radius_vox,
@@ -279,7 +339,7 @@ void MLS_project_verts(Arena_T arena,
      * scroll fold two wraps sit ~1-2 vox apart; the default R=12 spans both and
      * fuses them. Default = the caller's compiled radius. */
     {
-        const char *r_env = sf_env("MLS_RADIUS_VOX");
+        const char *r_env = getenv("MLS_RADIUS_VOX");
         if (r_env && *r_env) {
             double v = atof(r_env);
             if (v > 0.0) {
@@ -331,15 +391,15 @@ void MLS_project_verts(Arena_T arena,
     while (T < nv * 2) T <<= 1;
 
     uint64_t *tab_key  = (uint64_t *)ARENA_ALLOC(arena,
-                            (long)T * (long)sizeof(uint64_t));
+                            (size_t)T * sizeof(uint64_t));
     int32_t *tab_cnt   = (int32_t *)ARENA_ALLOC(arena,
-                            (long)T * (long)sizeof(int32_t));
+                            (size_t)T * sizeof(int32_t));
     int32_t *tab_start = (int32_t *)ARENA_ALLOC(arena,
-                            (long)T * (long)sizeof(int32_t));
+                            (size_t)T * sizeof(int32_t));
     uint32_t *slot_of  = (uint32_t *)ARENA_ALLOC(arena,
-                            (long)nv * (long)sizeof(uint32_t));
+                            (size_t)nv * sizeof(uint32_t));
     uint32_t *uniq     = (uint32_t *)ARENA_ALLOC(arena,
-                            (long)nv * (long)sizeof(uint32_t));
+                            (size_t)nv * sizeof(uint32_t));
     size_t n_uniq = 0;
 
     memset(tab_key, 0xFF, T * sizeof(uint64_t));   /* all MLS_HASH_EMPTY */
@@ -383,19 +443,19 @@ void MLS_project_verts(Arena_T arena,
      * reads ONLY these (never `verts`), so out_verts may alias verts
      * safely. */
     float   *bz   = (float *)ARENA_ALLOC(arena,
-                        (long)(nv + 3) * (long)sizeof(float));
+                        (size_t)(nv + 3) * sizeof(float));
     float   *by   = (float *)ARENA_ALLOC(arena,
-                        (long)(nv + 3) * (long)sizeof(float));
+                        (size_t)(nv + 3) * sizeof(float));
     float   *bx   = (float *)ARENA_ALLOC(arena,
-                        (long)(nv + 3) * (long)sizeof(float));
+                        (size_t)(nv + 3) * sizeof(float));
     int32_t *bidx = (int32_t *)ARENA_ALLOC(arena,
-                        (long)nv * (long)sizeof(int32_t));
+                        (size_t)nv * sizeof(int32_t));
     bz[nv] = 0.0f; bz[nv+1] = 0.0f; bz[nv+2] = 0.0f;
     by[nv] = 0.0f; by[nv+1] = 0.0f; by[nv+2] = 0.0f;
     bx[nv] = 0.0f; bx[nv+1] = 0.0f; bx[nv+2] = 0.0f;
     {
         int32_t *cur = (int32_t *)ARENA_ALLOC(arena,
-                            (long)T * (long)sizeof(int32_t));
+                            (size_t)T * sizeof(int32_t));
         memcpy(cur, tab_start, T * sizeof(int32_t));
         for (size_t i = 0; i < nv; i++) {
             size_t s = (size_t)slot_of[i];
@@ -414,6 +474,63 @@ void MLS_project_verts(Arena_T arena,
         }
     }
 
+#if defined(__AVX2__)
+    /* Double copies of the sorted SoA positions for the AVX2 kernel: it loads
+     * them instead of converting three floats per batch (float -> double is
+     * exact, so every value is unchanged).  Zero pads as for the floats. */
+    double *bzd = (double *)ARENA_ALLOC(arena, (size_t)(nv + 3) * sizeof(double));
+    double *byd = (double *)ARENA_ALLOC(arena, (size_t)(nv + 3) * sizeof(double));
+    double *bxd = (double *)ARENA_ALLOC(arena, (size_t)(nv + 3) * sizeof(double));
+    for (size_t q = 0; q < nv + 3; q++) {
+        bzd[q] = (double)bz[q];
+        byd[q] = (double)by[q];
+        bxd[q] = (double)bx[q];
+    }
+#endif
+    const int ref_kernel = g_mls_reference_kernel;
+
+    /* Per occupied cell, its EXISTING neighbour cells in the query's
+     * (dz, dy, dx) order, each with its CSR span.  Every vertex of a cell
+     * walked the same 5^3 offsets and hashed each one; the list does those
+     * lookups once per cell (a cell holds ~10^2 vertices).  The per-vertex
+     * sphere/box cull below is unchanged, so the spans visited, their order
+     * and every accumulation are identical (2026-10-04). */
+    int32_t *uidx_of_slot = (int32_t *)ARENA_ALLOC(arena,
+                                (size_t)T * sizeof(int32_t));
+    for (size_t u = 0; u < n_uniq; u++) uidx_of_slot[uniq[u]] = (int32_t)u;
+    int32_t *nb_off = (int32_t *)ARENA_ALLOC(arena,
+                          (size_t)(n_uniq + 1) * sizeof(int32_t));
+    MlsNb *nbl = NULL;
+    for (int pass = 0; pass < 2; pass++) {
+        size_t ne = 0;
+        for (size_t u = 0; u < n_uniq; u++) {
+            uint64_t key = tab_key[uniq[u]];
+            int32_t ccz = cell_key_axis(key, 42);
+            int32_t ccy = cell_key_axis(key, 21);
+            int32_t ccx = cell_key_axis(key, 0);
+            if (pass == 0) nb_off[u] = (int32_t)ne;
+            for (int dz = -MLS_CELL_DIV; dz <= MLS_CELL_DIV; dz++)
+                for (int dy = -MLS_CELL_DIV; dy <= MLS_CELL_DIV; dy++)
+                    for (int dx = -MLS_CELL_DIV; dx <= MLS_CELL_DIV; dx++) {
+                        size_t h = hash_find(tab_key, T,
+                                             cell_key(ccz + dz, ccy + dy, ccx + dx));
+                        if (h == SIZE_MAX) continue;
+                        if (pass == 1) {
+                            MlsNb *e = &nbl[ne];
+                            e->start = tab_start[h];
+                            e->cnt = tab_cnt[h];
+                            e->dz = (int8_t)dz; e->dy = (int8_t)dy; e->dx = (int8_t)dx;
+                            e->pad = 0;
+                        }
+                        ne++;
+                    }
+        }
+        if (pass == 0) {
+            nb_off[n_uniq] = (int32_t)ne;
+            nbl = (MlsNb *)ARENA_ALLOC(arena, (size_t)((ne ? ne : 1) * sizeof(MlsNb)));
+        }
+    }
+
     /* -------- Per-vertex MLS midpoint (fused single sweep) -------- */
     /* Each vertex is independent -- all-local accumulators, read-only cell
      * index, one write to out_*[i] -- so this parallelizes exactly: output is
@@ -424,19 +541,12 @@ void MLS_project_verts(Arena_T arena,
      * omp_set_num_threads(n_threads) in the driver. */
     int nv_i = (int)nv;
     int si = 0;   /* declared before the loop: MSVC OpenMP 2.0 form */
-    /* Cancellation: NEVER longjmp out of a parallel region. Poll cheaply
-     * (every 1024th index), flag-skip the remaining iterations, and let the
-     * caller-side RunCtx_check raise back to the API boundary. */
-    volatile int mls_stop = 0;
 #pragma omp parallel for schedule(dynamic, 256)
     for (si = 0; si < nv_i; si++) {
-        size_t i = (size_t)si;
-        if (mls_stop)
-            continue;
-        if ((si & 1023) == 0 && RunCtx_should_stop()) {
-            mls_stop = 1;
-            continue;
-        }
+        /* Queries in CSR (cell) order: consecutive queries share their
+         * neighbour spans, which stay in cache.  Each query is independent and
+         * writes only out_*[i], so the order changes no output. */
+        size_t i = ref_kernel ? (size_t)si : (size_t)bidx[si];
         float vz = verts[i * 3 + 0];
         float vy = verts[i * 3 + 1];
         float vx = verts[i * 3 + 2];
@@ -489,19 +599,20 @@ void MLS_project_verts(Arena_T arena,
         const __m256d zero4 = _mm256_setzero_pd();
 #endif
 
-        for (int dz = -MLS_CELL_DIV; dz <= MLS_CELL_DIV; dz++) {
-            double lo_z = (double)(ciz + dz) * cell_d;
-            double ddz = (wz < lo_z) ? (lo_z - wz)
-                       : (wz > lo_z + cell_d) ? (wz - (lo_z + cell_d)) : 0.0;
-            double ddz2 = ddz * ddz;
-            if (ddz2 > R2 + MLS_CULL_MARGIN_SQ) continue;
-            for (int dy = -MLS_CELL_DIV; dy <= MLS_CELL_DIV; dy++) {
-                double lo_y = (double)(ciy + dy) * cell_d;
-                double ddy = (wy < lo_y) ? (lo_y - wy)
-                           : (wy > lo_y + cell_d) ? (wy - (lo_y + cell_d)) : 0.0;
-                double dzy2 = ddz2 + ddy * ddy;
-                if (dzy2 > R2 + MLS_CULL_MARGIN_SQ) continue;
-                for (int dx = -MLS_CELL_DIV; dx <= MLS_CELL_DIV; dx++) {
+        const int32_t uu = uidx_of_slot[slot_of[i]];
+        for (int32_t e = nb_off[uu]; e < nb_off[uu + 1]; e++) {
+                    const MlsNb *nb = &nbl[e];
+                    const int dz = nb->dz, dy = nb->dy, dx = nb->dx;
+                    double lo_z = (double)(ciz + dz) * cell_d;
+                    double ddz = (wz < lo_z) ? (lo_z - wz)
+                               : (wz > lo_z + cell_d) ? (wz - (lo_z + cell_d)) : 0.0;
+                    double ddz2 = ddz * ddz;
+                    if (ddz2 > R2 + MLS_CULL_MARGIN_SQ) continue;
+                    double lo_y = (double)(ciy + dy) * cell_d;
+                    double ddy = (wy < lo_y) ? (lo_y - wy)
+                               : (wy > lo_y + cell_d) ? (wy - (lo_y + cell_d)) : 0.0;
+                    double dzy2 = ddz2 + ddy * ddy;
+                    if (dzy2 > R2 + MLS_CULL_MARGIN_SQ) continue;
                     double lo_x = (double)(cix + dx) * cell_d;
                     double ddx = (wx < lo_x) ? (lo_x - wx)
                                : (wx > lo_x + cell_d) ? (wx - (lo_x + cell_d)) : 0.0;
@@ -510,13 +621,74 @@ void MLS_project_verts(Arena_T arena,
                      * The exact per-point r2 test below owns correctness. */
                     if (dzy2 + ddx * ddx > R2 + MLS_CULL_MARGIN_SQ) continue;
 
-                    uint64_t target = cell_key(ciz + dz, ciy + dy, cix + dx);
-                    size_t h = hash_find(tab_key, T, target);
-                    if (h == SIZE_MAX) continue;
+                    int32_t k0 = nb->start;
+                    int32_t k1 = k0 + nb->cnt;
+                    if (g_mls_point_weight != NULL) {
+                    /* CT-weighted kernel (scalar path on every build): the
+                     * Wendland weight is scaled by the neighbour's brightness
+                     * weight, indexed through bidx (bucket -> original). */
+                    for (int32_t k = k0; k < k1; k++) {
+                        double dvz = (double)bz[k] - vzd;
+                        double dvy = (double)by[k] - vyd;
+                        double dvx = (double)bx[k] - vxd;
+                        double r2 = dvz*dvz + dvy*dvy + dvx*dvx;
+                        if (r2 >= R2) continue;
+                        double r = sqrt(r2);
+                        double w = wendland(r, R) *
+                                   (double)g_mls_point_weight[bidx[k]];
+                        if (w <= 0.0) continue;
+                        w_sum += w;
+                        double wdz = w * dvz;
+                        double wdy = w * dvy;
+                        double wdx = w * dvx;
+                        sdz += wdz; sdy += wdy; sdx += wdx;
+                        mzz += wdz * dvz;
+                        mzy += wdz * dvy;
+                        mzx += wdz * dvx;
+                        myy += wdy * dvy;
+                        myx += wdy * dvx;
+                        mxx += wdx * dvx;
+                        n_used++;
+                    }
+                    } else {
 
-                    int32_t k0 = tab_start[h];
-                    int32_t k1 = k0 + tab_cnt[h];
 #if defined(__AVX2__)
+                        if (!ref_kernel) {
+                        /* 2026-10-06 kernel: double loads, the tail mask only on the
+                         * span's last batch, FMA 4t+1 (exact), FMA r^2 and second
+                         * moments under MLS_FMA_ACCUMULATE.  Same spans, lanes and
+                         * accumulation order as the reference loop below. */
+                        for (int32_t k = k0; k < k1; k += 4) {
+                            __m256d dvz4 = _mm256_sub_pd(_mm256_loadu_pd(bzd + k), vz4);
+                            __m256d dvy4 = _mm256_sub_pd(_mm256_loadu_pd(byd + k), vy4);
+                            __m256d dvx4 = _mm256_sub_pd(_mm256_loadu_pd(bxd + k), vx4);
+                            __m256d r2v = mls_r2_4(dvz4, dvy4, dvx4);
+                            __m256d mdist = _mm256_cmp_pd(r2v, R2v, _CMP_LT_OQ);
+                            if (k1 - k < 4)   /* the span's last batch: lanes past k1 are pads */
+                                mdist = _mm256_and_pd(mdist, _mm256_castsi256_pd(
+                                    _mm256_loadu_si256((const __m256i *)MLS_TAIL_MASK[k1 - k])));
+                            if (_mm256_movemask_pd(mdist) == 0) continue;
+                            __m256d wv = mls_wendland4(r2v, Rv);
+                            __m256d mfull = _mm256_and_pd(mdist,
+                                _mm256_cmp_pd(wv, zero4, _CMP_GT_OQ));
+                            wv = _mm256_and_pd(wv, mfull);
+                            n_used += (size_t)_mm_popcnt_u32(
+                                (unsigned)_mm256_movemask_pd(mfull));
+                            aw = _mm256_add_pd(aw, wv);
+                            __m256d wdz = _mm256_mul_pd(wv, dvz4);
+                            __m256d wdy = _mm256_mul_pd(wv, dvy4);
+                            __m256d wdx = _mm256_mul_pd(wv, dvx4);
+                            az = _mm256_add_pd(az, wdz);
+                            ay = _mm256_add_pd(ay, wdy);
+                            ax = _mm256_add_pd(ax, wdx);
+                            azz = mls_madd4(wdz, dvz4, azz);
+                            azy = mls_madd4(wdz, dvy4, azy);
+                            azx = mls_madd4(wdz, dvx4, azx);
+                            ayy = mls_madd4(wdy, dvy4, ayy);
+                            ayx = mls_madd4(wdy, dvx4, ayx);
+                            axx = mls_madd4(wdx, dvx4, axx);
+                        }
+                        } else
                     for (int32_t k = k0; k < k1; k += 4) {
                         int32_t rem = k1 - k;
                         __m256d valid = _mm256_castsi256_pd(
@@ -589,13 +761,14 @@ void MLS_project_verts(Arena_T arena,
                         n_used++;
                     }
 #endif
-                }
-            }
+                    }   /* weighted vs plain kernel */
         }
 
 #if defined(__AVX2__)
-        /* Fixed left-assoc lane reduce: ((l0+l1)+l2)+l3. */
-        {
+        /* Fixed left-assoc lane reduce: ((l0+l1)+l2)+l3.  Skipped when the
+         * CT-weighted scalar kernel ran: its sums live in the scalar
+         * accumulators (the lanes are zero and would erase them). */
+        if (g_mls_point_weight == NULL) {
             double l[4];
             _mm256_storeu_pd(l, aw);  w_sum = ((l[0]+l[1])+l[2])+l[3];
             _mm256_storeu_pd(l, az);  sdz   = ((l[0]+l[1])+l[2])+l[3];
@@ -730,7 +903,7 @@ void MLS_project_verts(Arena_T arena,
      * that magnitude into the reference pipeline and measuring what
      * BPA/guards/weld actually do. NOT for production runs. */
     {
-        const char *pe = sf_env("MLS_PERTURB_EPS");
+        const char *pe = getenv("MLS_PERTURB_EPS");
         if (pe && *pe) {
             double eps = atof(pe);
             for (size_t vi = 0; eps > 0.0 && vi < nv; vi++) {
@@ -750,4 +923,117 @@ void MLS_project_verts(Arena_T arena,
     }
 
     Arena_restore(arena, mark);
+}
+
+static uint64_t mls_test_rand(uint64_t *s)
+{
+    *s += 0x9E3779B97F4A7C15ULL;
+    return hash64(*s);
+}
+
+/* Projection with the production and the reference kernel on one cloud: the
+ * float positions and normals must match bit for bit (MLS_FMA_ACCUMULATE 0) or
+ * within 1e-4 vox / 1e-5 (FMA: last-bit moment differences).  Returns 0 on pass. */
+static int mls_selftest_cloud(Arena_T arena, const char *what, const float *v,
+                              size_t nv)
+{
+    float *o1 = (float *)ARENA_ALLOC(arena, nv * 3 * sizeof(float));
+    float *n1 = (float *)ARENA_ALLOC(arena, nv * 3 * sizeof(float));
+    float *o2 = (float *)ARENA_ALLOC(arena, nv * 3 * sizeof(float));
+    float *n2 = (float *)ARENA_ALLOC(arena, nv * 3 * sizeof(float));
+    const float origin[3] = { 1024.0f, 2048.0f, 3072.0f };
+    MLS_test_reference_kernel(0);
+    MLS_project_verts(arena, v, nv, 12.0f, origin, o1, n1);
+    MLS_test_reference_kernel(1);
+    MLS_project_verts(arena, v, nv, 12.0f, origin, o2, n2);
+    MLS_test_reference_kernel(0);
+    size_t diff = 0, moved = 0;
+    double dmax_v = 0.0, dmax_n = 0.0;
+    for (size_t q = 0; q < nv * 3; q++) {
+        moved += (o1[q] != v[q]);
+        if (memcmp(&o1[q], &o2[q], sizeof(float)) != 0) {
+            diff++;
+            double d = fabs((double)o1[q] - (double)o2[q]);
+            if (d > dmax_v) dmax_v = d;
+        }
+        if (memcmp(&n1[q], &n2[q], sizeof(float)) != 0) {
+            diff++;
+            double d = fabs((double)n1[q] - (double)n2[q]);
+            if (d > dmax_n) dmax_n = d;
+        }
+    }
+    int ok = moved > 0 && (MLS_FMA_ACCUMULATE ? (dmax_v <= 1e-4 && dmax_n <= 1e-5) : diff == 0);
+    fprintf(stderr, "MLS_selftest: %s (%zu verts): kernel vs reference %zu float(s) differ "
+            "(max %.3g vox, normal %.3g)%s\n", what, nv, diff, dmax_v, dmax_n,
+            ok ? "" : " FAIL");
+    return ok ? 0 : -1;
+}
+
+/* MLS selftest: (a) the exact 4t+1 fmadd equals the two-rounding form bit for
+ * bit; (b) the production kernel against the reference kernel (cell-order
+ * queries, double loads, last-batch tail mask, MLS_FMA_ACCUMULATE) on a noisy
+ * curved double envelope and on a voxel-centre slab like the extract input. */
+int MLS_selftest(void)
+{
+    int fails = 0;
+#if defined(__AVX2__)
+    {
+        uint64_t s = 12345;
+        size_t bad = 0, checked = 0;
+        for (size_t n = 0; n < ((size_t)1 << 20); n++) {
+            double t[4];
+            for (int l = 0; l < 4; l++) {
+                uint64_t h = mls_test_rand(&s);
+                t[l] = (double)(h >> 11) * (1.0 / 9007199254740992.0);
+                if ((h & 15) == 0) t[l] = ldexp(t[l], -(int)((h >> 4) & 63));
+            }
+            if (n == 0) { t[0] = 0.0; t[1] = 1.0; t[2] = 0.25; t[3] = nextafter(1.0, 0.0); }
+            __m256d tv = _mm256_loadu_pd(t);
+            double a[4], b[4];
+            _mm256_storeu_pd(a, _mm256_fmadd_pd(_mm256_set1_pd(4.0), tv, _mm256_set1_pd(1.0)));
+            _mm256_storeu_pd(b, _mm256_add_pd(_mm256_mul_pd(_mm256_set1_pd(4.0), tv),
+                                              _mm256_set1_pd(1.0)));
+            bad += memcmp(a, b, sizeof(a)) != 0;
+            checked += 4;
+        }
+        fprintf(stderr, "MLS_selftest: fmadd 4t+1 vs mul+add: %zu values, %zu mismatches\n",
+                checked, bad);
+        if (bad) fails++;
+    }
+#endif
+    {
+        Arena_T arena = Arena_new();
+        uint64_t s = 777;
+        const int nx = 48, ny = 40;
+        size_t nv = (size_t)(2 * nx * ny), k = 0;
+        float *v = (float *)ARENA_ALLOC(arena, nv * 3 * sizeof(float));
+        for (int layer = 0; layer < 2; layer++)
+            for (int j = 0; j < ny; j++)
+                for (int i = 0; i < nx; i++, k++) {
+                    double jit = (double)(mls_test_rand(&s) >> 11) * (1.0 / 9007199254740992.0);
+                    double x = 0.5 + (double)i, y = 0.5 + (double)j;
+                    v[k * 3 + 0] = (float)(20.0 + 0.02 * (x - 24.0) * (x - 24.0) +
+                                           3.0 * (double)layer + 0.4 * jit);
+                    v[k * 3 + 1] = (float)y;
+                    v[k * 3 + 2] = (float)x;
+                }
+        if (mls_selftest_cloud(arena, "noisy double envelope", v, nv) != 0) fails++;
+        /* voxel centres of a 5-vox-thick curved sheet in a 40x48x48 box */
+        size_t cap = 40 * 48 * 48, m = 0;
+        float *w = (float *)ARENA_ALLOC(arena, cap * 3 * sizeof(float));
+        for (int z = 0; z < 40; z++)
+            for (int y = 0; y < 48; y++)
+                for (int x = 0; x < 48; x++) {
+                    double mid = 18.0 + 6.0 * sin(0.13 * (double)x) + 0.05 * (double)y;
+                    if (fabs((double)z + 0.5 - mid) < 2.5) {
+                        w[m * 3 + 0] = (float)z + 0.5f;
+                        w[m * 3 + 1] = (float)y + 0.5f;
+                        w[m * 3 + 2] = (float)x + 0.5f;
+                        m++;
+                    }
+                }
+        if (mls_selftest_cloud(arena, "voxel-centre sheet", w, m) != 0) fails++;
+        Arena_dispose(&arena);
+    }
+    return fails ? -1 : 0;
 }

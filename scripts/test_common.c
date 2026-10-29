@@ -11,6 +11,7 @@
 #include "common/bfs.h"
 #include "common/tiff_io.h"
 #include "common/halo_loader.h"
+#include "holefill/clipper2_wrap.h"
 
 #include "common/obj_io.h"
 
@@ -124,6 +125,39 @@ static void test_arena_save_restore(void)
     reuse[0] = 123.0f;
 
     Arena_dispose(&arena);
+    PASS();
+}
+
+/* Arena_new_sized: small chunks for small long-lived arenas.  Allocations
+ * that fit share chunks of the requested size; a larger one gets a chunk of
+ * its own; save/restore and reuse behave as in a default arena. */
+static void test_arena_sized(void)
+{
+    TEST(arena_sized);
+
+    Arena_T arena = Arena_new_sized(8192);
+    uint8_t *a = (uint8_t *)ARENA_ALLOC(arena, 3000);
+    uint8_t *b = (uint8_t *)ARENA_ALLOC(arena, 3000);
+    /* both fit one 8 KiB chunk: consecutive */
+    assert(b == a + 3008 || b == a + 3000);
+    memset(a, 1, 3000); memset(b, 2, 3000);
+    Arena_Mark mark = Arena_save(arena);
+    uint8_t *big = (uint8_t *)ARENA_ALLOC(arena, 1 << 20);   /* its own 1 MiB chunk */
+    big[0] = 3; big[(1 << 20) - 1] = 4;
+    uint8_t *c = (uint8_t *)ARENA_ALLOC(arena, 6000);        /* a new 8 KiB chunk */
+    memset(c, 5, 6000);
+    Arena_restore(arena, mark);
+    uint8_t *d = (uint8_t *)ARENA_CALLOC(arena, 100, 1);
+    for (int i = 0; i < 100; i++) assert(d[i] == 0);
+    assert(a[0] == 1 && a[2999] == 1 && b[0] == 2 && b[2999] == 2);
+    Arena_dispose(&arena);
+    assert(arena == NULL);
+
+    /* a request below the minimum still yields a usable arena */
+    Arena_T tiny = Arena_new_sized(1);
+    uint8_t *t = (uint8_t *)ARENA_ALLOC(tiny, 5000);
+    t[4999] = 7;
+    Arena_dispose(&tiny);
     PASS();
 }
 
@@ -793,6 +827,95 @@ static void test_pipeline_constants(void)
     PASS();
 }
 
+/* ===== Clipper2 ABI Regression ===== */
+
+static double polygon_area2(const double *xy, int n)
+{
+    double area2 = 0.0;
+    for (int i = 0; i < n; i++) {
+        int j = (i + 1) % n;
+        area2 += xy[i * 2] * xy[j * 2 + 1]
+               - xy[j * 2] * xy[i * 2 + 1];
+    }
+    return area2;
+}
+
+static void test_clipper2_union_2d_abi(void)
+{
+    TEST(clipper2_union_2d_abi);
+
+    /* A square gives a strict count/area check.  This call overflowed or
+     * returned corrupt geometry when CMake linked both the Z and non-Z
+     * Clipper2 archives and propagated USINGZ into clipper2_wrap.cpp. */
+    const double square[] = {
+        0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0
+    };
+    double *out = NULL;
+    int *counts = NULL;
+    int n_polys = 0;
+    int rc = Clipper2_union(square, 4, &out, &counts, &n_polys);
+    if (rc != 0 || n_polys != 1 || !out || !counts || counts[0] != 4) {
+        free(out);
+        free(counts);
+        FAIL("2-D Clipper ABI produced corrupt square union");
+        return;
+    }
+    double area2 = fabs(polygon_area2(out, counts[0]));
+    if (!isfinite(area2) || fabs(area2 - 200.0) > 1e-6) {
+        free(out);
+        free(counts);
+        FAIL("2-D Clipper ABI produced wrong square area");
+        return;
+    }
+    free(out);
+    free(counts);
+
+    /* The 17-point self-crossing shape mirrors the size and fallback path of
+     * the PHerc0332 boundary that exposed the heap overwrite. */
+    const double crossing[] = {
+        1799.041016, 1688.561157, 1797.531006, 1690.742676,
+        1796.021118, 1692.924194, 1795.076904, 1692.265381,
+        1794.132568, 1691.606567, 1793.188232, 1690.947754,
+        1792.243896, 1690.288940, 1791.696533, 1689.937012,
+        1791.630981, 1691.608032, 1793.473389, 1689.170898,
+        1791.661621, 1693.124512, 1791.692383, 1694.641113,
+        1791.723145, 1696.157593, 1794.249268, 1695.689819,
+        1795.651489, 1693.705078, 1797.053711, 1691.720459,
+        1798.456055, 1689.735718
+    };
+    out = NULL;
+    counts = NULL;
+    n_polys = 0;
+    rc = Clipper2_union(crossing, 17, &out, &counts, &n_polys);
+    if (rc != 0 || n_polys < 1 || !out || !counts) {
+        free(out);
+        free(counts);
+        FAIL("17-point self-crossing union failed");
+        return;
+    }
+    int total = 0;
+    for (int p = 0; p < n_polys; p++) {
+        if (counts[p] < 3) {
+            free(out);
+            free(counts);
+            FAIL("self-crossing union emitted a degenerate polygon");
+            return;
+        }
+        total += counts[p];
+    }
+    for (int i = 0; i < total * 2; i++) {
+        if (!isfinite(out[i])) {
+            free(out);
+            free(counts);
+            FAIL("self-crossing union emitted a non-finite coordinate");
+            return;
+        }
+    }
+    free(out);
+    free(counts);
+    PASS();
+}
+
 /* ===== Main ===== */
 
 #ifdef TEST_HARNESS
@@ -806,6 +929,7 @@ int main(void)
     printf("[Arena]\n");
     test_arena_basic();
     test_arena_save_restore();
+    test_arena_sized();
     test_arena_large_alloc();
     test_arena_free_reuse();
     test_arena_huge_alloc();
@@ -854,6 +978,9 @@ int main(void)
 
     printf("\n[Constants]\n");
     test_pipeline_constants();
+
+    printf("\n[Clipper2 ABI]\n");
+    test_clipper2_union_2d_abi();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
 

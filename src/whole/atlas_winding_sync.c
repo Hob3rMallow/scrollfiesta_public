@@ -19,6 +19,7 @@ typedef struct {
     int32_t raw_turn;
     double radius;
     double raw_winding;
+    double pitch;
 } AwsFaceRecord;
 
 typedef struct {
@@ -29,6 +30,7 @@ typedef struct {
     size_t faces;
     double radius;
     double raw_winding;
+    double pitch;
 } AwsStrand;
 
 typedef struct {
@@ -165,7 +167,8 @@ int AtlasWindingSync_solve(
         p->nfaces > (size_t)INT32_MAX || p->phi == NULL ||
         p->face_radius == NULL || p->face_axial == NULL ||
         p->face_chart == NULL || p->ncharts == 0 ||
-        p->adjacency_face0 == NULL || p->adjacency_face1 == NULL ||
+        (p->nadjacency && (p->adjacency_face0 == NULL || p->adjacency_face1 == NULL)) ||
+        (p->source_face_island && (!p->nsource_islands || p->nsource_islands > p->nfaces)) ||
         p->nintrinsic_adjacency > p->nadjacency ||
         !isfinite(p->spiral_a) || !isfinite(p->spiral_b) ||
         !isfinite(p->pitch) || p->pitch <= 1e-8 ||
@@ -196,7 +199,8 @@ int AtlasWindingSync_solve(
     for (size_t f = 0; f < p->nfaces; f++) {
         int32_t chart = p->face_chart[f];
         if (chart < 0 || (size_t)chart >= p->ncharts) return -1;
-        int32_t root = uf_find(&intrinsic, (int32_t)f);
+        int32_t root = p->source_face_island ? p->source_face_island[f] : uf_find(&intrinsic, (int32_t)f);
+        if (root < 0 || (p->source_face_island && (size_t)root >= p->nsource_islands)) return -1;
         if (root_island[root] < 0) root_island[root] = (int32_t)nisland++;
         face_island[f] = root_island[root];
     }
@@ -265,6 +269,9 @@ int AtlasWindingSync_solve(
         record[f].raw_turn = (int32_t)floor(face_q[f] + 1e-6);
         record[f].radius = p->face_radius[f];
         record[f].raw_winding = face_q[f];
+        double local_pitch = p->face_pitch ? p->face_pitch[f] : 0.0;
+        if (!isfinite(local_pitch) || local_pitch < 0.0) return -1;
+        record[f].pitch = local_pitch > 1e-8 ? local_pitch : p->pitch;
     }
     qsort(record, p->nfaces, sizeof(AwsFaceRecord), aws_compare_face_record);
     AwsStrand *strand = (AwsStrand *)ARENA_ALLOC(
@@ -288,9 +295,11 @@ int AtlasWindingSync_solve(
         for (size_t i = first; i < last; i++) {
             s->radius += record[i].radius;
             s->raw_winding += record[i].raw_winding;
+            s->pitch += record[i].pitch;
         }
         s->radius /= (double)s->faces;
         s->raw_winding /= (double)s->faces;
+        s->pitch /= (double)s->faces;
         first = last;
     }
     qsort(strand, nstrand, sizeof(AwsStrand),
@@ -313,7 +322,7 @@ int AtlasWindingSync_solve(
             for (size_t j = i + 1; j < stop; j++) {
                 const AwsStrand *inner = &strand[i], *outer = &strand[j];
                 if (inner->island == outer->island) continue;
-                double gap = (outer->radius - inner->radius) / p->pitch;
+                double gap = (outer->radius - inner->radius) / (0.5 * (outer->pitch + inner->pitch));
                 if (gap < 0.55 || gap > 4.5) continue;
                 long target_long = lround(
                     gap - (outer->raw_winding - inner->raw_winding));

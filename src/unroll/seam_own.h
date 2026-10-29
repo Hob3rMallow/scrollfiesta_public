@@ -39,7 +39,8 @@ typedef struct SeamOwnOpts {
     CubeTable *ct;           /* shared pre-built table (NULL = build own) */
     double pitch;            /* vox/turn (9.5) */
     double radius_gate;      /* <=0 => pitch/2 */
-    double cell;             /* UV cell size, vox (2.0) */
+    double cell;             /* UV candidate cell size, vox (2.0 API default;
+                                driver adapts to sqrt(du*dv), clamped 2..4) */
     double seam_gate3d;      /* max 3D centroid gap for a SEAM pair (8.0) --
                                 guards |dr| small but 3D-far constellations */
     double spiral_a, spiral_b;  /* diagnostic only (never decides) */
@@ -73,7 +74,8 @@ typedef struct SeamOwnResult {
     int32_t *face_region;    /* [nf] TRUE-overlap region id or -1 (arena) */
 
     /* pair classification */
-    size_t n_true_pairs, n_seam_pairs, n_mystery_pairs;
+    size_t n_true_pairs, n_seam_pairs;
+    size_t n_mystery_pairs;  /* far equal-radius pairs promoted to true */
     /* TRUE-overlap resolution */
     size_t n_regions, n_layers_total, max_region_faces;
     size_t n_vote_picks, n_energy_picks, n_largest_picks;

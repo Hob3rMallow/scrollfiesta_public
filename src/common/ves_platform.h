@@ -24,6 +24,19 @@
  * Compiler compat
  * ================================================================ */
 
+/* Thread-local storage for per-call solver state that concurrent callers
+ * must not share (the QP deadlines of convex_qp.c and active_set_qp.c).
+ * Same spelling rules as EXCEPT_THREAD_LOCAL in except.h. */
+#if defined(_MSC_VER)
+  #define VES_THREAD_LOCAL __declspec(thread)
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_THREADS__)
+  #define VES_THREAD_LOCAL _Thread_local
+#elif defined(__GNUC__)
+  #define VES_THREAD_LOCAL __thread
+#else
+  #define VES_THREAD_LOCAL
+#endif
+
 #ifdef _MSC_VER
   /* MSVC does not support C99 'restrict'; use __restrict instead */
   #ifndef restrict
@@ -195,6 +208,15 @@ static inline int ves_mkdir(const char *path)
 #endif
 }
 
+static inline int ves_rmdir(const char *path)
+{
+#ifdef _WIN32
+    return _rmdir(path);
+#else
+    return rmdir(path);
+#endif
+}
+
 /* ================================================================
  * Sleep: ves_sleep_ms()
  * ================================================================ */
@@ -321,6 +343,12 @@ int ves_ensure_parent_dir(const char *filepath);
 int ves_run_subprocess(const char *exe, const char *const *argv,
                        double timeout_sec);
 
+/* Same, but the child's stdout+stderr append to log_path (NULL = suppress,
+ * identical to ves_run_subprocess).  Orchestrators use this so every spawned
+ * stage keeps a full log per the house logging rule. */
+int ves_run_subprocess_logged(const char *exe, const char *const *argv,
+                              double timeout_sec, const char *log_path);
+
 /* ================================================================
  * Hard timeout: ves_hard_timeout_start / cancel
  *
@@ -336,20 +364,48 @@ void ves_hard_timeout_start(double seconds, volatile sig_atomic_t *flag);
 void ves_hard_timeout_cancel(void);
 
 /* ================================================================
- * OpenMP thread budget: ves_omp_set_threads()
+ * Thread count
  *
- * Sets the OpenMP thread count for subsequent parallel regions; n <= 0
- * leaves the runtime default. No-op when compiled without OpenMP.
- *
- * Implemented in ves_platform.c with a self-declared prototype rather
- * than including omp.h by name: embedding hosts (VC3D) inject a C++-only stub
- * omp.h into the include path, so no library TU may include the real
- * header by name.
+ * Set the OpenMP team size for subsequent parallel regions.  n <= 0
+ * means "leave the runtime default alone".  A no-op when the build
+ * has OpenMP disabled, so callers need no #ifdef of their own.
  * ================================================================ */
 
 void ves_omp_set_threads(int n);
+/* Leave the process now with exit status `code`, after fflush(NULL): no
+ * atexit handlers, no CRT/OpenMP/DLL teardown.  For a batch tool whose
+ * outputs are all written and closed.  2026-10-05: one cube_mesh in ~2,600
+ * hung at exit (output complete, 0 CPU, main + OpenMP worker + timer thread
+ * alive) -- a teardown deadlock this exit path cannot enter.  Does not return. */
+#if defined(_MSC_VER)
+#define VES_NORETURN __declspec(noreturn)
+#elif defined(__GNUC__)
+#define VES_NORETURN __attribute__((noreturn))
+#else
+#define VES_NORETURN
+#endif
+VES_NORETURN void ves_fast_exit(int code);
 
-/* omp_set_dynamic(flag), same self-declared-prototype rule as above. */
-void ves_omp_set_dynamic(int flag);
+/* Run fn(arg) on a worker thread bounded by the WORKER'S CPU time (cpu_ms) and,
+ * as a backstop for a blocked or starved worker, by wall time (wall_ms).
+ * Returns 0 when fn finished, 1 when its CPU budget ran out, 2 when the wall
+ * backstop expired -- in both cases the worker was TerminateThread'ed, so use it
+ * only for code that may be killed (no locks held while it spins) -- and -1
+ * when no thread could be started (the caller should run fn inline).  A CPU
+ * bound does not fire on a starved machine, so the outcome does not depend on
+ * the load (2026-10-05: a 10 s WALL bound in hole_fill abandoned holes and
+ * killed workers mid-flight under load).  *out_cpu_ms (optional) receives the
+ * worker's CPU time.  Windows; elsewhere it returns -1. */
+#ifdef _WIN32
+typedef unsigned (__stdcall *VesThreadFn)(void *);
+#else
+typedef unsigned (*VesThreadFn)(void *);
+#endif
+int ves_run_thread_cpu_bounded(VesThreadFn fn, void *arg, unsigned cpu_ms,
+                               unsigned wall_ms, unsigned *out_cpu_ms);
+
+/* Selftest of ves_run_thread_cpu_bounded (quick, spinning, sleeping and
+ * blocked workers).  Returns 0 on success. */
+int ves_platform_selftest(void);
 
 #endif /* VES_PLATFORM_H */

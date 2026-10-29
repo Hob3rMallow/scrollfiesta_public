@@ -8,6 +8,7 @@
 #include "ves_platform.h"
 #include "dump_obj.h"
 #include "obj_io.h"
+#include "mesh_bin.h"
 #include "obj_colors.h"
 #include "cc_color.h"
 
@@ -100,6 +101,24 @@ static void copy_to_all_obj_dir(const char *dir, const char *cube_id,
     copy_file(all_path, dst);
 }
 
+/* The text OBJ remains the human/tool interchange dump.  The fixed-width
+ * VMESH sibling is the authoritative pipeline handoff and is written from the
+ * same in-memory arrays, so the two formats cannot drift during generation. */
+static void write_binary_companion(const char *dir, const char *cube_id,
+                                   const char *obj_path,
+                                   const float *verts, size_t nv,
+                                   const int32_t *faces, size_t nf)
+{
+    char mesh_path[1024];
+    if (MeshBin_companion_path(obj_path, mesh_path, sizeof(mesh_path)) != 0 ||
+        MeshBin_write(mesh_path, verts, nv, faces, nf, NULL) != 0) {
+        fprintf(stderr, "WARNING: cannot write VMESH companion for %s\n",
+                obj_path);
+        return;
+    }
+    copy_to_all_obj_dir(dir, cube_id, mesh_path);
+}
+
 /* ----------------------------------------------------------------
  * Public API
  * ---------------------------------------------------------------- */
@@ -149,9 +168,9 @@ void DumpObj_write_meshes(Arena_T arena, const char *dir,
     /* Accumulate the combined (world-shifted) mesh in one pass for the CC dump. */
     size_t tot_nv = 0, tot_nf = 0;
     for (size_t i = 0; i < count; i++) { tot_nv += meshes[i].nv; tot_nf += meshes[i].nf; }
-    float   *comb_v = (float *)ARENA_ALLOC(arena, (long)(tot_nv * 3 * sizeof(float)));
-    int32_t *comb_f = (int32_t *)ARENA_ALLOC(arena, (long)(tot_nf * 3 * sizeof(int32_t)));
-    float   *comb_c = (float *)ARENA_ALLOC(arena, (long)(tot_nv * 3 * sizeof(float)));
+    float   *comb_v = (float *)ARENA_ALLOC(arena, (size_t)(tot_nv * 3 * sizeof(float)));
+    int32_t *comb_f = (int32_t *)ARENA_ALLOC(arena, (size_t)(tot_nf * 3 * sizeof(int32_t)));
+    float   *comb_c = (float *)ARENA_ALLOC(arena, (size_t)(tot_nv * 3 * sizeof(float)));
     size_t vo = 0, fo = 0;
     char comp_path[COMP_PATH_LEN];
 
@@ -188,8 +207,11 @@ void DumpObj_write_meshes(Arena_T arena, const char *dir,
     { CCColorOpts opts; CCColor_default_opts(&opts); opts.sat = 0.75;
       CCColor_compute(tot_nv, comb_f, tot_nf, &opts, comb_c, NULL);
       ObjIO_write_per_vertex_color(all_path, comb_v, tot_nv, comb_f, tot_nf, comb_c); }
+    write_binary_companion(dir, cube_id, all_path, comb_v, tot_nv,
+                           comb_f, tot_nf);
     copy_to_all_obj_dir(dir, cube_id, all_path);
-    fprintf(stderr, "  [dump] %zu OBJs + CC-coloured combined -> %s\n", count, dir);
+    fprintf(stderr, "  [dump] VMESH + %zu OBJs + CC-coloured combined -> %s\n",
+            count, dir);
 
     Arena_restore(arena, mark);
 }
@@ -207,7 +229,7 @@ void DumpObj_write_one_world(Arena_T arena, const char *path,
 
     Arena_Mark mark = Arena_save(arena);
     float *shifted = (float *)ARENA_ALLOC(arena,
-        (long)(nv * 3 * sizeof(float)));
+        (size_t)(nv * 3 * sizeof(float)));
     offset_verts(verts, shifted, nv, origin);
     ObjIO_write_colored(path, shifted, nv, faces, nf, color);
     Arena_restore(arena, mark);
@@ -225,7 +247,7 @@ void DumpObj_write_points_world(Arena_T arena, const char *path,
 
     Arena_Mark mark = Arena_save(arena);
     float *shifted = (float *)ARENA_ALLOC(arena,
-        (long)(nv * 3 * sizeof(float)));
+        (size_t)(nv * 3 * sizeof(float)));
     offset_verts(verts, shifted, nv, origin);
 
     FILE *fp = fopen(path, "w");
@@ -266,9 +288,9 @@ void DumpObj_write_mesh_ptrs(Arena_T arena, const char *dir,
 
     size_t tot_nv = 0, tot_nf = 0;
     for (size_t i = 0; i < count; i++) { tot_nv += meshes[i]->nv; tot_nf += meshes[i]->nf; }
-    float   *comb_v = (float *)ARENA_ALLOC(arena, (long)(tot_nv * 3 * sizeof(float)));
-    int32_t *comb_f = (int32_t *)ARENA_ALLOC(arena, (long)(tot_nf * 3 * sizeof(int32_t)));
-    float   *comb_c = (float *)ARENA_ALLOC(arena, (long)(tot_nv * 3 * sizeof(float)));
+    float   *comb_v = (float *)ARENA_ALLOC(arena, (size_t)(tot_nv * 3 * sizeof(float)));
+    int32_t *comb_f = (int32_t *)ARENA_ALLOC(arena, (size_t)(tot_nf * 3 * sizeof(int32_t)));
+    float   *comb_c = (float *)ARENA_ALLOC(arena, (size_t)(tot_nv * 3 * sizeof(float)));
     size_t vo = 0, fo = 0;
     char comp_path[COMP_PATH_LEN];
 
@@ -295,8 +317,11 @@ void DumpObj_write_mesh_ptrs(Arena_T arena, const char *dir,
     { CCColorOpts opts; CCColor_default_opts(&opts); opts.sat = 0.75;
       CCColor_compute(tot_nv, comb_f, tot_nf, &opts, comb_c, NULL);
       ObjIO_write_per_vertex_color(all_path, comb_v, tot_nv, comb_f, tot_nf, comb_c); }
+    write_binary_companion(dir, cube_id, all_path, comb_v, tot_nv,
+                           comb_f, tot_nf);
     copy_to_all_obj_dir(dir, cube_id, all_path);
-    fprintf(stderr, "  [dump] %zu OBJs + CC-coloured combined -> %s\n", count, dir);
+    fprintf(stderr, "  [dump] VMESH + %zu OBJs + CC-coloured combined -> %s\n",
+            count, dir);
 
     Arena_restore(arena, mark);
 }

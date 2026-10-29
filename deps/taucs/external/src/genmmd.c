@@ -1,3 +1,13 @@
+/* vesuvius-c: sheet_assemble orders several matrices at once; each thread
+ * keeps its own copy of the f2c statics below, exactly as a serial run
+ * keeps one. */
+#if defined(_MSC_VER)
+#define GENMMD_THREAD_LOCAL __declspec(thread)
+#elif defined(__GNUC__)
+#define GENMMD_THREAD_LOCAL __thread
+#else
+#define GENMMD_THREAD_LOCAL
+#endif
 /* genmmd.f -- translated by f2c (version of 23 April 1993  18:34:30).
    You must link the resulting object file with the libraries:
 	-lf2c -lm   (in that order)
@@ -62,9 +72,9 @@ integer *neqns, *xadj, *adjncy, *invp, *perm, *delta, *dhead, *qsize, *llist,
     integer i__1;
 
     /* Local variables */
-    static integer mdeg, ehead, i, mdlmt, mdnode;
+    static GENMMD_THREAD_LOCAL integer mdeg, ehead, i, mdlmt, mdnode;
     extern /* Subroutine */ int mmdelm_(), mmdupd_(), mmdint_(), mmdnum_();
-    static integer nextmd, tag, num;
+    static GENMMD_THREAD_LOCAL integer nextmd, tag, num;
 
 
 /* *************************************************************** */
@@ -139,7 +149,10 @@ L400:
 /*            USE VALUE OF DELTA TO SET UP MDLMT, WHICH GOVERNS */
 /*            WHEN A DEGREE UPDATE IS TO BE PERFORMED. */
 /*            ------------------------------------------------- */
-    mdlmt = mdeg + *delta;
+    /* Degrees include the node itself and cannot exceed NEQNS. On a
+     * complete graph DELTA=1 formerly visited DHEAD(NEQNS+1), whose
+     * uninitialized contents could be mistaken for a node index. */
+    mdlmt = *delta > *neqns - mdeg ? *neqns : mdeg + *delta;
     ehead = 0;
 
 L500:
@@ -244,7 +257,7 @@ integer *neqns, *xadj, *adjncy, *dhead, *dforw, *dbakw, *qsize, *llist, *
     integer i__1;
 
     /* Local variables */
-    static integer ndeg, node, fnode;
+    static GENMMD_THREAD_LOCAL integer ndeg, node, fnode;
 
 
 /* *************************************************************** */
@@ -331,7 +344,7 @@ integer *mdnode, *xadj, *adjncy, *dhead, *dforw, *dbakw, *qsize, *llist, *
     integer i__1, i__2;
 
     /* Local variables */
-    static integer node, link, rloc, rlmt, i, j, nabor, rnode, elmnt, xqnbr, 
+    static GENMMD_THREAD_LOCAL integer node, link, rloc, rlmt, i, j, nabor, rnode, elmnt, xqnbr,
 	    istop, jstop, istrt, jstrt, nxnode, pvnode, nqnbrs, npv;
 
 
@@ -581,7 +594,7 @@ integer *ehead, *neqns, *xadj, *adjncy, *delta, *mdeg, *dhead, *dforw, *dbakw,
     integer i__1, i__2;
 
     /* Local variables */
-    static integer node, mtag, link, mdeg0, i, j, enode, fnode, nabor, elmnt, 
+    static GENMMD_THREAD_LOCAL integer node, mtag, link, mdeg0, i, j, enode, fnode, nabor, elmnt,
 	    istop, jstop, q2head, istrt, jstrt, qxhead, iq2, deg, deg0;
 
 
@@ -937,7 +950,7 @@ integer *neqns, *perm, *invp, *qsize;
     integer i__1;
 
     /* Local variables */
-    static integer node, root, nextf, father, nqsize, num;
+    static GENMMD_THREAD_LOCAL integer node, root, nextf, father, nqsize, num;
 
 
 /* *************************************************************** */

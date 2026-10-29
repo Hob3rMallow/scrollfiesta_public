@@ -37,7 +37,7 @@ static void finalize_submesh(ComponentMesh *m, float *v, size_t nv,
 static int emit_single(Arena_T arena, const ComponentMesh *mesh,
                        ComponentMesh **out, size_t *n)
 {
-    ComponentMesh *o = (ComponentMesh *)ARENA_ALLOC(arena, (long)sizeof(ComponentMesh));
+    ComponentMesh *o = (ComponentMesh *)ARENA_ALLOC(arena, sizeof(ComponentMesh));
     *o = *mesh; o->self = o;
     *out = o; *n = 1;
     return 0;
@@ -56,7 +56,7 @@ static int build_component(Arena_T arena, const ComponentMesh *mesh,
     }
     if (cnf == 0) return -1;
 
-    int32_t *o2n = (int32_t *)ARENA_ALLOC(arena, (long)(N*sizeof(int32_t)));
+    int32_t *o2n = (int32_t *)ARENA_ALLOC(arena, (size_t)(N*sizeof(int32_t)));
     for (size_t i = 0; i < N; i++) o2n[i] = -1;
     for (size_t f = 0; f < nf; f++) {
         int32_t a = mesh->faces[f*3+0], b = mesh->faces[f*3+1], d = mesh->faces[f*3+2];
@@ -68,14 +68,14 @@ static int build_component(Arena_T arena, const ComponentMesh *mesh,
     for (size_t i = 0; i < N; i++) if (o2n[i] != -1) o2n[i] = cnv++;
     if (cnv < 3) return -1;
 
-    float *vv = (float *)ARENA_ALLOC(arena, (long)((size_t)cnv*3*sizeof(float)));
+    float *vv = (float *)ARENA_ALLOC(arena, (size_t)((size_t)cnv*3*sizeof(float)));
     for (size_t i = 0; i < N; i++) if (o2n[i] >= 0) {
         size_t ni = (size_t)o2n[i];
         vv[ni*3+0] = mesh->verts[i*3+0];
         vv[ni*3+1] = mesh->verts[i*3+1];
         vv[ni*3+2] = mesh->verts[i*3+2];
     }
-    int32_t *ff = (int32_t *)ARENA_ALLOC(arena, (long)(cnf*3*sizeof(int32_t)));
+    int32_t *ff = (int32_t *)ARENA_ALLOC(arena, (size_t)(cnf*3*sizeof(int32_t)));
     size_t k = 0;
     for (size_t f = 0; f < nf; f++) {
         int32_t a = mesh->faces[f*3+0], b = mesh->faces[f*3+1], d = mesh->faces[f*3+2];
@@ -103,7 +103,7 @@ int DepthPeel_process(Arena_T arena, const ComponentMesh *mesh,
     Arena_Mark scratch = Arena_save(arena);
 
     /* 1. depth along the component thickness axis (PCA normal). */
-    float *w = (float *)ARENA_ALLOC(arena, (long)(nv*sizeof(float)));
+    float *w = (float *)ARENA_ALLOC(arena, (size_t)(nv*sizeof(float)));
     float wmin = 0.0f, wmax = 0.0f;
     PCA_project(mesh->verts, nv, mesh->pca_normal, w, &wmin, &wmax);
 
@@ -111,7 +111,7 @@ int DepthPeel_process(Arena_T arena, const ComponentMesh *mesh,
      * more than min_gap. Only an inter-wrap bridge edge (a long, near-normal
      * step across the empty gap) makes such a jump; intra-sheet edges (~0.6 vox)
      * never do, so a single sheet -- however folded -- marks nothing here. */
-    unsigned char *seam = (unsigned char *)ARENA_CALLOC(arena, (long)nv, 1L);
+    unsigned char *seam = (unsigned char *)ARENA_CALLOC(arena, (size_t)nv, 1L);
     size_t n_seam = 0;
     float fmin_gap = (float)min_gap;
     for (size_t f = 0; f < nf; f++) {
@@ -131,9 +131,9 @@ int DepthPeel_process(Arena_T arena, const ComponentMesh *mesh,
 
     /* 3. exclusion band: seam verts dilated by gap_depth (KD-tree, like
      * bridge_cut's CUT_GAP_DEPTH). gap_depth <= 0 -> seam verts only. */
-    unsigned char *excluded = (unsigned char *)ARENA_CALLOC(arena, (long)nv, 1L);
+    unsigned char *excluded = (unsigned char *)ARENA_CALLOC(arena, (size_t)nv, 1L);
     if (gap_depth > 0.0) {
-        float *spts = (float *)ARENA_ALLOC(arena, (long)(n_seam*3*sizeof(float)));
+        float *spts = (float *)ARENA_ALLOC(arena, (size_t)(n_seam*3*sizeof(float)));
         size_t si = 0;
         for (size_t v = 0; v < nv; v++) if (seam[v]) {
             spts[si*3+0] = mesh->verts[v*3+0];
@@ -155,7 +155,7 @@ int DepthPeel_process(Arena_T arena, const ComponentMesh *mesh,
     /* 4. connected components of the SURVIVING faces (none of whose verts are
      * excluded). The removed band severs the mesh where the bridge spanned it. */
     UnionFind uf = UF_new(arena, (int32_t)nv);
-    unsigned char *refd = (unsigned char *)ARENA_CALLOC(arena, (long)nv, 1L);
+    unsigned char *refd = (unsigned char *)ARENA_CALLOC(arena, (size_t)nv, 1L);
     for (size_t f = 0; f < nf; f++) {
         int32_t a = mesh->faces[f*3+0], b = mesh->faces[f*3+1], c = mesh->faces[f*3+2];
         if (excluded[a] || excluded[b] || excluded[c]) continue;
@@ -164,9 +164,9 @@ int DepthPeel_process(Arena_T arena, const ComponentMesh *mesh,
     }
 
     /* 5. component sizes over referenced verts; promote big ones to real pieces. */
-    int32_t *vcount = (int32_t *)ARENA_CALLOC(arena, (long)nv, (long)sizeof(int32_t));
+    int32_t *vcount = (int32_t *)ARENA_CALLOC(arena, (size_t)nv, sizeof(int32_t));
     for (size_t v = 0; v < nv; v++) if (refd[v]) vcount[uf_find(&uf, (int32_t)v)]++;
-    int32_t *comp_of_root = (int32_t *)ARENA_ALLOC(arena, (long)(nv*sizeof(int32_t)));
+    int32_t *comp_of_root = (int32_t *)ARENA_ALLOC(arena, (size_t)(nv*sizeof(int32_t)));
     for (size_t v = 0; v < nv; v++) comp_of_root[v] = -1;
     int32_t n_real = 0;
     for (size_t v = 0; v < nv; v++) {
@@ -192,7 +192,7 @@ int DepthPeel_process(Arena_T arena, const ComponentMesh *mesh,
 
     /* 7. materialize the pieces. */
     ComponentMesh *o = (ComponentMesh *)ARENA_ALLOC(arena,
-                          (long)((size_t)n_real*sizeof(ComponentMesh)));
+                          (size_t)((size_t)n_real*sizeof(ComponentMesh)));
     size_t cnt = 0;
     for (int32_t c = 0; c < n_real; c++) {
         if (build_component(arena, mesh, vert_comp, c, &o[cnt]) == 0) {
@@ -220,8 +220,8 @@ static void make_grid(Arena_T arena, int ncol, int nrow, const float *z,
 {
     size_t nv = (size_t)ncol*(size_t)nrow;
     size_t nf = (size_t)(ncol-1)*(size_t)(nrow-1)*2;
-    float   *v = (float *)ARENA_ALLOC(arena, (long)(nv*3*sizeof(float)));
-    int32_t *f = (int32_t *)ARENA_ALLOC(arena, (long)(nf*3*sizeof(int32_t)));
+    float   *v = (float *)ARENA_ALLOC(arena, (size_t)(nv*3*sizeof(float)));
+    int32_t *f = (int32_t *)ARENA_ALLOC(arena, (size_t)(nf*3*sizeof(int32_t)));
     for (int r = 0; r < nrow; r++) for (int c = 0; c < ncol; c++) {
         size_t idx = (size_t)r*(size_t)ncol + (size_t)c;
         v[idx*3+0] = (float)c;
@@ -261,7 +261,7 @@ int DepthPeel_selftest(void)
     /* (1) Flat sheet: no depth-jump -> one piece. */
     {
         int N = 11; size_t nz = (size_t)N*(size_t)N;
-        float *z = (float *)ARENA_CALLOC(arena, (long)nz, (long)sizeof(float));
+        float *z = (float *)ARENA_CALLOC(arena, (size_t)nz, sizeof(float));
         float *v; int32_t *f; size_t nv, nf;
         make_grid(arena, N, N, z, &v, &nv, &f, &nf);
         ComponentMesh cm; wrap_mesh(&cm, v, nv, f, nf);
@@ -276,7 +276,7 @@ int DepthPeel_selftest(void)
      * min_gap): curved but one wrap -> must NOT split. */
     {
         int N = 11; size_t nz = (size_t)N*(size_t)N;
-        float *z = (float *)ARENA_ALLOC(arena, (long)(nz*sizeof(float)));
+        float *z = (float *)ARENA_ALLOC(arena, (size_t)(nz*sizeof(float)));
         for (int r = 0; r < N; r++) for (int c = 0; c < N; c++)
             z[(size_t)r*(size_t)N+(size_t)c] = 0.1f*(float)((c-5)*(c-5));
         float *v; int32_t *f; size_t nv, nf;
@@ -295,8 +295,8 @@ int DepthPeel_selftest(void)
         int N = 11; size_t per = (size_t)N*(size_t)N;
         size_t nv = 2*per;
         size_t cap_nf = 2*(size_t)(N-1)*(size_t)(N-1)*2 + 4;
-        float   *v = (float *)ARENA_ALLOC(arena, (long)(nv*3*sizeof(float)));
-        int32_t *f = (int32_t *)ARENA_ALLOC(arena, (long)(cap_nf*3*sizeof(int32_t)));
+        float   *v = (float *)ARENA_ALLOC(arena, (size_t)(nv*3*sizeof(float)));
+        int32_t *f = (int32_t *)ARENA_ALLOC(arena, (size_t)(cap_nf*3*sizeof(int32_t)));
         /* sheet A at z=0 (verts 0..per-1), sheet B at z=3 (verts per..2per-1) */
         for (int s = 0; s < 2; s++) for (int r = 0; r < N; r++) for (int c = 0; c < N; c++) {
             size_t idx = (size_t)s*per + (size_t)r*(size_t)N + (size_t)c;

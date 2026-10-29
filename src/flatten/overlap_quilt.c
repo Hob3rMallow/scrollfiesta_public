@@ -21,6 +21,7 @@
 #include <math.h>
 
 #include "../common/pca.h"
+#include "../common/mesh_normals.h"
 #include "../common/raw_sample.h"
 #include "../split/multicut_wrap.h"
 
@@ -446,14 +447,14 @@ int Quilt_run(Arena_T arena,
     free(rcur);
 
     /* outputs */
-    out->uv = (float *)ARENA_ALLOC(arena, (long)(nv*2*sizeof(float)));
+    out->uv = (float *)ARENA_ALLOC(arena, (size_t)(nv*2*sizeof(float)));
     memcpy(out->uv, uv, nv*2*sizeof(float));
-    out->face_keep = (uint8_t *)ARENA_ALLOC(arena, (long)nf);
+    out->face_keep = (uint8_t *)ARENA_ALLOC(arena, (size_t)nf);
     memset(out->face_keep, 1, nf);
-    out->face_dec = (uint8_t *)ARENA_CALLOC(arena, (long)nf, 1);
-    out->face_region = (int32_t *)ARENA_ALLOC(arena, (long)(nf*sizeof(int32_t)));
-    out->face_layer = (int32_t *)ARENA_ALLOC(arena, (long)(nf*sizeof(int32_t)));
-    out->face_energy = (double *)ARENA_ALLOC(arena, (long)(nf*sizeof(double)));
+    out->face_dec = (uint8_t *)ARENA_CALLOC(arena, (size_t)nf, 1);
+    out->face_region = (int32_t *)ARENA_ALLOC(arena, (size_t)(nf*sizeof(int32_t)));
+    out->face_layer = (int32_t *)ARENA_ALLOC(arena, (size_t)(nf*sizeof(int32_t)));
+    out->face_energy = (double *)ARENA_ALLOC(arena, (size_t)(nf*sizeof(double)));
     for (size_t f = 0; f < nf; f++) {
         out->face_region[f] = region_of[f];
         out->face_layer[f] = -1;
@@ -483,7 +484,7 @@ int Quilt_run(Arena_T arena,
     CubeTable ct; int have_ct = 0; float *nrm = NULL;
     if (o.raw_dir != NULL &&
         cubetable_init(&ct, arena, o.raw_dir, o.chunk, verts, nv, o.normal_range+2.0)==0) {
-        nrm = vertex_normals(verts, nv, faces, nf); have_ct = 1;
+        nrm = MeshNormals_compute(verts, nv, faces, nf); have_ct = 1;
     }
     out->have_texture = have_ct;
 

@@ -66,7 +66,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(SolutionDir)deps\lib\win64\Debug;$(SolutionDir)deps\lib\win64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>tiff.lib;zs.lib;Clipper2.lib;Clipper2Z.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>tiff.lib;zs.lib;Clipper2.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -91,7 +91,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(SolutionDir)deps\lib\win64\Release;$(SolutionDir)deps\lib\win64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>tiff.lib;zs.lib;Clipper2.lib;Clipper2Z.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>tiff.lib;zs.lib;Clipper2.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
     </Link>
   </ItemDefinitionGroup>
@@ -104,12 +104,6 @@
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <!-- Tests for the active code path -->
-    <ClCompile Include="scripts\extract\qem_test.c">
-      <CompileAs>CompileAsC</CompileAs>
-    </ClCompile>
-    <ClCompile Include="scripts\extract\qem_pin_test.c">
-      <CompileAs>CompileAsC</CompileAs>
-    </ClCompile>
     <ClCompile Include="scripts\extract\mesh_trim_pin_test.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
@@ -128,6 +122,9 @@
     <ClCompile Include="scripts\common\cc_color_test.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
+    <ClCompile Include="src\common\ves_png.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
     <ClCompile Include="src\pipeline\pipeline_cube.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
@@ -135,6 +132,9 @@
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <ClCompile Include="src\flatten\mesh_topo.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\flatten\topology_invariants.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <ClCompile Include="src\extract\mesh_extract.c">
@@ -167,6 +167,8 @@
     <ClCompile Include="src\flatten\snap_solve.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\flatten\recto_refine.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\raw_sample.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\pitch_table.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\mesh_normals.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\gco_wrap.cpp"><CompileAs>CompileAsCpp</CompileAs></ClCompile>
     <ClCompile Include="docs\research\gco-v3.0\GCoptimization.cpp"><CompileAs>CompileAsCpp</CompileAs></ClCompile>
     <ClCompile Include="docs\research\gco-v3.0\LinkedBlockList.cpp"><CompileAs>CompileAsCpp</CompileAs></ClCompile>
@@ -271,16 +273,19 @@
     <ClCompile Include="src\common\mesh_trim.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
-<ClCompile Include="src\common\obj_io.c">
+    <ClCompile Include="src\common\ply_io.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="src\common\obj_io.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <ClCompile Include="src\common\dump_obj.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
-    <ClCompile Include="src\common\ves_platform.c">
+    <ClCompile Include="src\common\mesh_bin.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
-    <ClCompile Include="src\common\qem.c">
+    <ClCompile Include="src\common\ves_platform.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <ClCompile Include="src\common\vert_weld.c">
@@ -314,8 +319,7 @@
       <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalIncludeDirectories>$(SolutionDir)deps\src\attene-predicates;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
-      <ClCompile Include="src\common\run_ctx.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
-</ItemGroup>
+  </ItemGroup>
   <ItemGroup>
     <ClInclude Include="scripts\test_harness.h" />
   </ItemGroup>

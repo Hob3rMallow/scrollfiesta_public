@@ -1216,6 +1216,12 @@ int main(int argc, char **argv)
             opts.tabu_core_y_lo = box[2]; opts.tabu_core_y_hi = box[3];
             opts.tabu_core_x_lo = box[4]; opts.tabu_core_x_hi = box[5];
             continue;
+        } else if (strcmp(argv[i], "--no-tear-lateral") == 0) {
+            opts.tabu_no_tear_lateral = 1;
+        } else if (strcmp(argv[i], "--all-group-overlap") == 0) {
+            opts.tabu_cross_group_only = 0;
+        } else if (strcmp(argv[i], "--dump-mask-png") == 0 && i + 1 < argc) {
+            opts.tabu_mask_png = argv[++i];
         } else if (strcmp(argv[i], "--write-uvphi") == 0) {
             write_uvphi = 1;
             continue;

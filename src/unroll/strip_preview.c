@@ -6,6 +6,7 @@
 #include "../common/tiff_io.h"
 #include "../common/ves_png.h"
 #include "../common/ves_platform.h"
+#include "../whole/atlas_ribbon_coverage.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -69,34 +70,17 @@ static int pv_class_rank(int v)
     }
 }
 
-/* atlas_ribbon_fit coverage provenance (ribbon_coverage_legend.csv). */
+/* atlas_ribbon_fit coverage provenance: palette and downsample rank come
+ * from the shared table (ribbon_coverage_legend.csv is written from the
+ * same header by the producer). */
 static void pv_coverage_rgb(int v, uint8_t *rgb)
 {
-    switch (v) {
-    case 0:  rgb[0] = 12;  rgb[1] = 14;  rgb[2] = 40;  break; /* background */
-    case 1:  rgb[0] = 155; rgb[1] = 155; rgb[2] = 155; break; /* ribboned */
-    case 2:  rgb[0] = 255; rgb[1] = 80;  rgb[2] = 180; break; /* prefit cull */
-    case 3:  rgb[0] = 30;  rgb[1] = 30;  rgb[2] = 30;  break; /* invalid chart */
-    case 4:  rgb[0] = 60;  rgb[1] = 100; rgb[2] = 220; break; /* outside v */
-    case 5:  rgb[0] = 40;  rgb[1] = 60;  rgb[2] = 145; break; /* outside u */
-    case 6:  rgb[0] = 245; rgb[1] = 220; rgb[2] = 40;  break; /* no u support */
-    case 7:  rgb[0] = 235; rgb[1] = 40;  rgb[2] = 235; break; /* sub-grid */
-    case 8:  rgb[0] = 230; rgb[1] = 130; rgb[2] = 30;  break; /* u gap */
-    case 9:  rgb[0] = 230; rgb[1] = 35;  rgb[2] = 35;  break; /* metric u */
-    case 10: rgb[0] = 135; rgb[1] = 45;  rgb[2] = 210; break; /* topology u */
-    case 11: rgb[0] = 255; rgb[1] = 255; rgb[2] = 255; break; /* crossing u */
-    case 12: rgb[0] = 30;  rgb[1] = 220; rgb[2] = 220; break; /* vertical */
-    case 13: rgb[0] = 80;  rgb[1] = 255; rgb[2] = 70;  break; /* wrong layer */
-    default: rgb[0] = 0;   rgb[1] = 0;   rgb[2] = 0;   break;
-    }
+    AtlasRibbonCoverage_rgb(v, rgb);
 }
 
 static int pv_coverage_rank(int v)
 {
-    static const uint8_t rank[14] = {
-        0, 1, 4, 5, 2, 2, 3, 6, 7, 9, 10, 12, 11, 13
-    };
-    return v >= 0 && v < 14 ? rank[v] : 0;
+    return AtlasRibbonCoverage_priority(v);
 }
 
 /* multi-cover tint over gray texture (diag_render --overlay semantics) */

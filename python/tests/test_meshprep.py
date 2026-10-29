@@ -65,3 +65,23 @@ def test_reorder_welded_to_xyz_keeps_color_and_flips_winding(tmp_path):
     assert vs[0] == "v 30 20 10 0.1 0.2 0.3"        # (z,y,x)->(x,y,z), color kept
     assert fs[0] == "f 1 3 2"                        # winding flipped
     assert "o comp_001" in lines                     # object/group lines pass through
+
+
+def test_reorder_welded_to_xyz_keeps_texture_coordinates(tmp_path):
+    # an atlas export carries its solved page as UVs; they must survive the axis reorder
+    src = tmp_path / "atlas_bake.obj"
+    dst = tmp_path / "atlas_bake_xyz.obj"
+    src.write_text("v 10 20 30\n"                    # z y x
+                   "v 11 21 31\n"
+                   "v 12 22 32\n"
+                   "vt 0.5 7\n"
+                   "vt 1.5 7\n"
+                   "vt 0.5 8\n"
+                   "vn 1 0 0\n"
+                   "f 1/1/1 2/2/1 3/3/1\n")
+    mp.reorder_welded_to_xyz(src, dst)
+    lines = [l for l in dst.read_text().splitlines() if not l.startswith("#")]
+    assert [l for l in lines if l.startswith("vt ")] == ["vt 0.5 7", "vt 1.5 7", "vt 0.5 8"]
+    assert [l for l in lines if l.startswith("v ")][0] == "v 30 20 10"
+    assert [l for l in lines if l.startswith("vn ")] == ["vn 0 0 1"]
+    assert [l for l in lines if l.startswith("f ")] == ["f 1/1/1 3/3/1 2/2/1"]   # flipped, pairs kept

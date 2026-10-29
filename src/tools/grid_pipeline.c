@@ -2,38 +2,43 @@
  * grid_pipeline.c -- cube-level orchestrator.
  *
  * Spawns cube_mesh.exe subprocesses, N at a time, over every cube in a
- * grid, then invokes grid_weld.exe to stitch the per-cube OBJs into one
- * welded mesh. Replaces scripts/run_grid_halo.ps1 with portable C and
- * eliminates the serial PowerShell foreach.
+ * grid, then invokes grid_weld.exe to assemble the per-cube VMESH containers
+ * into one mesh. The default assembly preserves the BPA-produced cube
+ * boundaries verbatim and does not synthesize seam geometry; --seam-bridge
+ * explicitly selects the historical BPA seam weld. Cube scheduling and
+ * resuming are handled directly by this portable executable.
  *
  * Usage:
  *   grid_pipeline <grid_dir> <output_dir>
  *                 [--halo N] [--threads-per-cube N] [--max-concurrent N]
  *                 [--exe path] [--weld path]
  *                 [--max-cubes N] [--skip-weld] [--check-determinism]
- *                 [--simplify qem|cvt] [--qem | --no-qem]
+ *                 [--no-simplify] [--cvt-ratio F]
  *                 [--umb-y F --umb-x F --wrap-pitch F]
  *                 [--grow-wind-tol F]
  *
  * Layout:
  *   <grid_dir>/cubes_PRED/*.tif         <- per-cube input prediction TIFFs
- *   <output_dir>/dump/<cube_id>/...     <- per-cube OBJ dumps
+ *   <output_dir>/dump/<cube_id>/...     <- VMESH + companion OBJ dumps
  *   <output_dir>/logs/<cube_id>.log     <- per-cube stderr/stdout
- *   <output_dir>/welded.obj             <- final welded mesh
+ *   <output_dir>/welded.obj             <- final assembled mesh (compat name)
  *   <output_dir>/pipeline_summary.csv   <- per-cube exit code, timing
  *
  * Concurrency: --max-concurrent caps how many cube_mesh.exe subprocesses
  * run at once. Each subprocess uses VESUVIUS_THREADS=--threads-per-cube
- * OpenMP threads. Default total = ves_cpu_count() / threads_per_cube.
+ * OpenMP threads. The default total is capped at half the logical CPUs.
  */
 #include "../common/ves_platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
+#include "../common/ves_omp.h"
 
 #include "../common/arena.h"
+#include "../common/mesh_bin.h"
 #include "../common/tiff_io.h"
 #include "../extract/pred_reject.h"
 
@@ -57,7 +62,26 @@ typedef struct {
     char        log_path[1024];
     int         exit_code;
     double      wall_seconds;
+    double      axis_y, axis_x;
+    int         have_axis;
+    /* dispatch pre-scan (longest-first ordering) */
+    int         prescanned;    /* reject_kind/fg_count below are valid */
+    int         reject_kind;   /* 0 keep, 1 solid slab, 2 empty (as cube_reject_kind) */
+    size_t      fg_count;      /* foreground voxels of the cube's own 128^3 */
 } CubeJob;
+
+/* Dispatch order: most foreground first (predicted meshing cost, r=0.73 with
+ * wall time on 360 dragon21 cubes), ties by cube_id, so the slowest cubes no
+ * longer start last and set each band's tail (2026-10-04).  Per-cube outputs
+ * do not depend on the order. */
+typedef struct { size_t fg; size_t idx; } DispatchKey;
+
+static int dispatch_key_cmp(const void *pa, const void *pb)
+{
+    const DispatchKey *a = (const DispatchKey *)pa, *b = (const DispatchKey *)pb;
+    if (a->fg != b->fg) return a->fg > b->fg ? -1 : 1;
+    return a->idx < b->idx ? -1 : (a->idx > b->idx ? 1 : 0);
+}
 
 /* ---- Argument plumbing ---- */
 
@@ -71,27 +95,35 @@ typedef struct {
     const char *weld_path;
     int         max_cubes;
     int         skip_weld;
+    int         seam_bridge;   /* opt-in historical synthetic seam weld;
+                                * default is faithful concat/assembly only */
     int         check_determinism;
-    int         skip_qem;
-    int         simplify_engine; /* 1 = CVT/RVD (default), 0 = QEM (--simplify qem) */
-    int         skip_existing;  /* resume: skip cubes whose step12_final OBJ is already complete */
+    int         skip_simplify;
+    float       cvt_target_ratio; /* 0 = pitch-aware scroll default */
+    int         skip_existing;  /* resume: skip cubes whose authoritative VMESH is complete */
     int         dry_run;        /* report skip/run decisions and exit; spawn nothing */
     int         reject_garbage; /* gate garbage (solid-slab) cubes pre-spawn (default 1) */
+    long        subgrid[6];     /* --subgrid z0 z1 y0 y1 x0 x1: half-open box of cube ORIGINS to mesh
+                                 * (the halo still reads every neighbour in cubes_PRED); armed when z1 > z0 */
     const char *reject_list;    /* optional: skip cube_ids listed in this file (else detect inline) */
     int         full_dumps;     /* pass NO --dump-final-only to children: every cube
                                  * writes all intermediate stage OBJs (~300 MB/dense
                                  * cube -- IO-bounds concurrent runs; debug only). */
+    int         cull_oracle_tangles; /* drop only final oracle-confirmed tangles */
     double      umb_y, umb_x;   /* scroll umbilicus (source-space vox, y/x) */
     double      wrap_pitch;     /* wrap pitch (vox/turn). These also arm
                                  * grid_weld's seam winding/phase gates; the
                                  * Jul-12 rebuild harness dropped them and paid
                                  * 661 seam-band gaps against 16 when armed. */
     double      grow_wind_tol;  /* BPA branch growth half-width in turns; 0=off */
+    const char *axis_table_path;/* optional z,y,x CSV: per-cube growth axis */
     int         have_umb_y, have_umb_x, have_wrap_pitch;
-                                /* geometry arguments arm grid_weld's seam
-                                 * winding/phase gates. Per-cube BPA gating is
-                                 * separately opt-in via --grow-wind-tol. */
-    int         have_grow_wind_tol;
+                                /* All three geometry arguments arm the CVT
+                                 * certificate and, later, grid_weld's seam
+                                 * winding/phase gates.  BPA growth is a separate,
+                                 * explicit experiment: grow_wind_tol must be >0.
+                                 * Dedicated BPA_GROW_* variables avoid exposing
+                                 * SEAM_WRAP_PITCH to pinhole_fill during meshing. */
     float       trim_inset;     /* owned-box inset passthrough. Default 0: the
                                  * whole-grid unwrap path is the documented
                                  * chain, and it pairs cross-seam skins, so
@@ -100,10 +132,14 @@ typedef struct {
                                  * PHerc0139-4x5x5 it halves the seam evidence
                                  * (2,713 pairs vs 6,441) and the registration
                                  * audit fails at 15.78% whole-turn error
-                                 * instead of passing at 2.98%. Pass < 0 for
-                                 * cube_mesh's own 1.0 default, which suits a
-                                 * weld-only run where the bridge wants a gap. */
+                                 * instead of passing at 2.98%. --seam-bridge
+                                 * changes this to 1 unless explicitly set. */
 } GpOptions;
+
+typedef struct {
+    double *z, *y, *x;
+    size_t n;
+} AxisTable;
 
 static void set_process_env_double(const char *name, double value)
 {
@@ -116,13 +152,104 @@ static void set_process_env_double(const char *name, double value)
 #endif
 }
 
-static void clear_process_env(const char *name)
+static void axis_table_free(AxisTable *table)
 {
-#ifdef _WIN32
-    _putenv_s(name, "");
-#else
-    unsetenv(name);
-#endif
+    free(table->z); free(table->y); free(table->x);
+    memset(table, 0, sizeof(*table));
+}
+
+static int axis_table_parse_line(const char *line,
+                                 double *z, double *y, double *x)
+{
+    char *end = NULL;
+    const char *p = line;
+    *z = strtod(p, &end);
+    if (end == p) return 0; /* header/comment */
+    p = end;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p++ != ',') return 0;
+    *y = strtod(p, &end);
+    if (end == p) return 0;
+    p = end;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p++ != ',') return 0;
+    *x = strtod(p, &end);
+    if (end == p) return 0;
+    return isfinite(*z) && isfinite(*y) && isfinite(*x);
+}
+
+/* Load z,y,x rows from a CSV. A header is optional. Rows are sorted here so
+ * callers may use either raw per-slice samples or a pre-smoothed cube table. */
+static int axis_table_load(const char *path, AxisTable *table)
+{
+    memset(table, 0, sizeof(*table));
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    size_t cap = 32;
+    table->z = (double *)malloc(cap * sizeof(double));
+    table->y = (double *)malloc(cap * sizeof(double));
+    table->x = (double *)malloc(cap * sizeof(double));
+    if (!table->z || !table->y || !table->x) {
+        fclose(f); axis_table_free(table); return -1;
+    }
+    char line[1024];
+    while (fgets(line, sizeof(line), f)) {
+        double z = 0.0, y = 0.0, x = 0.0;
+        if (!axis_table_parse_line(line, &z, &y, &x)) continue;
+        if (table->n == cap) {
+            cap *= 2;
+            double *nz = (double *)realloc(table->z, cap * sizeof(double));
+            if (!nz) { fclose(f); axis_table_free(table); return -1; }
+            table->z = nz;
+            double *ny = (double *)realloc(table->y, cap * sizeof(double));
+            if (!ny) { fclose(f); axis_table_free(table); return -1; }
+            table->y = ny;
+            double *nx = (double *)realloc(table->x, cap * sizeof(double));
+            if (!nx) { fclose(f); axis_table_free(table); return -1; }
+            table->x = nx;
+        }
+        table->z[table->n] = z;
+        table->y[table->n] = y;
+        table->x[table->n] = x;
+        table->n++;
+    }
+    fclose(f);
+    if (table->n < 2) { axis_table_free(table); return -1; }
+    for (size_t i = 1; i < table->n; i++) {
+        double z = table->z[i], y = table->y[i], x = table->x[i];
+        size_t j = i;
+        while (j > 0 && table->z[j-1] > z) {
+            table->z[j] = table->z[j-1];
+            table->y[j] = table->y[j-1];
+            table->x[j] = table->x[j-1];
+            j--;
+        }
+        table->z[j] = z; table->y[j] = y; table->x[j] = x;
+    }
+    for (size_t i = 1; i < table->n; i++) {
+        if (!(table->z[i] > table->z[i-1])) {
+            axis_table_free(table); return -1;
+        }
+    }
+    return 0;
+}
+
+static void axis_table_eval(const AxisTable *table, double z,
+                            double *out_y, double *out_x)
+{
+    if (z <= table->z[0]) {
+        *out_y = table->y[0]; *out_x = table->x[0]; return;
+    }
+    if (z >= table->z[table->n-1]) {
+        *out_y = table->y[table->n-1];
+        *out_x = table->x[table->n-1]; return;
+    }
+    size_t hi = 1;
+    while (hi < table->n && table->z[hi] < z) hi++;
+    size_t lo = hi - 1;
+    double t = (z - table->z[lo]) / (table->z[hi] - table->z[lo]);
+    *out_y = table->y[lo] + t * (table->y[hi] - table->y[lo]);
+    *out_x = table->x[lo] + t * (table->x[hi] - table->x[lo]);
 }
 
 
@@ -133,38 +260,45 @@ static void usage(const char *prog)
         "Options:\n"
         "  --halo N                  Halo voxels (default 13 = MLS R+1)\n"
         "  --threads-per-cube N      OpenMP threads per cube (default 1)\n"
-        "  --max-concurrent N        Max concurrent subprocesses (default cores/tpc)\n"
+        "  --max-concurrent N        Max concurrent subprocesses (default half-cores/tpc)\n"
         "  --exe PATH                cube_mesh.exe path (default build/Release/cube_mesh.exe)\n"
         "  --weld PATH               grid_weld.exe path (default build/Release/grid_weld.exe)\n"
         "  --max-cubes N             Stop after N cubes (default all)\n"
-        "  --skip-weld               Do not run grid_weld at end\n"
-        "  --skip-existing           Resume: skip cubes whose step12_final OBJ\n"
+        "  --skip-weld               Do not run the final assembler\n"
+        "  --seam-bridge             Historical mode: synthesize cross-cube seam\n"
+        "                            geometry (also defaults trim inset to 1)\n"
+        "  --skip-existing           Resume: skip cubes whose step12_final VMESH\n"
         "                            already exists and looks complete\n"
         "  --dry-run                 With --skip-existing: print which cubes would\n"
         "                            be skipped vs run, then exit (spawns nothing)\n"
         "  --check-determinism       Run each cube twice and cmp OBJs\n"
-        "  --simplify qem|cvt        Simplifier (default cvt)\n"
-        "  --qem                     Alias for --simplify qem\n"
-        "  --no-qem                  Pass --no-qem to cube_mesh\n"
+        "  --cvt-ratio F             override pitch-aware CVT site density\n"
+        "  --no-simplify             Dense diagnostic mode; skip CVT remeshing\n"
         "  --no-reject-garbage       Process all cubes (do not skip solid-slab garbage)\n"
+        "  --subgrid z0 z1 y0 y1 x0 x1  Mesh only cubes whose origin lies in this\n"
+        "                            half-open box (context cubes feed the halo only)\n"
         "  --reject-list FILE        Skip cube_ids listed in FILE (one per line);\n"
         "                            default detects garbage inline from each TIFF\n"
         "  --trim-inset F            Owned-box inset passthrough to cube_mesh\n"
         "                            (default 0: charts reach the cube faces so\n"
         "                            the whole-grid unwrap can pair cross-seam\n"
-        "                            skins; pass 1 for a weld-only run, where\n"
-        "                            the bridge wants a gap)\n"
+        "                            skins; --seam-bridge defaults this to 1)\n"
         "  --full-dumps              Children write ALL intermediate stage OBJs\n"
         "                            (default: step12_final only; the full set is\n"
         "                            ~300 MB/dense cube and IO-bounds the fleet)\n"
+        "  --cull-oracle-tangles     Omit final components still classified as\n"
+        "                            multi-sheet tangles by the oracle\n"
         "  --umb-y F --umb-x F       Scroll umbilicus (source-space voxels) and\n"
-        "  --wrap-pitch F            wrap pitch (vox/turn): arms grid_weld's seam\n"
-        "                            winding/phase gates, not per-cube meshing.\n"
-        "  --grow-wind-tol F         EXPERIMENTAL opt-in per-cube BPA growth gate;\n"
-        "                            off by default, 0 disables, must be < .5.\n"
-        "                            This can fragment sheets; all three geometry\n"
-        "                            arguments above are required when F > 0.\n"
-        "                            PHerc0139 weld geometry:\n"
+        "  --wrap-pitch F            wrap pitch (vox/turn): arms the atomic CVT\n"
+        "                            winding certificate and grid_weld seam gates.\n"
+        "  --axis-table FILE         CSV rows z,y,x; linearly interpolate a\n"
+        "                            per-vertex curved growth umbilicus; its cube-\n"
+        "                            center sample remains the constant fallback.\n"
+        "  --grow-wind-tol F         Experimental BPA growth half-width in turns\n"
+        "                            (default 0/off; positive values opt in). The\n"
+        "                            CVT candidate\n"
+        "                            certificate remains armed; must be < .5)\n"
+        "                            All three required to arm; PHerc0139:\n"
         "                            --umb-y 3405 --umb-x 2878 --wrap-pitch 9.5\n"
         "  --selftest                Run built-in unit tests and exit\n",
         prog);
@@ -172,25 +306,33 @@ static void usage(const char *prog)
 
 static int parse_args(int argc, char *argv[], GpOptions *o)
 {
+    int trim_inset_explicit = 0;
     memset(o, 0, sizeof(*o));
     o->halo = 13;   /* >= MLS_PROJECT_RADIUS_VOX+1 so boundary LOP is fully
                      * two-sided supported and adjacent cubes agree at the seam */
     o->threads_per_cube = 1;
     o->max_concurrent = 0;  /* derived below */
     o->max_cubes = 0;
-    o->simplify_engine = 1; /* CVT/RVD by default; --simplify qem selects the old QEM path */
     o->exe_path = "build/Release/cube_mesh.exe";
     o->weld_path = "build/Release/grid_weld.exe";
     o->reject_garbage = 1;  /* gate solid-slab garbage cubes by default */
     o->trim_inset = 0.0f;   /* whole-scroll path: charts reach the cube faces */
-    o->grow_wind_tol = 0.0;     /* fail-safe: coherent sheets are the default */
+    /* The BPA growth gate fragments ordinary sheets into narrow independent
+     * seed-growth bands on PHerc0139 (the canonical fixture goes 10 -> 68+
+     * charts).  Scroll geometry is still published below so the atomic CVT
+     * certificate and weld gates remain armed.  Growth gating is research-only
+     * and must be requested explicitly with --grow-wind-tol > 0. */
+    o->grow_wind_tol = 0.0;
 
     if (argc < 3) { usage(argv[0]); return -1; }
     o->grid_dir = argv[1];
     o->output_dir = argv[2];
 
     for (int i = 3; i < argc; i++) {
-        if (!strcmp(argv[i], "--halo") && i + 1 < argc) {
+        if (!strcmp(argv[i], "--subgrid") && i + 6 < argc) {
+            for (int k = 0; k < 6; k++) o->subgrid[k] = atol(argv[i + 1 + k]);
+            i += 6;
+        } else if (!strcmp(argv[i], "--halo") && i + 1 < argc) {
             o->halo = atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--threads-per-cube") && i + 1 < argc) {
             o->threads_per_cube = atoi(argv[++i]);
@@ -204,6 +346,8 @@ static int parse_args(int argc, char *argv[], GpOptions *o)
             o->max_cubes = atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--full-dumps")) {
             o->full_dumps = 1;
+        } else if (!strcmp(argv[i], "--cull-oracle-tangles")) {
+            o->cull_oracle_tangles = 1;
         } else if (!strcmp(argv[i], "--umb-y") && i + 1 < argc) {
             o->umb_y = atof(argv[++i]);
             o->have_umb_y = 1;
@@ -215,9 +359,13 @@ static int parse_args(int argc, char *argv[], GpOptions *o)
             o->have_wrap_pitch = 1;
         } else if (!strcmp(argv[i], "--grow-wind-tol") && i + 1 < argc) {
             o->grow_wind_tol = atof(argv[++i]);
-            o->have_grow_wind_tol = 1;
+        } else if (!strcmp(argv[i], "--axis-table") && i + 1 < argc) {
+            o->axis_table_path = argv[++i];
         } else if (!strcmp(argv[i], "--skip-weld")) {
             o->skip_weld = 1;
+        } else if (!strcmp(argv[i], "--seam-bridge") ||
+                   !strcmp(argv[i], "--legacy-seam-bridge")) {
+            o->seam_bridge = 1;
         } else if (!strcmp(argv[i], "--skip-existing") ||
                    !strcmp(argv[i], "--resume")) {
             o->skip_existing = 1;
@@ -225,28 +373,30 @@ static int parse_args(int argc, char *argv[], GpOptions *o)
             o->dry_run = 1;
         } else if (!strcmp(argv[i], "--check-determinism")) {
             o->check_determinism = 1;
-        } else if (!strcmp(argv[i], "--no-qem")) {
-            o->skip_qem = 1;
-        } else if (!strcmp(argv[i], "--qem")) {
-            o->skip_qem = 0;
-            o->simplify_engine = 0;
-        } else if (!strcmp(argv[i], "--simplify") && i + 1 < argc) {
-            const char *e = argv[++i];
-            if      (!strcmp(e, "cvt")) o->simplify_engine = 1;
-            else if (!strcmp(e, "qem")) o->simplify_engine = 0;
-            else { fprintf(stderr, "ERROR: --simplify must be qem|cvt\n"); return -1; }
+        } else if (!strcmp(argv[i], "--no-simplify")) {
+            o->skip_simplify = 1;
+        } else if (!strcmp(argv[i], "--cvt-ratio") && i + 1 < argc) {
+            o->cvt_target_ratio = (float)atof(argv[++i]);
+            if (!(o->cvt_target_ratio > 0.0f && o->cvt_target_ratio <= 1.0f)) {
+                fprintf(stderr, "ERROR: --cvt-ratio must be in (0,1]\n");
+                return -1;
+            }
         } else if (!strcmp(argv[i], "--no-reject-garbage")) {
             o->reject_garbage = 0;
         } else if (!strcmp(argv[i], "--reject-list") && i + 1 < argc) {
             o->reject_list = argv[++i];
         } else if (!strcmp(argv[i], "--trim-inset") && i + 1 < argc) {
             o->trim_inset = (float)atof(argv[++i]);
+            trim_inset_explicit = 1;
         } else {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);
             usage(argv[0]);
             return -1;
         }
     }
+
+    if (o->seam_bridge && !trim_inset_explicit)
+        o->trim_inset = 1.0f;
 
     if (o->grow_wind_tol < 0.0 || o->grow_wind_tol >= 0.5) {
         fprintf(stderr, "ERROR: --grow-wind-tol must be in [0, .5)\n");
@@ -262,16 +412,19 @@ static int parse_args(int argc, char *argv[], GpOptions *o)
         fprintf(stderr, "ERROR: --wrap-pitch must be positive\n");
         return -1;
     }
-    if (o->have_grow_wind_tol && o->grow_wind_tol > 0.0
-        && !(o->have_umb_y && o->have_umb_x && o->have_wrap_pitch)) {
+    if (o->axis_table_path &&
+        !(o->have_umb_y && o->have_umb_x && o->have_wrap_pitch)) {
         fprintf(stderr,
-                "ERROR: positive --grow-wind-tol requires --umb-y, --umb-x and --wrap-pitch\n");
+                "ERROR: --axis-table also requires --umb-y/--umb-x/--wrap-pitch "
+                "for the weld fallback\n");
         return -1;
     }
 
     if (o->max_concurrent == 0) {
         int cores = ves_cpu_count();
-        o->max_concurrent = cores / o->threads_per_cube;
+        int core_budget = cores / 2;
+        if (core_budget < 1) core_budget = 1;
+        o->max_concurrent = core_budget / o->threads_per_cube;
         if (o->max_concurrent < 1) o->max_concurrent = 1;
     }
 
@@ -364,9 +517,11 @@ static int run_one_cube(const char *exe_path,
                         const CubeJob *job,
                         const char *output_dir,
                         const char *dump_dir,
-                        int halo, int threads, int skip_qem,
+                        int halo, int threads, int skip_simplify,
                         float trim_inset, int dump_final_only,
-                        int simplify_engine)
+                        float cvt_target_ratio,
+                        int cull_oracle_tangles,
+                        const char *axis_table_path)
 {
     char out_tif[1024];
     snprintf(out_tif, sizeof(out_tif), "%s/cubes/%s.tif",
@@ -377,8 +532,13 @@ static int run_one_cube(const char *exe_path,
     snprintf(halo_str, sizeof(halo_str), "%d", halo);
     char trim_str[32];
     snprintf(trim_str, sizeof(trim_str), "%.3f", (double)trim_inset);
+    char cvt_ratio_str[32];
+    snprintf(cvt_ratio_str, sizeof(cvt_ratio_str), "%.9g", (double)cvt_target_ratio);
+    char axis_y_str[64], axis_x_str[64];
+    snprintf(axis_y_str, sizeof(axis_y_str), "%.12g", job->axis_y);
+    snprintf(axis_x_str, sizeof(axis_x_str), "%.12g", job->axis_x);
 
-    const char *argv[20];
+    const char *argv[32];
     int argc = 0;
     argv[argc++] = exe_path;
     argv[argc++] = job->tiff_path;
@@ -389,11 +549,25 @@ static int run_one_cube(const char *exe_path,
     argv[argc++] = dump_dir;
     argv[argc++] = "--no-timeout";
     if (dump_final_only) argv[argc++] = "--dump-final-only";
-    if (skip_qem) argv[argc++] = "--no-qem";
-    if (simplify_engine == 1) { argv[argc++] = "--simplify"; argv[argc++] = "cvt"; }
-    if (trim_inset >= 0.0f) {
+    if (skip_simplify) argv[argc++] = "--no-simplify";
+    if (cvt_target_ratio > 0.0f) {
+        argv[argc++] = "--cvt-ratio";
+        argv[argc++] = cvt_ratio_str;
+    }
+    if (cull_oracle_tangles) argv[argc++] = "--cull-oracle-tangles";
+    if (trim_inset > -999.0f) {   /* negative = overlap ring (2026-09-01) */
         argv[argc++] = "--trim-inset";
         argv[argc++] = trim_str;
+    }
+    if (job->have_axis) {
+        argv[argc++] = "--grow-umb-y";
+        argv[argc++] = axis_y_str;
+        argv[argc++] = "--grow-umb-x";
+        argv[argc++] = axis_x_str;
+    }
+    if (axis_table_path) {
+        argv[argc++] = "--grow-axis-table";
+        argv[argc++] = axis_table_path;
     }
     argv[argc] = NULL;
 
@@ -554,31 +728,12 @@ static int write_scrollslice_source(const GpOptions *opts)
     return 0;
 }
 
-/* Build the path to a cube's final per-cube mesh (the stage grid_weld reads). */
-static void step12_obj_path(char *buf, size_t n,
-                            const char *dump_dir, const char *cube_id)
+/* Build the path to the authoritative final per-cube mesh. */
+static void step12_vmesh_path(char *buf, size_t n,
+                              const char *dump_dir, const char *cube_id)
 {
-    snprintf(buf, n, "%s/%s/%s_step12_final/%s_step12_final_all.obj",
+    snprintf(buf, n, "%s/%s/%s_step12_final/%s_step12_final_all.vmesh",
              dump_dir, cube_id, cube_id, cube_id);
-}
-
-/* A cube counts as "already done" (for --skip-existing resume) iff its final
- * per-cube OBJ exists and looks complete: a non-trivial size and a clean
- * trailing newline. A cube_mesh process killed mid-dump leaves either no file
- * or a truncated tail whose last byte is not '\n', so it is re-run. The size
- * floor rejects empty/header-only stubs. This is intentionally a cheap O(1)
- * stat+tail read so a full-grid scan stays fast. */
-static int obj_looks_complete(const char *path)
-{
-    FILE *f = fopen(path, "rb");
-    if (!f) return 0;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return 0; }
-    long sz = ftell(f);
-    if (sz < 128) { fclose(f); return 0; }   /* header + a few verts minimum */
-    if (fseek(f, -1, SEEK_END) != 0) { fclose(f); return 0; }
-    int last = fgetc(f);
-    fclose(f);
-    return last == '\n';
 }
 
 /* ---- Optional reject-list (cube_ids to skip), loaded once before the run. ---- */
@@ -630,92 +785,130 @@ static void idset_free(IdSet *s) { free(s->ids); s->ids = NULL; s->n = 0; }
  * verdict is per-cube) and run the garbage detector. Per-call arena so it is
  * thread-safe inside the OpenMP loop. Returns the reject KIND:
  *   0 = keep, 1 = solid-slab garbage, 2 = empty garbage (no meshable component). */
-static int cube_reject_kind(const char *tiff_path)
+static int cube_prescan(const char *tiff_path, int want_reject,
+                        int *out_kind, size_t *out_fg)
 {
     Arena_T a = Arena_new();
     uint8_t *vol = NULL;
     int D = 0, H = 0, W = 0;
-    int kind = 0;
+    int kind = 0, rc = -1;
+    size_t fg = 0;
     if (TiffIO_load(a, tiff_path, &vol, &D, &H, &W) == 0) {
-        PredRejectStats st;
-        if (PredReject_is_garbage(a, vol, D, H, W, &st))
-            kind = st.empty ? 2 : 1;
+        size_t nvox = (size_t)D * (size_t)H * (size_t)W;
+        for (size_t v = 0; v < nvox; v++) fg += vol[v] ? 1u : 0u;
+        if (want_reject) {
+            PredRejectStats st;
+            if (PredReject_is_garbage(a, vol, D, H, W, &st))
+                kind = st.empty ? 2 : 1;
+        }
+        rc = 0;
     }
     Arena_dispose(&a);
+    *out_kind = kind;
+    *out_fg = fg;
+    return rc;
+}
+
+static int cube_reject_kind(const char *tiff_path)
+{
+    int kind = 0;
+    size_t fg = 0;
+    (void)cube_prescan(tiff_path, 1, &kind, &fg);
     return kind;
 }
 
-/* Built-in unit test for the resume completeness check (--selftest). */
+/* Built-in unit test for the binary resume completeness check (--selftest). */
 static int run_selftest(void)
 {
-    const char *p_ok    = "gp_selftest_ok.obj";
-    const char *p_trunc = "gp_selftest_trunc.obj";
-    const char *p_tiny  = "gp_selftest_tiny.obj";
+    const char *p_ok    = "gp_selftest_ok.vmesh";
+    const char *p_trunc = "gp_selftest_trunc.vmesh";
+    const char *p_tiny  = "gp_selftest_tiny.vmesh";
+    const char *p_axis  = "gp_selftest_axis.csv";
     FILE *f = NULL;
-
-    f = fopen(p_ok, "wb");      /* complete: verts + face + trailing newline */
-    if (f) { for (int i = 0; i < 24; i++) fprintf(f, "v %d.0 %d.0 %d.0\n", i, i, i);
-             fprintf(f, "f 1 2 3\n"); fclose(f); }
-    f = fopen(p_trunc, "wb");   /* same bytes but killed mid-line: no final \n */
-    if (f) { for (int i = 0; i < 24; i++) fprintf(f, "v %d.0 %d.0 %d.0\n", i, i, i);
-             fprintf(f, "f 1 2 3"); fclose(f); }
-    f = fopen(p_tiny, "wb");    /* below the size floor */
-    if (f) { fprintf(f, "v 0 0 0\n"); fclose(f); }
+    float vertices[12] = {0,0,0, 1,0,0, 1,1,0, 0,1,0};
+    int32_t faces[6] = {0,1,2, 0,2,3};
+    if (MeshBin_write(p_ok, vertices, 4, faces, 2, NULL) == 0) {
+        FILE *src = fopen(p_ok, "rb");
+        FILE *dst = fopen(p_trunc, "wb");
+        if (src && dst) {
+            unsigned char bytes[256];
+            size_t count = fread(bytes, 1, sizeof bytes, src);
+            if (count > 0) fwrite(bytes, 1, count - 1, dst);
+        }
+        if (src) fclose(src);
+        if (dst) fclose(dst);
+    }
+    f = fopen(p_tiny, "wb");
+    if (f) { fputs("VESMESH1", f); fclose(f); }
 
     struct { const char *path; int expect; const char *name; } cases[] = {
-        { p_ok,    1, "complete-obj" },
-        { p_trunc, 0, "truncated-no-newline" },
-        { p_tiny,  0, "below-size-floor" },
-        { "gp_selftest_missing.obj", 0, "missing-file" },
+        { p_ok,    1, "complete-vmesh" },
+        { p_trunc, 0, "truncated-vmesh" },
+        { p_tiny,  0, "header-only-vmesh" },
+        { "gp_selftest_missing.vmesh", 0, "missing-file" },
     };
     int fails = 0;
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-        int got = obj_looks_complete(cases[i].path);
+        int got = MeshBin_looks_complete(cases[i].path);
         int ok  = (got == cases[i].expect);
         fprintf(stderr, "[selftest] %-22s got=%d expect=%d -> %s\n",
                 cases[i].name, got, cases[i].expect, ok ? "ok" : "FAIL");
         if (!ok) fails++;
     }
+    f = fopen(p_axis, "wb");
+    if (f) {
+        fputs("z_l0,y_l0,x_l0\n0,10,20\n128,30,60\n", f);
+        fclose(f);
+    }
+    AxisTable table;
+    double ay = 0.0, ax = 0.0;
+    int axis_ok = axis_table_load(p_axis, &table) == 0;
+    if (axis_ok) {
+        axis_table_eval(&table, 64.0, &ay, &ax);
+        axis_ok = fabs(ay - 20.0) < 1e-9 && fabs(ax - 40.0) < 1e-9;
+        axis_table_free(&table);
+    }
+    fprintf(stderr,
+            "[selftest] %-22s y=%.3f x=%.3f expect=20/40 -> %s\n",
+            "axis-table-interpolate", ay, ax, axis_ok ? "ok" : "FAIL");
+    if (!axis_ok) fails++;
 
-    /* Regression: weld geometry must not silently arm per-cube BPA rejection.
-     * The old coupling shattered a known PHerc0139 cube from 5 sheets into 24
-     * fragments before CVT/RVD. Only an explicit positive --grow-wind-tol may
-     * opt into that experimental behavior. */
     {
-        char *av[] = {
-            "grid_pipeline", "grid", "out",
-            "--umb-y", "3405", "--umb-x", "2878",
-            "--wrap-pitch", "9.5"
+        GpOptions defaults, legacy, growth;
+        char *default_argv[] = { "grid_pipeline", "grid", "out" };
+        char *legacy_argv[] = {
+            "grid_pipeline", "grid", "out", "--seam-bridge"
         };
-        GpOptions o;
-        int rc = parse_args((int)(sizeof(av) / sizeof(av[0])), av, &o);
-        int ok = rc == 0 && o.have_umb_y && o.have_umb_x
-                 && o.have_wrap_pitch && !o.have_grow_wind_tol
-                 && o.grow_wind_tol == 0.0;
+        char *growth_argv[] = {
+            "grid_pipeline", "grid", "out", "--grow-wind-tol", "0.45"
+        };
+        int default_ok =
+            parse_args(3, default_argv, &defaults) == 0 &&
+            defaults.trim_inset == 0.0f && !defaults.seam_bridge &&
+            defaults.grow_wind_tol == 0.0;
+        int legacy_ok =
+            parse_args(4, legacy_argv, &legacy) == 0 &&
+            legacy.trim_inset == 1.0f && legacy.seam_bridge;
+        int growth_ok =
+            parse_args(5, growth_argv, &growth) == 0 &&
+            growth.grow_wind_tol == 0.45;
         fprintf(stderr,
-                "[selftest] %-22s grow_explicit=%d tol=%.2f -> %s\n",
-                "weld-geometry-gate-off", o.have_grow_wind_tol,
-                o.grow_wind_tol, ok ? "ok" : "FAIL");
-        if (!ok) fails++;
+                "[selftest] %-22s default=%s legacy=%s growth=%s -> %s\n",
+                "pipeline-defaults", default_ok ? "bpa/grow-off" : "BAD",
+                legacy_ok ? "bridge" : "BAD",
+                growth_ok ? "explicit" : "BAD",
+                default_ok && legacy_ok && growth_ok ? "ok" : "FAIL");
+        if (!default_ok || !legacy_ok || !growth_ok) fails++;
     }
     {
-        char *av[] = {
-            "grid_pipeline", "grid", "out",
-            "--umb-y", "3405", "--umb-x", "2878",
-            "--wrap-pitch", "9.5", "--grow-wind-tol", ".45"
-        };
-        GpOptions o;
-        int rc = parse_args((int)(sizeof(av) / sizeof(av[0])), av, &o);
-        int ok = rc == 0 && o.have_grow_wind_tol
-                 && o.grow_wind_tol > 0.449 && o.grow_wind_tol < 0.451;
-        fprintf(stderr,
-                "[selftest] %-22s grow_explicit=%d tol=%.2f -> %s\n",
-                "explicit-growth-opt-in", o.have_grow_wind_tol,
-                o.grow_wind_tol, ok ? "ok" : "FAIL");
+        DispatchKey k[5] = { {10, 0}, {50, 1}, {10, 2}, {0, 3}, {50, 4} };
+        qsort(k, 5, sizeof(DispatchKey), dispatch_key_cmp);
+        int ok = k[0].idx == 1 && k[1].idx == 4 && k[2].idx == 0 && k[3].idx == 2 && k[4].idx == 3;
+        fprintf(stderr, "[selftest] %-22s %s\n", "dispatch-order",
+                ok ? "ok (fg desc, ties by name)" : "FAIL");
         if (!ok) fails++;
     }
-
-    remove(p_ok); remove(p_trunc); remove(p_tiny);
+    remove(p_ok); remove(p_trunc); remove(p_tiny); remove(p_axis);
     fprintf(stderr, "=== grid_pipeline selftest %s (%d failure%s) ===\n",
             fails ? "FAILED" : "PASSED", fails, fails == 1 ? "" : "s");
     return fails ? 1 : 0;
@@ -729,8 +922,11 @@ int main(int argc, char *argv[])
     if (parse_args(argc, argv, &opts) != 0) return 1;
 
     fprintf(stderr,
-        "grid_pipeline: grid=%s output=%s halo=%d tpc=%d max_conc=%d reject_garbage=%d\n",
+        "grid_pipeline: grid=%s output=%s halo=%d trim_inset=%.2f "
+        "assembly=%s tpc=%d max_conc=%d reject_garbage=%d\n",
         opts.grid_dir, opts.output_dir, opts.halo,
+        (double)opts.trim_inset,
+        opts.seam_bridge ? "seam-bridge" : "bpa-boundaries",
         opts.threads_per_cube, opts.max_concurrent, opts.reject_garbage);
 
     /* Mirror the disable to cube_mesh children (which inherit our environment
@@ -745,32 +941,48 @@ int main(int argc, char *argv[])
 #endif
     }
 
-    /* Per-cube BPA winding rejection is deliberately SEPARATE from weld
-     * geometry. A 2026-07-30 4x21x21 run accidentally coupled the two: on the
-     * byte-identical z04480_y03328_x02816 prediction, Resplit changed from
-     * 4->5 coherent sheets to 4->24 fragments before CVT/RVD. Clear inherited
-     * BPA_GROW_* variables as well, so a caller's stale environment cannot
-     * silently reproduce that corruption. The experimental gate now requires
-     * an explicit positive --grow-wind-tol. */
-    clear_process_env("BPA_GROW_UMBILICUS_Y");
-    clear_process_env("BPA_GROW_UMBILICUS_X");
-    clear_process_env("BPA_GROW_WRAP_PITCH");
-    clear_process_env("BPA_GROW_WIND_TOL");
-    if (opts.have_grow_wind_tol && opts.grow_wind_tol > 0.0) {
+    /* Publish the scroll geometry once, before any spawn threads exist.  The
+     * atomic CVT candidate certificate consumes the axis/pitch even when
+     * grow_wind_tol is zero; BPA itself additionally requires a positive tol.
+     * These dedicated variables deliberately do not include SEAM_WRAP_PITCH:
+     * pinhole_fill reads that older variable and must remain unchanged. */
+    if (opts.have_umb_y && opts.have_umb_x && opts.have_wrap_pitch) {
         set_process_env_double("BPA_GROW_UMBILICUS_Y", opts.umb_y);
         set_process_env_double("BPA_GROW_UMBILICUS_X", opts.umb_x);
         set_process_env_double("BPA_GROW_WRAP_PITCH", opts.wrap_pitch);
         set_process_env_double("BPA_GROW_WIND_TOL", opts.grow_wind_tol);
-        fprintf(stderr,
-            "WARNING: experimental BPA growth gate explicitly armed: "
-            "umbilicus=(%.1f,%.1f) pitch=%.3f tol=%.3f turns\n",
-            opts.umb_y, opts.umb_x, opts.wrap_pitch, opts.grow_wind_tol);
+        if (opts.grow_wind_tol > 0.0) {
+            fprintf(stderr,
+                "BPA growth gate armed: umbilicus=(%.1f,%.1f) pitch=%.3f tol=%.3f turns\n",
+                opts.umb_y, opts.umb_x, opts.wrap_pitch, opts.grow_wind_tol);
+        } else {
+            fprintf(stderr,
+                    "BPA growth gate explicitly disabled (tol=0); "
+                    "CVT winding certificate remains armed\n");
+        }
     } else {
-        fprintf(stderr,
-            "BPA growth gate OFF (coherent-sheet default; weld geometry is scoped to grid_weld)\n");
+        const char *inherited_tol = getenv("BPA_GROW_WIND_TOL");
+        if (inherited_tol && inherited_tol[0])
+            fprintf(stderr,
+                "BPA growth gate controlled by inherited environment (tol=%s)\n",
+                inherited_tol);
+        else
+            fprintf(stderr,
+                "*** WARNING: winding gates NOT armed\n"
+                "***   The atomic CVT WINDING CERTIFICATE is off, and\n"
+                "***   CVT_INTERIOR_EDGE (13.0 vox) EXCEEDS the 9.5-vox wrap\n"
+                "***   pitch, so the remesher triangulates across the\n"
+                "***   inter-wrap gap and fuses turn N to turn N+1.\n"
+                "***   Measured on PHerc0139 4x5x5: 5186 full-turn fusions,\n"
+                "***   91%% of them cube-interior. No downstream stage can\n"
+                "***   undo this -- the sheet ends up wired across wraps.\n"
+                "***   Arm it:  --umb-y 3405 --umb-x 2878 --wrap-pitch 9.5\n"
+                "***            --grow-wind-tol 0  (keeps the certificate,\n"
+                "***             disables only the over-splitting BPA gate)\n"
+                "***   Verify with wind_audit: FULL-TURN must be 0.\n");
     }
 
-    if (opts.simplify_engine == 1) {
+    {
         const char *ratio = getenv("VES_CVT_RATIO");
         fprintf(stderr, "CVT site ratio: %s\n", ratio && ratio[0] ? ratio : "default");
     }
@@ -782,12 +994,60 @@ int main(int argc, char *argv[])
                 opts.grid_dir);
         return 1;
     }
+    if (opts.subgrid[1] > opts.subgrid[0]) {
+        size_t kept = 0;
+        for (size_t k = 0; k < n_jobs; k++) {
+            long oz = 0, oy = 0, ox = 0;
+            if (sscanf(jobs[k].cube_id, "z%ld_y%ld_x%ld", &oz, &oy, &ox) == 3 &&
+                oz >= opts.subgrid[0] && oz < opts.subgrid[1] && oy >= opts.subgrid[2] && oy < opts.subgrid[3] &&
+                ox >= opts.subgrid[4] && ox < opts.subgrid[5])
+                jobs[kept++] = jobs[k];
+        }
+        fprintf(stderr, "subgrid [%ld,%ld)x[%ld,%ld)x[%ld,%ld): %zu of %zu cubes meshed (the rest feed the halo)\n",
+                opts.subgrid[0], opts.subgrid[1], opts.subgrid[2], opts.subgrid[3], opts.subgrid[4], opts.subgrid[5], kept, n_jobs);
+        n_jobs = kept;
+    }
     if (opts.max_cubes > 0 && (size_t)opts.max_cubes < n_jobs) {
         n_jobs = (size_t)opts.max_cubes;
     }
     fprintf(stderr, "Processing %zu cubes\n", n_jobs);
 
     if (n_jobs == 0) { free(jobs); return 1; }
+
+    if (opts.axis_table_path) {
+        AxisTable table;
+        if (axis_table_load(opts.axis_table_path, &table) != 0) {
+            fprintf(stderr, "ERROR: cannot load axis table %s\n",
+                    opts.axis_table_path);
+            free(jobs);
+            return 1;
+        }
+        double min_y = 1e300, max_y = -1e300;
+        double min_x = 1e300, max_x = -1e300;
+        for (size_t k = 0; k < n_jobs; k++) {
+            int z0 = 0, y0 = 0, x0 = 0;
+            if (sscanf(jobs[k].cube_id, "z%d_y%d_x%d", &z0, &y0, &x0) != 3) {
+                fprintf(stderr, "ERROR: cannot parse cube origin from %s\n",
+                        jobs[k].cube_id);
+                axis_table_free(&table);
+                free(jobs);
+                return 1;
+            }
+            (void)y0; (void)x0;
+            axis_table_eval(&table, (double)z0 + 64.0,
+                            &jobs[k].axis_y, &jobs[k].axis_x);
+            jobs[k].have_axis = 1;
+            if (jobs[k].axis_y < min_y) min_y = jobs[k].axis_y;
+            if (jobs[k].axis_y > max_y) max_y = jobs[k].axis_y;
+            if (jobs[k].axis_x < min_x) min_x = jobs[k].axis_x;
+            if (jobs[k].axis_x > max_x) max_x = jobs[k].axis_x;
+        }
+        fprintf(stderr,
+                "Per-cube axis table: %s (%zu rows), assigned y=[%.1f,%.1f] "
+                "x=[%.1f,%.1f] at cube centers\n",
+                opts.axis_table_path, table.n, min_y, max_y, min_x, max_x);
+        axis_table_free(&table);
+    }
 
     /* Prepare output directory structure. */
     char dump_dir[1024], log_dir[1024], cubes_dir[1024];
@@ -798,6 +1058,26 @@ int main(int argc, char *argv[])
     ensure_dir(dump_dir);
     ensure_dir(log_dir);
     ensure_dir(cubes_dir);
+    if (opts.axis_table_path) {
+        char axis_log_path[1024];
+        snprintf(axis_log_path, sizeof(axis_log_path),
+                 "%s/axis_assignment.csv", opts.output_dir);
+        FILE *axis_log = fopen(axis_log_path, "w");
+        if (!axis_log) {
+            fprintf(stderr, "ERROR: cannot write %s\n", axis_log_path);
+            free(jobs);
+            return 1;
+        }
+        fprintf(axis_log, "cube_id,z_center,umb_y,umb_x\n");
+        for (size_t k = 0; k < n_jobs; k++) {
+            int z0 = 0;
+            sscanf(jobs[k].cube_id, "z%d", &z0);
+            fprintf(axis_log, "%s,%.1f,%.9g,%.9g\n", jobs[k].cube_id,
+                    (double)z0 + 64.0, jobs[k].axis_y, jobs[k].axis_x);
+        }
+        fclose(axis_log);
+        fprintf(stderr, "Axis assignments: %s\n", axis_log_path);
+    }
     if (write_scrollslice_source(&opts) != 0) {
         fprintf(stderr, "ERROR: could not write %s/scrollslice.source.json\n",
                 opts.output_dir);
@@ -815,8 +1095,8 @@ int main(int argc, char *argv[])
         size_t would_skip = 0;
         for (size_t k = 0; k < n_jobs; k++) {
             char fp[1024];
-            step12_obj_path(fp, sizeof(fp), dump_dir, jobs[k].cube_id);
-            if (opts.skip_existing && obj_looks_complete(fp)) {
+            step12_vmesh_path(fp, sizeof(fp), dump_dir, jobs[k].cube_id);
+            if (opts.skip_existing && MeshBin_looks_complete(fp)) {
                 would_skip++;
             } else {
                 fprintf(stderr, "  [dry] RUN  %s\n", jobs[k].cube_id);
@@ -860,8 +1140,8 @@ int main(int argc, char *argv[])
     /* Run cubes in parallel via OpenMP. MSVC OpenMP 2.0 requires the
      * loop counter declared outside the for-statement. */
     double t_start = ves_clock_sec();
-    ves_omp_set_dynamic(0);
-    ves_omp_set_threads(opts.max_concurrent);
+    omp_set_dynamic(0);
+    omp_set_num_threads(opts.max_concurrent);
 
 #ifdef _WIN32
     /* Enforce --threads-per-cube on Windows children. Set ONCE here,
@@ -884,21 +1164,59 @@ int main(int argc, char *argv[])
     int n_ok = 0, n_fail = 0, n_skip = 0, n_reject = 0, n_reject_empty = 0;
     int i;
     int n_jobs_i = (int)n_jobs;
+
+    /* Longest-first dispatch: pre-scan every cube once (its foreground count
+     * and, when the garbage gate is on, its reject verdict -- reused below so
+     * no TIFF is read twice), then hand cubes out in descending foreground. */
+    size_t *order = (size_t *)malloc((n_jobs ? n_jobs : 1) * sizeof(size_t));
+    {
+        double t_scan = ves_clock_sec();
+        int k;
+        DispatchKey *keys = (DispatchKey *)malloc((n_jobs ? n_jobs : 1) * sizeof(DispatchKey));
+        if (!order || !keys) { fprintf(stderr, "ERROR: out of memory\n"); return 1; }
+        #pragma omp parallel for schedule(dynamic, 4)
+        for (k = 0; k < n_jobs_i; k++) {
+            jobs[k].prescanned = 0;
+            jobs[k].reject_kind = 0;
+            jobs[k].fg_count = 0;
+            if (opts.skip_existing) {
+                char done_path[1024];
+                step12_vmesh_path(done_path, sizeof(done_path), dump_dir, jobs[k].cube_id);
+                if (MeshBin_looks_complete(done_path)) continue;
+            }
+            int kind = 0;
+            size_t fg = 0;
+            if (cube_prescan(jobs[k].tiff_path, opts.reject_garbage && !have_rejlist,
+                             &kind, &fg) == 0) {
+                jobs[k].reject_kind = kind;
+                jobs[k].fg_count = fg;
+                jobs[k].prescanned = 1;
+            }
+        }
+        for (size_t q = 0; q < n_jobs; q++) { keys[q].fg = jobs[q].fg_count; keys[q].idx = q; }
+        qsort(keys, n_jobs, sizeof(DispatchKey), dispatch_key_cmp);
+        for (size_t q = 0; q < n_jobs; q++) order[q] = keys[q].idx;
+        free(keys);
+        fprintf(stderr, "dispatch: longest-first by foreground voxels (pre-scan %.1fs)\n",
+                ves_clock_sec() - t_scan);
+    }
+
     #pragma omp parallel for schedule(dynamic, 1) reduction(+:n_ok,n_fail,n_skip,n_reject,n_reject_empty)
     for (i = 0; i < n_jobs_i; i++) {
-        /* Resume: a cube with an already-complete final OBJ is left untouched. */
+        CubeJob *job = &jobs[order[i]];
+        /* Resume: a cube with an already-complete authoritative VMESH is left untouched. */
         if (opts.skip_existing) {
             char done_path[1024];
-            step12_obj_path(done_path, sizeof(done_path), dump_dir, jobs[i].cube_id);
-            if (obj_looks_complete(done_path)) {
-                jobs[i].exit_code = 0;
-                jobs[i].wall_seconds = 0.0;
+            step12_vmesh_path(done_path, sizeof(done_path), dump_dir, job->cube_id);
+            if (MeshBin_looks_complete(done_path)) {
+                job->exit_code = 0;
+                job->wall_seconds = 0.0;
                 n_ok++;
                 n_skip++;
                 #pragma omp critical (gp_log)
                 {
                     if (summary) {
-                        fprintf(summary, "%s,0,0.00\n", jobs[i].cube_id);
+                        fprintf(summary, "%s,0,0.00\n", job->cube_id);
                         fflush(summary);
                     }
                 }
@@ -912,25 +1230,26 @@ int main(int argc, char *argv[])
          * in rejected_cubes.txt. A supplied --reject-list is treated as slab. */
         if (opts.reject_garbage) {
             int kind = have_rejlist
-                         ? (idset_has(&rejset, jobs[i].cube_id) ? 1 : 0)
-                         : cube_reject_kind(jobs[i].tiff_path);
+                         ? (idset_has(&rejset, job->cube_id) ? 1 : 0)
+                         : (job->prescanned ? job->reject_kind
+                                            : cube_reject_kind(job->tiff_path));
             if (kind) {
-                jobs[i].exit_code = GP_REJECT_CODE;
-                jobs[i].wall_seconds = 0.0;
+                job->exit_code = GP_REJECT_CODE;
+                job->wall_seconds = 0.0;
                 n_reject++;
                 if (kind == 2) n_reject_empty++;
                 #pragma omp critical (gp_log)
                 {
-                    fprintf(stderr, "  [reject] %s (%s)\n", jobs[i].cube_id,
+                    fprintf(stderr, "  [reject] %s (%s)\n", job->cube_id,
                             kind == 2 ? "empty prediction -- no meshable component"
                                       : "garbage solid-slab prediction");
                     if (summary) {
                         fprintf(summary, "%s,%d,0.00\n",
-                                jobs[i].cube_id, GP_REJECT_CODE);
+                                job->cube_id, GP_REJECT_CODE);
                         fflush(summary);
                     }
                     if (rejlog) {
-                        fprintf(rejlog, "%s\n", jobs[i].cube_id);
+                        fprintf(rejlog, "%s\n", job->cube_id);
                         fflush(rejlog);
                     }
                 }
@@ -938,28 +1257,31 @@ int main(int argc, char *argv[])
             }
         }
         double cube_start = ves_clock_sec();
-        int rc = run_one_cube(opts.exe_path, &jobs[i],
+        int rc = run_one_cube(opts.exe_path, job,
                               opts.output_dir, dump_dir,
                               opts.halo, opts.threads_per_cube,
-                              opts.skip_qem, opts.trim_inset,
-                              !opts.full_dumps, opts.simplify_engine);
-        jobs[i].exit_code = rc;
-        jobs[i].wall_seconds = ves_clock_sec() - cube_start;
+                              opts.skip_simplify, opts.trim_inset,
+                              !opts.full_dumps, opts.cvt_target_ratio,
+                              opts.cull_oracle_tangles,
+                              opts.axis_table_path);
+        job->exit_code = rc;
+        job->wall_seconds = ves_clock_sec() - cube_start;
         if (rc == 0) n_ok++; else n_fail++;
         #pragma omp critical (gp_log)
         {
             fprintf(stderr, "  [%4d/%zu] %s exit=%d t=%.1fs\n",
-                    i + 1, n_jobs, jobs[i].cube_id, rc,
-                    jobs[i].wall_seconds);
+                    i + 1, n_jobs, job->cube_id, rc,
+                    job->wall_seconds);
             if (summary) {
                 fprintf(summary, "%s,%d,%.2f\n",
-                        jobs[i].cube_id, rc, jobs[i].wall_seconds);
+                        job->cube_id, rc, job->wall_seconds);
                 fflush(summary);
             }
         }
     }
     if (summary) fclose(summary);
     if (rejlog) fclose(rejlog);
+    free(order);
     idset_free(&rejset);
     double t_total = ves_clock_sec() - t_start;
 
@@ -990,17 +1312,19 @@ int main(int argc, char *argv[])
             int rc_b = run_one_cube(opts.exe_path, &copy,
                                      opts.output_dir, dump_dir_b,
                                      opts.halo, opts.threads_per_cube,
-                                     opts.skip_qem, opts.trim_inset,
-                                     !opts.full_dumps, opts.simplify_engine);
+                                     opts.skip_simplify, opts.trim_inset,
+                                     !opts.full_dumps, opts.cvt_target_ratio,
+                                     opts.cull_oracle_tangles,
+                                     opts.axis_table_path);
             if (rc_b != 0) { n_diff++; continue; }
 
-            /* Compare the final per-cube OBJ. */
+            /* Compare the authoritative final per-cube VMESH. */
             char path_a[1024], path_b[1024];
             snprintf(path_a, sizeof(path_a),
-                "%s/%s/%s_step12_final/%s_step12_final_all.obj",
+                "%s/%s/%s_step12_final/%s_step12_final_all.vmesh",
                 dump_dir, jobs[j].cube_id, jobs[j].cube_id, jobs[j].cube_id);
             snprintf(path_b, sizeof(path_b),
-                "%s/%s/%s_step12_final/%s_step12_final_all.obj",
+                "%s/%s/%s_step12_final/%s_step12_final_all.vmesh",
                 dump_dir_b, jobs[j].cube_id, jobs[j].cube_id, jobs[j].cube_id);
             FILE *fa = fopen(path_a, "rb");
             FILE *fb = fopen(path_b, "rb");
@@ -1037,7 +1361,8 @@ int main(int argc, char *argv[])
     if (!opts.skip_weld && n_ok > 0) {
         char weld_out[1024];
         snprintf(weld_out, sizeof(weld_out), "%s/welded.obj", opts.output_dir);
-        /* Arm grid_weld's seam winding + phase gates (it reads them from env:
+        /* Arm grid_weld's seam winding + phase gates only for the explicit
+         * synthetic seam-bridge mode (it reads them from env:
          * SEAM_UMBILICUS_Y/X + SEAM_WRAP_PITCH). Deliberately set HERE — after
          * the cube fleet has finished, immediately before the weld spawn — so
          * per-cube meshing NEVER sees them: pinhole_fill.c also reads
@@ -1045,7 +1370,8 @@ int main(int argc, char *argv[])
          * output. Regression note (2026-07-18): the Jul-12 rebuild harness
          * stopped passing these, the weld ran gates-off, and the 4x5x5 shipped
          * 661 seam-band boundary loops instead of 16. */
-        if (opts.have_umb_y && opts.have_umb_x && opts.have_wrap_pitch) {
+        if (opts.seam_bridge && opts.have_umb_y && opts.have_umb_x &&
+            opts.have_wrap_pitch) {
             char envv[64];
             snprintf(envv, sizeof(envv), "%.6g", opts.umb_y);
 #ifdef _WIN32
@@ -1068,13 +1394,14 @@ int main(int argc, char *argv[])
             fprintf(stderr,
                 "Seam gates armed for weld: umbilicus=(%.1f,%.1f) pitch=%.2f\n",
                 opts.umb_y, opts.umb_x, opts.wrap_pitch);
-        } else {
+        } else if (opts.seam_bridge) {
             fprintf(stderr,
                 "Seam gates NOT armed (pass --umb-y/--umb-x/--wrap-pitch); "
                 "grid_weld's winding/phase gates run OFF\n");
         }
 
-        fprintf(stderr, "Running grid_weld -> %s\n", weld_out);
+        fprintf(stderr, "Running grid_weld (%s) -> %s\n",
+                opts.seam_bridge ? "seam bridge" : "assembly only", weld_out);
 
 #ifdef _WIN32
         /* Run grid_weld with stderr/stdout to a log file and capture the
@@ -1085,12 +1412,18 @@ int main(int argc, char *argv[])
         snprintf(weld_log, sizeof(weld_log),
                  "%s/grid_weld.log", opts.output_dir);
         char weld_cmd[4096];
-        /* The BPA seam-weld is unconditional in grid_weld now (it IS the weld;
-         * the bitwise hash-join it replaced is gone). step0 trims each cube to
-         * its face, so the cubes concatenate with a ~1-vox seam gap that the
-         * BPA bridge closes. No flag needed. */
-        snprintf(weld_cmd, sizeof(weld_cmd), "\"%s\" \"%s\" \"%s\"",
-                 opts.weld_path, dump_dir, weld_out);
+        if (opts.axis_table_path && opts.seam_bridge)
+            snprintf(weld_cmd, sizeof(weld_cmd),
+                     "\"%s\" \"%s\" \"%s\" --axis-table \"%s\"",
+                     opts.weld_path, dump_dir, weld_out,
+                     opts.axis_table_path);
+        else if (!opts.seam_bridge)
+            snprintf(weld_cmd, sizeof(weld_cmd),
+                     "\"%s\" \"%s\" \"%s\" --no-bridge",
+                     opts.weld_path, dump_dir, weld_out);
+        else
+            snprintf(weld_cmd, sizeof(weld_cmd), "\"%s\" \"%s\" \"%s\"",
+                     opts.weld_path, dump_dir, weld_out);
         SECURITY_ATTRIBUTES sa;
         sa.nLength = sizeof(sa);
         sa.lpSecurityDescriptor = NULL;
@@ -1143,11 +1476,20 @@ int main(int argc, char *argv[])
             }
         }
 #else
-        const char *weld_argv[4];
+        const char *weld_argv[7];
         weld_argv[0] = opts.weld_path;
         weld_argv[1] = dump_dir;
         weld_argv[2] = weld_out;
-        weld_argv[3] = NULL;   /* BPA seam-weld is unconditional now */
+        if (opts.axis_table_path && opts.seam_bridge) {
+            weld_argv[3] = "--axis-table";
+            weld_argv[4] = opts.axis_table_path;
+            weld_argv[5] = NULL;
+        } else if (!opts.seam_bridge) {
+            weld_argv[3] = "--no-bridge";
+            weld_argv[4] = NULL;
+        } else {
+            weld_argv[3] = NULL;
+        }
         int weld_rc = ves_run_subprocess(opts.weld_path, weld_argv, 0.0);
         /* ves_run_subprocess loses the distinction; treat -1 as crash for
          * the simple POSIX path. The Windows branch above is the
@@ -1177,5 +1519,7 @@ int main(int argc, char *argv[])
     if (n_fail > 0)     fprintf(stderr, "Cubes failed: %d\n", n_fail);
     if (weld_audit_warn) fprintf(stderr, "grid_weld reported audit warnings (non-fatal)\n");
     if (weld_crashed)   fprintf(stderr, "grid_weld crashed -- pipeline aborted\n");
-    return (n_fail == 0 && !weld_crashed) ? 0 : 1;
+    /* Everything is written and closed: leave without process teardown, which
+     * can deadlock with the OpenMP worker pool (see ves_fast_exit). */
+    ves_fast_exit((n_fail == 0 && !weld_crashed) ? 0 : 1);
 }

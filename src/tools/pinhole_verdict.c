@@ -20,7 +20,7 @@
  * nearest intruder + depth, the intruder's connectivity to the hole, and a final
  * verdict naming the responsible gate.
  *
- * Usage:  pinhole_verdict <mesh.obj> [rho=1.5] [maxloop=3]
+ * Usage:  pinhole_verdict <mesh.obj> [rho=1.5] [maxloop=3] [--loops]
  *
  * Standalone C99; no project deps so it builds as its own tiny vcxproj.
  */
@@ -188,7 +188,7 @@ static int pin_faces(const double *wv,const double *org){
 int main(int argc,char**argv)
 {
     if(argc>=2 && strcmp(argv[1],"--selftest")==0) return selftest();
-    if(argc<2){ fprintf(stderr,"Usage: %s <mesh.obj> [rho=1.5] [maxloop=3]\n"
+    if(argc<2){ fprintf(stderr,"Usage: %s <mesh.obj> [rho=1.5] [maxloop=3] [--loops]\n"
                                 "       %s <mesh.obj> --pins [--seam x+,z-]   (write bright-red pin OBJ)\n"
                                 "       %s --selftest\n",argv[0],argv[0],argv[0]); return 2; }
     const char *path=argv[1];
@@ -197,23 +197,29 @@ int main(int argc,char**argv)
     double degen_thresh = -1.0;   /* --degen <deg>: list triangles below <deg> min-angle */
     int pinch_report = 0;         /* --pinch: characterize boundary pinch points (bdeg>2) */
     int pins_report = 0;          /* --pins: pin-band analysis + bright-red colored OBJ */
+    int loop_report = 0;          /* --loops: compact geometry/UV report through maxloop */
     const char *seam_arg = NULL;  /* --seam <faces>: which faces are real seams (e.g. x+,z-) */
     for(int i=1;i<argc;i++){
         if(strcmp(argv[i],"--degen")==0 && i+1<argc) degen_thresh=atof(argv[i+1]);
         if(strcmp(argv[i],"--pinch")==0) pinch_report=1;
         if(strcmp(argv[i],"--pins")==0)  pins_report=1;
+        if(strcmp(argv[i],"--loops")==0) loop_report=1;
         if(strcmp(argv[i],"--seam")==0 && i+1<argc) seam_arg=argv[i+1];
     }
 
     FILE *f=fopen(path,"r");
     if(!f){ fprintf(stderr,"ERROR: cannot open %s\n",path); return 1; }
 
-    DArr V={0}; IArr Fc={0};
+    DArr V={0}, UV={0}; IArr Fc={0};
     char line[4096];
     while(fgets(line,sizeof(line),f)){
         if(line[0]=='v'&&line[1]==' '){
             double x=0,y=0,z=0;
             if(sscanf(line+2,"%lf %lf %lf",&x,&y,&z)==3) darr_push3(&V,x,y,z);
+        } else if(line[0]=='v'&&line[1]=='t'&&
+                  (line[2]==' '||line[2]=='\t')){
+            double u=0,v=0;
+            if(sscanf(line+3,"%lf %lf",&u,&v)==2) darr_push3(&UV,u,v,0.0);
         } else if(line[0]=='f'&&line[1]==' '){
             int idx[16]; int ni=0;
             const char *p=line+1;
@@ -230,6 +236,7 @@ int main(int argc,char**argv)
     }
     fclose(f);
     size_t nv=V.n/3, nf=Fc.n/3;
+    size_t nvt=UV.n/3;
     printf("=== pinhole_verdict: %s ===\n", path);
     printf("    V=%zu  F=%zu  rho=%.3f  maxloop=%d\n", nv, nf, rho, maxloop);
     if(nv<3||nf<1){ printf("    (empty mesh)\n"); return 0; }
@@ -406,6 +413,37 @@ int main(int argc,char**argv)
         int seq[64]; int len=0; int cur=(int)s;
         while(!vis[cur] && next[cur]>=0){ vis[cur]=1; if(len<64) seq[len]=cur; len++; cur=next[cur]; }
         nloops++;
+        if(loop_report && len>=3 && len<=maxloop && len<=64){
+            double diam2=0.0, umin=1e300,umax=-1e300,vmin=1e300,vmax=-1e300;
+            int simple=1;
+            for(int i=0;i<len;i++){
+                int a=seq[i];
+                if(bdeg[a]!=2) simple=0;
+                if(nvt==nv){
+                    double u=UV.p[(size_t)a*3], v=UV.p[(size_t)a*3+1];
+                    if(u<umin)umin=u; if(u>umax)umax=u;
+                    if(v<vmin)vmin=v; if(v>vmax)vmax=v;
+                }
+                for(int j=i+1;j<len;j++){
+                    double d[3]; v_sub(d,&V.p[(size_t)a*3],
+                                        &V.p[(size_t)seq[j]*3]);
+                    double d2=v_dot(d,d); if(d2>diam2)diam2=d2;
+                }
+            }
+            printf("  LOOP len=%d root=%d simple=%d diameter=%.4f",
+                   len,seq[0],simple,sqrt(diam2));
+            if(nvt==nv)
+                printf(" uv_bbox=[%.3f,%.3f]x[%.3f,%.3f] uv=",
+                       umin,umax,vmin,vmax);
+            else
+                printf(" uv=unavailable(nvt=%zu,nv=%zu)",nvt,nv);
+            if(nvt==nv)
+                for(int i=0;i<len;i++)
+                    printf("%s%d:(%.3f,%.3f)",i?",":"",seq[i],
+                           UV.p[(size_t)seq[i]*3],
+                           UV.p[(size_t)seq[i]*3+1]);
+            putchar('\n');
+        }
         if(len>maxloop || len<3) continue;
         if(len!=3) continue;                 /* this tool focuses on single-triangle holes */
         n3++;
@@ -514,7 +552,7 @@ int main(int argc,char**argv)
            elen_sum/(3.0*(double)nf), qhist[0],qhist[1],qhist[2],qhist[3],qhist[4],qhist[5],qhist[6]);
     printf("  summary : %d single-triangle holes | tracer-skip=%d  blocked/cocircular=%d  fillable-but-survived=%d\n",
            n3, tracer_skip, blocked, would_fill);
-    free(V.p); free(Fc.p); free(vf_cnt); free(vf_off); free(vf_idx);
+    free(V.p); free(UV.p); free(Fc.p); free(vf_cnt); free(vf_off); free(vf_idx);
     free(em.key); free(em.val); free(bdeg); free(next); free(vis); free(uf);
     return 0;
 }

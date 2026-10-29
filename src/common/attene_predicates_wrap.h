@@ -69,6 +69,12 @@ AttenePt AttenePred_facet_bisector2(AttenePredCtx *ctx,
  * v may be explicit or constructed; si,sj must be explicit. Exact + deterministic. */
 int AttenePred_side_bisector(AttenePredCtx *ctx, AttenePt v, AttenePt si, AttenePt sj);
 
+/* The same predicate for n points against one bisector: out[i] = side of v[i].
+ * One rounding-mode window and one set of plane constants serve all n points;
+ * each point's interval coordinates are computed once and cached in the pool. */
+void AttenePred_side_bisector_batch(AttenePredCtx *ctx, const AttenePt *v, int n,
+                                    AttenePt si, AttenePt sj, int *out);
+
 /* Approximate double coordinates of any point, for energy/geometry ONLY (never for a
  * topology decision — use the side predicate for those). Returns 0 on success, <0 if
  * the construction is degenerate (parallel / no intersection). */

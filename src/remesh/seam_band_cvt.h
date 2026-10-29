@@ -10,8 +10,8 @@
  * Post-weld seam-band CVT beautification.
  *
  * The recoarsen stage collapses the transient fine weld band back toward the
- * coarse budget, but a guarded shortest-edge collapse is QEM-style decimation
- * minus even QEM's placement solve -- the band ends up collapse-scarred and
+ * coarse budget, but a guarded shortest-edge collapse leaves the band
+ * collapse-scarred and
  * anisotropic next to the pristine blue-noise CVT interior. This stage
  * re-meshes the band with the SAME CVT/RVD engine the interior was built
  * with, so the welded mesh is CVT-quality everywhere.

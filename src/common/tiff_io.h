@@ -12,7 +12,8 @@
 int TiffIO_load(Arena_T arena, const char *path,
                 uint8_t **out_vol, int *out_D, int *out_H, int *out_W);
 
-/* Save flat uint8 volume as multi-page TIFF.
+/* Save flat uint8 volume as multi-page TIFF; automatically uses BigTIFF when
+ * classic 32-bit offsets cannot safely hold the raster and directory tables.
  * Returns 0 on success, -1 on failure. */
 int TiffIO_save(const char *path,
                 const uint8_t *vol, int D, int H, int W);
@@ -27,6 +28,11 @@ int TiffIO_save_float2d(const char *path, const float *img, int W, int H);
  * Arena-allocates *out_img of size W*H. Returns 0 on success, -1 on failure. */
 int TiffIO_load_float2d(Arena_T arena, const char *path,
                         float **out_img, int *out_W, int *out_H);
+
+/* Load a single 2D signed 32-bit integer TIFF.  This is used by tifxyz turn /
+ * topology labels, whose -1 background cannot be represented by TiffIO_load. */
+int TiffIO_load_int32_2d(Arena_T arena, const char *path,
+                         int32_t **out_img, int *out_W, int *out_H);
 
 /* ----------------------------------------------------------------------------
  * Streaming row access to a single-page UNCOMPRESSED 8-bit 1-sample gray TIFF
@@ -52,5 +58,8 @@ int  TiffIO_rows_open(Arena_T arena, const char *path, TiffRowReader *rd);
 int  TiffIO_rows_read(TiffRowReader *rd, int y, int x0, int w, uint8_t *dst);
 
 void TiffIO_rows_close(TiffRowReader *rd);
+
+/* Native I/O regression fixtures, written beneath an existing directory. */
+int TiffIO_selftest(const char *dir);
 
 #endif

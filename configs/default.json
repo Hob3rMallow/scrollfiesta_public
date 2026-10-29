@@ -1,0 +1,82 @@
+{
+  "schema": "scrollfiesta-config-v1",
+  "compute": {
+    "threads": 8
+  },
+  "resume": true,
+  "clean": {
+    "blob_area_per_face": 0.2,
+    "min_chart_area": 100.0,
+    "stress_band": 0.05,
+    "flatten_iters": 30,
+    "blob_double_sided": 0.5
+  },
+  "report": {
+    "atlas_cell_px": 96,
+    "atlas_max_cells": 4096
+  },
+  "raw_source": {
+    "path": "data/raw.zarr",
+    "chunk_size": 128
+  },
+  "bake": {
+    "exe": "build/Release/obj_bake_raw.exe",
+    "normal_reach_vox": 4.0,
+    "raster_du": 1.0,
+    "raster_dv": 1.0,
+    "level_v_to_z": true,
+    "window_u8": [
+      47,
+      193
+    ],
+    "dark_threshold_u8": 13,
+    "transparent_background": true
+  },
+  "place": {
+    "min_anchors": 12,
+    "max_rms": 12.0,
+    "max_layers": 3,
+    "layer_tol": 0.35,
+    "min_turn_hits": 3,
+    "max_rot_refine": 0.6,
+    "rel_rms": 0.04,
+    "max_rim_ratio": 0.3
+  },
+  "verdict": {
+    "exe": "build/Release/ribbon_verdict.exe",
+    "du": 2.0,
+    "dv": 2.0,
+    "core_radius": 64.0,
+    "include_blobs_in_source": false
+  },
+  "repair": {
+    "compact": 1,
+    "budget_seconds": 900,
+    "patch_seconds": 30,
+    "iterations": 12,
+    "clearance_iterations": 8,
+    "closure_iterations": 12,
+    "context_hops": 2,
+    "source_trials": 64,
+    "admission": 1,
+    "regional": 1,
+    "patch_faces": 100000,
+    "patch_field_faces": 300000,
+    "patch_coordinates": 120000
+  },
+  "geometry": {
+    "cylindrical_axis_yx": [
+      3405,
+      2878
+    ],
+    "wrap_spacing_voxels": 9.5,
+    "winding_sense": 1,
+    "axis_table": "configs/axis.csv"
+  },
+  "core": {
+    "wall_radius_voxels": 102
+  },
+  "registration": {
+    "overlap_family": 0
+  }
+}

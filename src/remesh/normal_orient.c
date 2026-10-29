@@ -8,7 +8,6 @@
  * restored on exit.
  */
 #include "normal_orient.h"
-#include "../common/run_ctx.h"
 
 #include "../common/kdtree.h"
 #include "../common/union_find.h"
@@ -31,6 +30,57 @@ static int edge_cmp(const void *pa, const void *pb)
     if (ea->a != eb->a) return (ea->a < eb->a) ? -1 : 1;
     if (ea->b != eb->b) return (ea->b < eb->b) ? -1 : 1;
     return 0;
+}
+
+/* Monotone key of a weight: float order, -0 folded onto +0 (edge_cmp's
+ * comparisons treat them as equal and fall through to (a, b)). */
+static inline uint32_t edge_wkey(float w)
+{
+    uint32_t u = 0;
+    memcpy(&u, &w, sizeof(u));
+    if (u == 0x80000000u) u = 0;
+    return (u & 0x80000000u) ? ~u : (u | 0x80000000u);
+}
+
+/* The edges in edge_cmp order by a stable LSD radix sort, b then a then the
+ * weight key, 8 bits per pass, constant bytes skipped (2026-10-06; qsort was
+ * ~1-2% of a cube).  edge_cmp is a total order up to identical edges, so the
+ * array equals qsort's.  NaN weights (no total order) and small inputs keep
+ * qsort. */
+static void edges_sort(Edge *edges, size_t ne)
+{
+    if (ne < 256) { qsort(edges, ne, sizeof(Edge), edge_cmp); return; }
+    for (size_t e = 0; e < ne; e++)
+        if (edges[e].w != edges[e].w) { qsort(edges, ne, sizeof(Edge), edge_cmp); return; }
+    Edge *tmp = (Edge *)malloc(ne * sizeof(Edge));
+    if (!tmp) { qsort(edges, ne, sizeof(Edge), edge_cmp); return; }
+    size_t cnt[256];
+    Edge *src = edges, *dst = tmp;
+    for (int field = 0; field < 3; field++) {
+        for (int shift = 0; shift < 32; shift += 8) {
+            memset(cnt, 0, sizeof(cnt));
+            for (size_t e = 0; e < ne; e++) {
+                uint32_t k = field == 0 ? (uint32_t)src[e].b : field == 1 ? (uint32_t)src[e].a
+                                                                          : edge_wkey(src[e].w);
+                cnt[(k >> shift) & 0xFF]++;
+            }
+            {
+                uint32_t k0 = field == 0 ? (uint32_t)src[0].b : field == 1 ? (uint32_t)src[0].a
+                                                                           : edge_wkey(src[0].w);
+                if (cnt[(k0 >> shift) & 0xFF] == ne) continue;   /* constant byte */
+            }
+            size_t run = 0;
+            for (int b = 0; b < 256; b++) { size_t c = cnt[b]; cnt[b] = run; run += c; }
+            for (size_t e = 0; e < ne; e++) {
+                uint32_t k = field == 0 ? (uint32_t)src[e].b : field == 1 ? (uint32_t)src[e].a
+                                                                          : edge_wkey(src[e].w);
+                dst[cnt[(k >> shift) & 0xFF]++] = src[e];
+            }
+            Edge *t = src; src = dst; dst = t;
+        }
+    }
+    if (src != edges) memcpy(edges, src, ne * sizeof(Edge));
+    free(tmp);
 }
 
 /* --- Diagnostics (NORMAL_ORIENT_DEBUG) ----------------------------------- *
@@ -78,7 +128,7 @@ int NormalOrient_consistent(Arena_T arena,
     if (out_flips) *out_flips = 0;
     if (nv < 2) return 0;
     int n = (int)nv;
-    int dbg = sf_env("NORMAL_ORIENT_DEBUG") != NULL;
+    int dbg = getenv("NORMAL_ORIENT_DEBUG") != NULL;
 
     Arena_Mark mark = Arena_save(arena);
     KDTree_T tree = KDTree_new(arena, verts, nv);
@@ -139,7 +189,7 @@ int NormalOrient_consistent(Arena_T arena,
             dbg_iso, (int)MAXNBR, dbg_clamp, dbg_agree_before);
     }
 
-    qsort(edges, ne, sizeof(Edge), edge_cmp);
+    edges_sort(edges, ne);
 
     /* --- Kruskal MST. --- */
     UnionFind uf = UF_new(arena, n);
@@ -307,4 +357,41 @@ int NormalOrient_consistent(Arena_T arena,
     Arena_restore(arena, mark);
     if (out_flips) *out_flips = flips;
     return 0;
+}
+
+/* Selftest (cube_mesh --selftest): edges_sort == qsort(edge_cmp), byte for byte,
+ * on random graphs with tied weights, duplicate edges, negative weights and +0. */
+int NormalOrient_selftest(void)
+{
+    uint32_t s = 0x1234567u;
+    int fails = 0;
+    size_t checks = 0;
+    for (int trial = 0; trial < 30 && !fails; trial++) {
+        size_t ne = (size_t)(1 + trial * trial * 113);
+        Edge *a = (Edge *)malloc((ne ? ne : 1) * sizeof(Edge));
+        Edge *b = (Edge *)malloc((ne ? ne : 1) * sizeof(Edge));
+        if (!a || !b) { free(a); free(b); return -1; }
+        for (size_t e = 0; e < ne; e++) {
+            s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+            int32_t x = (int32_t)(s % 5000u), y = (int32_t)((s >> 12) % 5000u);
+            a[e].a = x < y ? x : y;
+            a[e].b = x < y ? y : x;
+            switch ((s >> 24) & 3) {
+            case 0: a[e].w = (float)((s >> 3) % 7u) * 0.125f; break;           /* heavy ties */
+            case 1: a[e].w = 1.0f - (float)(s % 100000u) * 1e-5f; break;
+            case 2: a[e].w = -(float)(s % 1000u) * 1e-7f; break;                /* slightly negative */
+            default: a[e].w = 0.0f; break;
+            }
+            if (e > 0 && (s & 15u) == 0) a[e] = a[e - 1];                       /* duplicate edge */
+            b[e] = a[e];
+        }
+        edges_sort(a, ne);
+        qsort(b, ne, sizeof(Edge), edge_cmp);
+        checks++;
+        if (memcmp(a, b, ne * sizeof(Edge)) != 0) fails++;
+        free(a); free(b);
+    }
+    fprintf(stderr, "NormalOrient_selftest: %s (%zu radix edge sorts == qsort)\n",
+            fails ? "FAIL" : "OK", checks);
+    return fails ? -1 : 0;
 }

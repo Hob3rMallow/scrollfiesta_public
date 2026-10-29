@@ -34,9 +34,10 @@ typedef struct {
     double   u_min, u_max, v_min, v_max;   /* over verts of kept faces */
 } PieceSet;
 
-/* Load every <id>_uvphi.f32 + <id>_mesh.obj + <id>_facekeep.u8 (+ optional
+/* Load every <id>_uvphi.f32 + <id>_mesh.vmesh + <id>_facekeep.u8 (+ optional
  * <id>_group.i32) under placed_dir (the scroll_whole output). All outputs
- * arena-allocated. Returns 0; -1 if the dir has no complete placed cubes. */
+ * arena-allocated. OBJ siblings are never read. Returns 0; -1 if the dir has
+ * no complete placed cubes. */
 int PieceSet_build(Arena_T arena, const char *placed_dir, PieceSet *out);
 
 /* Same, but only cubes whose z-origin (parsed from the id, "z#####_...") lies

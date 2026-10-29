@@ -2,18 +2,18 @@
 #
 # build-deps.sh -- Build the vendored C/C++ dependencies for ScrollFiesta (Linux).
 #
-# Linux analog of build-deps.ps1. Produces the three static libraries that
+# Linux analog of build-deps.ps1. Produces the static libraries that
 # src/Makefile links from deps/lib/:
 #
 #     deps/lib/libtriangle.a    (Shewchuk's Triangle CDT, compiled from source)
-#     deps/lib/libClipper2.a    (Clipper2 polygon boolean ops)
-#     deps/lib/libClipper2Z.a   (Clipper2 with the Z coordinate, USINGZ)
+#     deps/lib/libClipper2.a    (Clipper2 polygon boolean ops, 2-D ABI)
 #
-# Unlike the Windows build, zlib and libtiff are NOT built here: the Makefile's
-# `-ltiff` links the *system* libtiff (libtiff-dev; headers under the multiarch
-# /usr/include/<triple>/ that GCC searches by default). Install it with:
+# It also stages deps/lib/libClipper2Z.a (Clipper2 with USINGZ), which nothing
+# links any more: every build uses the one 2-D Clipper2 ABI.
 #
-#     sudo apt-get install libtiff-dev
+# libtiff: the system package (libtiff-dev) is used when the host has one.
+# Otherwise the vendored zlib and libtiff are built into deps/prefix, without
+# root, and both CMakeLists.txt and src/Makefile take them from there.
 #
 # Run this ONCE before building the binaries:
 #
@@ -75,6 +75,40 @@ for name in libClipper2.a libClipper2Z.a; do
     cp -f "$found" "$lib/"
     echo "    staged $name"
 done
+
+# --- zlib + libtiff (only when the host does not provide them) --------------
+# build-deps.ps1 builds both from deps/src on Windows. On Linux this script
+# built neither, and its comment sent the user to `sudo apt-get install
+# libtiff-dev`, so a host without that package (or without root) could not
+# configure at all even though the sources are vendored right here. Build them
+# into deps/prefix, which CMakeLists.txt picks up the way it already picks up
+# deps/lib/win64 on Windows.
+prefix="$root/deps/prefix"
+if printf '#include <tiffio.h>\nint main(void){return 0;}\n' \
+        | cc -x c - -o /dev/null -ltiff >/dev/null 2>&1; then
+    echo "    system libtiff found; not building the vendored copy"
+else
+    cyan "vendored zlib + libtiff -> deps/prefix"
+    # The two build directories are pure output. Starting them clean keeps this
+    # step idempotent: zlib caches ZLIB_CONF_WRITTEN, so a half-finished build
+    # directory makes the next configure fail on a missing zconf.h.cmakein.
+    rm -rf "$deps/zlib/build-host" "$deps/tiff-4.7.1/bld-host"
+    [ -f "$deps/zlib/zconf.h" ] || cp "$deps/zlib/zconf.h.in" "$deps/zlib/zconf.h"
+    cmake -S "$deps/zlib" -B "$deps/zlib/build-host" \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        -DZLIB_BUILD_SHARED=OFF -DZLIB_BUILD_TESTING=OFF -DZLIB_INSTALL=ON \
+        -DCMAKE_INSTALL_PREFIX="$prefix"
+    cmake --build "$deps/zlib/build-host" -j"$jobs"
+    cmake --install "$deps/zlib/build-host"
+    cmake -S "$deps/tiff-4.7.1" -B "$deps/tiff-4.7.1/bld-host" \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        -DBUILD_SHARED_LIBS=OFF -Dtiff-tools=OFF -Dtiff-tests=OFF \
+        -Dtiff-contrib=OFF -Dtiff-docs=OFF \
+        -DCMAKE_PREFIX_PATH="$prefix" -DCMAKE_INSTALL_PREFIX="$prefix"
+    cmake --build "$deps/tiff-4.7.1/bld-host" -j"$jobs"
+    cmake --install "$deps/tiff-4.7.1/bld-host"
+    echo "    staged libz.a and libtiff.a into deps/prefix"
+fi
 
 echo
 green "All dependencies staged into $lib"

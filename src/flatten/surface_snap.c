@@ -13,6 +13,7 @@
 
 #include "../common/csr.h"
 #include "../common/kdtree.h"
+#include "../common/mesh_normals.h"
 #include "../common/raw_sample.h"
 #include "../common/tiff_io.h"
 #include "../common/ves_platform.h"
@@ -66,10 +67,10 @@ int SnapDetect_run(Arena_T arena,
     if(nv<3||nf<1||uv==NULL) return -1;
     SnapOpts o=*opts;
     double reach=o.reach>0?o.reach:8.0;                 /* march ceiling (safety cap) */
-    CubeTable *ct=(CubeTable*)ARENA_ALLOC(arena,(long)sizeof(CubeTable));
+    CubeTable *ct=(CubeTable*)ARENA_ALLOC(arena,sizeof(CubeTable));
     if(o.raw_dir==NULL || cubetable_init(ct,arena,o.raw_dir,o.chunk,verts,nv,o.normal_range+reach+2.0)!=0)
         return -1;
-    float *nrm=vertex_normals(verts,nv,faces,nf);
+    float *nrm=MeshNormals_compute(verts,nv,faces,nf);
     /* occupancy index over the EXISTING mesh -- "have we entered another sheet?" */
     KDTree_T occ=KDTree_new(arena,verts,nv);
 
@@ -103,15 +104,15 @@ int SnapDetect_run(Arena_T arena,
     for(size_t i=0;i<nv;i++) if(dark[i]&&cv[i]>band) out->n_overgrow++;  /* diag: bright-ish in dark set */
 
     /* outputs */
-    out->vclass=(uint8_t*)ARENA_CALLOC(arena,(long)nv,1);
-    out->voff=(float*)ARENA_CALLOC(arena,(long)nv,sizeof(float));
-    out->vdir=(float*)ARENA_CALLOC(arena,(long)nv,3*sizeof(float));
-    out->vgain=(float*)ARENA_CALLOC(arena,(long)nv,sizeof(float));
-    out->vtensor=(float*)ARENA_CALLOC(arena,(long)nv,sizeof(float));
-    out->vblock=(float*)ARENA_CALLOC(arena,(long)nv,sizeof(float));
-    out->vcur=(float*)ARENA_ALLOC(arena,(long)(nv*sizeof(float)));
-    out->vkdefect=(float*)ARENA_CALLOC(arena,(long)nv,sizeof(float));
-    out->vregion=(int32_t*)ARENA_ALLOC(arena,(long)(nv*sizeof(int32_t)));
+    out->vclass=(uint8_t*)ARENA_CALLOC(arena,(size_t)nv,1);
+    out->voff=(float*)ARENA_CALLOC(arena,(size_t)nv,sizeof(float));
+    out->vdir=(float*)ARENA_CALLOC(arena,(size_t)nv,3*sizeof(float));
+    out->vgain=(float*)ARENA_CALLOC(arena,(size_t)nv,sizeof(float));
+    out->vtensor=(float*)ARENA_CALLOC(arena,(size_t)nv,sizeof(float));
+    out->vblock=(float*)ARENA_CALLOC(arena,(size_t)nv,sizeof(float));
+    out->vcur=(float*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(float)));
+    out->vkdefect=(float*)ARENA_CALLOC(arena,(size_t)nv,sizeof(float));
+    out->vregion=(int32_t*)ARENA_ALLOC(arena,(size_t)(nv*sizeof(int32_t)));
     for(size_t i=0;i<nv;i++){ out->vcur[i]=(float)cv[i]; out->vregion[i]=-1; }
 
     /* Pass 1 is deliberately a REPAIR pass, not final surface placement.  It
@@ -181,8 +182,8 @@ int SnapDetect_run(Arena_T arena,
         for(int32_t e=aoff[i];e<aoff[i+1];e++){ int32_t j=atgt[e];
             if(out->vregion[j]!=r){ rbnd[r]++; if(out->vclass[j]==SNAP_GOOD)rgood[r]++; } } }
 
-    out->rclass=(uint8_t*)ARENA_ALLOC(arena,(long)(nreg>0?nreg:1));
-    out->rsize=(int32_t*)ARENA_ALLOC(arena,(long)((nreg>0?nreg:1)*sizeof(int32_t)));
+    out->rclass=(uint8_t*)ARENA_ALLOC(arena,(size_t)(nreg>0?nreg:1));
+    out->rsize=(int32_t*)ARENA_ALLOC(arena,(size_t)((nreg>0?nreg:1)*sizeof(int32_t)));
     out->nreg=(size_t)nreg;
     for(int32_t r=0;r<nreg;r++){
         out->rsize[r]=rsize[r]; if((size_t)rsize[r]>out->max_region_size)out->max_region_size=(size_t)rsize[r];

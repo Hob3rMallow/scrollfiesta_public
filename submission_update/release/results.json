@@ -1,0 +1,191 @@
+{
+  "schema": "scrollfiesta-public-release-check-v1",
+  "date": "2026-09-30",
+  "scroll": "PHerc0139",
+  "region": "4x5x5",
+  "mesh_pile": "head_39e72d0_20260826/mesh/dump",
+  "cube_count": 100,
+  "chunk_size": 128,
+  "bounds_zyx_half_open": [
+    [
+      4352,
+      4864
+    ],
+    [
+      3072,
+      3712
+    ],
+    [
+      2560,
+      3200
+    ]
+  ],
+  "configuration": {
+    "path": "configs/default.json",
+    "sha256_lf": "e31cb0e20e4c7c6529a352a9f3668c462823ccb7eeeb6479a7e73d77d90fe2b5",
+    "axis_path": "configs/axis.csv",
+    "axis_sha256_lf": "17d636546cd3347f7a0d780608f09e09f34d443939d3192bc23c5cd645630ff4",
+    "text_hash_rule": "SHA-256 after CRLF-to-LF normalization"
+  },
+  "audit": {
+    "schema": "native-original-field-v2",
+    "audit_complete": true,
+    "geometry_qualified": false,
+    "whole_scroll_qualified": false,
+    "material_identity_review": "Geometry alone does not establish CT material identity",
+    "source_preserved": true,
+    "source_faces": 916995,
+    "accounted_source_faces": 916995,
+    "represented_source_faces": 646199,
+    "absent_source_faces": 0,
+    "multiply_owned_source_faces": 0,
+    "foreign_faces": 0,
+    "altered_source_vertices": 0,
+    "source_area": 8147925.809097468,
+    "represented_area": 3860933.9363263287,
+    "excluded_area": 2795.9175247215003,
+    "unplaced_area": 4284195.955246464,
+    "missing_area": 0,
+    "coverage": 0.4738548222929877,
+    "placed_charts": 356,
+    "unplaced_charts": 406,
+    "excluded_charts": 21,
+    "audited_faces": 646199,
+    "invalid_faces": 0,
+    "strict_bad_faces": 0,
+    "bad_metric_charts": 0,
+    "sigma_min": 0.7726812271303105,
+    "sigma_max": 1.2499999999825682,
+    "within10_area": 3860921.6106513855,
+    "within25_area": 3860933.9363263287,
+    "contact_walk_complete": true,
+    "contact_leaf_pairs": 323133,
+    "contact_leaf_pair_budget": 4194304,
+    "overlapping_triangle_pairs": 171,
+    "self_overlapping_pairs": 0,
+    "overlap_area_sum": 2086.1706589920746,
+    "obligations": 1507,
+    "passing_seams": 126,
+    "unresolved_seams": 1381,
+    "continuity_components": 233,
+    "largest_connected_area": 144515.23785089832,
+    "repair_obligations": 242,
+    "passing_repair_seams": 125,
+    "unresolved_repair_seams": 117,
+    "continuity_graph": "Passing selected repair obligations; deferred proposals remain separately audited",
+    "contact_tolerance_vox": 4,
+    "contact_policy": "original_boundary_overlap_width_v1",
+    "metric_singular_value_roundoff": 1e-08,
+    "seam_rms_limit_vox": 4,
+    "seam_support_limit_vox": 4,
+    "minimum_supported_seam_mass_fraction": 0.9,
+    "original_mesh_cut_requires_exact_source_edge": true,
+    "original_mesh_cut_endpoint_count": 2,
+    "original_mesh_cut_supported_mass_fraction": 1,
+    "qualification_contract": "85% original area, continuity within recorded source regions, all represented required seams",
+    "minimum_coverage": 0.85,
+    "minimum_source_region_coherence": 0.99,
+    "legacy_geometry_qualified": false,
+    "source_regions": 544,
+    "represented_source_regions": 233,
+    "fractured_source_regions": 0,
+    "largest_possible_connected_area": 144515.23785089832,
+    "source_region_connected_area": 3860933.9363263017,
+    "source_region_coherence": 0.999999999999993,
+    "unresolved_present_repair_seams": 0,
+    "unresolved_missing_repair_seams": 117,
+    "tear_policy": "recorded tears (stage7_tears.csv) are no obligations; source regions are measured across them and without them",
+    "torn_seams": 0,
+    "torn_intrachart_cuts": 0,
+    "torn_seams_between_pieces": 0,
+    "torn_seam_length": 0,
+    "untorn_source_regions": 544,
+    "untorn_fractured_source_regions": 0,
+    "untorn_source_region_coherence": 0.999999999999993,
+    "border_policy": "placed charts' UV boundary length less the arc length of passing seams on each side",
+    "boundary_length_vox": 141086.04374834284,
+    "stitched_boundary_length_vox": 21547.605813550545,
+    "border_length_vox": 119538.43793479224,
+    "border_per_sqrt_area": 60.836103645509134,
+    "source_decoded_sha256": "2b2fc1bc139bc6b07c535ba7b73152fa9448fc48ef17c5c54f3e22e52a09cec8",
+    "field_sha256": "dcc7cee886e855e55559185d3c478bd01aecb7c0d9c179dad5c3e89a275d0c5a",
+    "obligations_sha256": "c362e7be292bcc13fbe676718c98d0d6058ea4a01114a02c21547517db440d69"
+  },
+  "preview": {
+    "source": "stage6_repaired.vmesh",
+    "vmesh_sha256": "94292fcb526f3d453894b65f1ea866e49132d91d0051cc8eaefd80ffb48da362",
+    "raw_source": "PHerc0139-4x5x5/cubes_RAW",
+    "normal_range_vox": 4,
+    "normal_samples": 9,
+    "window_u8": [
+      47,
+      193
+    ],
+    "raster_du": 1,
+    "raster_dv": 1,
+    "bounded_void_fill_pixels": 38630,
+    "coverage": {
+      "schema": "obj-bake-raw-coverage-v2",
+      "source_kind": "cube_tiffs",
+      "chunk_size": 128,
+      "table_shape_zyx": [
+        6,
+        6,
+        6
+      ],
+      "expected_chunks": 216,
+      "loaded_chunks": 100,
+      "missing_chunks": 116,
+      "outside_volume_chunks": 0,
+      "bbox_complete": false,
+      "missing_chunks_reached_by_faces": 72,
+      "face_reach_pad_vox": 6.0,
+      "faces_unpainted_missing_raw": 18456,
+      "faces": 646199,
+      "complete": false,
+      "complete_over_painted_faces": true,
+      "strict": true
+    },
+    "grid": {
+      "schema": "vesuvius-rawtex-grid-v1",
+      "coordinate_frame": "absolute_uv",
+      "fixed_window": false,
+      "origin_uv": [
+        -6245.916492572777,
+        -260.2533228776265
+      ],
+      "requested_bounds_uv": [
+        -6245.916492572777,
+        4924.081442973479,
+        -260.2533228776265,
+        381.1459377283245
+      ],
+      "step_uv": [
+        1,
+        1
+      ],
+      "shape_hw": [
+        642,
+        11170
+      ],
+      "covered_bounds_uv": [
+        -6245.916492572777,
+        4924.083507427223,
+        -260.2533228776265,
+        381.7466771223735
+      ],
+      "pixel_center_rule": "origin + (index + 0.5) * step"
+    },
+    "full_png_sha256": "8ab24dcd0da8e10a1126230361134fb3aaf7739439c9a58c0416acacc7b54da2",
+    "figure": "../figures/public_release_4x5x5.png",
+    "figure_sha256": "35bb48761a00199f278ff23724170419971b4d2f647a7d01cb92e72ec44383e3"
+  },
+  "validation": {
+    "cmake_release_build": "pass",
+    "native_quadribbon_build": "pass",
+    "install_check": "pass",
+    "ctest_passed": 16,
+    "ctest_failed": 0
+  },
+  "boundary": "Partial, geometry-unqualified reference check; not a reproduction of the August atlas or quadribbon exhibits."
+}

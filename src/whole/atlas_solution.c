@@ -99,7 +99,14 @@ int AtlasSolution_write(const char *path,
         return -1;
     if (ves_ensure_parent_dir(path) != 0) return -1;
 
-    FILE *fp = fopen(path, "wb");
+    /* Write to a sibling temp file and rename over the target so a failed
+     * or interrupted write never leaves a truncated checkpoint under the
+     * canonical name.  The reader's exact-EOF and fingerprint gates would
+     * reject a stub anyway; this keeps one from existing at all. */
+    char tmp_path[2048];
+    int tmp_len = snprintf(tmp_path, sizeof tmp_path, "%s.tmp", path);
+    if (tmp_len < 0 || (size_t)tmp_len >= sizeof tmp_path) return -1;
+    FILE *fp = fopen(tmp_path, "wb");
     if (fp == NULL) return -1;
     uint32_t endian = UINT32_C(0x01020304);
     uint64_t fingerprint = AtlasSolution_piece_fingerprint(ps);
@@ -143,7 +150,16 @@ int AtlasSolution_write(const char *path,
     }
 
     if (fclose(fp) != 0) io = -1;
-    return io == 0 ? 0 : -1;
+    if (io != 0) {
+        remove(tmp_path);
+        return -1;
+    }
+    remove(path); /* Windows rename() refuses to replace an existing file */
+    if (rename(tmp_path, path) != 0) {
+        remove(tmp_path);
+        return -1;
+    }
+    return 0;
 }
 
 int AtlasSolution_read(Arena_T arena,
@@ -155,7 +171,11 @@ int AtlasSolution_read(Arena_T arena,
         return -1;
     memset(out, 0, sizeof *out);
     FILE *fp = fopen(path, "rb");
-    if (fp == NULL) return -1;
+    if (fp == NULL) {
+        fprintf(stderr, "[atlas_solution] cannot open %s -- no checkpoint "
+                "(atlas_overlap_fix --tabu or --rounds writes it)\n", path);
+        return -1;
+    }
 
     unsigned char magic[8];
     uint32_t version = 0, endian = 0;
@@ -169,14 +189,22 @@ int AtlasSolution_read(Arena_T arena,
     io |= as_read_u64(fp, &nc);
     io |= as_read_u64(fp, &nr);
     io |= as_read_u64(fp, &fingerprint);
+    /* Every count is capped against the already-loaded PieceSet before any
+     * allocation, so a corrupt or truncated header can at worst request
+     * memory proportional to the mesh it claims to describe -- never an
+     * unbounded arena raise.  Charts partition vertices (nc <= nv); the
+     * residual ledger records untargetable collision pairs, of which more
+     * than a few per face would mean the relayout was garbage anyway. */
     if (io != 0 ||
         memcmp(magic, atlas_solution_magic, sizeof magic) != 0 ||
         version != ATLAS_SOLUTION_VERSION ||
         endian != UINT32_C(0x01020304) ||
         nv != (uint64_t)ps->nv || nf != (uint64_t)ps->nf ||
-        nc == 0 || nc > (uint64_t)SIZE_MAX ||
-        nr > (uint64_t)SIZE_MAX ||
+        nc == 0 || nc > (uint64_t)ps->nv ||
+        nr > (uint64_t)ps->nf * 8 ||
         fingerprint != AtlasSolution_piece_fingerprint(ps)) {
+        fprintf(stderr, "[atlas_solution] %s rejected: header or "
+                "fingerprint does not match the placed input\n", path);
         fclose(fp);
         return -1;
     }

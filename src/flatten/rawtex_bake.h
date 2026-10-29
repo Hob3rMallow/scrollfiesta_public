@@ -1,7 +1,7 @@
 /* ============================================================================
  * rawtex_bake.h -- rasterize RAW CT intensity into an unrolled (u,v) TIFF.
  *
- * Extracted from obj_bake_raw.c so the unified unroll pipeline (scroll_unroll)
+ * Extracted from obj_bake_raw.c so the unwrap pipeline (scroll_ribbon --raw)
  * and the standalone obj_bake_raw tool share one rasterizer. Given a
  * UV-carrying mesh (verts in source-space z,y,x + per-vertex u,v) and a RAW
  * cube table, every output pixel center is located in its covering UV
@@ -16,6 +16,13 @@
 
 #include "../common/raw_sample.h"   /* CubeTable, sample_vertex */
 
+/* Exactly one pointer is set. Rasterization never narrows scientific UVs. */
+typedef struct RawtexUv { const float *f32; const double *f64; } RawtexUv;
+static inline double Rawtex_uv(RawtexUv uv, size_t value)
+{ return uv.f64 ? uv.f64[value] : (double)uv.f32[value]; }
+static inline int Rawtex_has_uv(RawtexUv uv)
+{ return (uv.f32 != NULL) != (uv.f64 != NULL); }
+
 /* Optional diagnostics rasterized in the SAME pass (diag != NULL):
  *   <prefix>_diagclass.tif   0 bg | 1 ok | 2 skip-uv | 3 skip-3d | 4 multi | 5 dark
  *   <prefix>_diagstretch.tif 128 + 42.5*log2(sigma_max)  (UV->3D compression)
@@ -29,12 +36,50 @@ typedef struct DiagOpts {
     const char *smear_obj;     /* if set: write skip-uv faces in 3D + histograms */
 } DiagOpts;
 
+/* Raster sizing plan: the UV bounding box and the raster dims it implies at
+ * (du,dv), checked against the per-axis (2^20) and total-pixel caps BEFORE any
+ * expensive work.  `ok` says whether (du,dv) fits; `need_du`/`need_dv` are the
+ * smallest per-axis steps that do fit -- an axis already within its cap keeps
+ * its requested step (no more silently downsampling a 512-row v axis because
+ * u exploded).  Call this preflight before sampling; Rawtex_write_tif uses the
+ * identical computation, so a plan that says ok cannot be rejected later. */
+typedef struct RawtexPlan {
+    double umin, umax, vmin, vmax;  /* UV bbox over all nv vertices */
+    size_t W, H;                    /* raster dims at the requested (du,dv) */
+    double need_du, need_dv;        /* smallest steps that satisfy the caps */
+    size_t max_px;                  /* resolved total-pixel cap (0 -> default) */
+    int    ok;                      /* 1 = requested (du,dv) fits the caps */
+} RawtexPlan;
+
+/* Optional absolute UV raster window.  Unlike the default mesh-bbox plan,
+ * this fixes both the canvas origin and its extent, so two nested meshes paint
+ * a shared surface point into the same pixel.  Bounds are pixel-edge
+ * coordinates: pixel (x,y) samples
+ *   (umin + (x + 0.5) * du, vmin + (y + 0.5) * dv).
+ */
+typedef struct RawtexWindow {
+    double umin, umax, vmin, vmax;
+} RawtexWindow;
+
+/* max_px = 0 selects the default cap (1<<28 px). Returns 0 with *out filled
+ * (out->ok says whether it fits), -1 on invalid input (no verts / bad steps). */
+int Rawtex_plan(const float *uv, size_t nv, double du, double dv,
+                size_t max_px, RawtexPlan *out);
+
+/* Same preflight, but use `window` rather than the mesh UV bbox when non-NULL.
+ * The UV array is still validated: a fixed canvas must not hide invalid mesh
+ * coordinates. */
+int Rawtex_plan_window(const float *uv, size_t nv, double du, double dv,
+                       size_t max_px, const RawtexWindow *window,
+                       RawtexPlan *out);
+
 /* Rasterize the (u,v) texture at (du,dv) vox/px and write `path` (+ a .png
  * sibling). Face gates skip UV-stretched (streak) and long-3D-edge (hole-fill
  * membrane) faces. `face_skip`: optional [nf] mask -- faces with face_skip[f]!=0
  * are omitted ENTIRELY (not painted, not diagnosed); NULL = consider all faces.
- * `lo`/`hi` are the pre-computed contrast window. Out-params (nullable where
- * noted): W,H image dims; fill fraction; multi = #pixels with >1 cover;
+ * `lo`/`hi` are the pre-computed contrast window. `max_px` = total-pixel cap
+ * (0 -> default 1<<28), same meaning as Rawtex_plan. Out-params (nullable
+ * where noted): W,H image dims; fill fraction; multi = #pixels with >1 cover;
  * skip_uv/skip_3d = gated face counts. Returns 0 on success. */
 int Rawtex_write_tif(const char *path, CubeTable *ct,
                      const float *verts, const float *uv, size_t nv,
@@ -44,11 +89,30 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
                      double range, int nsteps,
                      double du, double dv, double lo, double hi,
                      double stretch_ratio, double stretch_floor,
-                     double max_edge3d,
+                     double max_edge3d, size_t max_px,
                      const DiagOpts *diag,
                      size_t *out_W, size_t *out_H,
                      double *out_fill, size_t *out_multi,
                      size_t *out_skip_uv, size_t *out_skip_3d);
+
+/* Fixed-origin variant.  `window == NULL` is exactly Rawtex_write_tif.
+ * Keeping the legacy entry point prevents accidental coordinate changes in
+ * existing callers while comparison/pipeline code opts into the explicit
+ * absolute frame. */
+int Rawtex_write_tif_window(const char *path, CubeTable *ct,
+                            const float *verts, const float *uv, size_t nv,
+                            const int32_t *faces, size_t nf,
+                            const float *normals,
+                            const uint8_t *face_skip,
+                            double range, int nsteps,
+                            double du, double dv, double lo, double hi,
+                            double stretch_ratio, double stretch_floor,
+                            double max_edge3d, size_t max_px,
+                            const RawtexWindow *window,
+                            const DiagOpts *diag,
+                            size_t *out_W, size_t *out_H,
+                            double *out_fill, size_t *out_multi,
+                            size_t *out_skip_uv, size_t *out_skip_3d);
 
 /* Percentile contrast window (256-bin histogram) over the sampled population;
  * val[i]/has[i] as returned by sample_vertex, pct_lo/pct_hi e.g. 1/99. The
@@ -56,5 +120,26 @@ int Rawtex_write_tif(const char *path, CubeTable *ct,
 void Rawtex_stretch_window(const double *val, const uint8_t *has, size_t nv,
                            double pct_lo, double pct_hi,
                            double *out_lo, double *out_hi);
+
+int Rawtex_plan_field(RawtexUv uv, size_t nv, double du, double dv,
+                       size_t max_px, const RawtexWindow *window,
+                       RawtexPlan *out);
+
+int Rawtex_write_tif_field(const char *path, CubeTable *ct,
+                            const float *verts, RawtexUv uv, size_t nv,
+                            const int32_t *faces, size_t nf,
+                            const float *normals,
+                            const uint8_t *face_skip,
+                            double range, int nsteps,
+                            double du, double dv, double lo, double hi,
+                            double stretch_ratio, double stretch_floor,
+                            double max_edge3d, size_t max_px,
+                            const RawtexWindow *window,
+                            const DiagOpts *diag,
+                            size_t *out_W, size_t *out_H,
+                            double *out_fill, size_t *out_multi,
+                            size_t *out_skip_uv, size_t *out_skip_3d);
+
+int Rawtex_selftest(void);
 
 #endif /* RAWTEX_BAKE_H */

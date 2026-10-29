@@ -12,6 +12,7 @@
 
 #include "export_atlas.h"
 #include "tifxyz_export.h"
+#include "../whole/axis_warp.h"
 
 void AtlasOpts_default(AtlasOpts *o)
 {
@@ -45,6 +46,75 @@ static int cmp_float(const void *pa, const void *pb)
     return a < b ? -1 : (a > b ? 1 : 0);
 }
 
+int Atlas_lift_polar_u(Arena_T arena, const PieceSet *ps,
+                       const ScaffoldCalib *c, float **out_uv,
+                       AtlasPolarStats *stats)
+{
+    if (arena == NULL || ps == NULL || c == NULL || out_uv == NULL
+        || ps->nv == 0 || ps->verts == NULL || ps->uv == NULL
+        || ps->phi == NULL)
+        return -1;
+    AtlasPolarStats st;
+    memset(&st, 0, sizeof(st));
+    AxisWarp axis;
+    AxisWarp_init(&axis);
+    if (c->axis_table[0] != '\0'
+        && AxisWarp_load_csv(&axis, c->axis_table) == 0)
+        st.curved_axis = 1;
+
+    /* Fit phase origin on S1. Integer turns vanish under exp(i phi), so the
+     * circular correlation is gauge-independent.  A radius-derived phase was
+     * also tested, but PHerc1447 is locally nested rather than one global
+     * Archimedean spiral: it regressed conflicts from 3.02% to 5.21%. */
+    double *theta = (double *)ARENA_ALLOC(
+        arena, (size_t)(ps->nv * sizeof(double)));
+    double cp = 0.0, sp = 0.0, cm = 0.0, sm = 0.0;
+    size_t np = 0;
+    for (size_t v = 0; v < ps->nv; v++) {
+        double cy = (double)c->axis_point[1];
+        double cx = (double)c->axis_point[2];
+        if (AxisWarp_valid(&axis))
+            AxisWarp_eval(&axis, (double)ps->verts[v * 3 + 0], &cy, &cx);
+        theta[v] = atan2((double)ps->verts[v * 3 + 1] - cy,
+                         (double)ps->verts[v * 3 + 2] - cx);
+        if (ps->gid != NULL && ps->gid[v] < 0) continue;
+        double phi = (double)ps->phi[v];
+        cp += cos(phi - theta[v]); sp += sin(phi - theta[v]);
+        cm += cos(phi + theta[v]); sm += sin(phi + theta[v]);
+        np++;
+    }
+    double coh_p = np ? sqrt(cp * cp + sp * sp) / (double)np : 0.0;
+    double coh_m = np ? sqrt(cm * cm + sm * sm) / (double)np : 0.0;
+    st.sign = coh_p >= coh_m ? 1 : -1;
+    st.offset = st.sign > 0 ? atan2(sp, cp) : atan2(sm, cm);
+    st.coherence = st.sign > 0 ? coh_p : coh_m;
+
+    float *uv = (float *)ARENA_ALLOC(
+        arena, (size_t)(ps->nv * 2 * sizeof(float)));
+    for (size_t v = 0; v < ps->nv; v++)
+        theta[v] = (double)st.sign * theta[v] + st.offset;
+
+    /* Registered phase selects the covering sheet, while theta supplies the
+     * local angular coordinate. Pointwise lifting intentionally leaves a
+     * discontinuity across a bridge between distinct turns; the stretch gate
+     * quarantines that bridge. A topology-hard lift instead forced those
+     * sheets together (3.33% conflicts and 921k ownership drops). */
+    for (size_t v = 0; v < ps->nv; v++) {
+        double lifted = theta[v] + SCAFFOLD_2PI
+                      * nearbyint(((double)ps->phi[v] - theta[v])
+                                  / SCAFFOLD_2PI);
+        uv[v * 2 + 0] = (float)(
+            c->spiral_a * lifted
+            + c->spiral_b * lifted * lifted
+              / (2.0 * SCAFFOLD_2PI));
+        uv[v * 2 + 1] = ps->uv[v * 2 + 1];
+    }
+    AxisWarp_dispose(&axis);
+    *out_uv = uv;
+    if (stats != NULL) *stats = st;
+    return 0;
+}
+
 int ExportAtlas_run(Arena_T arena, const PieceSet *ps, const ScaffoldCalib *c,
                     const char *seg_root, const char *prefix,
                     const AtlasOpts *opts_in, AtlasStats *out)
@@ -59,10 +129,59 @@ int ExportAtlas_run(Arena_T arena, const PieceSet *ps, const ScaffoldCalib *c,
     if (opts.du <= 0.0) opts.du = 1.0;
     if (opts.dv <= 0.0) opts.dv = 1.0;
     if (opts.slab_v <= 0.0) opts.slab_v = 4096.0;
+    if (opts.input_polar_u) {
+        out->polar_sign = opts.input_polar_stats.sign;
+        out->polar_offset = opts.input_polar_stats.offset;
+        out->polar_coherence = opts.input_polar_stats.coherence;
+        out->polar_curved_axis = opts.input_polar_stats.curved_axis;
+        out->polar_groups = opts.input_polar_stats.groups;
+        out->polar_ambiguous_groups = opts.input_polar_stats.ambiguous_groups;
+        out->polar_cycle_conflicts = opts.input_polar_stats.cycle_conflicts;
+        out->polar_isolated_vertices = opts.input_polar_stats.isolated_vertices;
+    }
 
     double t_start = ves_clock_sec();
 
     Arena_Mark mark = Arena_save(arena);
+
+    /* Optional globally gauged scaffold chart.  The registered Ribbon u is
+     * locally metric but can carry one arbitrary translation per disconnected
+     * seam-graph component.  F(phi) is single-valued across every component
+     * and every cube:
+     *     F(phi) = a*phi + b*phi^2/(4pi).
+     * Keep v unchanged and leave the source geometry untouched. */
+    PieceSet phase_ps;
+    if (opts.polar_u || opts.phase_u) {
+        phase_ps = *ps;
+        float *phase_uv = NULL;
+        if (opts.polar_u) {
+            AtlasPolarStats pst;
+            if (Atlas_lift_polar_u(arena, ps, c, &phase_uv, &pst) != 0) {
+                Arena_restore(arena, mark);
+                return -1;
+            }
+            out->polar_sign = pst.sign;
+            out->polar_offset = pst.offset;
+            out->polar_coherence = pst.coherence;
+            out->polar_curved_axis = pst.curved_axis;
+            out->polar_groups = pst.groups;
+            out->polar_ambiguous_groups = pst.ambiguous_groups;
+            out->polar_cycle_conflicts = pst.cycle_conflicts;
+            out->polar_isolated_vertices = pst.isolated_vertices;
+        } else {
+            phase_uv = (float *)ARENA_ALLOC(
+                arena, (size_t)(ps->nv * 2 * sizeof(float)));
+            for (size_t v = 0; v < ps->nv; v++) {
+                double phi = (double)ps->phi[v];
+                phase_uv[v * 2 + 0] = (float)(
+                    c->spiral_a * phi
+                    + c->spiral_b * phi * phi / (2.0 * SCAFFOLD_2PI));
+                phase_uv[v * 2 + 1] = ps->uv[v * 2 + 1];
+            }
+        }
+        phase_ps.uv = phase_uv;
+        ps = &phase_ps;
+    }
 
     /* per-vertex unwound turn coordinate. */
     double *w = (double *)ARENA_ALLOC(arena, (size_t)(ps->nv * sizeof(double)));
@@ -96,6 +215,7 @@ int ExportAtlas_run(Arena_T arena, const PieceSet *ps, const ScaffoldCalib *c,
         if (vf < vmin) vmin = vf;
         if (vf > vmax) vmax = vf;
     }
+    out->n_phase_quarantine_faces = nquar;
     out->n_quarantine_faces = nquar;
     if (kmin > kmax) { Arena_restore(arena, mark); return -1; }  /* nothing kept */
 
@@ -223,6 +343,37 @@ int ExportAtlas_run(Arena_T arena, const PieceSet *ps, const ScaffoldCalib *c,
             out->total_valid_px += tst.valid;
             out->total_multi_px += tst.multi;
             out->total_conflict_px += tst.conflicts;
+            out->total_conflict_same_cube_px += tst.conflict_same_cube;
+            out->total_conflict_cross_cube_px += tst.conflict_cross_cube;
+            out->total_conflict_unknown_cube_px += tst.conflict_unknown_cube;
+            out->total_conflict_d_le4 += tst.conflict_d_le4;
+            out->total_conflict_d_le8 += tst.conflict_d_le8;
+            out->total_conflict_d_le16 += tst.conflict_d_le16;
+            out->total_conflict_d_le32 += tst.conflict_d_le32;
+            out->total_conflict_d_gt32 += tst.conflict_d_gt32;
+            out->total_conflict_d_sum += tst.conflict_d_sum;
+            if (tst.conflict_d_max > out->max_conflict_d)
+                out->max_conflict_d = tst.conflict_d_max;
+            out->total_conflict_turn_known += tst.conflict_turn_known;
+            out->total_conflict_turn_le025 += tst.conflict_turn_le025;
+            out->total_conflict_turn_le05 += tst.conflict_turn_le05;
+            out->total_conflict_turn_le1 += tst.conflict_turn_le1;
+            out->total_conflict_turn_gt1 += tst.conflict_turn_gt1;
+            out->total_conflict_face_shared_edge +=
+                tst.conflict_face_shared_edge;
+            out->total_conflict_face_shared_vertex +=
+                tst.conflict_face_shared_vertex;
+            out->total_conflict_face_disjoint += tst.conflict_face_disjoint;
+            out->total_conflict_centroid_d_le8 += tst.conflict_centroid_d_le8;
+            out->total_conflict_centroid_d_gt8 += tst.conflict_centroid_d_gt8;
+            out->total_conflict_centroid_du_le2 += tst.conflict_centroid_du_le2;
+            out->total_conflict_centroid_du_le4 += tst.conflict_centroid_du_le4;
+            out->total_conflict_centroid_du_le8 += tst.conflict_centroid_du_le8;
+            out->total_conflict_centroid_du_gt8 += tst.conflict_centroid_du_gt8;
+            out->total_conflict_centroid_dv_le2 += tst.conflict_centroid_dv_le2;
+            out->total_conflict_centroid_dv_le4 += tst.conflict_centroid_dv_le4;
+            out->total_conflict_centroid_dv_le8 += tst.conflict_centroid_dv_le8;
+            out->total_conflict_centroid_dv_gt8 += tst.conflict_centroid_dv_gt8;
             pr->W = tst.W; pr->H = tst.H;
             pr->valid = tst.valid; pr->multi = tst.multi; pr->conflict = tst.conflicts;
             pr->origin_u = tst.u0; pr->origin_v = tst.v0;
@@ -237,6 +388,8 @@ int ExportAtlas_run(Arena_T arena, const PieceSet *ps, const ScaffoldCalib *c,
         }
     }
 
+    out->n_phase_quarantine_faces = nquar;
+    out->n_u_outlier_faces = total_uoutliers;
     out->n_quarantine_faces = nquar + total_uoutliers;
     out->conflict_frac = out->total_valid_px > 0
         ? (double)out->total_conflict_px / (double)out->total_valid_px : 0.0;
@@ -257,17 +410,80 @@ int ExportAtlas_run(Arena_T arena, const PieceSet *ps, const ScaffoldCalib *c,
                     "\"pitch\": %.6f, \"sense\": %d,\n"
                     "    \"axis_point_zyx\": [%.3f, %.3f, %.3f] },\n"
                     "  \"piece_wraps\": %d, \"slab_v\": %.1f,\n"
+                    "  \"u_coordinate\": \"%s\",\n"
+                    "  \"polar_lift\": { \"sign\": %d, \"offset\": %.9f, "
+                    "\"coherence\": %.9f, \"curved_axis\": %d, "
+                    "\"components\": %zu, \"inconsistent_components\": %zu, "
+                    "\"cycle_conflicts\": %zu, \"isolated_vertices\": %zu },\n"
                     "  \"k_range\": [%d, %d], \"n_pieces\": %zu, "
                     "\"n_quarantine_faces\": %zu,\n"
+                    "  \"n_phase_quarantine_faces\": %zu, "
+                    "\"n_u_outlier_faces\": %zu,\n"
                     "  \"total_valid_px\": %zu, \"total_conflict_px\": %zu,\n"
+                    "  \"conflict_diagnostics\": {\n"
+                    "    \"provenance_px\": {\"same_cube\": %zu, "
+                    "\"cross_cube\": %zu, \"unknown_cube\": %zu},\n"
+                    "    \"distance_px\": {\"le4\": %zu, \"le8\": %zu, "
+                    "\"le16\": %zu, \"le32\": %zu, \"gt32\": %zu, "
+                    "\"mean\": %.6f, \"max\": %.6f},\n"
+                    "    \"turn_delta_px\": {\"known\": %zu, "
+                    "\"le0.25\": %zu, \"le0.5\": %zu, \"le1\": %zu, "
+                    "\"gt1\": %zu},\n"
+                    "    \"face_relation_px\": {\"shared_edge\": %zu, "
+                    "\"shared_vertex\": %zu, \"disjoint\": %zu},\n"
+                    "    \"centroid_distance_px\": {\"le8\": %zu, "
+                    "\"gt8\": %zu},\n"
+                    "    \"centroid_du_px\": {\"le2\": %zu, \"le4\": %zu, "
+                    "\"le8\": %zu, \"gt8\": %zu},\n"
+                    "    \"centroid_dv_px\": {\"le2\": %zu, \"le4\": %zu, "
+                    "\"le8\": %zu, \"gt8\": %zu}\n"
+                    "  },\n"
                     "  \"pieces\": [\n",
                     prefix, opts.du, opts.dv,
                     c->spiral_a, c->spiral_b, c->pitch, c->sense,
                     (double)c->axis_point[0], (double)c->axis_point[1],
                     (double)c->axis_point[2],
-                    opts.piece_wraps, opts.slab_v, kmin, kmax, nrec,
+                    opts.piece_wraps, opts.slab_v,
+                    (opts.polar_u || opts.input_polar_u) ? "lifted_polar" :
+                    opts.phase_u ? "spiral_phase" : "registered",
+                    out->polar_sign, out->polar_offset,
+                    out->polar_coherence, out->polar_curved_axis,
+                    out->polar_groups, out->polar_ambiguous_groups,
+                    out->polar_cycle_conflicts,
+                    out->polar_isolated_vertices,
+                    kmin, kmax, nrec,
                     out->n_quarantine_faces,
-                    out->total_valid_px, out->total_conflict_px);
+                    out->n_phase_quarantine_faces,
+                    out->n_u_outlier_faces,
+                    out->total_valid_px, out->total_conflict_px,
+                    out->total_conflict_same_cube_px,
+                    out->total_conflict_cross_cube_px,
+                    out->total_conflict_unknown_cube_px,
+                    out->total_conflict_d_le4, out->total_conflict_d_le8,
+                    out->total_conflict_d_le16, out->total_conflict_d_le32,
+                    out->total_conflict_d_gt32,
+                    out->total_conflict_px
+                        ? out->total_conflict_d_sum
+                          / (double)out->total_conflict_px : 0.0,
+                    out->max_conflict_d,
+                    out->total_conflict_turn_known,
+                    out->total_conflict_turn_le025,
+                    out->total_conflict_turn_le05,
+                    out->total_conflict_turn_le1,
+                    out->total_conflict_turn_gt1,
+                    out->total_conflict_face_shared_edge,
+                    out->total_conflict_face_shared_vertex,
+                    out->total_conflict_face_disjoint,
+                    out->total_conflict_centroid_d_le8,
+                    out->total_conflict_centroid_d_gt8,
+                    out->total_conflict_centroid_du_le2,
+                    out->total_conflict_centroid_du_le4,
+                    out->total_conflict_centroid_du_le8,
+                    out->total_conflict_centroid_du_gt8,
+                    out->total_conflict_centroid_dv_le2,
+                    out->total_conflict_centroid_dv_le4,
+                    out->total_conflict_centroid_dv_le8,
+                    out->total_conflict_centroid_dv_gt8);
                 for (size_t i = 0; i < nrec; i++) {
                     PieceRec *pr = &recs[i];
                     fprintf(mf,

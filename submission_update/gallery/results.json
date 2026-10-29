@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "exhibit": "ScrollFiesta August 2026 progress gallery",
+  "prepared_at": "2026-08-30T00:00:00-04:00",
+  "public_repository_snapshot": "cfbc90ea3bba92162f0b532a34fffae1382639ba",
+  "experiment_commit": "d92a623cd0e5b3b3c884eec989c6a297e92885c5",
+  "pherc0139": {
+    "coherent_visual": {
+      "region": "10x10x10",
+      "lineage": "hybrid upper-bound/champion route",
+      "vertices": 16444360,
+      "faces": 32608066,
+      "caveat": "not the current general pre-weld fitter"
+    },
+    "largest_certified_view": {
+      "region": "21x21x21",
+      "artifact": "one winding page from the certified sheet book",
+      "caveat": "not one globally fitted surface"
+    },
+    "maintained_prefit": {
+      "region": "21x21x21",
+      "requested_cubes": 9231,
+      "mesh_outputs": 9110,
+      "clean_empty_successes": 2,
+      "rejected": 119,
+      "rejected_solid_slab": 92,
+      "rejected_empty_prediction": 27,
+      "failures": 0,
+      "unique_world_frame_meshes": 9110,
+      "vertices": 195970607,
+      "faces": 381764120,
+      "stage1_vmesh_bytes": 6932816788,
+      "stage1_vmesh_sha256": "398ae1acd722604aa24c0683629a37fe19bbd80a71d8975d09989e30e7102a33",
+      "cube_ledger_sha256": "4add7ee6a5150475bcb9d50f1fef34d7f69e4c8c679c64843f5aeef83ddacfc6",
+      "stop_boundary": "quadribbon stage 1 concat",
+      "quadribbon_fit_run": false,
+      "weld_run": false
+    }
+  },
+  "prize_targets": [
+    {
+      "scroll": "PHerc1203",
+      "region": "5x5x5",
+      "bbox_l0_zyx": [
+        9216,
+        9856,
+        3200,
+        3840,
+        3072,
+        3712
+      ],
+      "prediction_tiffs": 125,
+      "cubes_ok": 125,
+      "rejected": 0,
+      "failures": 0,
+      "vertices": 3983612,
+      "faces": 7752910,
+      "manifold_meshes": 125,
+      "nonmanifold_meshes": 0,
+      "same_direction_defects": 0,
+      "wrap_pitch_vox": 15.0052,
+      "calibration": "quadratic least-squares continuation of the prior zero-failure 4x5x5 curved-axis samples",
+      "raw_ct_in_grid": false,
+      "fit_run": false,
+      "weld_run": false
+    },
+    {
+      "scroll": "PHerc1447",
+      "region": "5x5x5",
+      "bbox_l0_zyx": [
+        11904,
+        12544,
+        3328,
+        3968,
+        3456,
+        4096
+      ],
+      "prediction_tiffs": 125,
+      "cubes_ok": 125,
+      "rejected": 0,
+      "failures": 0,
+      "vertices": 2169959,
+      "faces": 4191314,
+      "manifold_meshes": 125,
+      "nonmanifold_meshes": 0,
+      "same_direction_defects": 0,
+      "wrap_pitch_vox": 18.5,
+      "calibration": "quadratic continuation of the prior zero-failure 4x5x5 smooth-axis samples",
+      "raw_ct_in_grid": false,
+      "fit_run": false,
+      "weld_run": false
+    }
+  ],
+  "w043": {
+    "scan_resolution_um": 9.362,
+    "method": "normal-only native-sheet fit",
+    "median_signed_offset_vox": {
+      "before": 0.81,
+      "after": 0.395
+    },
+    "normal_offset_rmse_vox": {
+      "before": 2.027,
+      "after": 1.806
+    },
+    "q95_absolute_offset_vox": {
+      "before": 4.082,
+      "after": 3.59
+    },
+    "supervised_auc_all": {
+      "before": 0.6901,
+      "after": 0.7098
+    },
+    "interpretation": "real modest improvement, not oracle recovery"
+  },
+  "claim_boundaries": [
+    "The 21x21x21 maintained artifact stops before quadribbon fit.",
+    "The 10x10x10 coherent strip is a hybrid champion lineage.",
+    "The two prize-target regions are prediction-derived geometry only; no texture or ink claim is made.",
+    "W043 geometry fitting is a measured modest improvement."
+  ]
+}

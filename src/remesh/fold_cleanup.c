@@ -33,14 +33,14 @@ static void face_normal(const float *V, const int32_t *F, size_t f,
 /* Build vertex -> incident-face CSR (off[nv+1], inc[3*nf]). */
 static void build_vert_faces(Arena_T arena, const int32_t *faces, size_t nf,
                              size_t nv, size_t **out_off, int **out_inc) {
-    size_t *off = (size_t *)ARENA_CALLOC(arena, (size_t)(nv + 1),
-                                         (long)sizeof(size_t));
+    size_t *off = (size_t *)ARENA_CALLOC(arena, (nv + 1),
+                                         sizeof(size_t));
     for (size_t f = 0; f < nf; f++) {
         for (int k = 0; k < 3; k++) { off[(size_t)faces[f * 3 + k] + 1]++; }
     }
     for (size_t v = 0; v < nv; v++) { off[v + 1] += off[v]; }
-    int *inc = (int *)ARENA_ALLOC(arena, (size_t)(off[nv] * sizeof(int)));
-    size_t *cur = (size_t *)ARENA_ALLOC(arena, (size_t)(nv * sizeof(size_t)));
+    int *inc = (int *)ARENA_ALLOC(arena, (off[nv] * sizeof(int)));
+    size_t *cur = (size_t *)ARENA_ALLOC(arena, (nv * sizeof(size_t)));
     memcpy(cur, off, nv * sizeof(size_t));
     for (size_t f = 0; f < nf; f++) {
         for (int k = 0; k < 3; k++) {
@@ -87,7 +87,7 @@ static size_t fold_pass(Arena_T arena, ComponentMesh *cm) {
     size_t *off = NULL; int *inc = NULL;
     build_vert_faces(arena, faces, nf, nv, &off, &inc);
 
-    uint8_t *del = (uint8_t *)ARENA_CALLOC(arena, (size_t)nf, 1);
+    uint8_t *del = (uint8_t *)ARENA_CALLOC(arena, nf, 1);
     size_t marked = 0;
 
     for (size_t f = 0; f < nf; f++) {
@@ -129,7 +129,7 @@ static size_t fold_pass(Arena_T arena, ComponentMesh *cm) {
     /* compact faces in place (new arena buffer; old is past a mark we keep) */
     size_t nf_new = nf - marked;
     int32_t *nf_faces = (int32_t *)ARENA_ALLOC(arena,
-                              (long)(nf_new * 3 * sizeof(int32_t)));
+                              (nf_new * 3 * sizeof(int32_t)));
     size_t w = 0;
     for (size_t f = 0; f < nf; f++) {
         if (del[f]) { continue; }

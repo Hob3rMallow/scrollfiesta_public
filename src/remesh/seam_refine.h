@@ -90,4 +90,26 @@ int SeamRefine_process_with_parents(
                        size_t *out_n_new,
                        SeamRefineStats *st);
 
+/*
+ * Chart-geometry rollback variant.  A marked input face and every descendant
+ * remains bit-identical; conforming neighbour edges and quality flips incident
+ * to that protected patch are skipped.  With flip_max_rounds==0,
+ * out_face_source maps every emitted face to its unique input ancestor.
+ */
+int SeamRefine_process_masked_with_roots(
+                       Arena_T arena,
+                       const float *verts, size_t nv,
+                       const int32_t *faces, size_t nf,
+                       const SeamPlane *planes, size_t np,
+                       const SeamRefineParams *params,
+                       const uint8_t *freeze_source_faces,
+                       size_t freeze_source_nf,
+                       float **out_verts, size_t *out_nv,
+                       int32_t **out_faces, size_t *out_nf,
+                       int32_t **out_new_vert_parent0,
+                       int32_t **out_new_vert_parent1,
+                       int32_t **out_face_source,
+                       size_t *out_n_new,
+                       SeamRefineStats *st);
+
 #endif

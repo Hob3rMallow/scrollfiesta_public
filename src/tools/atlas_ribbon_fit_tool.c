@@ -13,11 +13,13 @@
 #include "../common/ves_platform.h"
 #include "../unroll/piece_set.h"
 #include "../whole/atlas_overlap_audit.h"
+#include "../whole/atlas_ribbon_coverage.h"
 #include "../whole/atlas_ribbon_texture.h"
 #include "../unroll/scaffold.h"
 #include "../whole/atlas_ribbon_fit.h"
 #include "../whole/atlas_solution.h"
 
+#include <assert.h>
 #include <float.h>
 #include <inttypes.h>
 #include <math.h>
@@ -1391,66 +1393,20 @@ static int write_ribbon_rows_obj(
     return fclose(fp) == 0 ? 0 : -1;
 }
 
-typedef enum {
-    ARFT_COVERAGE_BACKGROUND = 0,
-    ARFT_COVERAGE_RIBBON = 1,
-    ARFT_COVERAGE_PREFIT_CULL = 2,
-    ARFT_COVERAGE_INVALID_CHART = 3,
-    ARFT_COVERAGE_OUTSIDE_V = 4,
-    ARFT_COVERAGE_OUTSIDE_U = 5,
-    ARFT_COVERAGE_NO_U_SUPPORT = 6,
-    ARFT_COVERAGE_SUBGRID_U = 7,
-    ARFT_COVERAGE_U_GAP = 8,
-    ARFT_COVERAGE_METRIC_U = 9,
-    ARFT_COVERAGE_TOPOLOGY_U = 10,
-    ARFT_COVERAGE_CROSSING_U = 11,
-    ARFT_COVERAGE_VERTICAL_METRIC = 12,
-    ARFT_COVERAGE_GEOMETRY_MISMATCH = 13,
-    ARFT_COVERAGE_REASON_COUNT = 14
-} ArftCoverageReason;
-
-static const char *coverage_reason_name(int reason)
-{
-    static const char *name[ARFT_COVERAGE_REASON_COUNT] = {
-        "background",
-        "ribboned",
-        "prefit_cull",
-        "invalid_chart",
-        "outside_v_lattice",
-        "outside_u_lattice",
-        "no_u_support",
-        "subgrid_u_island",
-        "u_gap_cut",
-        "metric_u_cut",
-        "topology_u_cut",
-        "crossing_u_cut",
-        "vertical_metric_cut",
-        "geometry_mismatch"
-    };
-    return reason >= 0 && reason < ARFT_COVERAGE_REASON_COUNT
-         ? name[reason] : "invalid";
-}
-
-/* Priority used only when several source layers paint the same atlas pixel.
- * Every layer is still counted separately in the JSON/CSV audit. */
-static int coverage_reason_priority(int reason)
-{
-    static const uint8_t priority[ARFT_COVERAGE_REASON_COUNT] = {
-        0, 1, 4, 5, 2, 2, 3, 6, 7, 9, 10, 12, 11, 13
-    };
-    return reason >= 0 && reason < ARFT_COVERAGE_REASON_COUNT
-         ? priority[reason] : 0;
-}
+/* Reason codes, names, display priority, and palette are shared with
+ * strip_preview via atlas_ribbon_coverage.h -- one table, no drift. */
 
 static int coverage_reason_from_u_reject(uint8_t reject)
 {
     switch ((AtlasRibbonEdgeReject)reject) {
-    case ATLAS_RIBBON_EDGE_SUBGRID: return ARFT_COVERAGE_SUBGRID_U;
-    case ATLAS_RIBBON_EDGE_U_GAP: return ARFT_COVERAGE_U_GAP;
-    case ATLAS_RIBBON_EDGE_METRIC: return ARFT_COVERAGE_METRIC_U;
-    case ATLAS_RIBBON_EDGE_TOPOLOGY: return ARFT_COVERAGE_TOPOLOGY_U;
-    case ATLAS_RIBBON_EDGE_CROSSING: return ARFT_COVERAGE_CROSSING_U;
-    default: return ARFT_COVERAGE_NO_U_SUPPORT;
+    case ATLAS_RIBBON_EDGE_SUBGRID: return ATLAS_RIBBON_COVERAGE_SUBGRID_U;
+    case ATLAS_RIBBON_EDGE_U_GAP: return ATLAS_RIBBON_COVERAGE_U_GAP;
+    case ATLAS_RIBBON_EDGE_METRIC: return ATLAS_RIBBON_COVERAGE_METRIC_U;
+    case ATLAS_RIBBON_EDGE_TOPOLOGY:
+        return ATLAS_RIBBON_COVERAGE_TOPOLOGY_U;
+    case ATLAS_RIBBON_EDGE_CROSSING:
+        return ATLAS_RIBBON_COVERAGE_CROSSING_U;
+    default: return ATLAS_RIBBON_COVERAGE_NO_U_SUPPORT;
     }
 }
 
@@ -1468,45 +1424,58 @@ static double coverage_dense_shift(const double *dense, size_t nrows,
            t * dense[row1 * ncharts + (size_t)chart];
 }
 
+/* Classify one atlas pixel against the fitted grid cell it lands in.
+ * out_one_row is set when the cell failed on exactly ONE of its two
+ * bounding row edges -- a one-row hole is a candidate for a cross-row
+ * rescue, a two-row hole is real data absence. */
 static int coverage_classify(const AtlasRibbonObservationSet *set,
                              const AtlasRibbonFitOptions *opts,
                              const AtlasRibbonFitResult *fit,
                              double registered_u, double v,
                              const double source_p[2],
-                             double *out_residual)
+                             double *out_residual, int *out_one_row)
 {
     *out_residual = NAN;
+    *out_one_row = 0;
     double row_coordinate = (v - fit->v0) / fit->dv;
     int64_t row0 = (int64_t)floor(row_coordinate);
     if (row0 < 0 || row0 + 1 >= (int64_t)fit->nrows)
-        return ARFT_COVERAGE_OUTSIDE_V;
+        return ATLAS_RIBBON_COVERAGE_OUTSIDE_V;
     double column_coordinate = (registered_u - fit->u0) / fit->du;
     int64_t column = (int64_t)floor(column_coordinate);
     if (column < 0 || column + 1 >= (int64_t)fit->ncolumns)
-        return ARFT_COVERAGE_OUTSIDE_U;
+        return ATLAS_RIBBON_COVERAGE_OUTSIDE_U;
 
     size_t a = (size_t)row0 * fit->ncolumns + (size_t)column;
     size_t c = a + fit->ncolumns;
-    int lower_u = fit->u_edge != NULL && fit->u_edge[a];
-    int upper_u = fit->u_edge != NULL && fit->u_edge[c];
+    int lower_u = fit->u_edge[a] != 0;
+    int upper_u = fit->u_edge[c] != 0;
     if (!lower_u || !upper_u) {
-        int lower_reason = fit->u_reject != NULL
-                         ? coverage_reason_from_u_reject(fit->u_reject[a])
-                         : ARFT_COVERAGE_NO_U_SUPPORT;
-        int upper_reason = fit->u_reject != NULL
-                         ? coverage_reason_from_u_reject(fit->u_reject[c])
-                         : ARFT_COVERAGE_NO_U_SUPPORT;
+        int lower_reason = coverage_reason_from_u_reject(fit->u_reject[a]);
+        int upper_reason = coverage_reason_from_u_reject(fit->u_reject[c]);
+        *out_one_row = lower_u != upper_u;
         if (lower_u) return upper_reason;
         if (upper_u) return lower_reason;
-        return coverage_reason_priority(lower_reason) >=
-               coverage_reason_priority(upper_reason)
+        return AtlasRibbonCoverage_priority(lower_reason) >=
+               AtlasRibbonCoverage_priority(upper_reason)
              ? lower_reason : upper_reason;
     }
-    if (fit->v_edge == NULL || !fit->v_edge[a] || !fit->v_edge[a + 1])
-        return ARFT_COVERAGE_VERTICAL_METRIC;
-    if (!fit->valid[a] || !fit->valid[a + 1] ||
-        !fit->valid[c] || !fit->valid[c + 1])
-        return ARFT_COVERAGE_NO_U_SUPPORT;
+    /* Both row edges exist, so all four cell corners are valid nodes (an
+     * edge is only ever created between valid nodes) and any missing
+     * vertical edge carries a METRIC-family reject. */
+    assert(fit->valid[a] && fit->valid[a + 1] &&
+           fit->valid[c] && fit->valid[c + 1]);
+    if (!fit->v_edge[a] || !fit->v_edge[a + 1]) {
+        int fill_only = 1;
+        if (!fit->v_edge[a] &&
+            fit->v_reject[a] != ATLAS_RIBBON_EDGE_METRIC_FILL)
+            fill_only = 0;
+        if (!fit->v_edge[a + 1] &&
+            fit->v_reject[a + 1] != ATLAS_RIBBON_EDGE_METRIC_FILL)
+            fill_only = 0;
+        return fill_only ? ATLAS_RIBBON_COVERAGE_VERTICAL_METRIC_FILL
+                         : ATLAS_RIBBON_COVERAGE_VERTICAL_METRIC;
+    }
 
     double tx = column_coordinate - (double)column;
     double ty = row_coordinate - (double)row0;
@@ -1527,7 +1496,7 @@ static int coverage_classify(const AtlasRibbonObservationSet *set,
     double tolerance = opts->local_xyz_tolerance > 0.0
                      ? opts->local_xyz_tolerance : set->observation_du;
     return *out_residual <= tolerance
-         ? ARFT_COVERAGE_RIBBON : ARFT_COVERAGE_GEOMETRY_MISMATCH;
+         ? ATLAS_RIBBON_COVERAGE_RIBBON : ATLAS_RIBBON_COVERAGE_GEOMETRY_MISMATCH;
 }
 
 static double coverage_orient(double ax, double ay, double bx, double by,
@@ -1536,7 +1505,12 @@ static double coverage_orient(double ax, double ay, double bx, double by,
     return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
 }
 
-static int write_coverage_audit(
+/* The raster is bounded: at most this many pixels are allocated, and a
+ * larger atlas is sampled through an integer pixel_scale instead.  128M
+ * pixels is two 128 MB rasters -- roomy on the dev box, sane on Kaggle. */
+enum { ARFT_COVERAGE_MAX_PIXELS = 1 << 27 };
+
+static int coverage_audit_run(
     Arena_T arena,
     const char *dir,
     const PieceSet *ps,
@@ -1547,23 +1521,30 @@ static int write_coverage_audit(
 {
     if (arena == NULL || dir == NULL || ps == NULL || solution == NULL ||
         set == NULL || opts == NULL || fit == NULL || fit->u_edge == NULL ||
-        fit->v_edge == NULL || fit->row_chart_shift == NULL ||
+        fit->v_edge == NULL || fit->u_reject == NULL ||
+        fit->v_reject == NULL || fit->row_chart_shift == NULL ||
         solution->ncharts == 0 || ps->nf != solution->nfaces ||
         ps->nv != solution->nvertices)
         return -1;
 
+    /* Bbox over KEPT faces only.  Killed faces still rasterize below,
+     * clipped to this canvas; without the restriction a single group
+     * parked at a far-negative v (or a killed outlier) would stretch the
+     * raster arbitrarily. */
     double umin = DBL_MAX, umax = -DBL_MAX;
     double vmin = DBL_MAX, vmax = -DBL_MAX;
-    for (size_t face = 0; face < ps->nf; face++)
-    for (int corner = 0; corner < 3; corner++) {
-        int32_t vertex = ps->faces[face * 3 + (size_t)corner];
-        if (vertex < 0 || (size_t)vertex >= ps->nv) continue;
-        double u = solution->u[vertex], v = solution->v[vertex];
-        if (!isfinite(u) || !isfinite(v)) continue;
-        if (u < umin) umin = u;
-        if (u > umax) umax = u;
-        if (v < vmin) vmin = v;
-        if (v > vmax) vmax = v;
+    for (size_t face = 0; face < ps->nf; face++) {
+        if (!solution->face_keep[face]) continue;
+        for (int corner = 0; corner < 3; corner++) {
+            int32_t vertex = ps->faces[face * 3 + (size_t)corner];
+            if (vertex < 0 || (size_t)vertex >= ps->nv) continue;
+            double u = solution->u[vertex], v = solution->v[vertex];
+            if (!isfinite(u) || !isfinite(v)) continue;
+            if (u < umin) umin = u;
+            if (u > umax) umax = u;
+            if (v < vmin) vmin = v;
+            if (v > vmax) vmax = v;
+        }
     }
     if (!(umin < umax) || !(vmin < vmax)) return -1;
     double origin_u = floor(umin), origin_v = floor(vmin);
@@ -1572,24 +1553,32 @@ static int write_coverage_audit(
         end_u - origin_u > (double)INT32_MAX ||
         end_v - origin_v > (double)INT32_MAX)
         return -1;
-    int width = (int)(end_u - origin_u);
-    int height = (int)(end_v - origin_v);
-    if (width <= 0 || height <= 0 ||
-        (size_t)width > SIZE_MAX / (size_t)height)
+    int atlas_w = (int)(end_u - origin_u);
+    int atlas_h = (int)(end_v - origin_v);
+    if (atlas_w <= 0 || atlas_h <= 0 ||
+        (size_t)atlas_w > SIZE_MAX / (size_t)atlas_h)
         return -1;
+    int scale = 1;
+    while (((size_t)atlas_w + (size_t)scale - 1) / (size_t)scale *
+           (((size_t)atlas_h + (size_t)scale - 1) / (size_t)scale) >
+           (size_t)ARFT_COVERAGE_MAX_PIXELS)
+        scale++;
+    int width = (atlas_w + scale - 1) / scale;
+    int height = (atlas_h + scale - 1) / scale;
     size_t pixels = (size_t)width * (size_t)height;
     uint8_t *reason = (uint8_t *)ARENA_CALLOC(arena, pixels, 1);
     uint8_t *layers = (uint8_t *)ARENA_CALLOC(arena, pixels, 1);
     double *dense = NULL;
     if (build_dense_chart_shift(arena, solution, set, fit, &dense) != 0)
         return -1;
-    if (solution->ncharts > SIZE_MAX / ARFT_COVERAGE_REASON_COUNT)
+    if (solution->ncharts > SIZE_MAX / ATLAS_RIBBON_COVERAGE_REASON_COUNT)
         return -1;
     uint64_t *chart_reason = (uint64_t *)ARENA_CALLOC(
-        arena, solution->ncharts * ARFT_COVERAGE_REASON_COUNT,
+        arena, solution->ncharts * ATLAS_RIBBON_COVERAGE_REASON_COUNT,
         sizeof(*chart_reason));
-    uint64_t layer_reason[ARFT_COVERAGE_REASON_COUNT] = {0};
-    uint64_t display_reason[ARFT_COVERAGE_REASON_COUNT] = {0};
+    uint64_t layer_reason[ATLAS_RIBBON_COVERAGE_REASON_COUNT] = {0};
+    uint64_t one_row_reason[ATLAS_RIBBON_COVERAGE_REASON_COUNT] = {0};
+    uint64_t display_reason[ATLAS_RIBBON_COVERAGE_REASON_COUNT] = {0};
     uint64_t raster_faces = 0, degenerate_faces = 0;
     uint64_t geometry_tests = 0;
     double geometry_sum2 = 0.0, geometry_max = 0.0;
@@ -1617,10 +1606,14 @@ static int write_coverage_audit(
             continue;
         }
         raster_faces++;
-        int x0 = (int)floor(fmin(u[0], fmin(u[1], u[2])) - origin_u);
-        int x1 = (int)ceil(fmax(u[0], fmax(u[1], u[2])) - origin_u) - 1;
-        int y0 = (int)floor(fmin(v[0], fmin(v[1], v[2])) - origin_v);
-        int y1 = (int)ceil(fmax(v[0], fmax(v[1], v[2])) - origin_v) - 1;
+        int x0 = (int)floor(
+            (fmin(u[0], fmin(u[1], u[2])) - origin_u) / (double)scale);
+        int x1 = (int)ceil(
+            (fmax(u[0], fmax(u[1], u[2])) - origin_u) / (double)scale) - 1;
+        int y0 = (int)floor(
+            (fmin(v[0], fmin(v[1], v[2])) - origin_v) / (double)scale);
+        int y1 = (int)ceil(
+            (fmax(v[0], fmax(v[1], v[2])) - origin_v) / (double)scale) - 1;
         if (x0 < 0) x0 = 0;
         if (y0 < 0) y0 = 0;
         if (x1 >= width) x1 = width - 1;
@@ -1630,22 +1623,28 @@ static int write_coverage_audit(
             solution->vertex_chart[vi[1]] == chart &&
             solution->vertex_chart[vi[2]] == chart;
         for (int y = y0; y <= y1; y++) {
-            double pv = origin_v + (double)y + 0.5;
+            double pv = origin_v + ((double)y + 0.5) * (double)scale;
             for (int x = x0; x <= x1; x++) {
-                double pu = origin_u + (double)x + 0.5;
+                double pu = origin_u + ((double)x + 0.5) * (double)scale;
                 double w0 = coverage_orient(
                     u[1], v[1], u[2], v[2], pu, pv) / area;
                 double w1 = coverage_orient(
                     u[2], v[2], u[0], v[0], pu, pv) / area;
                 double w2 = 1.0 - w0 - w1;
+                /* The tolerance admits centres within fp noise of an edge;
+                 * a centre can therefore land in two triangles sharing the
+                 * edge, but only within that same noise width -- measured
+                 * as negligible against real multi-cover, so the simple
+                 * rule is kept over a top-left fill convention. */
                 if (w0 < -1.0e-10 || w1 < -1.0e-10 || w2 < -1.0e-10)
                     continue;
                 int why;
+                int one_row = 0;
                 double residual = NAN;
                 if (!solution->face_keep[face]) {
-                    why = ARFT_COVERAGE_PREFIT_CULL;
+                    why = ATLAS_RIBBON_COVERAGE_PREFIT_CULL;
                 } else if (!chart_valid) {
-                    why = ARFT_COVERAGE_INVALID_CHART;
+                    why = ATLAS_RIBBON_COVERAGE_INVALID_CHART;
                 } else {
                     double rowf = (pv - fit->v0) / fit->dv;
                     double shift = coverage_dense_shift(
@@ -1660,20 +1659,26 @@ static int write_coverage_audit(
                         source_p[1] += delta * set->basis1[d];
                     }
                     why = coverage_classify(
-                        set, opts, fit, pu + shift, pv, source_p, &residual);
+                        set, opts, fit, pu + shift, pv, source_p,
+                        &residual, &one_row);
                     if (isfinite(residual)) {
                         geometry_tests++;
                         geometry_sum2 += residual * residual;
                         if (residual > geometry_max) geometry_max = residual;
                     }
-                    chart_reason[(size_t)chart * ARFT_COVERAGE_REASON_COUNT +
-                                 (size_t)why]++;
                 }
+                /* Attributed whenever the face's chart is unambiguous, so
+                 * prefit_cull pixels count against their chart too. */
+                if (chart_valid)
+                    chart_reason[(size_t)chart *
+                                 ATLAS_RIBBON_COVERAGE_REASON_COUNT +
+                                 (size_t)why]++;
                 layer_reason[why]++;
+                if (one_row) one_row_reason[why]++;
                 size_t pixel = (size_t)y * (size_t)width + (size_t)x;
                 if (layers[pixel] != UINT8_MAX) layers[pixel]++;
-                if (coverage_reason_priority(why) >
-                    coverage_reason_priority(reason[pixel]))
+                if (AtlasRibbonCoverage_priority(why) >
+                    AtlasRibbonCoverage_priority(reason[pixel]))
                     reason[pixel] = (uint8_t)why;
             }
         }
@@ -1698,33 +1703,33 @@ static int write_coverage_audit(
     FILE *fp = open_out(dir, "ribbon_coverage_legend.csv");
     if (fp == NULL) return -1;
     fprintf(fp, "code,reason\n");
-    for (int i = 0; i < ARFT_COVERAGE_REASON_COUNT; i++)
-        fprintf(fp, "%d,%s\n", i, coverage_reason_name(i));
+    for (int i = 0; i < ATLAS_RIBBON_COVERAGE_REASON_COUNT; i++)
+        fprintf(fp, "%d,%s\n", i, AtlasRibbonCoverage_name(i));
     if (fclose(fp) != 0) return -1;
 
     fp = open_out(dir, "ribbon_coverage_by_chart.csv");
     if (fp == NULL) return -1;
     fprintf(fp, "chart");
-    for (int i = 1; i < ARFT_COVERAGE_REASON_COUNT; i++)
-        fprintf(fp, ",%s", coverage_reason_name(i));
+    for (int i = 1; i < ATLAS_RIBBON_COVERAGE_REASON_COUNT; i++)
+        fprintf(fp, ",%s", AtlasRibbonCoverage_name(i));
     fprintf(fp, "\n");
     for (size_t chart = 0; chart < solution->ncharts; chart++) {
         fprintf(fp, "%zu", chart);
-        for (int i = 1; i < ARFT_COVERAGE_REASON_COUNT; i++)
+        for (int i = 1; i < ATLAS_RIBBON_COVERAGE_REASON_COUNT; i++)
             fprintf(fp, ",%" PRIu64,
-                    chart_reason[chart * ARFT_COVERAGE_REASON_COUNT +
+                    chart_reason[chart * ATLAS_RIBBON_COVERAGE_REASON_COUNT +
                                  (size_t)i]);
         fprintf(fp, "\n");
     }
     if (fclose(fp) != 0) return -1;
 
     uint64_t layer_total = 0, kept_layer_total = 0;
-    for (int i = 1; i < ARFT_COVERAGE_REASON_COUNT; i++)
+    for (int i = 1; i < ATLAS_RIBBON_COVERAGE_REASON_COUNT; i++)
         layer_total += layer_reason[i];
-    for (int i = ARFT_COVERAGE_INVALID_CHART;
-         i < ARFT_COVERAGE_REASON_COUNT; i++)
+    for (int i = ATLAS_RIBBON_COVERAGE_INVALID_CHART;
+         i < ATLAS_RIBBON_COVERAGE_REASON_COUNT; i++)
         kept_layer_total += layer_reason[i];
-    kept_layer_total += layer_reason[ARFT_COVERAGE_RIBBON];
+    kept_layer_total += layer_reason[ATLAS_RIBBON_COVERAGE_RIBBON];
     fp = open_out(dir, "ribbon_coverage_stats.json");
     if (fp == NULL) return -1;
     fprintf(fp,
@@ -1732,6 +1737,9 @@ static int write_coverage_audit(
         "  \"domain\": \"discrete_source_uv\",\n"
         "  \"origin_u\": %.17g,\n"
         "  \"origin_v\": %.17g,\n"
+        "  \"pixel_scale\": %d,\n"
+        "  \"atlas_width\": %d,\n"
+        "  \"atlas_height\": %d,\n"
         "  \"width\": %d,\n"
         "  \"height\": %d,\n"
         "  \"raster_faces\": %" PRIu64 ",\n"
@@ -1747,27 +1755,56 @@ static int write_coverage_audit(
         "  \"geometry_residual_rms\": %.9g,\n"
         "  \"geometry_residual_max\": %.9g,\n"
         "  \"layer_reason_counts\": {\n",
-        origin_u, origin_v, width, height, raster_faces, degenerate_faces,
+        origin_u, origin_v, scale, atlas_w, atlas_h, width, height,
+        raster_faces, degenerate_faces,
         observed_pixels, multi_pixels, layer_total, kept_layer_total,
-        layer_reason[ARFT_COVERAGE_RIBBON],
-        layer_total > 0 ? (double)layer_reason[ARFT_COVERAGE_RIBBON] /
+        layer_reason[ATLAS_RIBBON_COVERAGE_RIBBON],
+        layer_total > 0 ? (double)layer_reason[ATLAS_RIBBON_COVERAGE_RIBBON] /
                           (double)layer_total : 0.0,
-        kept_layer_total > 0 ? (double)layer_reason[ARFT_COVERAGE_RIBBON] /
+        kept_layer_total > 0 ? (double)layer_reason[ATLAS_RIBBON_COVERAGE_RIBBON] /
                                (double)kept_layer_total : 0.0,
         geometry_tests,
         geometry_tests > 0 ? sqrt(geometry_sum2 / (double)geometry_tests) : 0.0,
         geometry_max);
-    for (int i = 1; i < ARFT_COVERAGE_REASON_COUNT; i++)
+    for (int i = 1; i < ATLAS_RIBBON_COVERAGE_REASON_COUNT; i++)
         fprintf(fp, "    \"%s\": %" PRIu64 "%s\n",
-                coverage_reason_name(i), layer_reason[i],
-                i + 1 < ARFT_COVERAGE_REASON_COUNT ? "," : "");
+                AtlasRibbonCoverage_name(i), layer_reason[i],
+                i + 1 < ATLAS_RIBBON_COVERAGE_REASON_COUNT ? "," : "");
+    /* One-row holes failed on exactly one of the cell's two bounding row
+     * edges -- the recoverable half of each bucket if a cross-row rescue
+     * ever lands.  Always a subset of layer_reason_counts. */
+    fprintf(fp, "  },\n  \"layer_reason_one_row_counts\": {\n");
+    for (int i = 1; i < ATLAS_RIBBON_COVERAGE_REASON_COUNT; i++)
+        fprintf(fp, "    \"%s\": %" PRIu64 "%s\n",
+                AtlasRibbonCoverage_name(i), one_row_reason[i],
+                i + 1 < ATLAS_RIBBON_COVERAGE_REASON_COUNT ? "," : "");
     fprintf(fp, "  },\n  \"display_pixel_reason_counts\": {\n");
-    for (int i = 0; i < ARFT_COVERAGE_REASON_COUNT; i++)
+    for (int i = 0; i < ATLAS_RIBBON_COVERAGE_REASON_COUNT; i++)
         fprintf(fp, "    \"%s\": %" PRIu64 "%s\n",
-                coverage_reason_name(i), display_reason[i],
-                i + 1 < ARFT_COVERAGE_REASON_COUNT ? "," : "");
+                AtlasRibbonCoverage_name(i), display_reason[i],
+                i + 1 < ATLAS_RIBBON_COVERAGE_REASON_COUNT ? "," : "");
     fprintf(fp, "  }\n}\n");
     return fclose(fp) == 0 ? 0 : -1;
+}
+
+/* The audit's rasters, dense shift, and counters are all scratch; scoping
+ * them under one arena mark keeps a full-scroll audit from leaving two
+ * hundred-MB buffers resident for the rest of the run, and the early
+ * returns inside coverage_audit_run all funnel through this restore. */
+static int write_coverage_audit(
+    Arena_T arena,
+    const char *dir,
+    const PieceSet *ps,
+    const AtlasSolution *solution,
+    const AtlasRibbonObservationSet *set,
+    const AtlasRibbonFitOptions *opts,
+    const AtlasRibbonFitResult *fit)
+{
+    if (arena == NULL) return -1;
+    Arena_Mark mark = Arena_save(arena);
+    int rc = coverage_audit_run(arena, dir, ps, solution, set, opts, fit);
+    Arena_restore(arena, mark);
+    return rc;
 }
 
 
@@ -2402,6 +2439,8 @@ static void usage(const char *program)
         "  --lambda-smooth F         zero-curvature weight (8)\n"
         "  --lambda-tangent F        increasing-U tangent weight (4)\n"
         "  --lambda-register-v F     vertical chart-shift weight (16)\n"
+        "  --lambda-ladder F         pull charts toward the spiral-arc\n"
+        "                            position of their wind (8; 0 = off)\n"
         "  --register-sweeps N       bidirectional feasible sweeps (6)\n"
         "  --collision-rounds N      exact-audit continuation rounds (8)\n"
         "  --collision-polish N      final full-escape rounds (0)\n"
@@ -2557,6 +2596,8 @@ int main(int argc, char **argv)
             destination = &opts.bridge_slack;
         else if (strcmp(argv[i], "--lambda-register-v") == 0)
             destination = &opts.lambda_register_vertical;
+        else if (strcmp(argv[i], "--lambda-ladder") == 0)
+            destination = &opts.lambda_ladder;
         else if (strcmp(argv[i], "--lambda-tangent") == 0)
             destination = &opts.lambda_tangent;
         else if (strcmp(argv[i], "--collision-relaxation") == 0)

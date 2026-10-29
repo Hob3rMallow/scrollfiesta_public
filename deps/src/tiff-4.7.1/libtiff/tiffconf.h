@@ -23,8 +23,13 @@
 #define TIFF_UINT32_T uint32_t
 #define TIFF_UINT64_T uint64_t
 
-/* Signed size type */
-#ifdef _WIN64
+/* Signed size type.
+   This must follow the width of size_t on the *host*, not the width of a
+   Windows pointer: tmsize_t is derived from it, and TIFF_TMSIZE_T_MAX is
+   (tmsize_t)(SIZE_MAX >> 1). On a 64-bit host that picks int32_t the cast
+   truncates to -1, every _TIFFCheckMalloc/_TIFFCheckRealloc overflow guard
+   trips, and all libtiff allocations fail with a spurious out-of-memory. */
+#if SIZE_MAX > 0xffffffffu
 #define TIFF_SSIZE_T  int64_t
 #else
 #define TIFF_SSIZE_T  int32_t

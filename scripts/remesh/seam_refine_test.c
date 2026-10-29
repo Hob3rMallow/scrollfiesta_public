@@ -10,6 +10,8 @@
  * two components (refinement can neither fuse nor split).
  * Scene B: no planes -> byte-identical no-op, outputs alias inputs.
  * Scene C: already-fine input -> no-op (nothing above target).
+ * Scene D: source-face rollback mask keeps the complete protected face
+ * bit-identical while refining its unprotected neighbour conformingly.
  *
  * Verts are (z,y,x); the seam plane is x = 128 (sheets at x in [102,127] and
  * [129,154]).
@@ -296,6 +298,39 @@ int main(void)
                                     &OV,&onv,&OF,&onf,&SRC,&nnew,NULL);
         CHECK(rc==0 && nnew==0 && onf==nf, "C: fine input was split");
         fprintf(stderr, "Scene C (already fine -> no-op): ok\n");
+    }
+
+    /* ---- Scene D: complete source-face rollback, not descendant cuts ---- */
+    {
+        float V[12] = {
+            50,0,124, 50,12,124, 50,12,132, 50,0,132
+        };
+        int32_t F[6] = {0,1,2, 0,2,3};
+        uint8_t freeze[2] = {1,0};
+        SeamRefineParams p; SeamRefine_default_params(&p);
+        SeamRefineStats st;
+        float *OV; int32_t *OF, *P0, *P1, *ROOT;
+        size_t onv,onf,nnew,root0=0;
+        p.flip_max_rounds=0; /* face roots remain unique for this certificate */
+        int rc=SeamRefine_process_masked_with_roots(
+            a,V,4,F,2,&plane,1,&p,freeze,2,
+            &OV,&onv,&OF,&onf,&P0,&P1,&ROOT,&nnew,&st);
+        CHECK(rc==0&&nnew>0&&onf>2&&ROOT!=NULL,
+              "D: masked refinement failed rc=%d nnew=%zu onf=%zu",
+              rc,nnew,onf);
+        for(size_t f=0;f<onf;f++)if(ROOT[f]==0)root0++;
+        CHECK(root0==1,"D: protected face has %zu descendants, want 1",root0);
+        CHECK(OF[0]==F[0]&&OF[1]==F[1]&&OF[2]==F[2],
+              "D: protected source face changed");
+        CHECK(max_edge_run(OF,onf)<=2,"D: non-manifold edge");
+        CHECK(same_dir_pairs(OF,onf)==0,"D: same_dir pair minted");
+        CHECK(component_count(OF,onf,onv)==1,
+              "D: protected patch broke connectivity");
+        fprintf(stderr,
+                "Scene D (complete-face rollback mask): %s "
+                "(protected descendants=%zu, +%zuv +%zuf)\n",
+                g_fail?"check above":"ok",root0,
+                st.verts_added,st.faces_added);
     }
 
     Arena_dispose(&a);

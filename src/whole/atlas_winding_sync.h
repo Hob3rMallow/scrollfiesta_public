@@ -30,6 +30,16 @@ typedef struct {
     int sense;
     double axial_bin_spacing;
     int phase_bins;
+
+    /* Optional exact source-component labels for a bounded sample of a
+     * larger mesh. The caller proves connectivity before sampling; labels
+     * never invent shared edges between sampled triangles. NULL retains
+     * the original intrinsic-adjacency path. */
+    const int32_t *source_face_island;
+    size_t nsource_islands;
+    /* Optional measured local layer spacing; zero uses the global pitch.
+     * Affects pairwise radial evidence, not the absolute radius prior. */
+    const double *face_pitch;
 } AtlasWindingSyncProblem;
 
 typedef struct {

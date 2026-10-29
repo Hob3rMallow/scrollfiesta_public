@@ -6,10 +6,10 @@
 #include "arena.h"
 
 /* ============================================================================
- * raw_sample.h -- sample raw CT intensity from a grid of per-cube uint8 TIFFs
- * onto arbitrary 3D points. Lazy per-cube loading keyed by the cube's source-
- * space voxel origin (z#####_y#####_x#####.tif). Extracted from obj_bake_raw
- * so both the RAW read-back tool and the overlap-repair module share one
+ * raw_sample.h -- sample raw CT intensity from either a grid of per-cube uint8
+ * TIFFs or an uncompressed uint8 OME-Zarr v2 level 0.  Both are addressed in
+ * source-space voxel coordinates and loaded lazily one chunk at a time.
+ * Extracted from obj_bake_raw so RAW read-back and geometry repair share one
  * sampler. Deps: arena, tiff_io, libm.
  * ==========================================================================*/
 
@@ -24,6 +24,9 @@ typedef struct CubeTable {
     long      nz, ny, nx;       /* table dims, cubes */
     uint8_t **slot;             /* [nz*ny*nx] */
     int       n_loaded, n_missing;
+    size_t    n_outside;        /* requested bbox chunks outside Zarr shape */
+    int       is_zarr;          /* dir/0/.zarray, uint8 + compressor:null */
+    long      shape[3];         /* zarr level-0 shape; unused for TIFF cubes */
 } CubeTable;
 
 /* Size the table from the vertex bbox padded by `pad` vox (the normal-sampling
@@ -41,6 +44,32 @@ int cube_fetch(CubeTable *ct, long iz, long iy, long ix);
  * so concurrent reads from OpenMP workers are safe. Serial; returns the
  * number of cubes loaded. */
 int cubetable_prewarm_all(CubeTable *ct);
+
+/* Coverage proof after prewarm.  Expected chunks are only chunks intersecting
+ * the physical Zarr shape; bbox halo outside that shape is counted separately
+ * in n_outside and samples there return no datum.  A production sampler must
+ * not treat an absent in-volume chunk as legitimate zero-valued CT. */
+size_t cubetable_expected_chunks(const CubeTable *ct);
+int cubetable_is_complete(const CubeTable *ct);
+
+/* After prewarm: the number of distinct MISSING in-volume chunks that some
+ * face can sample -- a chunk intersecting the face's (z,y,x) bbox padded by
+ * `pad` vox plus the trilinear +-1, the same padding cubetable_init gives the
+ * whole mesh.  A masked Zarr stores no chunk outside the scroll, so a mesh
+ * bbox can be incomplete while every chunk its faces reach is present; zero
+ * here is that proof.  Faces index verts[3*v..3*v+2].  reached (nullable,
+ * cubetable_expected_chunks entries in slot order) is set to 1 for each
+ * reached missing chunk, 0 elsewhere. */
+size_t cubetable_missing_reached(const CubeTable *ct, const float *verts,
+                                 const int32_t *faces, size_t nf, double pad,
+                                 uint8_t *reached);
+
+/* The faces whose padded bbox (same padding) intersects a chunk flagged in
+ * `slots` (slot order, e.g. the `reached` output above): face_mask[f] = 1
+ * for those, 0 otherwise.  Returns their count. */
+size_t cubetable_faces_reaching(const CubeTable *ct, const float *verts,
+                                const int32_t *faces, size_t nf, double pad,
+                                const uint8_t *slots, uint8_t *face_mask);
 
 /* Trilinear sample at (z,y,x); weights renormalize over available corners.
  * Returns -1.0 when no corner has data. */
@@ -76,10 +105,5 @@ int sample_tangent_tensor(CubeTable *ct, const double p[3],
  * or range<=0. Returns -1.0 when nothing sampled. p and n are (z,y,x). */
 double sample_vertex(CubeTable *ct, const float *p, const float *n,
                      double range, int nsteps);
-
-/* Area-weighted, normalized per-vertex normals; zero vector where undefined.
- * Returns a malloc'd [nv*3] buffer -- caller frees. */
-float *vertex_normals(const float *verts, size_t nv,
-                      const int32_t *faces, size_t nf);
 
 #endif

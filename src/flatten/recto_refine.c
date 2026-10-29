@@ -7,9 +7,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _OPENMP
+#include "../common/ves_omp.h"
+#endif
 
 #include "../common/csr.h"
 #include "../common/kdtree.h"
+#include "../common/mesh_normals.h"
 #include "../common/tiff_io.h"
 #include "../common/ves_platform.h"
 
@@ -32,6 +36,9 @@ void RectoRefineOpts_default(RectoRefineOpts *o)
     o->window_lo = 0.0;
     o->window_hi = 255.0;
     o->band_frac = 0.35;
+    o->midline = 0;
+    o->midline_min_thick = 1.0;
+    o->midline_max_thick = 6.0;
     o->range = 3.0;
     o->sample_step = 0.25;
     o->edge_half = 0.5;
@@ -166,6 +173,35 @@ static int rr_find_target(CubeTable *ct, const double p[3],
             found = 1;
         }
     }
+    if (found && o->midline) {
+        /* walk outward from the recto edge to the next falling crossing of
+         * the same band; the midpoint is the sheet's midline */
+        double tmin = o->midline_min_thick > 0.0 ? o->midline_min_thick : 1.0;
+        double tmax = o->midline_max_thick > 0.0 ? o->midline_max_thick : 6.0;
+        int nf = (int)floor(tmax / step + 0.5) + 1;
+        int fi = 0, ffound = 0;
+        double t_fall = 0.0;
+        for (fi = 1; fi < nf; fi++) {
+            double t = best_t + step * (double)fi;
+            double qm[3], qp[3], sm, sp;
+            int k = 0;
+            for (k = 0; k < 3; k++) {
+                qm[k] = p[k] + (t - half) * dir[k];
+                qp[k] = p[k] + (t + half) * dir[k];
+            }
+            sm = sample_trilinear(ct, qm[0], qm[1], qm[2]);
+            sp = sample_trilinear(ct, qp[0], qp[1], qp[2]);
+            if (sm < 0.0 || sp < 0.0) break;
+            if (sm >= band && sp <= band && sm > sp + 1e-9) {
+                double f = rr_clamp((sm - band) / (sm - sp), 0.0, 1.0);
+                t_fall = t - half + 2.0 * half * f;
+                ffound = 1;
+                break;
+            }
+        }
+        if (!ffound || t_fall - best_t < tmin) return 0;   /* no band: abstain */
+        best_t = 0.5 * (best_t + t_fall);
+    }
     *out_t = best_t;
     *out_grad = best_grad;
     return found;
@@ -252,26 +288,26 @@ int RectoRefine_run(Arena_T arena,
     adj = CSR_from_faces(arena, faces, nf, nv);
     off = CSR_offset(adj);
     tgt = CSR_target(adj);
-    start = (float *)ARENA_ALLOC(arena, (long)(nv * 3 * sizeof(float)));
+    start = (float *)ARENA_ALLOC(arena, (size_t)(nv * 3 * sizeof(float)));
     memcpy(start, verts, nv * 3 * sizeof(float));
     occ = KDTree_new(arena, start, nv);
-    dirs = (float *)ARENA_CALLOC(arena, (long)nv, 3 * sizeof(float));
-    target = (float *)ARENA_CALLOC(arena, (long)nv, sizeof(float));
-    weight = (float *)ARENA_CALLOC(arena, (long)nv, sizeof(float));
-    base_disp = (float *)ARENA_CALLOC(arena, (long)nv, sizeof(float));
-    disp_a = (float *)ARENA_CALLOC(arena, (long)nv, sizeof(float));
-    disp_b = (float *)ARENA_CALLOC(arena, (long)nv, sizeof(float));
-    ever_supported = (uint8_t *)ARENA_CALLOC(arena, (long)nv, 1);
-    slope_hit = (uint8_t *)ARENA_CALLOC(arena, (long)nv, 1);
+    dirs = (float *)ARENA_CALLOC(arena, (size_t)nv, 3 * sizeof(float));
+    target = (float *)ARENA_CALLOC(arena, (size_t)nv, sizeof(float));
+    weight = (float *)ARENA_CALLOC(arena, (size_t)nv, sizeof(float));
+    base_disp = (float *)ARENA_CALLOC(arena, (size_t)nv, sizeof(float));
+    disp_a = (float *)ARENA_CALLOC(arena, (size_t)nv, sizeof(float));
+    disp_b = (float *)ARENA_CALLOC(arena, (size_t)nv, sizeof(float));
+    ever_supported = (uint8_t *)ARENA_CALLOC(arena, (size_t)nv, 1);
+    slope_hit = (uint8_t *)ARENA_CALLOC(arena, (size_t)nv, 1);
 
 #ifdef _OPENMP
-    ves_omp_set_threads(nthreads);
+    omp_set_num_threads(nthreads);
 #else
     (void)nthreads;
 #endif
 
     for (outer = 0; outer < (o.outer_iters > 0 ? o.outer_iters : 4); outer++) {
-        float *normals = vertex_normals(verts, nv, faces, nf);
+        float *normals = MeshNormals_compute(verts, nv, faces, nf);
         long long supported = 0;
         double grad_sum = 0.0;
         int n = (int)nv, i = 0;
