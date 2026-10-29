@@ -10,19 +10,20 @@
  *      whose index (0,0,0) is world voxel (oz-halo, oy-halo, ox-halo), exactly
  *      like HaloLoader_load. Lets a caller stream a cube straight from a remote
  *      zarr with no TIFF on disk. (oz,oy,ox) is the owned cube origin, so
- *      p_size must equal 128 + 2*halo. --dump-obj is required: the per-stage
- *      dumps are this mode's only output.
+ *      p_size must equal 128 + 2*halo. --dump-obj is required: the
+ *      final meshes are this mode's only output.
  *
  * Body of the per-cube pipeline lives in src/pipeline/pipeline_cube.c.
  * This file is just: arg parsing -> single pipeline_process_cube() call
  * -> exit status. Driven per-cube by the grid_pipeline orchestrator.
  *
- * --dump-obj dir:  write OBJ meshes under dir/<cube_id>/<cube_id>_<stage>/
+ * --dump-obj dir:  write final meshes under dir/<cube_id>/<cube_id>_step12_final/
+ * --full-dumps:    also export intermediate stages for explicit debugging
  * --halo N:        load N voxels of safety boundary from neighbor cubes
  * --no-simplify:   skip CVT remeshing (dense MC+LOP diagnostic)
  * --no-timeout:    disable the hard wall-clock timeout
  *
- * output.tif (TIFF mode) is a positional placeholder; this binary emits OBJs only.
+ * output.tif (TIFF mode) is a positional placeholder; this binary emits meshes.
  */
 #include "common/ves_platform.h"
 
@@ -72,19 +73,24 @@ static void set_env_double(const char *name, double value)
 static void usage(const char *argv0)
 {
     fprintf(stderr,
-        "Usage: %s input.tif output.tif [--dump-obj dir] [--dump-final-only] "
+        "Usage: %s input.tif output.tif [--dump-obj dir] [--full-dumps] "
         "[--no-simplify] [--cvt-ratio F] [--cull-oracle-tangles] [--no-timeout] [--halo N] [--trim-inset F] "
-        "[--grow-umb-y F --grow-umb-x F] [--grow-axis-table FILE]\n"
+        "[--grow-umb-y F --grow-umb-x F] [--grow-axis-table FILE] [--surface midpoint|f0-inner]\n"
         "   or: %s --stdin-raw <p_size> <oz> <oy> <ox> --dump-obj dir "
-        "[--dump-final-only] [--halo N] [--trim-inset F] [--no-simplify] "
+        "[--full-dumps] [--halo N] [--trim-inset F] [--no-simplify] "
         "[--cvt-ratio F] [--no-timeout]\n"
-        "   or: %s --selftest\n",
+        "   or: %s --selftest\n"
+        "Final meshes only by default; --full-dumps enables intermediate exports.\n"
+        "With --halo N > 0 the final mesh is cut at the exact cube box (TRIM_CLIP_AT_BOX); --trim-inset then only\n"
+        "deepens the step-0 cloud's reach into the halo (at least TRIM_CLIP_CLOUD_REACH_VOX).\n"
+        "--dump-final-only remains accepted for existing callers.\n",
         argv0, argv0, argv0);
 }
 
 int main(int argc, char *argv[])
 {
     if (argc >= 2 && strcmp(argv[1], "--selftest") == 0) return pipeline_selftest();
+    ves_prof_start_from_env();   /* VES_PROF_OUT: sampling profiler (diagnostics) */
 
     int stdin_raw = (argc >= 2 && strcmp(argv[1], "--stdin-raw") == 0);
 
@@ -92,7 +98,8 @@ int main(int argc, char *argv[])
     const char *output_path = NULL;
     const char *dump_dir    = NULL;
     int skip_simplify = 0;
-    int dump_final_only = 0;
+    int surface_f0_inner = 0;
+    int full_dumps = 0;
     int cull_oracle_tangles = 0;
     int no_timeout  = 0;
     int halo_voxels = 0;
@@ -130,6 +137,11 @@ int main(int argc, char *argv[])
     for (int i = opt_start; i < argc; i++) {
         if (strcmp(argv[i], "--dump-obj") == 0 && i + 1 < argc) {
             dump_dir = argv[++i];
+        } else if (strcmp(argv[i], "--surface") == 0 && i + 1 < argc) {
+            const char *surface = argv[++i];
+            if (strcmp(surface, "f0-inner") == 0) surface_f0_inner = 1;
+            else if (strcmp(surface, "midpoint") == 0) surface_f0_inner = 0;
+            else { fprintf(stderr, "ERROR: --surface must be midpoint or f0-inner\n"); return 1; }
         } else if (strcmp(argv[i], "--no-simplify") == 0) {
             skip_simplify = 1;
         } else if (strcmp(argv[i], "--cvt-ratio") == 0 && i + 1 < argc) {
@@ -138,13 +150,10 @@ int main(int argc, char *argv[])
                 fprintf(stderr, "ERROR: --cvt-ratio must be in (0, 1]\n");
                 return 1;
             }
+        } else if (strcmp(argv[i], "--full-dumps") == 0) {
+            full_dumps = 1;
         } else if (strcmp(argv[i], "--dump-final-only") == 0) {
-            /* Write only step12_final (the grid_weld input); skip the
-             * intermediate stage dumps. Fleet default via grid_pipeline —
-             * the full stage set is ~300 MB/dense cube and IO-bounds
-             * concurrent grid runs. Re-run one cube without this flag to
-             * regenerate its stage dumps for seam debugging. */
-            dump_final_only = 1;
+            full_dumps = 0; /* compatibility: explicit return to the default */
         } else if (strcmp(argv[i], "--cull-oracle-tangles") == 0) {
             cull_oracle_tangles = 1;
         } else if (strcmp(argv[i], "--no-timeout") == 0) {
@@ -173,6 +182,20 @@ int main(int argc, char *argv[])
         } else {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);
             return 1;
+        }
+    }
+
+    if (!full_dumps) {
+        /* Legacy helpers also read these destinations directly. A parent
+         * process's environment must not enable exports without the CLI flag. */
+        const char *debug_env[] = { "EXTRACT_DIAG", "VES_OVERLAP_DEBUG_DIR",
+                                   "SEAM_HOLE_DUMP_DIR" };
+        for (size_t i = 0; i < sizeof(debug_env) / sizeof(debug_env[0]); ++i) {
+#ifdef _WIN32
+            _putenv_s(debug_env[i], "");
+#else
+            unsetenv(debug_env[i]);
+#endif
         }
     }
 
@@ -215,8 +238,7 @@ int main(int argc, char *argv[])
             return 1;
         }
         if (!dump_dir) {
-            /* Stage dumps are stdin mode's only output; a run without them
-             * would leave nothing to inspect (house rule: always dump). */
+            /* Final meshes are stdin mode's only output. */
             fprintf(stderr, "ERROR: --stdin-raw requires --dump-obj\n");
             return 1;
         }
@@ -232,11 +254,10 @@ int main(int argc, char *argv[])
         }
     }
 
-    /* ALWAYS dump per-stage OBJs. A run with no --dump-obj would otherwise leave
+    /* Always export final meshes. A run with no --dump-obj would otherwise leave
      * no geometry to inspect (the output-path arg alone writes nothing) -- so if
      * --dump-obj was not given, default the dump dir to the output file's own
-     * directory. Every cube_mesh run therefore emits its stage OBJs under
-     * <out_dir>/<cube_id>/<cube_id>_<stage>/. grid_pipeline passes --dump-obj
+     * directory. Intermediate stages require --full-dumps. grid_pipeline passes --dump-obj
      * explicitly, so this only changes bare cube_mesh invocations. (stdin-raw
      * mode has no output path to derive from; it requires --dump-obj above.) */
     char default_dump[1024] = {0};
@@ -249,7 +270,7 @@ int main(int argc, char *argv[])
         else strcpy(default_dump, ".");
         dump_dir = default_dump;
         fprintf(stderr,
-            "  note: no --dump-obj given; defaulting per-stage dumps to %s\n",
+            "  note: no --dump-obj given; defaulting mesh output to %s\n",
             dump_dir);
     }
 
@@ -332,7 +353,8 @@ int main(int argc, char *argv[])
                 .trim_inset       = trim_inset,
                 .dump_dir         = dump_dir,
                 .skip_simplify    = skip_simplify,
-                .dump_final_only  = dump_final_only,
+                .surface_f0_inner = surface_f0_inner,
+                .full_dumps       = full_dumps,
                 .cull_oracle_tangles = cull_oracle_tangles,
                 .vol_in           = raw_buf,
                 .p_size_in        = stdin_raw ? p_size : 0,

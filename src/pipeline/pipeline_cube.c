@@ -41,6 +41,40 @@
 static double now_sec(void) { return ves_clock_sec(); }
 static double elapsed_since(double t0) { return now_sec() - t0; }
 
+/* The halo-mode trims (2026-10-20).  Clip mode (halo mode with TRIM_CLIP_AT_BOX):
+ * the step-0 cloud reaches at least TRIM_CLIP_CLOUD_REACH_VOX into the halo, so
+ * BPA's eroded boundary lands past the face, and the final trim cuts at the
+ * EXACT cube box.  Otherwise both use the owned box inset by trim_inset (the
+ * BPA_OWNED_TRIM_INSET default when <= -999), cut at its planes when the inset
+ * is positive and drop-only otherwise. */
+static int pipeline_clip_mode(const PipelineInput *in)
+{
+    return in->halo_voxels > 0 && TRIM_CLIP_AT_BOX;
+}
+
+static float pipeline_trim_inset(float trim_inset)
+{
+    return trim_inset > -999.0f ? trim_inset : (float)BPA_OWNED_TRIM_INSET;
+}
+
+/* The step-0 cloud trim's inset (cube-local vox; negative = into the halo). */
+static float pipeline_cloud_inset(float trim_inset, int clip)
+{
+    float ins = pipeline_trim_inset(trim_inset);
+    float reach = (float)TRIM_CLIP_CLOUD_REACH_VOX;
+    return (clip && ins > -reach) ? -reach : ins;
+}
+
+/* The final trim's box (cube-local, cubic cubes) and whether it cuts. */
+static void pipeline_final_trim_box(float trim_inset, int clip, int cube_D,
+                                    float *owned_lo, float *owned_hi, int *use_cut)
+{
+    float ins = clip ? 0.0f : pipeline_trim_inset(trim_inset);
+    *owned_lo = ins;
+    *owned_hi = (float)cube_D - ins;
+    *use_cut = clip || ins > 0.0f;
+}
+
 /* CVT_TIMING=1 adds one CVT-phase line per remesh attempt (diagnostic only). */
 static int pipeline_cvt_timing_verbose(void)
 {
@@ -629,13 +663,21 @@ int pipeline_process_cube(Arena_T arena,
 
     memset(out, 0, sizeof(*out));
 
-    /* Stage-dump gate. In final-only mode every INTERMEDIATE stage dump is
-     * suppressed (dump_stage/dump_cloud_stage no-op on a NULL dir) and only
-     * step12_final — the OBJ grid_weld consumes — is written. The full
-     * stage set is a seam-debug affordance (~300 MB of text OBJ per dense
-     * cube); with 32 concurrent cubes it IO-bounds the entire grid run.
-     * Re-run one cube without --dump-final-only to regenerate its stages. */
-    const char *stage_dump_dir = in->dump_final_only ? NULL : in->dump_dir;
+    /* Meshing is stable: only finals are exported unless --full-dumps explicitly
+     * enables debug stages. Apply the same gate to extraction and overlap
+     * diagnostics, including inherited environment-variable destinations. */
+    const char *stage_dump_dir = in->full_dumps ? in->dump_dir : NULL;
+    PredRectoField recto_field = {0};
+    PredRectoField *recto = NULL;
+    if (in->surface_f0_inner) {
+        float origin[3] = {0.0f, 0.0f, 0.0f};
+        if (pipeline_parse_cube_origin(in, origin) != 0 ||
+            !pipeline_wind_gate_from_env(&recto_field.axis, origin, NULL, CVT_WIND_TOL_DEFAULT)) {
+            fprintf(stderr, "F0-inner requires a source origin, umbilicus and wrap pitch\n");
+            return -1;
+        }
+        recto = &recto_field;
+    }
 
     /* Opt-in calibration path for a small two-label delamination merge.  The
      * healed topology is fitted to ORIGINAL cubes_RAW material.  The padded
@@ -733,7 +775,7 @@ int pipeline_process_cube(Arena_T arena,
     }
     {
         const char *overlap_debug = getenv("VES_OVERLAP_DEBUG_DIR");
-        if (overlap_debug && *overlap_debug) {
+        if (in->full_dumps && overlap_debug && *overlap_debug) {
             DumpObj_ensure_dir(overlap_debug);
             OverlapSep_set_debug_dir(overlap_debug);
         } else {
@@ -746,10 +788,10 @@ int pipeline_process_cube(Arena_T arena,
      * the directory exists. */
     char cube_dump_dir[1024] = {0};
     const char *mesh_dump_dir = NULL;
-    if (in->dump_dir && in->cube_id) {
+    if (stage_dump_dir && in->cube_id) {
         snprintf(cube_dump_dir, sizeof(cube_dump_dir), "%s/%s",
-                 in->dump_dir, in->cube_id);
-        DumpObj_ensure_dir(in->dump_dir);
+                 stage_dump_dir, in->cube_id);
+        DumpObj_ensure_dir(stage_dump_dir);
         DumpObj_ensure_dir(cube_dump_dir);
         mesh_dump_dir = cube_dump_dir;
     }
@@ -765,9 +807,10 @@ int pipeline_process_cube(Arena_T arena,
                              mesh_dump_dir,
                              (in->halo_voxels > 0 || in->dump_dir)
                                  ? in->cube_id : NULL,
-                              in->trim_inset,
+                             pipeline_cloud_inset(in->trim_inset, pipeline_clip_mode(in)),
                              in->vol_in, in->p_size_in,
                              in->vol_in ? in->cube_origin_zyx : NULL,
+                             recto,
                              &out->meshes, &out->n_meshes, &clouds);
     out->t_extract = elapsed_since(t0);
     if (rc != 0 || out->n_meshes == 0) {
@@ -1345,6 +1388,8 @@ int pipeline_process_cube(Arena_T arena,
         }
     }
 
+    if (recto) PredRecto_meshes(arena, recto, out->meshes, out->n_meshes, "pre-CVT");
+
     /* ---- CVT/RVD chart remeshing ---- */
     if (!in->skip_simplify) {
         double tcvt_stage = now_sec();
@@ -1437,10 +1482,12 @@ int pipeline_process_cube(Arena_T arena,
                 CvtField fld; const CvtField *fldp = NULL;
                 { const char *ge = getenv("VES_CVT_GRADED");
                   if (ge && *ge == '1' && in->halo_voxels > 0) {
-                    float ins = in->trim_inset > -999.0f ? in->trim_inset
-                                                       : (float)BPA_OWNED_TRIM_INSET;
-                    fld.lo = (double)ins;
-                    fld.hi = (double)in->cube_D - (double)ins;
+                    float olo = 0.0f, ohi = 0.0f;
+                    int ocut = 0;
+                    pipeline_final_trim_box(in->trim_inset, pipeline_clip_mode(in), in->cube_D,
+                                            &olo, &ohi, &ocut);
+                    fld.lo = (double)olo;
+                    fld.hi = (double)ohi;
                     fld.h_seam     = CVT_SEAM_EDGE;
                     fld.h_interior = CVT_INTERIOR_EDGE;
                     fld.band_lo    = CVT_SEAM_BAND;
@@ -1748,6 +1795,8 @@ int pipeline_process_cube(Arena_T arena,
                    out->meshes, out->n_meshes);
     }
 
+    if (recto) PredRecto_meshes(arena, recto, out->meshes, out->n_meshes, "post-CVT");
+
     /* ---- Kibble removal: connectivity pass + surface-area filter ----
      * After hole-fill/CVT, split into connectivity-components and drop any whose
      * area is < KIBBLE_AREA_FRAC of its upstream sheet's area (stray BPA
@@ -1780,11 +1829,15 @@ int pipeline_process_cube(Arena_T arena,
          * doubles. The 2*INSET gap is spanned by grid_weld's seam bridge.
          * trim_inset 0 (whole-grid unwrap path) lets charts reach the faces:
          * the mutual-nearest weld merges the boundary rows instead, and the
-         * grazing doubles become SeamOwn's seam double-paint (handled). */
-        float ins = in->trim_inset > -999.0f ? in->trim_inset
-                                           : (float)BPA_OWNED_TRIM_INSET;
-        float owned_lo = ins;
-        float owned_hi = (float)in->cube_D - ins;  /* cubic cubes */
+         * grazing doubles become SeamOwn's seam double-paint (handled).
+         * Clip mode (TRIM_CLIP_AT_BOX, the halo default since 2026-10-20) cuts
+         * at the EXACT cube box instead: the cloud was meshed past the faces,
+         * so every chart ends ON the plane its neighbour's chart ends on. */
+        int clip = pipeline_clip_mode(in);
+        float owned_lo = 0.0f, owned_hi = 0.0f;  /* cubic cubes */
+        int use_cut = 0;
+        pipeline_final_trim_box(in->trim_inset, clip, in->cube_D,
+                                &owned_lo, &owned_hi, &use_cut);
         /* Cut-at-plane trim (default when inset > 0): clip crossing triangles
          * at the owned-box planes instead of dropping them, so the boundary
          * lands EXACTLY on the inset planes and the inter-cube gap is a
@@ -1794,7 +1847,6 @@ int pipeline_process_cube(Arena_T arena,
          * the seam rim. inset==0 (whole-grid unwrap path) keeps drop-only:
          * charts there are MEANT to reach the faces and be row-merged.
          * Env kill switch: VES_TRIM_CUT=0. */
-        int use_cut = (ins > 0.0f);
         { const char *e = getenv("VES_TRIM_CUT");
           if (e && *e == '0') use_cut = 0; }
         size_t total_cut_faces = 0;
@@ -1859,7 +1911,7 @@ int pipeline_process_cube(Arena_T arena,
             n_trim_kept, out->n_meshes,
             total_in_nv, total_in_nf,
             total_out_nv, total_out_nf,
-            use_cut ? "cut-at-plane" : "drop-only", total_cut_faces,
+            use_cut ? (clip ? "clip-at-box" : "cut-at-plane") : "drop-only", total_cut_faces,
             out->t_trim);
 
     } else {
@@ -1940,9 +1992,9 @@ int pipeline_process_cube(Arena_T arena,
                     n_culled, out->n_trimmed, n_before);
     }
 
-    /* Dump the final per-cube mesh (halo mode -- this is the weld input).
-     * dump_stage no-ops when dump_dir is NULL. */
-    if (in->halo_voxels > 0) {
+    /* Always export the final mesh, including a direct run without a halo.
+     * Without a halo trimmed aliases meshes; dump_stage no-ops on a NULL dir. */
+    {
         double td = now_sec();
         dump_stage(arena, in->dump_dir, in->cube_id, "step12_final",
                    out->trimmed, out->n_trimmed);
@@ -1963,9 +2015,71 @@ int pipeline_process_cube(Arena_T arena,
     return 0;
 }
 
+/* The halo-mode trims: the clip mode's exact box and cloud reach, the inset
+ * modes it replaces, and a strip meshed 6 vox past the x = 128 face cut ON it. */
+static int pipeline_clip_selftest(void)
+{
+    int fails = 0;
+    float lo = 0.0f, hi = 0.0f;
+    int cut = 0;
+    pipeline_final_trim_box(-1000.0f, 0, 128, &lo, &hi, &cut);   /* inset default 1: cut */
+    if (!(fabsf(lo - 1.0f) < 1e-6f && fabsf(hi - 127.0f) < 1e-6f && cut)) fails++;
+    pipeline_final_trim_box(0.0f, 0, 128, &lo, &hi, &cut);       /* inset 0: drop-only at the box */
+    if (!(fabsf(lo) < 1e-6f && fabsf(hi - 128.0f) < 1e-6f && !cut)) fails++;
+    pipeline_final_trim_box(3.0f, 1, 128, &lo, &hi, &cut);       /* clip: the exact box whatever the inset */
+    if (!(fabsf(lo) < 1e-6f && fabsf(hi - 128.0f) < 1e-6f && cut)) fails++;
+    pipeline_final_trim_box(0.0f, 1, 128, &lo, &hi, &cut);
+    if (!(fabsf(lo) < 1e-6f && fabsf(hi - 128.0f) < 1e-6f && cut)) fails++;
+    {   /* the cloud: clip reaches at least TRIM_CLIP_CLOUD_REACH_VOX into the halo; a deeper inset stays */
+        float reach = (float)TRIM_CLIP_CLOUD_REACH_VOX;
+        if (fabsf(pipeline_cloud_inset(0.0f, 1) + reach) > 1e-6f) fails++;
+        if (fabsf(pipeline_cloud_inset(-1000.0f, 1) + reach) > 1e-6f) fails++;
+        if (fabsf(pipeline_cloud_inset(-12.0f, 1) + 12.0f) > 1e-6f) fails++;
+        if (fabsf(pipeline_cloud_inset(0.0f, 0)) > 1e-6f) fails++;
+        if (fabsf(pipeline_cloud_inset(-1000.0f, 0) - 1.0f) > 1e-6f) fails++;
+    }
+    {   /* halo mode is the clip mode */
+        PipelineInput in;
+        memset(&in, 0, sizeof in);
+        in.halo_voxels = 13;
+        if (pipeline_clip_mode(&in) != (TRIM_CLIP_AT_BOX ? 1 : 0)) fails++;
+        in.halo_voxels = 0;
+        if (pipeline_clip_mode(&in) != 0) fails++;
+    }
+    {   /* a 15 x 3 vertex strip, z 64, y 60..64, x 120..134 (cube-local, (z, y, x)), cut at the clip box */
+        Arena_T arena = Arena_new();
+        enum { NX = 15, NY = 3 };
+        float v[NX * NY * 3];
+        int32_t f[(NX - 1) * (NY - 1) * 6];
+        size_t nf = 0;
+        for (int j = 0; j < NY; j++) for (int i = 0; i < NX; i++) {
+            float *q = v + 3 * (size_t)(j * NX + i);
+            q[0] = 64.0f; q[1] = 60.0f + 2.0f * (float)j; q[2] = 120.0f + (float)i;
+        }
+        for (int j = 0; j + 1 < NY; j++) for (int i = 0; i + 1 < NX; i++) {
+            int32_t a = j * NX + i, b = a + 1, c = a + NX, d = c + 1;
+            f[3 * nf] = a; f[3 * nf + 1] = b; f[3 * nf + 2] = d; nf++;
+            f[3 * nf] = a; f[3 * nf + 1] = d; f[3 * nf + 2] = c; nf++;
+        }
+        pipeline_final_trim_box(0.0f, 1, 128, &lo, &hi, &cut);
+        float *ov = NULL; int32_t *of = NULL; size_t onv = 0, onf = 0, ncut = 0;
+        int rc = Mesh_trim_cut_to_owned_box(arena, v, (size_t)(NX * NY), f, nf, lo, hi, (float)TRIM_CUT_SNAP_EPS_VOX,
+                                            &ov, &onv, &of, &onf, &ncut);
+        float xmax = -1e30f;
+        for (size_t k = 0; k < onv; k++) if (ov[3 * k + 2] > xmax) xmax = ov[3 * k + 2];
+        /* x = 128 is a grid line here: the faces past it go, those before it stay whole, the face carries the edge */
+        if (rc != 0 || onf != 32 || !(fabsf(xmax - 128.0f) < 1e-6f)) fails++;
+        Arena_dispose(&arena);
+    }
+    fprintf(stderr, "  clip-at-box: trim box modes, cloud reach, halo = clip and the halo strip cut on the face: %s\n",
+            fails ? "FAIL" : "ok");
+    return fails;
+}
+
 int pipeline_selftest(void)
 {
     int fails = 0;
+    if (PredRecto_selftest() != 0) fails++;
     if (KDTree_selftest() != 0) fails++;
     if (MLS_selftest() != 0) fails++;
     if (Weld_selftest() != 0) fails++;
@@ -1980,6 +2094,7 @@ int pipeline_selftest(void)
     if (MeshResplit_assign_selftest() != 0) fails++;
     if (BallPivot_query_selftest() != 0) fails++;
     if (HoleFill_triangle_selftest() != 0) fails++;
+    if (pipeline_clip_selftest() != 0) fails++;
     if (ves_platform_selftest() != 0) fails++;
     fprintf(stderr, "=== cube_mesh selftest %s (%d failure%s) ===\n",
             fails ? "FAILED" : "PASSED", fails, fails == 1 ? "" : "s");

@@ -7,6 +7,16 @@
 #define TUNNEL_BG_CC_MAX        27   /* max BG CC size to fill (26-conn) */
 #define MORPH_CLOSE_ITERS        3   /* multi-pass morph close iterations */
 #define SIMPLE_FILL_MIN_FG       4   /* min FG 6-conn neighbors to be candidate */
+/* F0-inner mask boundary candidate, 9.362um native data. Geometry is enabled
+ * explicitly by --surface f0-inner; the historical midpoint remains default. */
+#define PR_RECTO_HALF_SAMPLES 24
+#define PR_RECTO_SAMPLES (2 * PR_RECTO_HALF_SAMPLES + 1)
+#define PR_RECTO_STEP 0.25
+#define PR_RECTO_SEED_REACH 1.5
+#define PR_RECTO_MAX_THICKNESS 6.0
+#define PR_RECTO_MAX_MOVE 4.0
+#define PR_RECTO_MIN_RADIAL_COS 0.15
+#define PR_RECTO_MIN_FACE_RATIO 0.1
 /* CT-weighted LOP/MLS (experiment, armed by VES_CT_WEIGHTED_LOP=1): the
  * voxel-centre cloud is weighted by raw-CT brightness inside the predicted
  * shell so the projected surface sits on the papyrus centre instead of the
@@ -68,13 +78,30 @@
  * near-seam boundary verts get full two-sided support and adjacent cubes
  * converge to the same height (no seam walls).
  * See plan: the-main-problem-with-composed-badger.md */
-#define MLS_PROJECT_RADIUS_VOX  12.0f /* Wendland kernel radius (voxels).
-                                       * Must be ~2x layer thickness so the
-                                       * Wendland tail still has meaningful
-                                       * weight on the far face. For ~5 vox
-                                       * layers, R=12 gives weight ~0.05 on
-                                       * the far envelope face — enough to
-                                       * actually collapse it. */
+#define MLS_PROJECT_RADIUS_VOX  8.0f  /* Wendland kernel radius (voxels).
+                                       * Two bounds (scripts/extract/
+                                       * band_geometry_survey.py): COLLAPSE --
+                                       * R >= ~1.7x the predicted band's
+                                       * thickness, so the tail still weighs
+                                       * the far envelope face; ISOLATION --
+                                       * the neighbouring sheet's near face
+                                       * beyond ~0.75 R.  2026-10-20: 12 -> 8.
+                                       * At 12 the kernel reached the next
+                                       * sheet in PHerc0358 (bands 2-4.5 vox,
+                                       * spacing p10 8 vox) wherever two sheets
+                                       * share a CC component and projected
+                                       * both onto a surface in the gap: offset
+                                       * duplicate copies at cube faces and
+                                       * tangled neighbours.  At 8 (halo 13,
+                                       * TRIM_CLIP_AT_BOX, seam pin kept), area
+                                       * on a predicted band: PHerc0358 4x5x5
+                                       * 89.9 -> 95.9%, known-good PHerc0139
+                                       * 4x5x5 95.7 -> 98.5%; face duplicates
+                                       * 1.19 -> 0.10% and 0.34 -> 0.01%.
+                                       * REGIME-BOUND (vox, so scan-resolution
+                                       * dependent): windows 0358 7.5..6.7
+                                       * (empty; 8 keeps collapse), 0139
+                                       * 6.7..10.  Re-survey new scan types. */
 /* Iterative LOP with tangent-plane projection (V' = V − ((V−C)·N) N).
  * Each iter only moves vertices perpendicular to the local sheet normal,
  * so in-plane geometry is preserved across iterations regardless of
@@ -257,6 +284,19 @@
  * output edge length the cut can create (crossings nearer an endpoint reuse
  * the endpoint). Env kill switch for the whole cut path: VES_TRIM_CUT=0. */
 #define TRIM_CUT_SNAP_EPS_VOX   0.05f
+
+/* Clip-at-box (halo mode, 2026-10-20).  1: the step-0 cloud reaches at least
+ * TRIM_CLIP_CLOUD_REACH_VOX into the halo (a more negative --trim-inset reaches
+ * further; the drivers' --trim-inset 0 and the BPA_OWNED_TRIM_INSET default
+ * reach this far), so BPA's eroded open boundary lands past the cube face, and
+ * the final trim cuts every chart at the EXACT cube box: adjacent cubes' charts
+ * end on the same plane instead of ~1 rho short of it, 3-10 vox where the
+ * cloud thins (PHerc0358 4x5x5: on-face boundary within 1 vox of the
+ * neighbour's 58 -> 89%).  0 = the inset trims (BPA_OWNED_TRIM_INSET,
+ * --trim-inset; cut-at-plane when the inset is positive, else drop-only).
+ * Measured with halo 13 and MLS_PROJECT_RADIUS_VOX 8 (the reach is 0.75 R). */
+#define TRIM_CLIP_AT_BOX           1
+#define TRIM_CLIP_CLOUD_REACH_VOX  6.0f
 
 /* Seam weld -- pre-bridge sliver cull. A boundary triangle whose open edge lies
  * in a seam plane is a bridge-front candidate; if it is a near-degenerate sliver
@@ -992,7 +1032,7 @@
 #define CVT_WIND_TOL_DEFAULT      0.30    /* max branch-free turn span on any edge     */
 #define CVT_TARGET_SPACING_PITCH  0.44    /* initial uniform edge spacing / wrap pitch */
 #define CVT_WIND_MAX_RETRIES         4    /* winding shortcut: density may cure it     */
-#define CVT_TOPOLOGY_MAX_RETRIES     1    /* one 2x attempt, then retain source chart */
+#define CVT_TOPOLOGY_MAX_RETRIES     3    /* 2x attempts on topology failure, then retain source chart */
 /* Mid-Lloyd certificate probe (2026-10-05, A/B scaffolding; the defaults run
  * no probe and leave the output byte-identical).  A probe builds the dual of
  * the CURRENT sites -- exactly what the attempt would emit if Lloyd stopped
@@ -1016,16 +1056,16 @@
  *     It never turns an accepted chart into a retained one (replay of 611
  *     charts: 0 such; 6 accepted one rung denser; CVT -16.6% at k=3, T=20). */
 #define CVT_PROBE_TRACE              0
-#define CVT_PROBE_ITER               0
-#define CVT_PROBE_ABORT_BAD         -1
-#define CVT_PROBE_ABORT_TOPO         0
+#define CVT_PROBE_ITER               3    /* B2G */
+#define CVT_PROBE_ABORT_BAD         20    /* B2G */
+#define CVT_PROBE_ABORT_TOPO         1    /* B2G */
 /* CVT_MANIFOLD_GUARD 1 (2026-10-05, A/B lever; OUTPUT-CHANGING): a CVT candidate
  * that fails the topology certificate with a non-manifold component (~59% of
  * the measured topology failures: the restricted-Delaunay dual grew a >2-face
  * edge or a bowtie) gets the output stage's manifold guard -- resolve >2-face
  * edges, split pinch vertices, no reorientation -- and BOTH certificates are
  * re-run on the guarded mesh; it is accepted only if they pass. */
-#define CVT_MANIFOLD_GUARD           0
+#define CVT_MANIFOLD_GUARD           1    /* B2G */
 #define CVT_MIN_FACES_FOR_REMESH    400    /* retain already-small dense charts        */
 /* OverlapSep lifted multicut: cap on Kernighan-Lin moves per bipartition
  * update.  0 = unlimited = the vendored andres behaviour (default).  A cap is

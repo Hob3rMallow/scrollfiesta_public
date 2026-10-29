@@ -232,6 +232,7 @@ endif()
 
 set(SF_EXTRACT_SRC
     ${SF_SRC}/extract/mesh_extract.c
+    ${SF_SRC}/extract/pred_recto.c
     ${SF_SRC}/extract/mesh_resplit.c
     ${SF_SRC}/extract/pred_reject.c)
 set(SF_SPLIT_SRC

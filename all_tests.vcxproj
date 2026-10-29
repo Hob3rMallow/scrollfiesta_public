@@ -140,6 +140,9 @@
     <ClCompile Include="src\extract\mesh_extract.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
+    <ClCompile Include="src\extract\pred_recto.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
     <ClCompile Include="src\extract\mesh_resplit.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>

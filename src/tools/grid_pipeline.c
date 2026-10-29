@@ -99,6 +99,7 @@ typedef struct {
                                 * default is faithful concat/assembly only */
     int         check_determinism;
     int         skip_simplify;
+    int         surface_f0_inner;
     float       cvt_target_ratio; /* 0 = pitch-aware scroll default */
     int         skip_existing;  /* resume: skip cubes whose authoritative VMESH is complete */
     int         dry_run;        /* report skip/run decisions and exit; spawn nothing */
@@ -106,7 +107,7 @@ typedef struct {
     long        subgrid[6];     /* --subgrid z0 z1 y0 y1 x0 x1: half-open box of cube ORIGINS to mesh
                                  * (the halo still reads every neighbour in cubes_PRED); armed when z1 > z0 */
     const char *reject_list;    /* optional: skip cube_ids listed in this file (else detect inline) */
-    int         full_dumps;     /* pass NO --dump-final-only to children: every cube
+    int         full_dumps;     /* pass explicit --full-dumps to children: every cube
                                  * writes all intermediate stage OBJs (~300 MB/dense
                                  * cube -- IO-bounds concurrent runs; debug only). */
     int         cull_oracle_tangles; /* drop only final oracle-confirmed tangles */
@@ -373,6 +374,11 @@ static int parse_args(int argc, char *argv[], GpOptions *o)
             o->dry_run = 1;
         } else if (!strcmp(argv[i], "--check-determinism")) {
             o->check_determinism = 1;
+        } else if (!strcmp(argv[i], "--surface") && i + 1 < argc) {
+            const char *surface = argv[++i];
+            if (!strcmp(surface, "f0-inner")) o->surface_f0_inner = 1;
+            else if (!strcmp(surface, "midpoint")) o->surface_f0_inner = 0;
+            else { fprintf(stderr, "ERROR: --surface must be midpoint or f0-inner\n"); return -1; }
         } else if (!strcmp(argv[i], "--no-simplify")) {
             o->skip_simplify = 1;
         } else if (!strcmp(argv[i], "--cvt-ratio") && i + 1 < argc) {
@@ -412,7 +418,7 @@ static int parse_args(int argc, char *argv[], GpOptions *o)
         fprintf(stderr, "ERROR: --wrap-pitch must be positive\n");
         return -1;
     }
-    if (o->axis_table_path &&
+    if ((o->axis_table_path || o->surface_f0_inner) &&
         !(o->have_umb_y && o->have_umb_x && o->have_wrap_pitch)) {
         fprintf(stderr,
                 "ERROR: --axis-table also requires --umb-y/--umb-x/--wrap-pitch "
@@ -518,10 +524,10 @@ static int run_one_cube(const char *exe_path,
                         const char *output_dir,
                         const char *dump_dir,
                         int halo, int threads, int skip_simplify,
-                        float trim_inset, int dump_final_only,
+                        float trim_inset, int full_dumps,
                         float cvt_target_ratio,
                         int cull_oracle_tangles,
-                        const char *axis_table_path)
+                        const char *axis_table_path, int surface_f0_inner)
 {
     char out_tif[1024];
     snprintf(out_tif, sizeof(out_tif), "%s/cubes/%s.tif",
@@ -548,8 +554,12 @@ static int run_one_cube(const char *exe_path,
     argv[argc++] = "--dump-obj";
     argv[argc++] = dump_dir;
     argv[argc++] = "--no-timeout";
-    if (dump_final_only) argv[argc++] = "--dump-final-only";
+    argv[argc++] = full_dumps ? "--full-dumps" : "--dump-final-only";
     if (skip_simplify) argv[argc++] = "--no-simplify";
+    if (surface_f0_inner) {
+        argv[argc++] = "--surface";
+        argv[argc++] = "f0-inner";
+    }
     if (cvt_target_ratio > 0.0f) {
         argv[argc++] = "--cvt-ratio";
         argv[argc++] = cvt_ratio_str;
@@ -817,13 +827,26 @@ static int cube_reject_kind(const char *tiff_path)
     return kind;
 }
 
+/* selftest scratch: selftest/grid_pipeline_<pid>/<name> (ves_selftest_dir), made on first use, removed after a
+ * pass */
+static char gp_st_dir[256];
+
+static const char *gp_scratch(char *buf, size_t len, const char *name)
+{
+    if (gp_st_dir[0] == '\0')
+        (void)ves_selftest_dir(gp_st_dir, sizeof gp_st_dir, "grid_pipeline");
+    snprintf(buf, len, "%s/%s", gp_st_dir, name);
+    return buf;
+}
+
 /* Built-in unit test for the binary resume completeness check (--selftest). */
 static int run_selftest(void)
 {
-    const char *p_ok    = "gp_selftest_ok.vmesh";
-    const char *p_trunc = "gp_selftest_trunc.vmesh";
-    const char *p_tiny  = "gp_selftest_tiny.vmesh";
-    const char *p_axis  = "gp_selftest_axis.csv";
+    char b_ok[320], b_trunc[320], b_tiny[320], b_axis[320], b_missing[320];
+    const char *p_ok    = gp_scratch(b_ok, sizeof b_ok, "gp_selftest_ok.vmesh");
+    const char *p_trunc = gp_scratch(b_trunc, sizeof b_trunc, "gp_selftest_trunc.vmesh");
+    const char *p_tiny  = gp_scratch(b_tiny, sizeof b_tiny, "gp_selftest_tiny.vmesh");
+    const char *p_axis  = gp_scratch(b_axis, sizeof b_axis, "gp_selftest_axis.csv");
     FILE *f = NULL;
     float vertices[12] = {0,0,0, 1,0,0, 1,1,0, 0,1,0};
     int32_t faces[6] = {0,1,2, 0,2,3};
@@ -845,7 +868,7 @@ static int run_selftest(void)
         { p_ok,    1, "complete-vmesh" },
         { p_trunc, 0, "truncated-vmesh" },
         { p_tiny,  0, "header-only-vmesh" },
-        { "gp_selftest_missing.vmesh", 0, "missing-file" },
+        { gp_scratch(b_missing, sizeof b_missing, "gp_selftest_missing.vmesh"), 0, "missing-file" },
     };
     int fails = 0;
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -909,6 +932,7 @@ static int run_selftest(void)
         if (!ok) fails++;
     }
     remove(p_ok); remove(p_trunc); remove(p_tiny); remove(p_axis);
+    if (!fails) (void)ves_selftest_clean(gp_st_dir);
     fprintf(stderr, "=== grid_pipeline selftest %s (%d failure%s) ===\n",
             fails ? "FAILED" : "PASSED", fails, fails == 1 ? "" : "s");
     return fails ? 1 : 0;
@@ -1261,9 +1285,9 @@ int main(int argc, char *argv[])
                               opts.output_dir, dump_dir,
                               opts.halo, opts.threads_per_cube,
                               opts.skip_simplify, opts.trim_inset,
-                              !opts.full_dumps, opts.cvt_target_ratio,
+                              opts.full_dumps, opts.cvt_target_ratio,
                               opts.cull_oracle_tangles,
-                              opts.axis_table_path);
+                              opts.axis_table_path, opts.surface_f0_inner);
         job->exit_code = rc;
         job->wall_seconds = ves_clock_sec() - cube_start;
         if (rc == 0) n_ok++; else n_fail++;
@@ -1313,9 +1337,9 @@ int main(int argc, char *argv[])
                                      opts.output_dir, dump_dir_b,
                                      opts.halo, opts.threads_per_cube,
                                      opts.skip_simplify, opts.trim_inset,
-                                     !opts.full_dumps, opts.cvt_target_ratio,
+                                     opts.full_dumps, opts.cvt_target_ratio,
                                      opts.cull_oracle_tangles,
-                                     opts.axis_table_path);
+                                     opts.axis_table_path, opts.surface_f0_inner);
             if (rc_b != 0) { n_diff++; continue; }
 
             /* Compare the authoritative final per-cube VMESH. */

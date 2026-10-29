@@ -68,7 +68,7 @@ COMMON_SRC = common/pitch_table.c common/closest_tri.c common/arena.c common/exc
              common/mesh_trim.c common/ply_io.c common/obj_io.c common/mesh_bin.c common/dump_obj.c \
              common/ves_platform.c common/raw_snapback.c common/snap_cg.c \
              common/eig3.c common/dev_metric.c common/mesh_manifold.c
-EXTRACT_SRC  = whole/axis_warp.c extract/mesh_extract.c extract/mesh_resplit.c extract/pred_reject.c
+EXTRACT_SRC  = whole/axis_warp.c extract/mesh_extract.c extract/pred_recto.c extract/mesh_resplit.c extract/pred_reject.c
 SPLIT_SRC    = split/overlap_quality.c split/oracle.c split/bridge_cut.c split/overlap_sep.c split/overlap_merge.c split/dev_cut.c split/depth_peel.c
 REMESH_SRC   = remesh/patch_repair.c remesh/cvt_remesh.c remesh/rvd_clip.c remesh/ball_pivot.c remesh/orient_mesh.c remesh/pinhole_fill.c remesh/normal_orient.c remesh/component_cull.c remesh/manifold_guard.c remesh/dev_gate.c
 HOLEFILL_SRC = holefill/hole_fill.c

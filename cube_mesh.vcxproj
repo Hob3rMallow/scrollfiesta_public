@@ -200,6 +200,9 @@ if exist "$(SolutionDir)deps\lib\win64\Release\cubecl-cuda-runtime\*.dll" copy /
     <ClCompile Include="src\extract\mesh_extract.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
+    <ClCompile Include="src\extract\pred_recto.c">
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
     <ClCompile Include="src\extract\mesh_resplit.c">
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>

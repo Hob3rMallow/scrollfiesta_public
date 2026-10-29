@@ -42,17 +42,20 @@ typedef struct {
                                   * mutual-nearest weld merges the near-
                                   * coincident boundary rows instead). Keep
                                   * the default for the grid_weld path -- its
-                                  * seam bridge NEEDS the 2*inset gap. */
-    const char *dump_dir;        /* if non-NULL, writes per-stage OBJs under
+                                  * seam bridge NEEDS the 2*inset gap.
+                                  * Halo mode with TRIM_CLIP_AT_BOX (the
+                                  * default since 2026-10-20) cuts the final
+                                  * mesh at the EXACT cube box whatever this
+                                  * is; it then only deepens the step-0
+                                  * cloud's reach past
+                                  * TRIM_CLIP_CLOUD_REACH_VOX into the halo. */
+    const char *dump_dir;        /* if non-NULL, writes final meshes under
                                   * <dump_dir>/<cube_id>/<cube_id>_<stage>/ */
     int         skip_simplify;   /* dense diagnostic mode; production is CVT */
-    int         dump_final_only; /* nonzero = write ONLY step12_final (the
-                                  * grid_weld input). The full intermediate
-                                  * stage set (~300 MB/dense cube of text OBJ)
-                                  * is a seam-debug affordance; at fleet
-                                  * concurrency it IO-bounds the whole grid
-                                  * run. Re-run a single cube without this
-                                   * flag to regenerate its stage dumps. */
+    int         surface_f0_inner; /* explicit F0/fixer inward-boundary geometry */
+    int         full_dumps;     /* explicit --full-dumps opt-in: export intermediate
+                                 * stages too. Zero-initialized callers write only
+                                 * step12_final, the downstream mesh input. */
     int         cull_oracle_tangles; /* omit final components for which the
                                       * developability oracle still sees more
                                       * than one sheet; explicit fail-closed

@@ -567,6 +567,7 @@ int MeshExtract_run(Arena_T          arena,
                     const uint8_t   *vol_in,
                     int              p_size_in,
                     const int64_t   *cube_origin_in,
+                    PredRectoField  *recto,
                     ComponentMesh  **out_meshes,
                     size_t          *out_n_meshes,
                     MeshResplitCloud **out_clouds)
@@ -656,6 +657,11 @@ int MeshExtract_run(Arena_T          arena,
 
     size_t vol_size = (size_t)D * (size_t)H * (size_t)W;
     if (vol_size == 0) return 0;
+    if (recto) {
+        recto->vol = vol;
+        recto->d = D; recto->h = H; recto->w = W;
+        recto->halo = halo_voxels;
+    }
 
     /* Threshold to binary */
     for (size_t i = 0; i < vol_size; i++) {
@@ -1187,6 +1193,11 @@ int MeshExtract_run(Arena_T          arena,
         if (src != mls_verts) {
             memcpy(mls_verts, src, surf_nv * 3 * sizeof(float));
         }
+        if (recto) {
+            PredRectoStats stats = {0};
+            PredRecto_cloud(recto, mls_verts, mls_normals, surf_nv, &stats);
+            PredRecto_report("pre-BPA", &stats);
+        }
 
         /* Snapshot the raw voxel-center cloud (surf_verts, preserved as the LOP's
          * read-only src) and its 1:1 LOP image (mls_verts), BEFORE the weld
@@ -1196,7 +1207,9 @@ int MeshExtract_run(Arena_T          arena,
             snap_n = surf_nv;
             snap_orig = (float *)ARENA_ALLOC(arena, (size_t)(surf_nv * 3 * sizeof(float)));
             snap_lop  = (float *)ARENA_ALLOC(arena, (size_t)(surf_nv * 3 * sizeof(float)));
-            memcpy(snap_orig, surf_verts, surf_nv * 3 * sizeof(float));
+            /* The resplit must retain this boundary target; replaying the
+             * thick voxel cloud would undo recto placement. */
+            memcpy(snap_orig, recto ? mls_verts : surf_verts, surf_nv * 3 * sizeof(float));
             memcpy(snap_lop,  mls_verts,  surf_nv * 3 * sizeof(float));
         }
 

@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "../common/arena.h"
 #include "../common/mesh_types.h"
+#include "pred_recto.h"
 
 /* ----------------------------------------------------------------
  * Exposed primitives (used by Step 0 itself).
@@ -89,6 +90,7 @@ int MeshExtract_run(Arena_T          arena,
                     const uint8_t   *vol_in,          /* optional in-memory cube */
                     int              p_size_in,
                     const int64_t   *cube_origin_in,  /* owned origin (z,y,x) */
+                    PredRectoField  *recto,          /* optional F0-inner target; receives borrowed volume */
                     ComponentMesh  **out_meshes,
                     size_t          *out_n_meshes,
                     MeshResplitCloud **out_clouds);
