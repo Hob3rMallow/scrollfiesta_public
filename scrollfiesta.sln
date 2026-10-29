@@ -44,6 +44,12 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "closeup_strip_turn", "close
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "vmesh_fiber_rigid", "vmesh_fiber_rigid.vcxproj", "{288B93BB-2D99-48E8-B502-BFE03DF607D9}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "closeup_repair", "closeup_repair.vcxproj", "{3C8E2B71-6D4A-4F19-9E05-A1B7C2D3E4F5}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "tifxyz_snap", "tifxyz_snap.vcxproj", "{7D2F1C4A-9B3E-4F0A-8C61-5E2A7B9D0C13}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "vcr_gpu", "vcr_gpu.vcxproj", "{5F19EAAF-1FCB-4DC4-874C-AD7DD9547501}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -132,6 +138,15 @@ Global
 		{288B93BB-2D99-48E8-B502-BFE03DF607D9}.Debug|x64.ActiveCfg = Release|x64
 		{288B93BB-2D99-48E8-B502-BFE03DF607D9}.Release|x64.ActiveCfg = Release|x64
 		{288B93BB-2D99-48E8-B502-BFE03DF607D9}.Release|x64.Build.0 = Release|x64
+		{3C8E2B71-6D4A-4F19-9E05-A1B7C2D3E4F5}.Debug|x64.ActiveCfg = Release|x64
+		{3C8E2B71-6D4A-4F19-9E05-A1B7C2D3E4F5}.Release|x64.ActiveCfg = Release|x64
+		{3C8E2B71-6D4A-4F19-9E05-A1B7C2D3E4F5}.Release|x64.Build.0 = Release|x64
+		{7D2F1C4A-9B3E-4F0A-8C61-5E2A7B9D0C13}.Debug|x64.ActiveCfg = Release|x64
+		{7D2F1C4A-9B3E-4F0A-8C61-5E2A7B9D0C13}.Release|x64.ActiveCfg = Release|x64
+		{7D2F1C4A-9B3E-4F0A-8C61-5E2A7B9D0C13}.Release|x64.Build.0 = Release|x64
+		{5F19EAAF-1FCB-4DC4-874C-AD7DD9547501}.Debug|x64.ActiveCfg = Release|x64
+		{5F19EAAF-1FCB-4DC4-874C-AD7DD9547501}.Release|x64.ActiveCfg = Release|x64
+		{5F19EAAF-1FCB-4DC4-874C-AD7DD9547501}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

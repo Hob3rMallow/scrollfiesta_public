@@ -39,6 +39,9 @@ option(SCROLLFIESTA_OPENMP
 option(SCROLLFIESTA_INSTALL
        "Generate install/export rules"
        ${PROJECT_IS_TOP_LEVEL})
+option(SCROLLFIESTA_GPU_TESTS
+       "Run vcr_gpu's GPU selftest (needs an NVIDIA driver and NVRTC beside vcr_gpu)"
+       OFF)
 
 # AppleClang does not accept the driver's -fopenmp flag. Keep raw flags,
 # as with the other toolchains, and locate the separately supplied runtime.
@@ -750,6 +753,8 @@ if(SCROLLFIESTA_BUILD_TOOLS)
     add_executable(sheet_strip
         ${SF_SRC}/tools/sheet_strip.c
         ${SF_SRC}/common/strip_layout.c
+        ${SF_SRC}/common/closeup_window.c
+        ${SF_SRC}/common/block_list.c
         ${SF_SRC}/common/json_read.c
         ${SF_SRC}/common/ves_png.c)
     add_executable(sheet_reading
@@ -780,9 +785,34 @@ if(SCROLLFIESTA_BUILD_TOOLS)
     add_executable(vmesh_fiber_rigid
         ${SF_SRC}/tools/vmesh_fiber_rigid.c
         ${SF_SRC}/flatten/fiber_rigid.c)
+    # A close-up surface without its duplicate and wrong-side geometry, and a
+    # tifxyz segment snapped onto the papyrus recto in the RAW CT.
+    add_executable(closeup_repair
+        ${SF_SRC}/tools/closeup_repair.c
+        ${SF_SRC}/flatten/closeup_repair.c
+        ${SF_SRC}/assemble/asm_axis.c
+        ${SF_SRC}/common/ves_png.c)
+    add_executable(tifxyz_snap
+        ${SF_SRC}/tools/tifxyz_snap.c
+        ${SF_SRC}/flatten/tifxyz_recto.c
+        ${SF_SRC}/flatten/rawtex_tifxyz.c
+        ${SF_SRC}/common/zarr_shard.c
+        ${SF_SRC}/common/json_read.c
+        ${SF_SRC}/common/ves_png.c)
+    # villa's vc_render_tifxyz surface-volume render on the GPU. The CUDA
+    # driver and NVRTC are loaded at run time, so no CUDA toolkit is needed
+    # to build it.
+    add_executable(vcr_gpu
+        ${SF_SRC}/tools/vcr_gpu.c
+        ${SF_SRC}/flatten/vcr_render.c
+        ${SF_SRC}/common/cuda_drv.c
+        ${SF_SRC}/common/json_read.c
+        ${SF_SRC}/common/zarr_shard.c)
+    target_link_libraries(vcr_gpu PRIVATE ${CMAKE_DL_LIBS})
     set(SF_SHEET_TOOLS ribbon_verdict swirl_slim obj_bake_raw sheet_strip
                        sheet_reading sheet_layers vmesh_tifxyz scroll_axis_track
-                       closeup_strip_turn vmesh_fiber_rigid)
+                       closeup_strip_turn vmesh_fiber_rigid closeup_repair
+                       tifxyz_snap vcr_gpu)
 
     # sheet_assemble solves its constrained QPs with the vendored OSQP 1.0
     # (built-in QDLDL + AMD; configuration in deps/osqp/osqp_configure.h) and
@@ -1035,7 +1065,13 @@ if(SCROLLFIESTA_BUILD_TESTS)
         foreach(tool ${SF_SHEET_TOOLS})
             set(_sf_wd ${CMAKE_CURRENT_BINARY_DIR}/selftest/${tool})
             file(MAKE_DIRECTORY ${_sf_wd})
-            add_test(NAME ${tool}_selftest COMMAND ${tool} --selftest
+            # vcr_gpu's full selftest renders on the GPU; without one, test
+            # its storage layer only.
+            set(_sf_mode --selftest)
+            if(tool STREQUAL "vcr_gpu" AND NOT SCROLLFIESTA_GPU_TESTS)
+                set(_sf_mode --storage-selftest)
+            endif()
+            add_test(NAME ${tool}_selftest COMMAND ${tool} ${_sf_mode}
                      WORKING_DIRECTORY ${_sf_wd})
             set_tests_properties(${tool}_selftest PROPERTIES
                 ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")

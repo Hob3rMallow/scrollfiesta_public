@@ -5,6 +5,10 @@
 #include <stdio.h>
 #include "arena.h"
 
+#ifndef INT32_MAX
+#include <limits.h>
+#endif
+
 /* ============================================================================
  * strip_layout.h -- piece-aware "strip" pages of a winding-ribbon bake.
  *
@@ -29,11 +33,65 @@
  * once with its value unchanged (StripLayout_render counts them).
  * ==========================================================================*/
 
+/* A piece's turn on the page (2026-10-24, the user: "specify that a given chart in a sheet is the wrong orientation
+ * and must be rotated 90 degrees (and then all charts in the sheet should shuffle to make room for it)"): the
+ * piece's source block is mirrored left-right when flip, then turned rot degrees clockwise, and that block is laid
+ * on the page; for rot 90 / 270 its page width is the block's height (pixel for pixel: StripLayout_selftest).
+ * {0, 0} = none. */
+typedef struct StripTurn { int32_t rot, flip; } StripTurn;
+
+static inline int StripTurn_identity(StripTurn t) { return t.rot == 0 && !t.flip; }
+static inline int StripTurn_swaps(StripTurn t) { return t.rot == 90 || t.rot == 270; }
+/* (rows, cols) of the turned block of a (h, w) source block */
+static inline void StripTurn_size(StripTurn t, int32_t h, int32_t w, int32_t *th, int32_t *tw)
+{
+    if (StripTurn_swaps(t)) { *th = w; *tw = h; } else { *th = h; *tw = w; }
+}
+/* source-local pixel (u, v) of a (h, w) block -> page-local (x, y) of the turned block */
+static inline void StripTurn_to_page(StripTurn t, int32_t u, int32_t v, int32_t h, int32_t w, int32_t *x, int32_t *y)
+{
+    if (t.flip) u = w - 1 - u;
+    switch (t.rot) {
+    case 90: *x = h - 1 - v; *y = u; break;               /* clockwise: the top-left corner goes to the top-right */
+    case 180: *x = w - 1 - u; *y = h - 1 - v; break;
+    case 270: *x = v; *y = w - 1 - u; break;              /* the top-left corner goes to the bottom-left */
+    default: *x = u; *y = v; break;
+    }
+}
+/* page-local pixel (x, y) -> source-local (u, v): the inverse of StripTurn_to_page */
+static inline void StripTurn_to_source(StripTurn t, int32_t x, int32_t y, int32_t h, int32_t w, int32_t *u, int32_t *v)
+{
+    switch (t.rot) {
+    case 90: *u = y; *v = h - 1 - x; break;
+    case 180: *u = w - 1 - x; *v = h - 1 - y; break;
+    case 270: *u = w - 1 - y; *v = x; break;
+    default: *u = x; *v = y; break;
+    }
+    if (t.flip) *u = w - 1 - *u;
+}
+/* a page-local rectangle [x0, x1) x [y0, y1) of the turned (h, w) block -> its source-local rectangle (a turn maps
+ * rectangles to rectangles: the bounds of the corner pixels) */
+static inline void StripTurn_rect_to_source(StripTurn t, int32_t h, int32_t w, int32_t x0, int32_t y0, int32_t x1,
+                                            int32_t y1, int32_t *u0, int32_t *v0, int32_t *u1, int32_t *v1)
+{
+    const int32_t xs[4] = {x0, x1 - 1, x0, x1 - 1}, ys[4] = {y0, y0, y1 - 1, y1 - 1};
+    *u0 = *v0 = INT32_MAX; *u1 = *v1 = INT32_MIN;
+    for (int k = 0; k < 4; k++) {
+        int32_t u = 0, v = 0;
+        StripTurn_to_source(t, xs[k], ys[k], h, w, &u, &v);
+        if (u < *u0) *u0 = u;
+        if (v < *v0) *v0 = v;
+        if (u + 1 > *u1) *u1 = u + 1;
+        if (v + 1 > *v1) *v1 = v + 1;
+    }
+}
+
 typedef struct StripParams {
     double du, dv;              /* vox per source pixel (the bake's step_uv) */
     double merge_gap_vox;       /* empty column runs narrower than this stay inside a piece */
     double kibble_area_vox2;    /* pieces with less covered area go to the tray */
     double aspect;              /* target page width / height */
+    int64_t max_line_pixels;     /* 0 = aspect-only; otherwise bound each line's width x height */
     double line_gap_vox;        /* blank rows between lines */
     double piece_gap_vox;       /* blank columns between pieces on a line */
     double margin_vox;          /* blank border around the page */
@@ -57,6 +115,7 @@ typedef struct StripPiece {
     int64_t covered;            /* covered source pixels */
     double  area_vox2;          /* covered * du * dv */
     int32_t tray;               /* 1 = kibble, laid out in the tray */
+    StripTurn turn;             /* the piece's turn on the page ({0, 0}: none) */
 } StripPiece;
 
 typedef struct StripFragment {
@@ -64,8 +123,15 @@ typedef struct StripFragment {
     int32_t line;               /* index into StripPage.lines */
     int32_t sx0, sx1;           /* source columns [sx0, sx1) */
     int32_t sy0, sy1;           /* covered source rows of those columns [sy0, sy1) */
-    int32_t dx;                 /* page column of sx0, from the left margin */
+    int32_t dx;                 /* page column of the fragment's left edge, from the left margin */
+    StripTurn turn;             /* the piece's turn: on the page the source rect is laid turned, so for rot 90 / 270
+                                 * the fragment is sy1 - sy0 wide and sx1 - sx0 tall (StripFragment_page_size) */
 } StripFragment;
+
+static inline void StripFragment_page_size(const StripFragment *g, int32_t *w, int32_t *h)
+{
+    StripTurn_size(g->turn, g->sy1 - g->sy0, g->sx1 - g->sx0, h, w);
+}
 
 typedef struct StripLine {
     int32_t dy;                 /* page row of the line's top: every fragment's sy0 */
@@ -96,6 +162,28 @@ int StripLayout_columns(Arena_T arena, const uint8_t *cov, int32_t W, int32_t H,
  * or invalid input. */
 int StripLayout_plan(Arena_T arena, const StripColumns *cols, const StripParams *p,
                      StripPage *out);
+
+/* The pieces of a profile alone (StripLayout_plan's segmentation): *out[*n] on
+ * the arena. 0 = ok; -1 = none. */
+int StripLayout_segments(Arena_T arena, const StripColumns *cols, const StripParams *p,
+                         StripPiece **out, size_t *n);
+
+/* The column profile, in the page frame, of a (h x w) row-major coverage
+ * block turned by t: W = the turned width, H = the turned height, rows
+ * relative to the block's top. 0 = ok. */
+int StripLayout_columns_turned(Arena_T arena, const uint8_t *cov, int32_t w, int32_t h,
+                               StripTurn t, StripColumns *out);
+
+/* The plan of given pieces (StripLayout_segments of cols, in that order) with
+ * some turned: turns[i] (NULL = none) is piece i's turn, and a turned piece
+ * takes its page profile from prof[i] (StripLayout_columns_turned of its
+ * sub-mask, W / H the turned size); pieces with no turn read cols as
+ * StripLayout_plan does. With every turn none the plan is StripLayout_plan's.
+ * 0 = ok; -1 = invalid input (a turned piece without its profile, a profile
+ * of the wrong size). */
+int StripLayout_plan_pieces(Arena_T arena, const StripColumns *cols, const StripPiece *pieces, size_t n,
+                            const StripTurn *turns, const StripColumns *const *prof, const StripParams *p,
+                            StripPage *out);
 
 /* Copy every covered source pixel to the zeroed page[pg->W * pg->H]
  * (tex/cov are the W x H source). *out_copied = covered pixels written. */

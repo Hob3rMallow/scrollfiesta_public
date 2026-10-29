@@ -38,6 +38,8 @@
   <ItemGroup>
     <ClCompile Include="src\tools\sheet_strip.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\strip_layout.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\closeup_window.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="src\common\block_list.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\json_read.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\tiff_io.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
     <ClCompile Include="src\common\ves_png.c"><CompileAs>CompileAsC</CompileAs></ClCompile>

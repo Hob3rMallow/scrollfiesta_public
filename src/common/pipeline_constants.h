@@ -2725,4 +2725,104 @@
 #define STRIP_TURN_PAD_CELLS     2       /* ... with this many nodes beyond the canvas on every side, so every vertex
                                           * of the close-up is interpolated bilinearly by ink_closeup --reuv */
 
+
+/* ================================================================
+ * tifxyz_snap (a tifxyz segment snapped onto the papyrus recto) and
+ * closeup_repair (duplicate and wrong-side geometry out of a close-up),
+ * ported from vesuvius-c in October 2026.
+ * ================================================================ */
+
+/* closeup_repair (src/flatten/closeup_repair.c, 2026-10-12): a close-up surface's duplicate and wrong-side geometry.
+ * A DUPLICATE is stitch_audit.py's: within DUP_VOX in 3-D of a vertex more than DUP_PX away on the surface.
+ * A FLAP is a connected set of observed vertices facing away from the axis, of at least FLAP_MIN_VERTS
+ * vertices (~vox^2) with a mean facing (normal . unit direction to the axis) of at most -FLAP_FACING: an
+ * edge-on sheet (|facing| small) stays. Fill facing away by more than FILL_FACING goes. */
+#define CLOSEUP_REPAIR_DUP_VOX 2.0
+#define CLOSEUP_REPAIR_DUP_PX 64.0
+#define CLOSEUP_REPAIR_FLAP_MIN_VERTS 2000
+#define CLOSEUP_REPAIR_FLAP_FACING 0.25
+#define CLOSEUP_REPAIR_FILL_FACING 0.0
+
+/* ---- tifxyz_snap (src/flatten/tifxyz_recto.c, 2026-10-09): a close-up's tifxyz node grid snapped onto the papyrus
+ * RECTO edge read in the RAW CT.  Regime: close-ups at 1 node per voxel (9.36 um),
+ * vc_render 21-layer stacks.  Measured on cand5 (cu20261009T081311Z) before any snap: the surface sits p50 0.9 vox
+ * OUTWARD of the recto edge with p5..p95 -4.0..+5.1 vox and 57% of pixels more than 1.5 vox off; 35% of pixels lie
+ * in the dark gap inside the band; band thickness p50 6.8 vox (p5 3.0, p95 11.6); the recto's steepest descent
+ * -30 grey/vox median (p95 -7.5); the next wrap ~10 vox away along the normal; the display window 100..205 is NOT
+ * the band contrast (the mean band peak is 120, the gap 89), so the band isovalue is each profile's own midpoint. */
+#define TXR_SEARCH_VOX 8.0          /* profile half-length along the inward normal.  Under the inter-wrap spacing
+                                     * (~10 vox) it still reaches the recto of a node sitting in the band's outer half
+                                     * (cand5 with the nearest-band rule at 6 vox: 9.4% of nodes abstained with their
+                                     * band in view and its recto out of reach); the nearest-band assignment keeps the
+                                     * next wrap's edge from being taken */
+#define TXR_SAMPLE_STEP 0.25        /* profile spacing, vox */
+#define TXR_SMOOTH_SIGMA 0.75       /* Gaussian smoothing of the profile, vox (the CT's ~1 vox point spread) */
+#define TXR_MIN_CONTRAST 12.0       /* grey: a band's crest must stand this far above its inward trough (its own
+                                     * prominence, not a global isovalue: a brighter neighbouring wrap pushed the
+                                     * profile midpoint above dim bands and sent 11% of cand5's nodes to the cap) */
+#define TXR_IRLS_ROUNDS 3           /* solves per outer iteration: least squares, then Cauchy-reweighted by the
+                                     * residual to that smooth field, so a stray target (noise, another band) fades
+                                     * continuously instead of being capped or thresholded */
+#define TXR_ROBUST_SCALE_VOX 1.0    /* the Cauchy scale of that reweighting */
+#define TXR_MEDIAN_HALF 7           /* the per-node edge offsets are median-filtered over a (2 x 7 + 1)^2 window
+                                     * before the solve: the measured edge follows the papyrus fibre weave (+-2 vox
+                                     * streaks 8-12 px wide on cand5, the two fibre layers' faces), and the snap
+                                     * must correct the surface's slow drift (patches of 50-300 px), not chase
+                                     * single fibres -- the detector learned the weave as depth texture */
+#define TXR_MEDIAN_MIN_SUPPORT 0.3  /* a window with fewer supported nodes (share of its valid nodes) gives none */
+#define TXR_MEDIAN_HALF_SMOOTH 31   /* --smooth: a 63-node window, every TXR_MEDIAN_STRIDE_SMOOTH-th node (441 samples):
+                                     * the slow drift only (cand5 offline: a 61-node median keeps p5..p95 -0.5..+1.9
+                                     * vox of the per-node -3.8..+4.2), no weave at all.  The 15-node snap lost on every
+                                     * candidate at every depth offset (sweep 2026-10-10 01:05): the detectors want the
+                                     * mesher's smoothness, so a re-placement may only move the drift */
+#define TXR_MEDIAN_STRIDE_SMOOTH 3
+#define TXR_MIN_EDGE 4.0            /* grey/vox: a weaker descent supports no target (cand5: 3% of pixels) */
+#define TXR_EDGE_FULL 20.0          /* grey/vox: full confidence at or above this (the cand5 p25) */
+#define TXR_DATA_W 1.0              /* a supported node's weight is this x (0.35 + 0.65 confidence) */
+#define TXR_ANCHOR_W 0.02           /* an unsupported valid node: a weak pull to zero displacement */
+#define TXR_SMOOTH_MU 3.0           /* 4-neighbour smoothness: a smooth structure of wavelength L keeps the share
+                                     * (a / (1 + a))^iters of its error, a = mu (2 pi / L)^2 / w: 10 px 16%, 6 px
+                                     * 46%, 4 px 68% after 4 iterations; per-node CT edge noise (~0.2 vox) is
+                                     * averaged over ~pi mu / w = 9 nodes */
+#define TXR_MAX_STEP_VOX 2.0        /* per outer iteration */
+#define TXR_MAX_TOTAL_VOX 7.0       /* from the input grid, under the inter-wrap spacing (at 5 vox, 19% of cand5's nodes
+                                     * sat on the cap once the seam confusion was gone: their inner face is 5-7 vox in) */
+#define TXR_OUTER_ITERS 6           /* measure along the moved normals again this many times at most (cand5's
+                                     * mean |step| halved per iteration: 1.23, 0.57, 0.25, 0.12 vox) */
+#define TXR_STEP_TOL 0.02           /* mean |step| below this ends the outer loop */
+#define TXR_PCG_MAX_ITERS 500
+#define TXR_PCG_TOL 1e-6            /* relative residual of the global solve */
+#define TXR_MIDLINE_MIN_THICK 2.0   /* --midline: the band must be this thick (vox) ... */
+#define TXR_MIDLINE_MAX_THICK 14.0  /* ... and no thicker (a thicker one is two fused wraps) */
+#define TXR_RECTO_INSET_VOX 1.0     /* --inset: the surface stops this far OUTWARD of the recto edge, inside the papyrus.
+                                     * The detectors were trained on mesher surfaces that sit p50 +0.9 vox outward of the
+                                     * edge (cand5), and the surface put exactly ON the edge scored worse (ft-r54 AP .830
+                                     * -> .793, half the ink share, the reversed control above the forward stack):
+                                     * PROVISIONAL at 1.0 until the depth sweep of the snapped surface names the offset */
+
+/* The PRIOR (tifxyz_snap, 2026-10-10; user: "constants should be determined per scroll not globally, and should be
+ * computed based on some sort of useful prior like rayshooting"): long rays along the node normals read the wrap
+ * structure and set the search range, the move cap, the band gate, the edge gates, the smoothing and the thickness
+ * bounds per scroll; the TXR_* values above stay as the defaults and the bounds below cap what the rays may set. */
+#define TXR_PRIOR_RANGE_VOX 24.0    /* ray half-length: two wraps either side at ~10 vox spacing */
+#define TXR_PRIOR_STRIDE 4          /* every 4th node in both directions (cand5: 500k rays, ~10 s) */
+#define TXR_PRIOR_SIGMA 0.5         /* the rays' own smoothing (light: edge widths are measured on them) */
+#define TXR_PRIOR_FLOOR 6.0         /* grey: an extremum pair closer than this is noise, pruned before reading */
+#define TXR_PRIOR_AIR_REL 0.25      /* a trough within this share of the ray's full contrast above its darkest sample
+                                     * is a GAP (air); a higher trough is a dip inside a band (the fibre-layer seam) */
+#define TXR_SEARCH_MAX_VOX 12.0     /* the rays may set the search range up to this (array bound) */
+#define TXR_SIGMA_MAX 1.5           /* ... and the smoothing up to this (kernel bound) */
+#define TXR_PROFILE_HALF 10         /* report: the mean CT profile at -10..+10 vox, 1 vox apart (the 21-layer stack) */
+#define TXR_PROFILE_STRIDE 4        /* report: every 4th row and column */
+#define TXR_DIAG_SCALE 4            /* diagnostic PNGs are downsampled by this */
+#define TXR_DIAG_FULL_VOX 4.0       /* ... blue (outward) .. red (inward) saturate at +-this */
+
+/* Whole-sheet segments (a 21^3 box's sheet blocks are 4295 x 70k nodes) run in column windows (2026-10-10):
+ * cores of TXR_WINDOW_COLS columns, each measured and solved with TXR_WINDOW_HALO columns of the INPUT either side
+ * and keeping its core only.  The halo carries the 63-node smooth median at stride 3 (93 columns) and the solve's
+ * reach across abstaining nodes (sqrt(mu / anchor) = 12 nodes per decay length); measured equal to the whole run
+ * in the cores on cand5 (tifxyz_snap --window, 2026-10-10). */
+#define TXR_WINDOW_COLS 8192
+#define TXR_WINDOW_HALO 256
+
 #endif
