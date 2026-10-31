@@ -276,6 +276,16 @@ void CloseupRebuildResult_free(CloseupRebuildResult *result);
  * Normals are normalize(tu x tv) (unoriented).  0 on success, -1 on no memory / no observations. */
 int CloseupSurface_fit(CloseupGrid *g, CloseupObs *obs, const CloseupFitOpts *o, CloseupFitStats *st);
 
+/* CloseupSurface_fit, recording its robust data rounds in cache, so that the next fit of the same grid with the same
+ * options -- after observations were only APPENDED to obs (a completion's adopt rounds) -- refits only the nodes the
+ * new observations can reach through the rounds and takes every other node's rounds from the record.  The result is
+ * CloseupSurface_fit's, bit for bit; a cache that does not match the grid, options or observations is rebuilt. */
+typedef struct CloseupFitCache CloseupFitCache;
+CloseupFitCache *CloseupFitCache_new(void);
+void CloseupFitCache_free(CloseupFitCache **cache);
+int CloseupSurface_fit_cached(CloseupGrid *g, CloseupObs *obs, const CloseupFitOpts *o, CloseupFitStats *st,
+                              CloseupFitCache *cache);
+
 /* Orientation: inward[k*3..] is the unit direction toward the scroll axis at node k (any array of nn
  * entries; zero vectors abstain).  Every normal is set to s * normalize(tu x tv) with s the sign of the
  * summed vote sum (tu x tv) . inward over valid nodes, so the normals point inward.  Returns s (+1: the

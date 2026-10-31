@@ -11,6 +11,15 @@
 
 #include "../common/ves_omp.h"
 
+static double ca_clock(void)
+{
+#ifdef _OPENMP
+    return omp_get_wtime();
+#else
+    return 0.0;
+#endif
+}
+
 #define CA_MAX_SAMPLES 6000     /* vertices tried per chart (strided) */
 #define CA_LAYER_SAMPLES 600    /* ...of which the layer gate tests at most this many (its 5% needs no more) */
 
@@ -545,22 +554,41 @@ static void ca_eval_chart(const CloseupGrid *g, KDTree_T kd, const int32_t *pmap
 typedef struct CaScreen {
     double lo[3];
     size_t n[3];
-    uint8_t *bits;
+    uint32_t *bits;
 } CaScreen;
 
 static int ca_screen_build(const CloseupGrid *g, CaScreen *sc)
 {
-    size_t nn = g->ni * g->nj, k = 0, tot = 0;
+    size_t nn = g->ni * g->nj, tot = 0;
     double hi[3] = { -1e300, -1e300, -1e300 };
+    long k = 0;
     int q = 0;
     memset(sc, 0, sizeof *sc);
     sc->lo[0] = sc->lo[1] = sc->lo[2] = 1e300;
-    for (k = 0; k < nn; k++) {
-        if (g->state[k] == CLOSEUP_NODE_NONE) continue;
-        for (q = 0; q < 3; q++) {
-            double x = g->pos[k * 3 + (size_t)q];
-            if (x < sc->lo[q]) sc->lo[q] = x;
-            if (x > hi[q]) hi[q] = x;
+#ifdef _OPENMP
+#pragma omp parallel
+#endif
+    {   /* the box: per-thread extremes, merged (min and max take no order) */
+        double tlo[3] = { 1e300, 1e300, 1e300 }, thi[3] = { -1e300, -1e300, -1e300 };
+        long kk = 0;
+        int qq = 0;
+#ifdef _OPENMP
+#pragma omp for schedule(static)
+#endif
+        for (kk = 0; kk < (long)nn; kk++) {
+            if (g->state[kk] == CLOSEUP_NODE_NONE) continue;
+            for (qq = 0; qq < 3; qq++) {
+                double x = g->pos[(size_t)kk * 3 + (size_t)qq];
+                if (x < tlo[qq]) tlo[qq] = x;
+                if (x > thi[qq]) thi[qq] = x;
+            }
+        }
+#ifdef _OPENMP
+#pragma omp critical(ca_screen_box)
+#endif
+        for (qq = 0; qq < 3; qq++) {
+            if (tlo[qq] < sc->lo[qq]) sc->lo[qq] = tlo[qq];
+            if (thi[qq] > hi[qq]) hi[qq] = thi[qq];
         }
     }
     if (hi[0] < sc->lo[0]) return -1;
@@ -569,21 +597,30 @@ static int ca_screen_build(const CloseupGrid *g, CaScreen *sc)
         sc->n[q] = (size_t)ceil((hi[q] + 2.0 * CA_CELL_VOX - sc->lo[q]) / CA_CELL_VOX) + 1;
     }
     tot = sc->n[0] * sc->n[1] * sc->n[2];
-    sc->bits = (uint8_t *)calloc(tot / 8 + 1, 1);
+    sc->bits = (uint32_t *)calloc(tot / 32 + 1, sizeof *sc->bits);
     if (sc->bits == NULL) return -1;
-    for (k = 0; k < nn; k++) {
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic, 4096)
+#endif
+    for (k = 0; k < (long)nn; k++) {      /* setting a bit takes no order: atomic ORs */
         long c[3], dz = 0, dy = 0, dx = 0;
+        int qq = 0;
         if (g->state[k] == CLOSEUP_NODE_NONE) continue;
-        for (q = 0; q < 3; q++) c[q] = (long)floor((g->pos[k * 3 + (size_t)q] - sc->lo[q]) / CA_CELL_VOX);
+        for (qq = 0; qq < 3; qq++) c[qq] = (long)floor((g->pos[(size_t)k * 3 + (size_t)qq] - sc->lo[qq]) / CA_CELL_VOX);
         for (dz = -1; dz <= 1; dz++)
             for (dy = -1; dy <= 1; dy++)
                 for (dx = -1; dx <= 1; dx++) {
                     long z = c[0] + dz, y = c[1] + dy, x = c[2] + dx;
                     size_t b = 0;
+                    uint32_t bit = 0;
                     if (z < 0 || y < 0 || x < 0 || (size_t)z >= sc->n[0] || (size_t)y >= sc->n[1] || (size_t)x >= sc->n[2])
                         continue;
                     b = ((size_t)z * sc->n[1] + (size_t)y) * sc->n[2] + (size_t)x;
-                    sc->bits[b >> 3] |= (uint8_t)(1u << (b & 7));
+                    bit = 1u << (b & 31);
+#ifdef _OPENMP
+#pragma omp atomic
+#endif
+                    sc->bits[b >> 5] |= bit;
                 }
     }
     return 0;
@@ -599,14 +636,17 @@ static int ca_screen_hit(const CaScreen *sc, const float *p)
         if (c[q] < 0 || (size_t)c[q] >= sc->n[q]) return 0;
     }
     b = ((size_t)c[0] * sc->n[1] + (size_t)c[1]) * sc->n[2] + (size_t)c[2];
-    return (sc->bits[b >> 3] >> (b & 7)) & 1;
+    return (int)((sc->bits[b >> 5] >> (b & 31)) & 1u);
 }
 
+typedef struct CaOrder { size_t corr, chart; } CaOrder;
+
+/* support first (more contacts), then chart index: a total order (every evaluation names its own chart) */
 static int ca_cmp_corr(const void *x, const void *y)
 {
-    const CaEval *a = (const CaEval *)x, *b = (const CaEval *)y;
-    if (a->p.corr != b->p.corr) return a->p.corr > b->p.corr ? -1 : 1;
-    return a->p.chart < b->p.chart ? -1 : a->p.chart > b->p.chart ? 1 : 0;
+    const CaOrder *a = (const CaOrder *)x, *b = (const CaOrder *)y;
+    if (a->corr != b->corr) return a->corr > b->corr ? -1 : 1;
+    return a->chart < b->chart ? -1 : a->chart > b->chart ? 1 : 0;
 }
 
 int CloseupAdopt_round_audited(const CloseupGrid *g, const CloseupPool *pool, const uint8_t *done,
@@ -624,9 +664,12 @@ int CloseupAdopt_round_audited(const CloseupGrid *g, const CloseupPool *pool, co
     int32_t *pmap = NULL, *near_sup = NULL, *dmap = NULL;
     uint16_t *ccount = NULL;
     CaEval *ev = NULL;
+    CaOrder *order = NULL;
     CaScreen sc;
     long ch = 0;
     int rc = -1, bad = 0;
+    double ta = ca_clock(), t_kd = 0, t_screen = 0, t_near = 0, t_eval = 0, t_claim = 0;
+    size_t n_eval = 0;
     memset(&sc, 0, sizeof sc);
     if (oin == NULL) CloseupAdoptOpts_default(&o); else o = *oin;
     if (st == NULL) st = &s0;
@@ -659,8 +702,11 @@ int CloseupAdopt_round_audited(const CloseupGrid *g, const CloseupPool *pool, co
             kdd = KDTree_new(arena, dpts, ndata);
         }
     }
+    t_kd = ca_clock() - ta; ta = ca_clock();
     if (ca_screen_build(g, &sc) != 0) goto done;
+    t_screen = ca_clock() - ta; ta = ca_clock();
     near_sup = ca_near_supported(g, &o);            /* the continuity gate's reference; NULL: gate off (no memory) */
+    t_near = ca_clock() - ta; ta = ca_clock();
     for (k = 0; k < pool->nch; k++) {
         size_t c = pool->vofs[k + 1] - pool->vofs[k];
         if (c > maxv) maxv = c;
@@ -690,16 +736,22 @@ int CloseupAdopt_round_audited(const CloseupGrid *g, const CloseupPool *pool, co
                     hits += (size_t)ca_screen_hit(&sc, &pool->verts[v * 3]);
                 e->screen_hits = hits;
                 if ((long)hits < o.min_corr) continue;          /* never near the sheet */
+                if (pool->chart_fill != NULL && !pool->chart_ready[ch]) {   /* first use: this thread's chart */
+                    pool->chart_fill(pool->chart_ctx, (size_t)ch);
+                    pool->chart_ready[ch] = 1;
+                }
                 ca_eval_chart(g, kd, pmap, near_sup, kdd, dmap, pool, (size_t)ch, &o, A, B, keep, e);
                 e->screen_hits = hits;   /* ca_eval_chart initializes its result */
             }
         }
         free(A); free(B); free(keep);
     }
+    t_eval = ca_clock() - ta; ta = ca_clock();
     if (bad) goto done;
     for (ch = 0; ch < (long)pool->nch; ch++) {
         CaEval *e = &ev[ch];
         if (done != NULL && done[ch]) continue;
+        n_eval += (long)e->screen_hits >= o.min_corr;
         st->candidates++;
         if ((long)e->p.corr >= o.min_corr) st->touched++;
         if (e->why == 1) st->refused_extent++;
@@ -711,7 +763,10 @@ int CloseupAdopt_round_audited(const CloseupGrid *g, const CloseupPool *pool, co
         else if (e->why == 9) st->refused_layer++;
     }
     /* claims: the accepted charts in order of support; a claim that disagrees with an earlier one waits */
-    qsort(ev, pool->nch, sizeof *ev, ca_cmp_corr);
+    order = (CaOrder *)malloc((pool->nch ? pool->nch : 1) * sizeof *order);
+    if (order == NULL) goto done;
+    for (k = 0; k < pool->nch; k++) { order[k].corr = ev[k].p.corr; order[k].chart = ev[k].p.chart; }
+    qsort(order, pool->nch, sizeof *order, ca_cmp_corr);
     claim = (float *)calloc(nn * 3, sizeof *claim);
     ccount = (uint16_t *)calloc(nn, sizeof *ccount);
     *out = (CloseupPlacement *)malloc((pool->nch ? pool->nch : 1) * sizeof **out);
@@ -723,7 +778,7 @@ int CloseupAdopt_round_audited(const CloseupGrid *g, const CloseupPool *pool, co
         if (ca_round_init(&rset, nok * (CA_LAYER_SAMPLES + 1) + 1) != 0) goto done;
     }
     for (k = 0; k < pool->nch; k++) {
-        CaEval *e = &ev[k];
+        CaEval *e = &ev[order[k].chart];
         size_t v0 = 0, v1 = 0, v = 0, stride = 1, clash = 0, fresh_in = 0;
         if (!e->ok) continue;
         v0 = pool->vofs[e->p.chart]; v1 = pool->vofs[e->p.chart + 1];
@@ -795,9 +850,12 @@ int CloseupAdopt_round_audited(const CloseupGrid *g, const CloseupPool *pool, co
     }
     st->placed = nacc;
     *nout = nacc;
+    t_claim = ca_clock() - ta; ta = ca_clock();
+    fprintf(stderr, "  [adopt-timing] valid %zu data %zu charts %zu evaluated %zu: kd %.2f screen %.2f near %.2f eval %.2f "
+            "claims %.2f s\n", nvalid, ndata, pool->nch, n_eval, t_kd, t_screen, t_near, t_eval, t_claim);
     if (observer != NULL) {
         for (k = 0; k < pool->nch; k++) {
-            const CaEval *e = &ev[k];
+            const CaEval *e = &ev[order[k].chart];
             CloseupAdoptAudit record;
             if (done != NULL && done[e->p.chart]) continue;
             memset(&record, 0, sizeof record);
@@ -813,11 +871,13 @@ int CloseupAdopt_round_audited(const CloseupGrid *g, const CloseupPool *pool, co
             record.layer_checked = e->layer_checked; record.layer_bad = e->layer_bad;
             if (observer(&record, context) != 0) goto done;
         }
+        fprintf(stderr, "  [adopt-timing] observer %.2f s\n", ca_clock() - ta);
     }
     rc = 0;
 done:
     if (rc != 0) { free(*out); *out = NULL; *nout = 0; }
-    free(pts); free(pmap); free(near_sup); free(ev); free(claim); free(ccount); free(sc.bits); free(dpts); free(dmap);
+    free(pts); free(pmap); free(near_sup); free(ev); free(order); free(claim); free(ccount); free(sc.bits); free(dpts);
+    free(dmap);
     if (have_rset) ca_round_free(&rset);
     Arena_dispose(&arena);
     return rc;

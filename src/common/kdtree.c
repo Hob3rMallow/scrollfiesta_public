@@ -4,6 +4,8 @@
 #include <float.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include "ves_omp.h"
 
 /* 16-byte node: point + original index.
  * Split axis = depth % 3. 4 nodes per 64-byte cacheline. */
@@ -101,12 +103,30 @@ static size_t partition_median(const float *points, int32_t *indices,
     return lo;
 }
 
-/* Build tree recursively into heap-layout nodes array */
+/* A subtree left for the parallel phase of the build: its heap slot, index range and depth. */
+typedef struct {
+    size_t node, lo, hi;
+    int depth;
+} KDPending;
+
+#define KD_PARALLEL_MIN 65536   /* points from which the subtrees below KD_PARALLEL_DEPTH build in parallel */
+#define KD_PARALLEL_DEPTH 6     /* 64 independent subtrees */
+
+/* Build tree recursively into heap-layout nodes array.  With pend != NULL the
+ * recursion stops at depth stop_depth and records each subtree there instead:
+ * a subtree's partitions touch only its own index range and heap slots, so the
+ * recorded subtrees can be built in any order (or at once) into the same tree. */
 static void build_tree(const float *points, int32_t *indices,
                        KDNode *nodes, size_t node_idx,
-                       size_t lo, size_t hi, int depth, size_t n_total)
+                       size_t lo, size_t hi, int depth, size_t n_total,
+                       KDPending *pend, size_t *npend, int stop_depth)
 {
     if (lo >= hi || node_idx >= n_total) {
+        return;
+    }
+    if (pend != NULL && depth == stop_depth) {
+        pend[*npend].node = node_idx; pend[*npend].lo = lo; pend[*npend].hi = hi; pend[*npend].depth = depth;
+        (*npend)++;
         return;
     }
 
@@ -133,14 +153,131 @@ static void build_tree(const float *points, int32_t *indices,
     /* Left child: [lo, mid) */
     if (mid > lo && 2 * node_idx + 1 < n_total) {
         build_tree(points, indices, nodes, 2 * node_idx + 1,
-                   lo, mid, depth + 1, n_total);
+                   lo, mid, depth + 1, n_total, pend, npend, stop_depth);
     }
 
     /* Right child: [mid+1, hi) */
     if (mid + 1 < hi && 2 * node_idx + 2 < n_total) {
         build_tree(points, indices, nodes, 2 * node_idx + 2,
-                   mid + 1, hi, depth + 1, n_total);
+                   mid + 1, hi, depth + 1, n_total, pend, npend, stop_depth);
     }
+}
+
+/* partition_median over elements that carry their point (a KDNode: point +
+ * original index): the same comparisons and swaps, so the same permutation,
+ * read from consecutive memory instead of gathered through the index array. */
+static size_t partition_median_packed(KDNode *e, size_t lo, size_t hi, int axis)
+{
+    size_t mid = lo + complete_left_size(hi - lo);
+    while (lo < hi) {
+        size_t a = lo, b = mid, c = hi - 1;
+        float va = e[a].point[axis], vb = e[b].point[axis], vc = e[c].point[axis];
+        size_t pivot_idx;
+        KDNode t;
+        if (va <= vb) {
+            pivot_idx = (vb <= vc) ? b : ((va <= vc) ? c : a);
+        } else {
+            pivot_idx = (va <= vc) ? a : ((vb <= vc) ? c : b);
+        }
+        t = e[lo]; e[lo] = e[pivot_idx]; e[pivot_idx] = t;
+        float pivot_val = e[lo].point[axis];
+        size_t i = lo + 1;
+        size_t j = hi - 1;
+        while (i <= j) {
+            while (i <= j && e[i].point[axis] <= pivot_val) {
+                i++;
+            }
+            while (i <= j && e[j].point[axis] > pivot_val) {
+                if (j == 0) { break; }
+                j--;
+            }
+            if (i < j) {
+                t = e[i]; e[i] = e[j]; e[j] = t;
+                i++;
+                if (j > 0) { j--; }
+            } else {
+                break;
+            }
+        }
+        t = e[lo]; e[lo] = e[j]; e[j] = t;
+        if (j == mid) {
+            return mid;
+        } else if (j < mid) {
+            lo = j + 1;
+        } else {
+            hi = j;
+        }
+    }
+    return lo;
+}
+
+/* One node of build_tree over packed elements: its slot, and the subtrees
+ * below it (out[0..*nout)) in build_tree's order. */
+static void build_node_packed(KDNode *e, KDNode *nodes, KDPending in, size_t n_total, KDPending *out, size_t *nout)
+{
+    size_t mid = 0;
+    *nout = 0;
+    if (in.lo >= in.hi || in.node >= n_total) return;
+    if (in.hi - in.lo == 1) { nodes[in.node] = e[in.lo]; return; }
+    mid = partition_median_packed(e, in.lo, in.hi, in.depth % 3);
+    nodes[in.node] = e[mid];
+    if (mid > in.lo && 2 * in.node + 1 < n_total) {
+        out[*nout].node = 2 * in.node + 1; out[*nout].lo = in.lo; out[*nout].hi = mid;
+        out[*nout].depth = in.depth + 1; (*nout)++;
+    }
+    if (mid + 1 < in.hi && 2 * in.node + 2 < n_total) {
+        out[*nout].node = 2 * in.node + 2; out[*nout].lo = mid + 1; out[*nout].hi = in.hi;
+        out[*nout].depth = in.depth + 1; (*nout)++;
+    }
+}
+
+static void build_tree_packed(KDNode *e, KDNode *nodes, KDPending in, size_t n_total)
+{
+    KDPending kids[2];
+    size_t nk = 0, k = 0;
+    build_node_packed(e, nodes, in, n_total, kids, &nk);
+    for (k = 0; k < nk; k++) build_tree_packed(e, nodes, kids[k], n_total);
+}
+
+/* The whole tree.  Large ones over packed elements: the top KD_PARALLEL_DEPTH
+ * levels one level at a time (a level's subtrees partition at once), then the
+ * subtrees below in parallel (2026-10-30: two 6-9 M point trees per close-up
+ * adopt round took 2.7 s serial).  Every node takes the slot and the point a
+ * serial build_tree over the index array gives it. */
+static void build_all(const float *points, int32_t *indices, KDNode *nodes, size_t n)
+{
+#ifdef _OPENMP
+    if (n >= KD_PARALLEL_MIN && !omp_in_parallel()) {
+        KDNode *e = (KDNode *)malloc(n * sizeof *e);
+        if (e != NULL) {
+            KDPending cur[(size_t)1 << KD_PARALLEL_DEPTH], kids[(size_t)2 << KD_PARALLEL_DEPTH];
+            size_t ncur = 1, nk[(size_t)1 << KD_PARALLEL_DEPTH];
+            long p = 0;
+            int level = 0;
+#pragma omp parallel for schedule(static)
+            for (p = 0; p < (long)n; p++) {
+                e[p].point[0] = points[(size_t)p * 3]; e[p].point[1] = points[(size_t)p * 3 + 1];
+                e[p].point[2] = points[(size_t)p * 3 + 2]; e[p].orig_index = indices[p];
+            }
+            cur[0].node = 0; cur[0].lo = 0; cur[0].hi = n; cur[0].depth = 0;
+            for (level = 0; level < KD_PARALLEL_DEPTH && ncur > 0; level++) {
+                size_t k = 0, next = 0;
+#pragma omp parallel for schedule(dynamic, 1)
+                for (p = 0; p < (long)ncur; p++) build_node_packed(e, nodes, cur[p], n, &kids[2 * (size_t)p], &nk[p]);
+                for (k = 0; k < ncur; k++) {
+                    size_t c = 0;
+                    for (c = 0; c < nk[k]; c++) cur[next++] = kids[2 * k + c];
+                }
+                ncur = next;
+            }
+#pragma omp parallel for schedule(dynamic, 1)
+            for (p = 0; p < (long)ncur; p++) build_tree_packed(e, nodes, cur[p], n);
+            free(e);
+            return;
+        }
+    }
+#endif
+    build_tree(points, indices, nodes, 0, 0, n, 0, n, NULL, NULL, 0);
 }
 
 KDTree_T KDTree_new(Arena_T arena, const float *points, size_t n)
@@ -171,7 +308,7 @@ KDTree_T KDTree_new(Arena_T arena, const float *points, size_t n)
         indices[i] = (int32_t)i;
     }
 
-    build_tree(points, indices, tree->nodes, 0, 0, n, 0, n);
+    build_all(points, indices, tree->nodes, n);
 
     return tree;
 }
@@ -468,6 +605,28 @@ int KDTree_selftest(void)
     uint32_t rng = 0x5EEDu;
     int fails = 0;
     size_t checks = 0;
+    {   /* the parallel build writes the serial tree slot for slot (with exact duplicates) */
+        static const size_t big[] = { KD_PARALLEL_MIN, KD_PARALLEL_MIN + 12345, 4 * KD_PARALLEL_MIN + 7 };
+        for (size_t bi = 0; bi < sizeof big / sizeof big[0]; bi++) {
+            size_t n = big[bi];
+            float *pts = (float *)ARENA_ALLOC(a, n * 3 * sizeof(float));
+            KDNode *serial = (KDNode *)ARENA_CALLOC(a, n, sizeof(KDNode));
+            KDNode *parallel = (KDNode *)ARENA_CALLOC(a, n, sizeof(KDNode));
+            int32_t *ia = (int32_t *)ARENA_ALLOC(a, n * sizeof(int32_t));
+            int32_t *ib = (int32_t *)ARENA_ALLOC(a, n * sizeof(int32_t));
+            for (size_t i = 0; i < n * 3; i++) {
+                pts[i] = (i % 3 == 0) ? 2.0f * kd_st_unit(&rng) : 50.0f * kd_st_unit(&rng);
+                if (i >= 30 && (i / 3) % 11 == 0) pts[i] = pts[i - 30];
+            }
+            for (size_t i = 0; i < n; i++) ia[i] = ib[i] = (int32_t)i;
+            build_tree(pts, ia, serial, 0, 0, n, 0, n, NULL, NULL, 0);
+            build_all(pts, ib, parallel, n);
+            if (memcmp(serial, parallel, n * sizeof(KDNode)) != 0) {
+                fprintf(stderr, "  kdtree selftest FAIL: parallel build of %zu points differs from the serial build\n", n);
+                fails++;
+            }
+        }
+    }
     for (size_t si = 0; si < sizeof(sizes) / sizeof(sizes[0]) && !fails; si++) {
         size_t n = sizes[si];
         float *pts = (float *)ARENA_ALLOC(a, (size_t)((n ? n : 1) * 3 * sizeof(float)));

@@ -9,6 +9,8 @@ typedef struct CsInfillSystem {
     const CloseupGrid *g;
     const double *uv;
     const int32_t *index;
+    const int32_t *owner;          /* with owner: index is fixed for every hole; a node is this hole's when owner says */
+    int32_t region;
     int32_t component;
     int fill_collar;
     int n, nt, cap, dimensions;
@@ -16,6 +18,23 @@ typedef struct CsInfillSystem {
     double *values, *rhs;
     double origin[5];
 } CsInfillSystem;
+
+/* The node's unknown in this hole's system, or -1. */
+static int32_t cs_infill_idx(const CsInfillSystem *s, size_t at)
+{
+    if (s->owner != NULL && s->owner[at] != s->region) return -1;
+    return s->index[at];
+}
+
+/* A hole solved off the grid (the observation-collar pass's workers): the solution and the gate's verdict, applied and
+ * printed in the hole's turn. */
+typedef struct CsInfillOut {
+    float *pos, *tu, *tv;          /* [3 count] when kept */
+    int gate;                      /* refused with the gate's line due */
+    const char *reason;
+    size_t failed_at;
+    double failed_lo, failed_hi, failed_dot, failed_det;
+} CsInfillOut;
 
 static double cs_infill_coordinate(const CloseupGrid *g, const double *uv, size_t at, int d)
 {
@@ -35,7 +54,7 @@ static void cs_infill_row(CsInfillSystem *s, const size_t *nodes, const double *
     double fixed[5] = {0};
     for (int k = 0; k < count; k++) {
         size_t at = nodes[k];
-        if (s->index[at] >= 0) { active++; continue; }
+        if (cs_infill_idx(s, at) >= 0) { active++; continue; }
         if (!cs_infill_known(s->g,at,s->fill_collar) || s->g->component[at] != s->component) return;
         for (int d = 0; d < s->dimensions; d++) {
             double p = cs_infill_coordinate(s->g,s->uv,at,d);
@@ -45,10 +64,10 @@ static void cs_infill_row(CsInfillSystem *s, const size_t *nodes, const double *
     }
     if (!active) return;
     for (int k = 0; k < count; k++) {
-        int a = s->index[nodes[k]]; if (a < 0) continue;
+        int a = cs_infill_idx(s, nodes[k]); if (a < 0) continue;
         for (int d = 0; d < s->dimensions; d++) s->rhs[(size_t)d*(size_t)s->n+(size_t)a] -= weights[k]*fixed[d];
         for (int j = 0; j <= k; j++) {
-            int b = s->index[nodes[j]]; if (b < 0) continue;
+            int b = cs_infill_idx(s, nodes[j]); if (b < 0) continue;
             if (s->nt >= s->cap) { s->nt = -1; return; }
             s->rows[s->nt] = a > b ? a : b;
             s->cols[s->nt] = a > b ? b : a;
@@ -59,16 +78,20 @@ static void cs_infill_row(CsInfillSystem *s, const size_t *nodes, const double *
 
 static double cs_infill_point(const CsInfillSystem *s, const double *solution, size_t at, int d)
 {
-    if (s->index[at] < 0) return cs_infill_coordinate(s->g,s->uv,at,d);
-    double value = solution[(size_t)d*(size_t)s->n+(size_t)s->index[at]]+s->origin[d];
+    const int32_t a = cs_infill_idx(s, at);
+    if (a < 0) return cs_infill_coordinate(s->g,s->uv,at,d);
+    double value = solution[(size_t)d*(size_t)s->n+(size_t)a]+s->origin[d];
     /* The gates inspect the same float world points that will be exported. */
     return d < 3 ? (double)(float)value : value;
 }
 
+/* owner == NULL: index is set for the hole's nodes and cleared after, and a kept solution is written to the grid.
+ * owner: index already holds every hole's numbering (owner[at] = its hole), and the solution and the gate's verdict
+ * go to out (the grid is only read: several holes may solve at once). */
 static int cs_infill_solve(CloseupGrid *g, const int32_t *nodes, size_t count, int32_t *index,
                             size_t x0, size_t y0, size_t x1, size_t y1, int32_t component,
                             const double normal[3], int fill_collar, int preserve_faces,
-                            int provisional, double *uv)
+                            int provisional, double *uv, const int32_t *owner, int32_t region, CsInfillOut *out)
 {
     size_t box = (x1-x0+3)*(y1-y0+3);
     if (count > CS_INFILL_MAX_NODES || box > 4*CS_INFILL_MAX_NODES) return 0;
@@ -77,7 +100,7 @@ static int cs_infill_solve(CloseupGrid *g, const int32_t *nodes, size_t count, i
     const char *reason = "equations";
     size_t failed_at = 0;
     double failed_lo = 0, failed_hi = 0, failed_dot = 0, failed_det = 0;
-    s.g = g; s.index = index; s.component = component; s.fill_collar = fill_collar;
+    s.g = g; s.index = index; s.owner = owner; s.region = region; s.component = component; s.fill_collar = fill_collar;
     s.uv = uv; s.dimensions = uv ? 5 : 3;
     s.n = (int)count; s.cap = (int)(22*box);
     s.rows = (int *)malloc((size_t)s.cap*sizeof(int)); s.cols = (int *)malloc((size_t)s.cap*sizeof(int));
@@ -94,7 +117,7 @@ static int cs_infill_solve(CloseupGrid *g, const int32_t *nodes, size_t count, i
         }
     }
 origin_found:
-    for (size_t k = 0; k < count; k++) index[(size_t)nodes[k]] = (int32_t)k;
+    if (owner == NULL) for (size_t k = 0; k < count; k++) index[(size_t)nodes[k]] = (int32_t)k;
     for (size_t j = y0-1; j <= y1+1; j++) for (size_t i = x0-1; i <= x1+1; i++) {
         size_t at = j*g->ni+i;
         const double second[3] = {1,-2,1};
@@ -122,7 +145,7 @@ origin_found:
         int tri[2][3] = {{0,1,3},{0,3,2}};
         if (preserve_faces) {
             int unknown = 0, missing = -1;
-            for (int k = 0; k < 4; k++) if (index[corners[k]] >= 0) { unknown++; missing = k; }
+            for (int k = 0; k < 4; k++) if (cs_infill_idx(&s, corners[k]) >= 0) { unknown++; missing = k; }
             /* A retained three-corner face owns its old diagonal. Inserting
              * the fourth corner adds its complement, never retriangulates or
              * overlaps that face. The exporter must use the same topology. */
@@ -135,8 +158,8 @@ origin_found:
             size_t v[3]; int active = 0, valid = 1;
             double e[3], f[3], cross[3], ee = 0, ff = 0, ef = 0, dot = 0;
             for (int k = 0; k < 3; k++) {
-                v[k] = corners[tri[t][k]]; active += index[v[k]] >= 0;
-                if (index[v[k]] < 0 && (!cs_infill_known(g,v[k],fill_collar) || g->component[v[k]] != component)) valid = 0;
+                v[k] = corners[tri[t][k]]; active += cs_infill_idx(&s, v[k]) >= 0;
+                if (cs_infill_idx(&s, v[k]) < 0 && (!cs_infill_known(g,v[k],fill_collar) || g->component[v[k]] != component)) valid = 0;
             }
             if (!active || !valid) continue;
             double au = g->h*((double)(v[1]%g->ni)-(double)(v[0]%g->ni));
@@ -177,6 +200,23 @@ origin_found:
             }
         }
     }
+    if (out != NULL) {          /* the same values, for the hole's turn (cs_fill_holes_observed) */
+        out->pos = (float *)malloc(3*count*sizeof(float)); out->tu = (float *)malloc(3*count*sizeof(float));
+        out->tv = (float *)malloc(3*count*sizeof(float));
+        if (!out->pos || !out->tu || !out->tv) { kept = -1; goto done; }
+        for (size_t k = 0; k < count; k++) {
+            size_t at = (size_t)nodes[k];
+            for (int d = 0; d < 3; d++) {
+                out->pos[3*k+(size_t)d] = (float)cs_infill_point(&s,solution,at,d);
+                out->tu[3*k+(size_t)d] = (float)((cs_infill_point(&s,solution,at+1,d)-
+                    cs_infill_point(&s,solution,at-1,d))/(2*g->h));
+                out->tv[3*k+(size_t)d] = (float)((cs_infill_point(&s,solution,at+g->ni,d)-
+                    cs_infill_point(&s,solution,at-g->ni,d))/(2*g->h));
+            }
+        }
+        kept = 1;
+        goto done;
+    }
     for (size_t k = 0; k < count; k++) {
         size_t at = (size_t)nodes[k];
         for (int d = 0; d < 3; d++) {
@@ -192,10 +232,13 @@ origin_found:
     }
     kept = 1;
 done:
-    if (!kept) fprintf(stderr,"    Cartesian infill gate: %s box=%zu,%zu..%zu,%zu at=%zu,%zu "
+    if (!kept && out != NULL) {
+        out->gate = 1; out->reason = reason; out->failed_at = failed_at;
+        out->failed_lo = failed_lo; out->failed_hi = failed_hi; out->failed_dot = failed_dot; out->failed_det = failed_det;
+    } else if (!kept) fprintf(stderr,"    Cartesian infill gate: %s box=%zu,%zu..%zu,%zu at=%zu,%zu "
                       "squared-scales=%.8g,%.8g orientation=%.8g uv-det=%.8g\n",reason,x0,y0,x1,y1,
                       failed_at%g->ni,failed_at/g->ni,failed_lo,failed_hi,failed_dot,failed_det);
-    for (size_t k = 0; k < count; k++) index[(size_t)nodes[k]] = -1;
+    if (owner == NULL) for (size_t k = 0; k < count; k++) index[(size_t)nodes[k]] = -1;
     Sparse_factor_free(&factor); free(s.rows); free(s.cols); free(s.values); free(s.rhs); free(solution);
     return kept;
 }
@@ -211,6 +254,8 @@ static int cs_fill_holes_pass(CloseupGrid *g, double max_distance_px, CloseupFit
     uint8_t *seen = (uint8_t *)calloc(nn,1);
     int32_t *queue = (int32_t *)malloc(nn*sizeof(int32_t)), *index = (int32_t *)malloc(nn*sizeof(int32_t));
     int rc = -1;
+    double t_pass = ves_clock_sec(), t_solve = 0;
+    size_t n_solve = 0, n_solve_nodes = 0, n_regions = 0;
     if (!seen || !queue || !index) goto done;
     for (size_t k = 0; k < nn; k++) index[k] = -1;
     for (size_t start = 0; start < nn; start++) {
@@ -239,12 +284,16 @@ static int cs_fill_holes_pass(CloseupGrid *g, double max_distance_px, CloseupFit
                 } else if (!seen[other]) { seen[other] = 1; queue[count++] = (int32_t)other; }
             }
         }
+        n_regions++;
         if (exterior || (require_fill && !has_fill)) continue;
         st->variational_holes++;
         int result = 0;
-        if (!mixed && !beyond_limit && component >= 0 && count <= CS_INFILL_MAX_NODES)
+        if (!mixed && !beyond_limit && component >= 0 && count <= CS_INFILL_MAX_NODES) {
+            double ts = ves_clock_sec();
             result = cs_infill_solve(g,queue,count,index,x0,y0,x1,y1,component,normal,
-                                    fill_collar,preserve_faces,provisional,uv);
+                                    fill_collar,preserve_faces,provisional,uv,NULL,0,NULL);
+            t_solve += ves_clock_sec() - ts; n_solve++; n_solve_nodes += count;
+        }
         if (result < 0) goto done;
         if (result) {
             if (patch_ids) for (size_t k = 0; k < count; k++) patch_ids[(size_t)queue[k]] = (int32_t)st->variational_filled;
@@ -258,13 +307,133 @@ static int cs_fill_holes_pass(CloseupGrid *g, double max_distance_px, CloseupFit
     }
     rc = 0;
 done:
+    fprintf(stderr, "  [holes-timing] collar=%d regions %zu solves %zu (%zu nodes) solve %.2fs pass %.2fs\n",
+            fill_collar, n_regions, n_solve, n_solve_nodes, t_solve, ves_clock_sec() - t_pass);
     free(seen); free(queue); free(index); return rc;
+}
+
+/* cs_fill_holes_pass(g, max, st, 0, 0, 0, 0, NULL, reference_normal, NULL) with its holes solved on all threads.
+ * With the observations alone as collar no hole reads another: a hole's rows and gates read only DATA nodes and its
+ * own, and a filled hole is FILL, which this pass does not count as known.  So the holes are found in the scan's order,
+ * solved at once off the grid, then applied and logged in that order: the same grid, counts and log. */
+typedef struct CsHole {
+    size_t first, count, x0, y0, x1, y1, added;
+    int exterior, mixed, beyond, solvable;
+    int32_t component;
+    double normal[3];
+} CsHole;
+
+static int cs_fill_holes_observed(CloseupGrid *g, double max_distance_px, CloseupFitStats *st,
+                                  const float *reference_normal)
+{
+    if (!g || !st || !(max_distance_px > 0) || !isfinite(max_distance_px) || !(g->h > 0) ||
+        !g->ni || !g->nj || g->ni > INT32_MAX/g->nj) return -1;
+    size_t nn = g->ni*g->nj, used = 0, nh = 0, caph = 1024;
+    uint8_t *seen = (uint8_t *)calloc(nn,1);
+    int32_t *nodes = (int32_t *)malloc(nn*sizeof(int32_t)), *index = (int32_t *)malloc(nn*sizeof(int32_t));
+    int32_t *owner = (int32_t *)malloc(nn*sizeof(int32_t));
+    CsHole *holes = (CsHole *)malloc(caph*sizeof *holes);
+    CsInfillOut *res = NULL;
+    int *kept = NULL, rc = -1, bad = 0;
+    long r = 0;
+    double t_pass = ves_clock_sec();
+    size_t n_solve = 0, n_solve_nodes = 0;
+    if (!seen || !nodes || !index || !owner || !holes) goto done;
+    for (size_t k = 0; k < nn; k++) { index[k] = -1; owner[k] = -1; }
+    for (size_t start = 0; start < nn; start++) {   /* the holes, as the serial scan meets them */
+        if (seen[start] || cs_infill_known(g,start,0)) continue;
+        CsHole h;
+        memset(&h, 0, sizeof h);
+        h.first = used; h.count = 1; h.x0 = g->ni; h.y0 = g->nj; h.component = -1;
+        seen[start] = 1; nodes[used] = (int32_t)start;
+        for (size_t head = 0; head < h.count; head++) {
+            size_t at = (size_t)nodes[used+head], x = at%g->ni, y = at/g->ni;
+            if (!x || !y || x+1 == g->ni || y+1 == g->nj) h.exterior = 1;
+            if (x < h.x0) h.x0 = x; if (x > h.x1) h.x1 = x;
+            if (y < h.y0) h.y0 = y; if (y > h.y1) h.y1 = y;
+            h.beyond |= !(g->dist[at] <= max_distance_px);
+            h.added += g->state[at] != CLOSEUP_NODE_FILL;
+            for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+                if ((!dx && !dy) || (dx < 0 && !x) || (dy < 0 && !y) ||
+                    (dx > 0 && x+1 == g->ni) || (dy > 0 && y+1 == g->nj)) continue;
+                size_t other = (size_t)((int64_t)at+(int64_t)dy*(int64_t)g->ni+dx);
+                if (cs_infill_known(g,other,0)) {
+                    int32_t c = g->component[other];
+                    if (c < 0) h.mixed = 1;
+                    if (h.component < 0) h.component = c; else if (h.component != c) h.mixed = 1;
+                    for (int d = 0; d < 3; d++) h.normal[d] += reference_normal[3*other+(size_t)d];
+                } else if (!seen[other]) { seen[other] = 1; nodes[used+h.count++] = (int32_t)other; }
+            }
+        }
+        used += h.count;
+        h.solvable = !h.exterior && !h.mixed && !h.beyond && h.component >= 0 && h.count <= CS_INFILL_MAX_NODES;
+        if (nh == caph) {
+            CsHole *grown = (CsHole *)realloc(holes, 2*caph*sizeof *holes);
+            if (!grown) goto done;
+            holes = grown; caph *= 2;
+        }
+        holes[nh++] = h;
+    }
+    res = (CsInfillOut *)calloc(nh ? nh : 1, sizeof *res);
+    kept = (int *)calloc(nh ? nh : 1, sizeof *kept);
+    if (!res || !kept) goto done;
+    for (size_t h = 0; h < nh; h++) {
+        if (!holes[h].solvable) continue;
+        for (size_t k = 0; k < holes[h].count; k++) {
+            index[nodes[holes[h].first+k]] = (int32_t)k;
+            owner[nodes[holes[h].first+k]] = (int32_t)h;
+        }
+        n_solve++; n_solve_nodes += holes[h].count;
+    }
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic, 1) reduction(| : bad)
+#endif
+    for (r = 0; r < (long)nh; r++) {
+        const CsHole *h = &holes[r];
+        if (!h->solvable) continue;
+        kept[r] = cs_infill_solve(g,nodes+h->first,h->count,index,h->x0,h->y0,h->x1,h->y1,h->component,h->normal,
+                                  0,0,0,NULL,owner,(int32_t)r,&res[r]);
+        if (kept[r] < 0) bad |= 1;
+    }
+    if (bad) goto done;
+    for (size_t h = 0; h < nh; h++) {   /* their turns: the serial pass's writes, counts and log */
+        const CsHole *o = &holes[h];
+        if (o->exterior) continue;
+        st->variational_holes++;
+        if (o->solvable && !kept[h] && res[h].gate)
+            fprintf(stderr,"    Cartesian infill gate: %s box=%zu,%zu..%zu,%zu at=%zu,%zu "
+                    "squared-scales=%.8g,%.8g orientation=%.8g uv-det=%.8g\n",res[h].reason,o->x0,o->y0,o->x1,o->y1,
+                    res[h].failed_at%g->ni,res[h].failed_at/g->ni,res[h].failed_lo,res[h].failed_hi,
+                    res[h].failed_dot,res[h].failed_det);
+        if (o->solvable && kept[h]) {
+            for (size_t k = 0; k < o->count; k++) {
+                size_t at = (size_t)nodes[o->first+k];
+                memcpy(&g->pos[3*at], &res[h].pos[3*k], 3*sizeof(float));
+                memcpy(&g->tu[3*at], &res[h].tu[3*k], 3*sizeof(float));
+                memcpy(&g->tv[3*at], &res[h].tv[3*k], 3*sizeof(float));
+                g->state[at] = CLOSEUP_NODE_FILL; g->chart[at] = -1; g->component[at] = o->component;
+                g->support[at] = 0; cs_set_normal(g,at);
+            }
+            st->variational_filled++; st->variational_nodes += o->count; st->fill_nodes += o->added;
+        } else {
+            st->variational_refused++;
+            fprintf(stderr,"  Cartesian infill refused: collar=%s nodes=%zu box=%zu,%zu..%zu,%zu mixed=%d beyond-reach=%d\n",
+                    "observations",o->count,o->x0,o->y0,o->x1,o->y1,o->mixed,o->beyond);
+        }
+    }
+    rc = 0;
+done:
+    fprintf(stderr, "  [holes-timing] collar=0 (parallel) regions %zu solves %zu (%zu nodes) pass %.2fs\n",
+            nh, n_solve, n_solve_nodes, ves_clock_sec() - t_pass);
+    if (res) for (size_t h = 0; h < nh; h++) { free(res[h].pos); free(res[h].tu); free(res[h].tv); }
+    free(seen); free(nodes); free(index); free(owner); free(holes); free(res); free(kept);
+    return rc;
 }
 
 int CloseupSurface_fill_holes(CloseupGrid *g, double max_distance_px, CloseupFitStats *st)
 {
     if (!g) return -1;
-    int rc=cs_fill_holes_pass(g,max_distance_px,st,0,0,0,0,NULL,g->nrm,NULL);
+    int rc=cs_fill_holes_observed(g,max_distance_px,st,g->nrm);
     return rc?rc:cs_fill_holes_pass(g,max_distance_px,st,1,1,0,0,NULL,g->nrm,NULL);
 }
 
@@ -442,6 +611,64 @@ static int cs_selftest_fixed_infill(void)
     return fails != 0;
 }
 
+/* The parallel observation-collar pass against the serial one on copies of a sheet with ~300 holes: small and large,
+ * kept and gated, mixed components, beyond reach, at the border; every array and counter must agree. */
+static int cs_selftest_infill_parallel(void)
+{
+    CloseupGrid ga = {0}, gb = {0};
+    CloseupFitStats sa = {0}, sb = {0};
+    uint32_t rng = 0x3c6ef372u;
+    size_t nn = 0, k = 0, bad = 0;
+    int fails = 0, h = 0;
+    if (CloseupGrid_alloc(&ga,0,600,0,400,2) || CloseupGrid_alloc(&gb,0,600,0,400,2)) {
+        CloseupGrid_free(&ga); CloseupGrid_free(&gb); return 1;
+    }
+    nn = ga.ni*ga.nj;
+    for (k = 0; k < nn; k++) {
+        double u = ga.u0+ga.h*(double)(k%ga.ni), v = ga.v0+ga.h*(double)(k/ga.ni);
+        ga.pos[3*k] = (float)(9000+u); ga.pos[3*k+1] = (float)(7000+v);
+        ga.pos[3*k+2] = (float)(3000+.02*u*v/40+3*sin(u/37));
+        ga.tu[3*k] = 1; ga.tv[3*k+1] = 1;
+        ga.tu[3*k+2] = (float)(.02*v/40+3*cos(u/37)/37); ga.tv[3*k+2] = (float)(.02*u/40);
+        cs_set_normal(&ga,k);
+        ga.state[k] = CLOSEUP_NODE_DATA; ga.component[k] = u > 400 ? 2 : 1; ga.chart[k] = 5; ga.dist[k] = 0;
+        ga.support[k] = 3;
+    }
+    for (h = 0; h < 300; h++) {        /* rectangles of 1..12 x 1..9 nodes; some stretched by a bump */
+        size_t x0 = 0, y0 = 0, w = 0, hh = 0, x = 0, y = 0;
+        rng = rng*1664525u+1013904223u; x0 = (rng >> 8) % ga.ni;
+        rng = rng*1664525u+1013904223u; y0 = (rng >> 8) % ga.nj;
+        rng = rng*1664525u+1013904223u; w = 1 + (rng >> 28) % 12; hh = 1 + (rng >> 24) % 9;
+        for (y = y0; y < y0+hh && y < ga.nj; y++) for (x = x0; x < x0+w && x < ga.ni; x++) {
+            size_t at = y*ga.ni+x;
+            ga.state[at] = (rng >> 20) % 5 == 0 ? CLOSEUP_NODE_FILL : CLOSEUP_NODE_NONE;
+            ga.component[at] = ga.state[at] == CLOSEUP_NODE_FILL ? ga.component[at] : -1;
+            ga.dist[at] = (rng >> 16) % 23 == 0 ? 1000.0f : 4.0f;
+            if (ga.state[at] == CLOSEUP_NODE_NONE) ga.pos[3*at] = ga.pos[3*at+1] = ga.pos[3*at+2] = NAN;
+            if ((rng >> 12) % 7 == 0) ga.pos[3*at+2] += 30.0f;
+        }
+    }
+    gb.ni = ga.ni; gb.nj = ga.nj; gb.u0 = ga.u0; gb.v0 = ga.v0; gb.h = ga.h;
+    memcpy(gb.pos,ga.pos,3*nn*sizeof(float)); memcpy(gb.tu,ga.tu,3*nn*sizeof(float)); memcpy(gb.tv,ga.tv,3*nn*sizeof(float));
+    memcpy(gb.nrm,ga.nrm,3*nn*sizeof(float)); memcpy(gb.dist,ga.dist,nn*sizeof(float));
+    memcpy(gb.support,ga.support,nn*sizeof(float)); memcpy(gb.chart,ga.chart,nn*sizeof(int32_t));
+    memcpy(gb.component,ga.component,nn*sizeof(int32_t)); memcpy(gb.state,ga.state,nn);
+    if (cs_fill_holes_pass(&ga,64,&sa,0,0,0,0,NULL,ga.nrm,NULL) || cs_fill_holes_observed(&gb,64,&sb,gb.nrm)) fails++;
+    for (k = 0; k < nn; k++)
+        if (ga.state[k] != gb.state[k] || ga.chart[k] != gb.chart[k] || ga.component[k] != gb.component[k] ||
+            memcmp(&ga.pos[3*k],&gb.pos[3*k],3*sizeof(float)) || memcmp(&ga.tu[3*k],&gb.tu[3*k],3*sizeof(float)) ||
+            memcmp(&ga.tv[3*k],&gb.tv[3*k],3*sizeof(float)) || memcmp(&ga.nrm[3*k],&gb.nrm[3*k],3*sizeof(float)) ||
+            memcmp(&ga.support[k],&gb.support[k],sizeof(float))) bad++;
+    if (sa.variational_holes != sb.variational_holes || sa.variational_filled != sb.variational_filled ||
+        sa.variational_refused != sb.variational_refused || sa.variational_nodes != sb.variational_nodes ||
+        sa.fill_nodes != sb.fill_nodes) bad++;
+    if (bad || sa.variational_filled == 0 || sa.variational_refused == 0) fails++;
+    fprintf(stderr,"  parallel observation-collar holes vs the serial pass: %zu holes, %zu filled, %zu refused, %zu "
+            "differences: %s\n",sa.variational_holes,sa.variational_filled,sa.variational_refused,bad,fails ? "FAIL" : "ok");
+    CloseupGrid_free(&ga); CloseupGrid_free(&gb);
+    return fails;
+}
+
 static int cs_selftest_infill(void)
 {
     int fails = 0;
@@ -500,6 +727,7 @@ static int cs_selftest_infill(void)
                 test,st.variational_filled,st.variational_refused,worst);
         free(truth); CloseupGrid_free(&g);
     }
+    fails += cs_selftest_infill_parallel();
     fails += cs_selftest_fixed_infill();
     fails += cs_selftest_provisional();
     fails += cs_selftest_rebuild();

@@ -51,6 +51,7 @@
 #include "../common/ves_platform.h"
 #include "../common/ves_png.h"
 #include "../common/mesh_normals.h"
+#include "../common/kdtree.h"
 #include "../flatten/chart_pool.h"
 #include "../flatten/closeup_adopt.h"
 #include "../flatten/closeup_cttrack.h"
@@ -71,6 +72,7 @@
 
 #include <math.h>
 #include <float.h>
+#include <stdarg.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -398,26 +400,63 @@ static void ic_axial_sense(const IcConfig *c, double *axial, size_t n)
     for (i = 0; i < n; i++) axial[i] = -axial[i];
 }
 
-/* Unit direction to the axis foot and the axial arc length of every point. */
+#define IC_AXIS_INDEX_MIN 4096   /* points at which the nearest-foot index pays for its build */
+
+/* Unit direction to the axis foot and the axial arc length of every point.  Without the arc length only the foot is
+ * needed, and the axis's nearest-foot index returns AsmAxis_project's own foot (the asm_axis selftest compares them
+ * bit for bit) without scanning the ~500 segments of each point's z window: 44 s of a completion pass's 120 M pool
+ * vertices on 16 threads (2026-10-30). */
+/* One point of ic_axis_fields: the foot by the index when there is one and no arc length is wanted. */
+static void ic_axis_point(const AsmAxis *axis, const AsmAxisProjector *index, const float *p, double *axial,
+                          float *inward)
+{
+    double q[3], s = 0.0, foot[3], d[3], l = 0.0;
+    int k = 0;
+    for (k = 0; k < 3; k++) q[k] = (double)p[k];
+    if (!isfinite(q[0])) { if (axial) *axial = 0.0; if (inward) memset(inward, 0, 3 * sizeof *inward); return; }
+    if (index != NULL && axial == NULL) AsmAxis_project_foot(index, q, foot);
+    else AsmAxis_project(axis, q, &s, NULL, NULL, foot);
+    for (k = 0; k < 3; k++) { d[k] = foot[k] - q[k]; l += d[k] * d[k]; }
+    l = sqrt(l);
+    if (axial) *axial = s;
+    if (inward)
+        for (k = 0; k < 3; k++) inward[k] = l > 1e-9 ? (float)(d[k] / l) : 0.0f;
+}
+
 static void ic_axis_fields(const AsmAxis *axis, const float *p, size_t n, double *axial, float *inward)
 {
+    Arena_T arena = NULL;
+    const AsmAxisProjector *index = NULL;
     long i = 0;
+    if (axial == NULL && n >= IC_AXIS_INDEX_MIN) {
+        arena = Arena_new_sized((size_t)1 << 20);
+        index = AsmAxis_projector(arena, axis);
+    }
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
+    for (i = 0; i < (long)n; i++)
+        ic_axis_point(axis, index, &p[(size_t)i * 3], axial ? &axial[i] : NULL, inward ? &inward[(size_t)i * 3] : NULL);
+    if (arena != NULL) Arena_dispose(&arena);
+}
+
+/* ic_axis_fields' inward for the points whose position changed since prev[] (bitwise; prev is updated): the same
+ * function of the same bits, so the field is the one a full pass computes.  A completion's refits move a few percent
+ * of the grid's nodes. */
+static void ic_axis_inward_moved(const AsmAxis *axis, const AsmAxisProjector *index, const float *p, size_t n,
+                                 float *prev, float *inward)
+{
+    long i = 0;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static, 4096)
+#endif
     for (i = 0; i < (long)n; i++) {
-        double q[3], s = 0.0, foot[3], d[3], l = 0.0;
-        int k = 0;
-        for (k = 0; k < 3; k++) q[k] = (double)p[(size_t)i * 3 + (size_t)k];
-        if (!isfinite(q[0])) { if (axial) axial[i] = 0.0; if (inward) memset(&inward[(size_t)i * 3], 0, 3 * sizeof *inward); continue; }
-        AsmAxis_project(axis, q, &s, NULL, NULL, foot);
-        for (k = 0; k < 3; k++) { d[k] = foot[k] - q[k]; l += d[k] * d[k]; }
-        l = sqrt(l);
-        if (axial) axial[i] = s;
-        if (inward)
-            for (k = 0; k < 3; k++) inward[(size_t)i * 3 + (size_t)k] = l > 1e-9 ? (float)(d[k] / l) : 0.0f;
+        if (memcmp(&p[(size_t)i * 3], &prev[(size_t)i * 3], 3 * sizeof *p) == 0) continue;
+        ic_axis_point(axis, index, &p[(size_t)i * 3], NULL, &inward[(size_t)i * 3]);
+        memcpy(&prev[(size_t)i * 3], &p[(size_t)i * 3], 3 * sizeof *p);
     }
 }
+
 
 static uint32_t ic_hash(uint32_t x)
 {
@@ -427,19 +466,84 @@ static uint32_t ic_hash(uint32_t x)
 
 /* ------------------------------------------------------------------ pool */
 
+/* A pool's arrays, by kind: what a chain keeps from one pass's pool for the next (ic_pool_keep) instead of handing
+ * ~9 GB back to the system and faulting it in again, zeroed, a few seconds later. */
+enum { IB_VOFS, IB_FOFS, IB_CHART_ID, IB_FACES, IB_FACE_CHART, IB_VERTS, IB_UV, IB_INWARD, IB_NRM, IB_READY, IB_COUNT };
+typedef struct IcPoolBufs {
+    void *ptr[IB_COUNT];
+    size_t bytes[IB_COUNT];
+} IcPoolBufs;
+
 typedef struct IcPool {
     CloseupPool p;
     float *verts, *nrm, *inward;
     double *uv;
     int32_t *faces, *face_chart, *chart_id;
     size_t *vofs, *fofs;
+    Arena_T arena;                  /* the lazy fields' axis index (ic_pool_load lazy) */
+    const AsmAxisProjector *index;
+    uint8_t *chart_ready;           /* [nch] */
+    size_t bytes[IB_COUNT];         /* each array's allocation */
 } IcPool;
 
 static void ic_pool_free(IcPool *q)
 {
     free(q->verts); free(q->nrm); free(q->inward); free(q->uv); free(q->faces); free(q->face_chart);
-    free(q->chart_id); free(q->vofs); free(q->fofs);
+    free(q->chart_id); free(q->vofs); free(q->fofs); free(q->chart_ready);
+    if (q->arena != NULL) Arena_dispose(&q->arena);
     memset(q, 0, sizeof *q);
+}
+
+static void ic_bufs_free(IcPoolBufs *b)
+{
+    int k = 0;
+    for (k = 0; k < IB_COUNT; k++) free(b->ptr[k]);
+    memset(b, 0, sizeof *b);
+}
+
+/* A buffer of at least `bytes` for array kind k: the spare one when it is large enough, else a new one.  The
+ * allocation's size lands in *got.  Contents are undefined. */
+static void *ic_buf(IcPoolBufs *spare, int k, size_t bytes, size_t *got)
+{
+    void *p = NULL;
+    if (bytes == 0) bytes = 1;
+    if (spare != NULL && spare->ptr[k] != NULL && spare->bytes[k] >= bytes) {
+        p = spare->ptr[k]; *got = spare->bytes[k];
+        spare->ptr[k] = NULL; spare->bytes[k] = 0;
+        return p;
+    }
+    if (spare != NULL) { free(spare->ptr[k]); spare->ptr[k] = NULL; spare->bytes[k] = 0; }
+    p = malloc(bytes);
+    *got = p != NULL ? bytes : 0;
+    return p;
+}
+
+/* The pool's arrays into spare for the next pass's pool; the rest freed. */
+static void ic_pool_keep(IcPool *q, IcPoolBufs *spare)
+{
+    void *arrays[IB_COUNT];
+    int k = 0;
+    arrays[IB_VOFS] = q->vofs; arrays[IB_FOFS] = q->fofs; arrays[IB_CHART_ID] = q->chart_id; arrays[IB_FACES] = q->faces;
+    arrays[IB_FACE_CHART] = q->face_chart; arrays[IB_VERTS] = q->verts; arrays[IB_UV] = q->uv;
+    arrays[IB_INWARD] = q->inward; arrays[IB_NRM] = q->nrm; arrays[IB_READY] = q->chart_ready;
+    for (k = 0; k < IB_COUNT; k++) {
+        free(spare->ptr[k]);
+        spare->ptr[k] = arrays[k]; spare->bytes[k] = arrays[k] != NULL ? q->bytes[k] : 0;
+    }
+    if (q->arena != NULL) Arena_dispose(&q->arena);
+    memset(q, 0, sizeof *q);
+}
+
+/* CloseupPool.chart_fill of a pool whose normals and inward field are computed per chart on first use (a completion
+ * round evaluates ~3,000 of its ~640,000 charts): the chart's run of MeshNormals_compute_runs and its points of
+ * ic_axis_fields, the values a full pass gives them.  ctx is the IcPool. */
+static void ic_pool_chart_fill(const void *ctx, size_t chart)
+{
+    const IcPool *q = (const IcPool *)ctx;
+    const size_t v0 = q->vofs[chart], v1 = q->vofs[chart + 1];
+    size_t v = 0;
+    MeshNormals_run(q->verts, q->faces, q->fofs[chart], q->fofs[chart + 1], v0, v1, q->nrm);
+    for (v = v0; v < v1; v++) ic_axis_point(NULL, q->index, &q->verts[v * 3], NULL, &q->inward[v * 3]);
 }
 
 /* The pool's near region (CLOSEUP_POOL_NEAR_SURFACE): cells holding a supported node of the fused surface, dilated
@@ -664,13 +768,42 @@ static int ic_layout_paged(const IcConfig *c, const char *vmesh, MeshBinData *m,
 }
 
 typedef struct IcAdoptAudit {
-    FILE *file;
     const IcPool *pool;
+    char *buf;                     /* the CSV, built in memory (fprintf's bytes) and written in one go */
+    size_t n, cap;
+    int failed;
 } IcAdoptAudit;
+
+/* A file's bytes, written later (a chain's pass files, ic_write_job_run). */
+typedef struct IcFileBytes {
+    char path[2700];
+    char *data;
+    size_t n;
+} IcFileBytes;
+
+static void ic_audit_printf(IcAdoptAudit *a, const char *fmt, ...)
+{
+    va_list ap;
+    int need = 0;
+    if (a->failed) return;
+    for (;;) {
+        va_start(ap, fmt);
+        need = vsnprintf(a->buf + a->n, a->cap - a->n, fmt, ap);
+        va_end(ap);
+        if (need < 0) { a->failed = 1; return; }
+        if ((size_t)need < a->cap - a->n) { a->n += (size_t)need; return; }
+        {
+            size_t cap = a->cap * 2 + (size_t)need + 1;
+            char *grown = (char *)realloc(a->buf, cap);
+            if (grown == NULL) { a->failed = 1; return; }
+            a->buf = grown; a->cap = cap;
+        }
+    }
+}
 
 static int ic_adopt_observer(const CloseupAdoptAudit *record, void *context)
 {
-    const IcAdoptAudit *audit = (const IcAdoptAudit *)context;
+    IcAdoptAudit *audit = (IcAdoptAudit *)context;
     const IcPool *pool = audit->pool;
     const CloseupPlacement *p = &record->p;
     double lo[3] = {1e300, 1e300, 1e300}, hi[3] = {-1e300, -1e300, -1e300};
@@ -690,31 +823,48 @@ static int ic_adopt_observer(const CloseupAdoptAudit *record, void *context)
         }
     }
     if (record->reason < 2) ulo = uhi = vlo = vhi = NAN;
-    return fprintf(audit->file, "%zu,%d,%d,%zu,%zu,%.9g,%.9g,%zu,%zu,%zu,%zu,%.9g,%.9g,%zu,"
+    ic_audit_printf(audit, "%zu,%d,%d,%zu,%zu,%.9g,%.9g,%zu,%zu,%zu,%zu,%.9g,%.9g,%zu,"
                    "%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%zu,%zu,%.9g\n",
                    p->chart, pool->chart_id[p->chart], record->reason, record->screen_hits, p->corr, p->rms, p->extent,
                    record->data_landed, record->data_agree, record->fill_landed, record->fill_agree,
                    record->data_max_error, record->fill_max_error, p->fresh,
                    lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], ulo, uhi, vlo, vhi,
-                   record->ignored_fill_landed, record->ignored_fill_agree, record->ignored_fill_max_error) < 0 ? -1 : 0;
+                   record->ignored_fill_landed, record->ignored_fill_agree, record->ignored_fill_max_error);
+    return audit->failed ? -1 : 0;
 }
 
+/* later: NULL writes the audit CSV now; else it receives the CSV's bytes for the caller to write (a chain's writer). */
 static int ic_adopt_round(const IcConfig *c, const CloseupGrid *g, const IcPool *pool, const uint8_t *done,
-                          int pool_index, int round, CloseupPlacement **out, size_t *nout, CloseupAdoptStats *st)
+                          int pool_index, int round, CloseupPlacement **out, size_t *nout, CloseupAdoptStats *st,
+                          IcFileBytes *later)
 {
     char path[2600];
     IcAdoptAudit audit;
     int rc = 0;
     if (!c->adopt_audit) return CloseupAdopt_round(g, &pool->p, done, &c->adopt, out, nout, st);
     snprintf(path, sizeof path, "%s/%s_adopt_pool%d_round%d.csv", c->out_dir, c->id, pool_index, round);
-    ves_ensure_parent_dir(path);
-    audit.file = fopen(path, "wb"); audit.pool = pool;
-    if (audit.file == NULL) return -1;
-    if (fprintf(audit.file, "pool_chart,source_chart,reason,screen_hits,corr,rms,extent,data_landed,data_agree,"
-                "fill_landed,fill_agree,data_max_error,fill_max_error,fresh,z_min,z_max,y_min,y_max,x_min,x_max,"
-                "u_min,u_max,v_min,v_max,ignored_fill_landed,ignored_fill_agree,ignored_fill_max_error\n") < 0) rc = -1;
+    memset(&audit, 0, sizeof audit);
+    audit.pool = pool;
+    audit.cap = (size_t)1 << 20;
+    audit.buf = (char *)malloc(audit.cap);
+    if (audit.buf == NULL) return -1;
+    ic_audit_printf(&audit, "pool_chart,source_chart,reason,screen_hits,corr,rms,extent,data_landed,data_agree,"
+                    "fill_landed,fill_agree,data_max_error,fill_max_error,fresh,z_min,z_max,y_min,y_max,x_min,x_max,"
+                    "u_min,u_max,v_min,v_max,ignored_fill_landed,ignored_fill_agree,ignored_fill_max_error\n");
+    if (audit.failed) rc = -1;
     if (rc == 0) rc = CloseupAdopt_round_audited(g, &pool->p, done, &c->adopt, out, nout, st, ic_adopt_observer, &audit);
-    if (fclose(audit.file) != 0) rc = -1;
+    if (rc == 0 && later != NULL) {
+        snprintf(later->path, sizeof later->path, "%s", path);
+        later->data = audit.buf; later->n = audit.n;
+        audit.buf = NULL;
+    } else if (rc == 0) {
+        FILE *f = NULL;
+        ves_ensure_parent_dir(path);
+        f = fopen(path, "wb");
+        if (f == NULL || (audit.n && fwrite(audit.buf, 1, audit.n, f) != audit.n)) rc = -1;
+        if (f != NULL && fclose(f) != 0) rc = -1;
+    }
+    free(audit.buf);
     if (rc != 0) { free(*out); *out = NULL; *nout = 0; }
     return rc;
 }
@@ -759,39 +909,74 @@ static int ic_pool_paged(const char *vmesh, const char *attr_path, const double 
     return rc;
 }
 
-static int ic_pool_load(const char *dir, int surface, const AsmAxis *axis, const double lo[3], const double hi[3],
-                        const IcNear *nreg, const uint8_t *exclude, size_t nexcl, IcPool *q)
+/* A pool layout as read over a search box: its paged (or whole) mesh, per-vertex charts and, for a close-up surface
+ * pool, its attributes. */
+typedef struct IcPoolMesh {
+    MeshBinData m;
+    int32_t *vchart;
+    uint8_t *attr;
+} IcPoolMesh;
+
+static void ic_pool_mesh_free(IcPoolMesh *pm)
+{
+    MeshBin_dispose(&pm->m); free(pm->vchart); free(pm->attr);
+    memset(pm, 0, sizeof *pm);
+}
+
+/* The pool's mesh over [lo, hi]: the chart index's runs meeting it (ic_pool_paged), else the whole mesh, then its
+ * index for the next close-up.  0 read, -1 error. */
+static int ic_pool_read(const char *dir, int surface, const double lo[3], const double hi[3], const IcNear *nreg,
+                        const uint8_t *exclude, size_t nexcl, IcPoolMesh *pm)
 {
     char path[2600], apath[2600];
-    MeshBinData m;
-    int32_t *vchart = NULL, *vmap = NULL;
-    uint8_t *attr = NULL, *elig = NULL;
-    size_t got = 0, f = 0, v = 0, maxid = 0, *cnt = NULL, *pos = NULL, nsel = 0, *order = NULL, nch = 0, k = 0, nelig = 0;
-    int rc = -1, pg = 1;
-    memset(q, 0, sizeof *q);
-    memset(&m, 0, sizeof m);
+    size_t got = 0;
+    int pg = 1;
+    double tpl = ves_clock_sec();
+    memset(pm, 0, sizeof *pm);
     snprintf(path, sizeof path, surface ? "%s_surface.vmesh" : "%s/stage6_repaired.vmesh", dir);
     snprintf(apath, sizeof apath, "%s_surface_attr.u8", dir);
-    pg = ic_pool_paged(path, surface ? apath : NULL, lo, hi, nreg, exclude, nexcl, &m, &vchart, &attr);
+    pg = ic_pool_paged(path, surface ? apath : NULL, lo, hi, nreg, exclude, nexcl, &pm->m, &pm->vchart, &pm->attr);
     if (pg < 0) { fprintf(stderr, "ERROR: cannot page the pool layout %s\n", path); return -1; }
+    fprintf(stderr, "  [complete-timing] pool paged read %.2fs\n", ves_clock_sec() - tpl);
     if (pg > 0) {                                    /* no current chart index: the whole mesh, then its index */
         char cpath[2600];
         MeshChartStamp stamp;
         int stamped = 0;
         snprintf(cpath, sizeof cpath, surface ? "%s_surface_chart.i32" : "%s/stage6_repaired_chart.i32", dir);
         stamped = !surface && MeshChartIndex_stamp(path, cpath, &stamp) == 0;    /* a close-up surface is small */
-        if (MeshBin_read_precise_malloc(path, &m) != 0 || (m.uv == NULL && m.uv64 == NULL)) {
+        if (MeshBin_read_precise_malloc(path, &pm->m) != 0 || (pm->m.uv == NULL && pm->m.uv64 == NULL)) {
             fprintf(stderr, "ERROR: cannot read the pool layout %s\n", path);
+            ic_pool_mesh_free(pm);
             return -1;
         }
-        vchart = (int32_t *)ic_read_file(cpath, m.nv * sizeof(int32_t), &got);
-        if (vchart == NULL) { fprintf(stderr, "ERROR: %s missing or short\n", cpath); goto out; }
-        if (stamped) ic_index_after_read(&stamp, path, cpath, &m, vchart);       /* the raw charts, before any mask */
+        pm->vchart = (int32_t *)ic_read_file(cpath, pm->m.nv * sizeof(int32_t), &got);
+        if (pm->vchart == NULL) { fprintf(stderr, "ERROR: %s missing or short\n", cpath); ic_pool_mesh_free(pm); return -1; }
+        if (stamped) ic_index_after_read(&stamp, path, cpath, &pm->m, pm->vchart);  /* the raw charts, before any mask */
         if (surface) {
-            attr = (uint8_t *)ic_read_file(apath, m.nv, &got);
-            if (!attr) goto out;
+            pm->attr = (uint8_t *)ic_read_file(apath, pm->m.nv, &got);
+            if (!pm->attr) { ic_pool_mesh_free(pm); return -1; }
         }
     }
+    return 0;
+}
+
+/* The pool over [lo, hi] from its mesh: charts with a face whose centroid lies in the box, in chart-id order, their
+ * faces in file order and vertices numbered as those faces first name them.  A mesh read over a larger box selects
+ * the same pool: a run that misses [lo, hi] holds no such face (its centroids lie in its vertices' box).
+ * lazy_inward: the inward field is filled per chart when an adopt round first evaluates it (CloseupPool.inward_fill),
+ * instead of for every pool vertex here; the values are the same either way. */
+static int ic_pool_select(const IcPoolMesh *pm, int surface, const AsmAxis *axis, const double lo[3], const double hi[3],
+                          const IcNear *nreg, const uint8_t *exclude, size_t nexcl, int lazy_inward, IcPoolBufs *spare,
+                          IcPool *q)
+{
+    const MeshBinData m = pm->m;
+    const uint8_t *attr = pm->attr;
+    int32_t *vchart = pm->vchart, *masked = NULL, *vmap = NULL;
+    uint8_t *elig = NULL, *infc = NULL;
+    size_t f = 0, v = 0, maxid = 0, *cnt = NULL, *pos = NULL, nsel = 0, *order = NULL, nch = 0, k = 0, nelig = 0;
+    int rc = -1, own = 0;
+    double tpl = ves_clock_sec();
+    memset(q, 0, sizeof *q);
     if (nreg != NULL) {                /* the candidate charts, from the boxes of all their vertices (before the mask) */
         double *cbox = NULL;
         for (v = 0; v < m.nv; v++) if (vchart[v] >= 0 && (size_t)vchart[v] + 1 > nelig) nelig = (size_t)vchart[v] + 1;
@@ -815,49 +1000,124 @@ static int ic_pool_load(const char *dir, int surface, const AsmAxis *axis, const
         for (k = 0; k < nelig; k++) elig[k] = (uint8_t)ic_pool_candidate(&cbox[k * 6], &cbox[k * 6 + 3], lo, hi, nreg);
         free(cbox);
     }
-    if (surface)                       /* Filled/extrapolated geometry is never evidence for a connection. */
-        for (v = 0; v < m.nv; v++) if (attr[v] != 1 && attr[v] != 3) vchart[v] = -1;
+    if (surface) {                     /* Filled/extrapolated geometry is never evidence for a connection. */
+        masked = (int32_t *)malloc((m.nv ? m.nv : 1) * sizeof *masked);
+        if (masked == NULL) goto out;
+        for (v = 0; v < m.nv; v++) masked[v] = attr[v] != 1 && attr[v] != 3 ? -1 : vchart[v];
+        vchart = masked;
+    }
     for (v = 0; v < m.nv; v++) if (vchart[v] >= 0 && (size_t)vchart[v] + 1 > maxid) maxid = (size_t)vchart[v] + 1;
     cnt = (size_t *)calloc(maxid + 1, sizeof *cnt);
     pos = (size_t *)calloc(maxid + 1, sizeof *pos);
     order = (size_t *)malloc((m.nf ? m.nf : 1) * sizeof *order);
     vmap = (int32_t *)malloc(m.nv * sizeof *vmap);
-    if (cnt == NULL || pos == NULL || order == NULL || vmap == NULL) goto out;
-    for (f = 0; f < m.nf; f++) {
-        int32_t ch = vchart[m.faces[f * 3]];
-        double c3[3] = { 0.0, 0.0, 0.0 };
-        int kk = 0, in = 1;
-        if (ch < 0 || vchart[m.faces[f * 3 + 1]] < 0 || vchart[m.faces[f * 3 + 2]] < 0 ||
-            ((size_t)ch < nexcl && exclude[ch]) || (elig != NULL && !elig[ch])) continue;
-        for (kk = 0; kk < 3; kk++) {
-            size_t w = (size_t)m.faces[f * 3 + (size_t)kk];
-            c3[0] += m.verts[w * 3] / 3.0; c3[1] += m.verts[w * 3 + 1] / 3.0; c3[2] += m.verts[w * 3 + 2] / 3.0;
+    infc = (uint8_t *)malloc(m.nf ? m.nf : 1);
+    if (cnt == NULL || pos == NULL || order == NULL || vmap == NULL || infc == NULL) goto out;
+    {   /* each face's verdict in parallel (a face's centroid test reads only its own corners); the counts and the
+         * chart-ordered face lists stay one pass in file order */
+        long lf = 0;
+        int mixed = 0;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static, 65536) reduction(| : mixed)
+#endif
+        for (lf = 0; lf < (long)m.nf; lf++) {
+            const size_t ff = (size_t)lf;
+            int32_t ch = vchart[m.faces[ff * 3]];
+            double c3[3] = { 0.0, 0.0, 0.0 };
+            int kk = 0, in = 1;
+            infc[ff] = 0;
+            if (ch < 0 || vchart[m.faces[ff * 3 + 1]] < 0 || vchart[m.faces[ff * 3 + 2]] < 0 ||
+                ((size_t)ch < nexcl && exclude[ch]) || (elig != NULL && !elig[ch])) continue;
+            mixed |= vchart[m.faces[ff * 3 + 1]] != ch || vchart[m.faces[ff * 3 + 2]] != ch;
+            for (kk = 0; kk < 3; kk++) {
+                size_t w = (size_t)m.faces[ff * 3 + (size_t)kk];
+                c3[0] += m.verts[w * 3] / 3.0; c3[1] += m.verts[w * 3 + 1] / 3.0; c3[2] += m.verts[w * 3 + 2] / 3.0;
+            }
+            for (kk = 0; kk < 3; kk++) if (c3[kk] < lo[kk] || c3[kk] > hi[kk]) in = 0;
+            infc[ff] = (uint8_t)in;
         }
-        for (kk = 0; kk < 3; kk++) if (c3[kk] < lo[kk] || c3[kk] > hi[kk]) in = 0;
-        if (!in) continue;
-        cnt[ch]++;
+        own = !mixed;      /* every candidate face on its own chart's vertices: charts number their vertices alone */
     }
+    for (f = 0; f < m.nf; f++) if (infc[f]) cnt[vchart[m.faces[f * 3]]]++;
     for (k = 0; k < maxid; k++) { pos[k] = nsel; nsel += cnt[k]; if (cnt[k]) nch++; }
-    for (f = 0; f < m.nf; f++) {
-        int32_t ch = vchart[m.faces[f * 3]];
-        double c3[3] = { 0.0, 0.0, 0.0 };
-        int kk = 0, in = 1;
-        if (ch < 0 || cnt[ch] == 0 || vchart[m.faces[f * 3 + 1]] < 0 || vchart[m.faces[f * 3 + 2]] < 0) continue;
-        for (kk = 0; kk < 3; kk++) {
-            size_t w = (size_t)m.faces[f * 3 + (size_t)kk];
-            c3[0] += m.verts[w * 3] / 3.0; c3[1] += m.verts[w * 3 + 1] / 3.0; c3[2] += m.verts[w * 3 + 2] / 3.0;
-        }
-        for (kk = 0; kk < 3; kk++) if (c3[kk] < lo[kk] || c3[kk] > hi[kk]) in = 0;
-        if (in) order[pos[ch]++] = f;
-    }
+    for (f = 0; f < m.nf; f++) if (infc[f]) { int32_t ch = vchart[m.faces[f * 3]]; order[pos[ch]++] = f; }
+    fprintf(stderr, "  [complete-timing] pool select %.2fs\n", ves_clock_sec() - tpl);
     /* charts in id order, vertices numbered in chart order (charts share no vertices) */
-    q->vofs = (size_t *)malloc((nch + 1) * sizeof *q->vofs);
-    q->fofs = (size_t *)malloc((nch + 1) * sizeof *q->fofs);
-    q->chart_id = (int32_t *)malloc((nch ? nch : 1) * sizeof *q->chart_id);
-    q->faces = (int32_t *)malloc((nsel ? nsel : 1) * 3 * sizeof *q->faces);
-    q->face_chart = (int32_t *)malloc((nsel ? nsel : 1) * sizeof *q->face_chart);
+    q->vofs = (size_t *)ic_buf(spare, IB_VOFS, (nch + 1) * sizeof *q->vofs, &q->bytes[IB_VOFS]);
+    q->fofs = (size_t *)ic_buf(spare, IB_FOFS, (nch + 1) * sizeof *q->fofs, &q->bytes[IB_FOFS]);
+    q->chart_id = (int32_t *)ic_buf(spare, IB_CHART_ID, (nch ? nch : 1) * sizeof *q->chart_id, &q->bytes[IB_CHART_ID]);
+    q->faces = (int32_t *)ic_buf(spare, IB_FACES, (nsel ? nsel : 1) * 3 * sizeof *q->faces, &q->bytes[IB_FACES]);
+    q->face_chart = (int32_t *)ic_buf(spare, IB_FACE_CHART, (nsel ? nsel : 1) * sizeof *q->face_chart,
+                                      &q->bytes[IB_FACE_CHART]);
     if (q->vofs == NULL || q->fofs == NULL || q->chart_id == NULL || q->faces == NULL || q->face_chart == NULL) goto out;
-    for (v = 0; v < m.nv; v++) vmap[v] = -1;
+    {
+        long lv = 0;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static, 65536)
+#endif
+        for (lv = 0; lv < (long)m.nv; lv++) vmap[lv] = -1;
+    }
+    if (own) {   /* the serial numbering below, chart by chart in parallel: a chart's ids are its first-seen order */
+        size_t nv = 0, c = 0, fi = 0;
+        size_t *nloc = (size_t *)malloc((nch + 1) * sizeof *nloc);
+        long lc = 0;
+        if (nloc == NULL) goto out;
+        for (k = 0; k < maxid; k++) {
+            if (cnt[k] == 0) continue;
+            q->fofs[c] = fi; q->chart_id[c] = (int32_t)k;
+            fi += cnt[k];
+            c++;
+        }
+        q->fofs[c] = fi;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic, 64)
+#endif
+        for (lc = 0; lc < (long)nch; lc++) {
+            const size_t ck = (size_t)q->chart_id[lc];
+            size_t a = 0, local = 0;
+            for (a = pos[ck] - cnt[ck]; a < pos[ck]; a++) {
+                int kk = 0;
+                for (kk = 0; kk < 3; kk++) {
+                    const size_t w = (size_t)m.faces[order[a] * 3 + (size_t)kk];
+                    if (vmap[w] < 0) vmap[w] = (int32_t)local++;
+                }
+            }
+            nloc[lc] = local;
+        }
+        for (c = 0; c < nch; c++) { q->vofs[c] = nv; nv += nloc[c]; }
+        q->vofs[nch] = nv;
+        free(nloc);
+        q->verts = (float *)ic_buf(spare, IB_VERTS, (nv ? nv : 1) * 3 * sizeof *q->verts, &q->bytes[IB_VERTS]);
+        q->uv = (double *)ic_buf(spare, IB_UV, (nv ? nv : 1) * 2 * sizeof *q->uv, &q->bytes[IB_UV]);
+        q->inward = (float *)ic_buf(spare, IB_INWARD, (nv ? nv : 1) * 3 * sizeof *q->inward, &q->bytes[IB_INWARD]);
+        if (q->verts == NULL || q->uv == NULL || q->inward == NULL) goto out;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic, 64)
+#endif
+        for (lc = 0; lc < (long)nch; lc++) {   /* global ids; each vertex copied as its first face names it */
+            const size_t ck = (size_t)q->chart_id[lc], base = q->vofs[lc];
+            size_t a = 0, fo = q->fofs[lc];
+            for (a = pos[ck] - cnt[ck]; a < pos[ck]; a++, fo++) {
+                int kk = 0;
+                for (kk = 0; kk < 3; kk++) {
+                    const size_t w = (size_t)m.faces[order[a] * 3 + (size_t)kk];
+                    int32_t id = vmap[w];
+                    if (id >= 0) {
+                        const size_t gi = base + (size_t)id;
+                        memcpy(&q->verts[gi * 3], &m.verts[w * 3], 3 * sizeof *q->verts);
+                        q->uv[gi * 2] = MeshBin_uv(&m, w * 2); q->uv[gi * 2 + 1] = MeshBin_uv(&m, w * 2 + 1);
+                        vmap[w] = -(int32_t)gi - 2;
+                        id = (int32_t)gi;
+                    } else {
+                        id = -id - 2;
+                    }
+                    q->faces[fo * 3 + (size_t)kk] = id;
+                }
+                q->face_chart[fo] = (int32_t)ck;
+            }
+        }
+        goto numbered;
+    }
     {
         size_t nv = 0, fi = 0, c = 0;
         for (k = 0; k < maxid; k++) {
@@ -878,20 +1138,45 @@ static int ic_pool_load(const char *dir, int surface, const AsmAxis *axis, const
             c++;
         }
         q->vofs[c] = nv; q->fofs[c] = fi;
-        q->verts = (float *)malloc((nv ? nv : 1) * 3 * sizeof *q->verts);
-        q->uv = (double *)malloc((nv ? nv : 1) * 2 * sizeof *q->uv);
-        q->inward = (float *)malloc((nv ? nv : 1) * 3 * sizeof *q->inward);
+        q->verts = (float *)ic_buf(spare, IB_VERTS, (nv ? nv : 1) * 3 * sizeof *q->verts, &q->bytes[IB_VERTS]);
+        q->uv = (double *)ic_buf(spare, IB_UV, (nv ? nv : 1) * 2 * sizeof *q->uv, &q->bytes[IB_UV]);
+        q->inward = (float *)ic_buf(spare, IB_INWARD, (nv ? nv : 1) * 3 * sizeof *q->inward, &q->bytes[IB_INWARD]);
         if (q->verts == NULL || q->uv == NULL || q->inward == NULL) goto out;
-        for (v = 0; v < m.nv; v++) {
-            size_t w = 0;
-            if (vmap[v] < 0) continue;
-            w = (size_t)vmap[v];
-            memcpy(&q->verts[w * 3], &m.verts[v * 3], 3 * sizeof *q->verts);
-            q->uv[w * 2] = MeshBin_uv(&m, v * 2); q->uv[w * 2 + 1] = MeshBin_uv(&m, v * 2 + 1);
+        {
+            long lv = 0;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static, 65536)
+#endif
+            for (lv = 0; lv < (long)m.nv; lv++) {      /* vmap is one-to-one: every target written once */
+                size_t w = 0, vv = (size_t)lv;
+                if (vmap[vv] < 0) continue;
+                w = (size_t)vmap[vv];
+                memcpy(&q->verts[w * 3], &m.verts[vv * 3], 3 * sizeof *q->verts);
+                q->uv[w * 2] = MeshBin_uv(&m, vv * 2); q->uv[w * 2 + 1] = MeshBin_uv(&m, vv * 2 + 1);
+            }
         }
-        q->nrm = MeshNormals_compute(q->verts, nv, q->faces, fi);
-        if (q->nrm == NULL) goto out;
-        ic_axis_fields(axis, q->verts, nv, NULL, q->inward);
+    }
+numbered:
+    {
+        const size_t nv = q->vofs[nch], fi = q->fofs[nch];
+        {
+            double tp = ves_clock_sec();
+            if (lazy_inward) {           /* both fields per chart when a round first evaluates it */
+                q->arena = Arena_new_sized((size_t)1 << 20);
+                q->index = AsmAxis_projector(q->arena, axis);
+                q->nrm = (float *)ic_buf(spare, IB_NRM, (nv ? nv : 1) * 3 * sizeof *q->nrm, &q->bytes[IB_NRM]);
+                q->chart_ready = (uint8_t *)ic_buf(spare, IB_READY, nch ? nch : 1, &q->bytes[IB_READY]);
+                if (q->nrm == NULL || q->chart_ready == NULL || q->index == NULL) goto out;
+                memset(q->chart_ready, 0, nch ? nch : 1);
+                q->p.chart_fill = ic_pool_chart_fill; q->p.chart_ctx = q; q->p.chart_ready = q->chart_ready;
+            } else {
+                q->nrm = MeshNormals_compute_runs(q->verts, nv, q->faces, q->vofs, q->fofs, nch);
+                if (q->nrm == NULL) goto out;
+                ic_axis_fields(axis, q->verts, nv, NULL, q->inward);
+            }
+            fprintf(stderr, "  [complete-timing] pool normals + axis fields %.2fs (%zu verts %zu faces%s)\n",
+                    ves_clock_sec() - tp, nv, fi, lazy_inward ? ", per chart on first use" : "");
+        }
         q->p.nv = nv; q->p.nf = fi; q->p.nch = nch;
     }
     q->p.verts = q->verts; q->p.nrm = q->nrm; q->p.inward = q->inward; q->p.uv = q->uv; q->p.faces = q->faces;
@@ -899,9 +1184,68 @@ static int ic_pool_load(const char *dir, int surface, const AsmAxis *axis, const
     rc = 0;
 out:
     if (rc != 0) ic_pool_free(q);
-    MeshBin_dispose(&m);
-    free(attr); free(elig); free(vchart); free(vmap); free(cnt); free(pos); free(order);
+    free(masked); free(elig); free(vmap); free(cnt); free(pos); free(order); free(infc);
     return rc;
+}
+
+static int ic_pool_load(const char *dir, int surface, const AsmAxis *axis, const double lo[3], const double hi[3],
+                        const IcNear *nreg, const uint8_t *exclude, size_t nexcl, int lazy_inward, IcPool *q)
+{
+    IcPoolMesh pm;
+    int rc = ic_pool_read(dir, surface, lo, hi, nreg, exclude, nexcl, &pm);
+    memset(q, 0, sizeof *q);
+    if (rc == 0) rc = ic_pool_select(&pm, surface, axis, lo, hi, nreg, exclude, nexcl, lazy_inward, NULL, q);
+    ic_pool_mesh_free(&pm);
+    return rc;
+}
+
+/* The completion chain's pool meshes (ic_stage_complete_chain): each read once over its first pass's search box plus
+ * IC_POOL_CACHE_SLACK_VOX, then every later pass selects from it (ic_pool_select), reading again only when a pass's
+ * box leaves it.  The HDD-resident pools of a 32^3 take-in cost minutes per cold read (2026-10-30). */
+#define IC_POOL_CACHE_SLOTS 4
+#define IC_POOL_CACHE_SLACK_VOX 512.0
+typedef struct IcPoolCache {
+    IcPoolBufs spare;              /* the last pass's pool arrays, for the next pass's (ic_pool_keep) */
+    IcPoolMesh pm[IC_POOL_CACHE_SLOTS];
+    char dir[IC_POOL_CACHE_SLOTS][2600];
+    int surface[IC_POOL_CACHE_SLOTS], loaded[IC_POOL_CACHE_SLOTS];
+    double lo[IC_POOL_CACHE_SLOTS][3], hi[IC_POOL_CACHE_SLOTS][3];
+} IcPoolCache;
+
+static void ic_pool_cache_free(IcPoolCache *pc)
+{
+    int k = 0;
+    for (k = 0; k < IC_POOL_CACHE_SLOTS; k++) ic_pool_mesh_free(&pc->pm[k]);
+    ic_bufs_free(&pc->spare);
+    memset(pc, 0, sizeof *pc);
+}
+
+static int ic_pool_load_cached(IcPoolCache *pc, const char *dir, int surface, const AsmAxis *axis, const double lo[3],
+                               const double hi[3], int lazy_inward, IcPool *q)
+{
+    int slot = -1, k = 0, d = 0;
+    for (k = 0; k < IC_POOL_CACHE_SLOTS && slot < 0; k++)
+        if (pc->loaded[k] && pc->surface[k] == surface && strcmp(pc->dir[k], dir) == 0) slot = k;
+    if (slot >= 0) {
+        int inside = 1;
+        for (d = 0; d < 3; d++) inside = inside && lo[d] >= pc->lo[slot][d] && hi[d] <= pc->hi[slot][d];
+        if (inside) {
+            fprintf(stderr, "  pool %s from the chain's copy (read over %.0f..%.0f %.0f..%.0f %.0f..%.0f)\n", dir,
+                    pc->lo[slot][0], pc->hi[slot][0], pc->lo[slot][1], pc->hi[slot][1], pc->lo[slot][2], pc->hi[slot][2]);
+            return ic_pool_select(&pc->pm[slot], surface, axis, lo, hi, NULL, NULL, 0, lazy_inward, &pc->spare, q);
+        }
+    } else {
+        for (k = 0; k < IC_POOL_CACHE_SLOTS && slot < 0; k++) if (!pc->loaded[k]) slot = k;
+        if (slot < 0) slot = 0;
+    }
+    ic_pool_mesh_free(&pc->pm[slot]);
+    pc->loaded[slot] = 0;
+    for (d = 0; d < 3; d++) { pc->lo[slot][d] = lo[d] - IC_POOL_CACHE_SLACK_VOX; pc->hi[slot][d] = hi[d] + IC_POOL_CACHE_SLACK_VOX; }
+    if (ic_pool_read(dir, surface, pc->lo[slot], pc->hi[slot], NULL, NULL, 0, &pc->pm[slot]) != 0) return -1;
+    snprintf(pc->dir[slot], sizeof pc->dir[slot], "%s", dir);
+    pc->surface[slot] = surface; pc->loaded[slot] = 1;
+    fprintf(stderr, "  pool %s read once for the chain over the search box + %.0f vox\n", dir, IC_POOL_CACHE_SLACK_VOX);
+    return ic_pool_select(&pc->pm[slot], surface, axis, lo, hi, NULL, NULL, 0, lazy_inward, &pc->spare, q);
 }
 
 /* ------------------------------------------------------------------ surface */
@@ -1214,7 +1558,7 @@ static int ic_stage_surface(const IcConfig *c)
                 if (ic_near_for_pool(&g, lo3, hi3, &nreg, &nuse) != 0) goto out;
                 lr = ic_pool_load(c->pool[pi].path, c->pool[pi].surface, axis, lo3, hi3, nuse,
                                   c->pool[pi].surface || c->candidate_manifest ? NULL : seedchart,
-                                  c->pool[pi].surface || c->candidate_manifest ? 0 : nchart_ids, &pool);
+                                  c->pool[pi].surface || c->candidate_manifest ? 0 : nchart_ids, 0, &pool);
                 ic_near_free(&nreg);
                 if (lr != 0) goto out;
             }
@@ -1227,7 +1571,7 @@ static int ic_stage_surface(const IcConfig *c)
                 CloseupPlacement *pl = NULL;
                 CloseupAdoptStats ast;
                 size_t npl = 0, k = 0, obs0 = obs.n, area_faces = 0;
-                if (ic_adopt_round(c, &g, &pool, done, pi, round, &pl, &npl, &ast) != 0) {
+                if (ic_adopt_round(c, &g, &pool, done, pi, round, &pl, &npl, &ast, NULL) != 0) {
                     free(done); free(pfuv); ic_pool_free(&pool); goto out;
                 }
                 for (k = 0; k < npl; k++) {
@@ -1430,10 +1774,159 @@ out:
     return rc;
 }
 
+/* PROFILE (closeup_complete_speed_20261030): one stderr line per phase with its wall time. */
+static void ic_lap(const char *what, double *t)
+{
+    double now = ves_clock_sec();
+    fprintf(stderr, "  [complete-timing] %-28s %8.2fs\n", what, now - *t);
+    *t = now;
+}
+
+/* A completion pass's surface as its files hold it: the next pass of a chain reads it here instead of from disk. */
+typedef struct IcSurfaceMem {
+    MeshBinData m;                 /* verts, uv64, faces */
+    uint8_t *attr;
+    int32_t *chart;
+} IcSurfaceMem;
+
+static void ic_surface_mem_free(IcSurfaceMem *s)
+{
+    MeshBin_dispose(&s->m); free(s->attr); free(s->chart);
+    memset(s, 0, sizeof *s);
+}
+
+/* One pass's files, written off the computing thread: the mesh and its per-vertex files, then the report (last, so a
+ * report on disk means a complete pass).  The job owns its arrays. */
+#define IC_WRITE_EXTRA 64
+typedef struct IcWriteJob {
+    IcFileBytes extra[IC_WRITE_EXTRA];   /* the pass's audit CSVs */
+    int nextra;
+    char stem[2700];               /* <out_dir>/<id> */
+    float *verts, *nrm;
+    double *muv;
+    int32_t *faces, *oc;
+    uint8_t *oa;
+    size_t nv, nf;
+    char *report;                  /* the report JSON up to its "seconds" */
+    double t0;                     /* the pass's start: "seconds" run to the report's write */
+    int rc;
+    int no_mesh;                   /* a chain's intermediate pass: its CSVs and report, not its mesh */
+} IcWriteJob;
+
+typedef struct IcWriter {
+    /* the chain's plan for the pass about to queue its files: keep every mesh, or only the final pass's -- the last
+     * pass, or one gaining less than min_gain of the previous vertex count (the chain's own stop rule) */
+    int keep_all, last;
+    double previous, min_gain;
+    int queued_no_mesh;            /* the last pass queued without its mesh */
+#ifdef _WIN32
+    uintptr_t thread;
+#else
+    pthread_t thread;
+#endif
+    int running, failed;
+    IcWriteJob *job;
+} IcWriter;
+
+static void ic_write_job_free(IcWriteJob *j)
+{
+    int k = 0;
+    if (j == NULL) return;
+    for (k = 0; k < j->nextra; k++) free(j->extra[k].data);
+    free(j->verts); free(j->nrm); free(j->muv); free(j->faces); free(j->oc); free(j->oa); free(j->report);
+    free(j);
+}
+
+static int ic_write_job_run(IcWriteJob *j)
+{
+    char path[2800];
+    FILE *fp = NULL;
+    int k = 0;
+    for (k = 0; k < j->nextra; k++) {
+        ves_ensure_parent_dir(j->extra[k].path);
+        if (ic_write_file(j->extra[k].path, j->extra[k].data, j->extra[k].n) != 0) return -1;
+    }
+    if (!j->no_mesh) {
+        snprintf(path, sizeof path, "%s_surface.vmesh", j->stem);
+        ves_ensure_parent_dir(path);
+        if (MeshBin_write_uv64(path, j->verts, j->nv, j->faces, j->nf, j->muv) != 0) return -1;
+        snprintf(path, sizeof path, "%s_surface_nrm.f32", j->stem);
+        if (ic_write_file(path, j->nrm, j->nv * 3 * sizeof *j->nrm) != 0) return -1;
+        snprintf(path, sizeof path, "%s_surface_attr.u8", j->stem);
+        if (ic_write_file(path, j->oa, j->nv) != 0) return -1;
+        snprintf(path, sizeof path, "%s_surface_chart.i32", j->stem);
+        if (ic_write_file(path, j->oc, j->nv * sizeof *j->oc) != 0) return -1;
+    }
+    snprintf(path, sizeof path, "%s_surface_report.json", j->stem);
+    fp = fopen(path, "wb");
+    if (fp == NULL) return -1;
+    if (fputs(j->report, fp) < 0 || fprintf(fp, "  \"seconds\": %.2f\n}\n", ves_clock_sec() - j->t0) < 0) {
+        fclose(fp);
+        return -1;
+    }
+    return fclose(fp) == 0 ? 0 : -1;
+}
+
+#ifdef _WIN32
+static unsigned __stdcall ic_writer_main(void *arg)
+#else
+static void *ic_writer_main(void *arg)
+#endif
+{
+    IcWriteJob *j = (IcWriteJob *)arg;
+    j->rc = ic_write_job_run(j);
+    if (j->rc != 0) fprintf(stderr, "ERROR: writing %s_surface.* failed\n", j->stem);
+#ifdef _WIN32
+    return 0;
+#else
+    return NULL;
+#endif
+}
+
+/* The queued pass's files are on disk (or failed: -1, and every later wait fails too). */
+static int ic_writer_wait(IcWriter *w)
+{
+    double t0 = ves_clock_sec();
+    if (w->running) {
+#ifdef _WIN32
+        WaitForSingleObject((HANDLE)w->thread, INFINITE);
+        CloseHandle((HANDLE)w->thread);
+#else
+        pthread_join(w->thread, NULL);
+#endif
+        w->running = 0;
+        if (ves_clock_sec() - t0 > 0.05)
+            fprintf(stderr, "  [complete-timing] waited %.2fs for the previous pass's files\n", ves_clock_sec() - t0);
+    }
+    if (w->job != NULL) {
+        if (w->job->rc != 0) w->failed = 1;
+        ic_write_job_free(w->job);
+        w->job = NULL;
+    }
+    return w->failed ? -1 : 0;
+}
+
+/* Queue a pass's files (the writer takes the job); written inline when no thread starts. */
+static int ic_writer_start(IcWriter *w, IcWriteJob *j)
+{
+    if (ic_writer_wait(w) != 0) { ic_write_job_free(j); return -1; }
+    w->job = j;
+#ifdef _WIN32
+    w->thread = _beginthreadex(NULL, 0, ic_writer_main, j, 0, NULL);
+    w->running = w->thread != 0;
+#else
+    w->running = pthread_create(&w->thread, NULL, ic_writer_main, j) == 0;
+#endif
+    if (!w->running) (void)ic_writer_main(j);
+    return 0;
+}
+
 /* Complete an already flattened close-up when the original assembly is unavailable. Only faces
  * whose three corners were observed support the fit; old FILL never becomes a new observation.
- * Keep the existing UV frame plus an integer translation, so pixels compare without a glyph warp. */
-static int ic_stage_complete_surface(const IcConfig *c)
+ * Keep the existing UV frame plus an integer translation, so pixels compare without a glyph warp.
+ * In a chain (ic_stage_complete_chain): src (taken) is the previous pass's surface in memory, out receives this one,
+ * pc keeps the pool meshes between passes and wr writes the files behind the next pass; NULL each: the files. */
+static int ic_complete_pass(const IcConfig *c, IcSurfaceMem *src, IcSurfaceMem *out, IcPoolCache *pc, IcWriter *wr)
 {
     char path[2600], js[4800];
     MeshBinData m;
@@ -1444,6 +1937,7 @@ static int ic_stage_complete_surface(const IcConfig *c)
     CloseupFitStats fs;
     Arena_T arena = NULL;
     AsmAxis *axis = NULL;
+    CloseupFitCache *fitcache = NULL;   /* the adopt rounds' refits redo only what their charts reach */
     uint8_t *attr = NULL, *use = NULL, *oa = NULL;
     int32_t *chart = NULL, *fc = NULL, *faces = NULL, *nodes = NULL, *oc = NULL;
     float *inward = NULL, *verts = NULL, *nrm = NULL;
@@ -1453,18 +1947,39 @@ static int ic_stage_complete_surface(const IcConfig *c)
     size_t got = 0, f = 0, v = 0, used = 0, gated = 0, nv = 0, nf = 0, nn = 0;
     size_t nadopt = 0, obs_source = 0;
     int32_t adopt_first = 0, chart_offset = 0;
-    int k = 0, orient = 0, rc = 1;
+    int k = 0, orient = 0, rc = 1, ncsv = 0, q0 = 0;
     FILE *fp = NULL;
+    char *report = NULL;
+    IcFileBytes csv[IC_WRITE_EXTRA];
+    AsmAxisProjector *axis_index = NULL;
+    float *inward_at = NULL;           /* the positions inward was last measured at (ic_axis_inward_moved) */
+    double tl = t0;
     memset(&m, 0, sizeof m); memset(&obs, 0, sizeof obs); memset(&g, 0, sizeof g);
+    for (q0 = 0; q0 < IC_WRITE_EXTRA; q0++) { csv[q0].data = NULL; csv[q0].n = 0; csv[q0].path[0] = 0; }
+    if (out != NULL) memset(out, 0, sizeof *out);
     if (c->complete_gaps) CloseupFitOpts_complete(&fit); else CloseupFitOpts_default(&fit);
     fit.bridge = c->bridge && c->chart_wrap != NULL; fit.chart_wrap = c->chart_wrap; fit.nchart_wrap = c->nchart_wrap;
     fit.bridge_px = fit.fill_px;    /* the bridge reaches as far as the fill in effect (24 px, or the completed-gap 160 px) */
-    snprintf(path, sizeof path, "%s_surface.vmesh", c->surface_source);
-    if (MeshBin_read_precise_malloc(path, &m) != 0 || (m.uv == NULL && m.uv64 == NULL)) goto out;
-    snprintf(path, sizeof path, "%s_surface_attr.u8", c->surface_source);
-    attr = (uint8_t *)ic_read_file(path, m.nv, &got);
-    snprintf(path, sizeof path, "%s_surface_chart.i32", c->surface_source);
-    chart = (int32_t *)ic_read_file(path, m.nv * sizeof *chart, &got);
+    fprintf(stderr, "  [complete-timing] bridge=%d threads=%d\n", fit.bridge,
+#ifdef _OPENMP
+            omp_get_max_threads()
+#else
+            1
+#endif
+            );
+    if (src != NULL) {                 /* the previous pass's files, as they would read back */
+        m = src->m; attr = src->attr; chart = src->chart;
+        memset(src, 0, sizeof *src);
+        fprintf(stderr, "[ink_closeup] completion: the source %s from the chain's memory\n", c->surface_source);
+    } else {
+        snprintf(path, sizeof path, "%s_surface.vmesh", c->surface_source);
+        if (MeshBin_read_precise_malloc(path, &m) != 0 || (m.uv == NULL && m.uv64 == NULL)) goto out;
+        snprintf(path, sizeof path, "%s_surface_attr.u8", c->surface_source);
+        attr = (uint8_t *)ic_read_file(path, m.nv, &got);
+        snprintf(path, sizeof path, "%s_surface_chart.i32", c->surface_source);
+        chart = (int32_t *)ic_read_file(path, m.nv * sizeof *chart, &got);
+    }
+    ic_lap("read source", &tl);
     uv = (double *)malloc(m.nv * 2 * sizeof *uv);
     use = (uint8_t *)calloc(m.nf, 1);
     fc = (int32_t *)malloc(m.nf * sizeof *fc);
@@ -1494,6 +2009,7 @@ static int ic_stage_complete_surface(const IcConfig *c)
     if (CloseupObs_add_faces(&obs, m.verts, uv, m.faces, m.nf, use, fc, &gate, &used, &gated) != 0 || obs.n == 0) goto out;
     obs_source = obs.n;
     fprintf(stderr, "[ink_closeup] completion: %zu observations from %zu observed faces (%zu gated)\n", obs.n, used, gated);
+    ic_lap("source observations", &tl);
     {
         double margin = fit.fill_px + 4.0 + (c->npool ? CLOSEUP_ADOPT_MARGIN_PX : 0.0);
         if (c->has_growth) {
@@ -1503,15 +2019,24 @@ static int ic_stage_complete_surface(const IcConfig *c)
         }
         if (CloseupGrid_alloc(&g, lo[0] - margin, hi[0] + margin, lo[1] - margin, hi[1] + margin, CLOSEUP_GRID_PX) != 0) goto out;
     }
-    if (CloseupSurface_fit(&g, &obs, &fit, &fs) != 0) goto out;
+    fprintf(stderr, "  [complete-timing] grid %zu x %zu = %zu nodes\n", g.ni, g.nj, g.ni * g.nj);
+    ic_lap("grid alloc", &tl);
+    fitcache = CloseupFitCache_new();
+    if (fitcache == NULL || CloseupSurface_fit_cached(&g, &obs, &fit, &fs, fitcache) != 0) goto out;
+    ic_lap("fit 0", &tl);
     nn = g.ni * g.nj;
     inward = (float *)malloc(nn * 3 * sizeof *inward);
     uvn = (double *)malloc(nn * 2 * sizeof *uvn);
     if (inward == NULL || uvn == NULL) goto out;
     arena = Arena_new(); axis = AsmAxis_load(arena, c->axis);
     if (axis == NULL) goto out;
-    ic_axis_fields(axis, g.pos, nn, NULL, inward);
+    axis_index = AsmAxis_projector(arena, axis);
+    inward_at = (float *)malloc(nn * 3 * sizeof *inward_at);
+    if (inward_at == NULL) goto out;
+    memset(inward_at, 0xff, nn * 3 * sizeof *inward_at);     /* a NaN no position carries: every node measured */
+    ic_axis_inward_moved(axis, axis_index, g.pos, nn, inward_at, inward);
     orient = CloseupSurface_orient(&g, inward, &agree);
+    ic_lap("axis + orient 0", &tl);
     chart_offset = adopt_first;
     for (k = 0; k < c->npool; k++) {
         IcPool pool;
@@ -1524,14 +2049,20 @@ static int ic_stage_complete_surface(const IcConfig *c)
             for (q = 0; q < 3; q++) { lo3[q] = fmin(lo3[q], g.pos[v * 3 + (size_t)q]); hi3[q] = fmax(hi3[q], g.pos[v * 3 + (size_t)q]); }
         }
         for (q = 0; q < 3; q++) { lo3[q] -= c->search_margin; hi3[q] += c->search_margin; }
+        fprintf(stderr, "  [complete-timing] search box %.0f..%.0f %.0f..%.0f %.0f..%.0f\n",
+                lo3[0], hi3[0], lo3[1], hi3[1], lo3[2], hi3[2]);
         {
             IcNear nreg;
             const IcNear *nuse = NULL;
             int lr = 0;
             if (ic_near_for_pool(&g, lo3, hi3, &nreg, &nuse) != 0) goto out;
-            lr = ic_pool_load(c->pool[k].path, c->pool[k].surface, axis, lo3, hi3, nuse, NULL, 0, &pool);
+            ic_lap("near region", &tl);
+            lr = pc != NULL && nuse == NULL
+                     ? ic_pool_load_cached(pc, c->pool[k].path, c->pool[k].surface, axis, lo3, hi3, 1, &pool)
+                     : ic_pool_load(c->pool[k].path, c->pool[k].surface, axis, lo3, hi3, nuse, NULL, 0, 1, &pool);
             ic_near_free(&nreg);
             if (lr != 0) goto out;
+            ic_lap("pool load", &tl);
         }
         puv = (double *)malloc((pool.p.nv + 1) * 2 * sizeof *puv);
         done = (uint8_t *)calloc(pool.p.nch + 1, 1);
@@ -1550,9 +2081,12 @@ static int ic_stage_complete_surface(const IcConfig *c)
             CloseupPlacement *pl = NULL;
             CloseupAdoptStats ast;
             size_t npl = 0, p = 0, before = obs.n;
-            if (ic_adopt_round(c, &g, &pool, done, k, round, &pl, &npl, &ast) != 0) {
+            if (ic_adopt_round(c, &g, &pool, done, k, round, &pl, &npl, &ast,
+                               wr != NULL && ncsv < IC_WRITE_EXTRA ? &csv[ncsv] : NULL) != 0) {
                 free(puv); free(done); ic_pool_free(&pool); goto out;
             }
+            if (wr != NULL && ncsv < IC_WRITE_EXTRA && csv[ncsv].data != NULL) ncsv++;
+            ic_lap("adopt round", &tl);
             for (p = 0; p < npl; p++) {
                 size_t ch = pl[p].chart, a = 0, nu = 0, ng = 0;
                 done[ch] = 1;
@@ -1566,13 +2100,18 @@ static int ic_stage_complete_surface(const IcConfig *c)
             }
             fprintf(stderr, "  completion adopt %d/%d: %zu placed, +%zu observations; refused rms %zu, conflict %zu; deferred %zu\n",
                     k, round, npl, obs.n - before, ast.refused_rms, ast.refused_conflict, ast.deferred);
+            ic_lap("adopted observations", &tl);
             free(pl); nadopt += npl;
             if (npl == 0) break;
-            if (CloseupSurface_fit(&g, &obs, &fit, &fs) != 0) { free(puv); free(done); ic_pool_free(&pool); goto out; }
-            ic_axis_fields(axis, g.pos, nn, NULL, inward);
+            if (CloseupSurface_fit_cached(&g, &obs, &fit, &fs, fitcache) != 0) { free(puv); free(done); ic_pool_free(&pool); goto out; }
+            ic_lap("fit", &tl);
+            ic_axis_inward_moved(axis, axis_index, g.pos, nn, inward_at, inward);
             orient = CloseupSurface_orient(&g, inward, &agree);
+            ic_lap("axis + orient", &tl);
         }
-        free(puv); free(done); ic_pool_free(&pool);
+        free(puv); free(done);
+        if (pc != NULL) ic_pool_keep(&pool, &pc->spare); else ic_pool_free(&pool);
+        ic_lap("pool free", &tl);
     }
     if (CLOSEUP_APRON_TRIM) {   /* the outward apron: FILL only between observed papyrus (2026-10-15) */
         CloseupApronStats ap;
@@ -1581,6 +2120,7 @@ static int ic_stage_complete_surface(const IcConfig *c)
         fprintf(stderr, "[ink_closeup] completion: outward apron: %zu of %zu FILL nodes had papyrus on one side only (reach "
                 "%.0f px): dropped (%.1fs)\n", ap.dropped, ap.fill_before, fit.fill_px, ap.seconds);
     }
+    ic_lap("apron", &tl);
     {   /* duplicated papyrus: FILL extrapolated over papyrus the surface holds elsewhere goes (2026-10-15) */
         CloseupDedupStats dd;
         memset(&dd, 0, sizeof dd);
@@ -1588,6 +2128,7 @@ static int ic_stage_complete_surface(const IcConfig *c)
         fprintf(stderr, "[ink_closeup] completion: duplicated papyrus: %zu node pairs (%zu DATA-DATA, kept); %zu FILL nodes "
                 "dropped\n", dd.pairs, dd.data_pairs, dd.dropped_fill);
     }
+    ic_lap("dedup", &tl);
     shift = ceil((CLOSEUP_RASTER_MARGIN_PX - fmin(g.u0, g.v0)) / g.h) * g.h;
     if (shift < 0.0) shift = 0.0;
     for (v = 0; v < nn; v++) {
@@ -1601,33 +2142,72 @@ static int ic_stage_complete_surface(const IcConfig *c)
         oa[v] = g.state[nodes[v]]; oc[v] = g.chart[nodes[v]];
         if (oa[v] == CLOSEUP_NODE_DATA && oc[v] >= adopt_first) oa[v] = 3;
     }
-    snprintf(path, sizeof path, "%s/%s_surface.vmesh", c->out_dir, c->id);
-    ves_ensure_parent_dir(path);
-    if (MeshBin_write_uv64(path, verts, nv, faces, nf, muv) != 0) goto out;
-    snprintf(path, sizeof path, "%s/%s_surface_nrm.f32", c->out_dir, c->id);
-    if (ic_write_file(path, nrm, nv * 3 * sizeof *nrm) != 0) goto out;
-    snprintf(path, sizeof path, "%s/%s_surface_attr.u8", c->out_dir, c->id);
-    if (ic_write_file(path, oa, nv) != 0) goto out;
-    snprintf(path, sizeof path, "%s/%s_surface_chart.i32", c->out_dir, c->id);
-    if (ic_write_file(path, oc, nv * sizeof *oc) != 0) goto out;
-    snprintf(path, sizeof path, "%s/%s_surface_report.json", c->out_dir, c->id);
-    fp = fopen(path, "wb"); if (fp == NULL) goto out;
-    ic_json_str(js, sizeof js, c->surface_source);
-    fprintf(fp, "{\n  \"schema\": \"ink-closeup-completion-v1\",\n  \"surface_source\": %s,\n", js);
-    fprintf(fp, "  \"uv_translation\": [%.1f, %.1f],\n  \"frame\": \"source UV retained; integer translation only\",\n", shift, shift);
-    fprintf(fp, "  \"complete_gaps\": %s,\n  \"fill_policy\": {\"reach_px\": %.1f, \"fit_max_px\": %.1f, "
-            "\"cartesian_thin_plate\": %s, \"holes\": %zu, \"filled\": %zu, \"refused\": %zu, \"nodes\": %zu},\n",
-            c->complete_gaps ? "true" : "false", fit.fill_px, fit.fill_fit_max_px,
-            fit.variational_holes ? "true" : "false", fs.variational_holes, fs.variational_filled,
-            fs.variational_refused, fs.variational_nodes);
-    fprintf(fp, "  \"adopt\": {\"charts\": %zu, \"observations\": %zu, \"first_chart_id\": %d},\n",
-            nadopt, obs.n - obs_source, adopt_first);
-    fprintf(fp, "  \"fit\": {\"observations\": %zu, \"observed_faces\": %zu, \"faces_gated\": %zu, \"data\": %zu, "
-            "\"fill\": %zu, \"fill_rejected\": %zu, \"resid_p50\": %.6f, \"resid_p99\": %.6f, "
-            "\"torn_stretch\": %zu, \"torn_float\": %zu, "
-            "\"orient\": %d, \"orient_agree\": %.6f},\n", obs.n, used, gated, fs.data_nodes, fs.fill_nodes,
-            fs.fill_rejected, fs.resid_p50, fs.resid_p99, fs.torn_stretch, fs.torn_float, orient, agree);
-    fprintf(fp, "  \"surface\": {\"verts\": %zu, \"faces\": %zu},\n  \"seconds\": %.2f\n}\n", nv, nf, ves_clock_sec() - t0);
+    ic_lap("mesh", &tl);
+    {   /* the report, all but its "seconds" (ic_write_job_run adds them as it writes it, after the other files) */
+        const size_t cap = 16384;
+        int at = 0;
+        report = (char *)malloc(cap);
+        if (report == NULL) goto out;
+        ic_json_str(js, sizeof js, c->surface_source);
+        at += snprintf(report + at, cap - (size_t)at, "{\n  \"schema\": \"ink-closeup-completion-v1\",\n  \"surface_source\": %s,\n", js);
+        at += snprintf(report + at, cap - (size_t)at, "  \"uv_translation\": [%.1f, %.1f],\n  \"frame\": \"source UV retained; integer translation only\",\n", shift, shift);
+        at += snprintf(report + at, cap - (size_t)at, "  \"complete_gaps\": %s,\n  \"fill_policy\": {\"reach_px\": %.1f, \"fit_max_px\": %.1f, "
+                "\"cartesian_thin_plate\": %s, \"holes\": %zu, \"filled\": %zu, \"refused\": %zu, \"nodes\": %zu},\n",
+                c->complete_gaps ? "true" : "false", fit.fill_px, fit.fill_fit_max_px,
+                fit.variational_holes ? "true" : "false", fs.variational_holes, fs.variational_filled,
+                fs.variational_refused, fs.variational_nodes);
+        at += snprintf(report + at, cap - (size_t)at, "  \"adopt\": {\"charts\": %zu, \"observations\": %zu, \"first_chart_id\": %d},\n",
+                nadopt, obs.n - obs_source, adopt_first);
+        at += snprintf(report + at, cap - (size_t)at, "  \"fit\": {\"observations\": %zu, \"observed_faces\": %zu, \"faces_gated\": %zu, \"data\": %zu, "
+                "\"fill\": %zu, \"fill_rejected\": %zu, \"resid_p50\": %.6f, \"resid_p99\": %.6f, "
+                "\"torn_stretch\": %zu, \"torn_float\": %zu, "
+                "\"orient\": %d, \"orient_agree\": %.6f},\n", obs.n, used, gated, fs.data_nodes, fs.fill_nodes,
+                fs.fill_rejected, fs.resid_p50, fs.resid_p99, fs.torn_stretch, fs.torn_float, orient, agree);
+        at += snprintf(report + at, cap - (size_t)at, "  \"surface\": {\"verts\": %zu, \"faces\": %zu},\n", nv, nf);
+        if (at <= 0 || (size_t)at >= cap) goto out;
+    }
+    {   /* the files: behind the next pass (a chain) or now */
+        IcWriteJob *job = (IcWriteJob *)calloc(1, sizeof *job);
+        if (job == NULL) goto out;
+        snprintf(job->stem, sizeof job->stem, "%s/%s", c->out_dir, c->id);
+        job->nv = nv; job->nf = nf; job->t0 = t0;
+        for (q0 = 0; q0 < ncsv; q0++) { job->extra[q0] = csv[q0]; csv[q0].data = NULL; }
+        job->nextra = ncsv; ncsv = 0;
+        job->nrm = nrm; nrm = NULL;
+        job->report = report; report = NULL;
+        if (wr != NULL && out != NULL && !wr->keep_all && !wr->last &&
+            !(wr->previous > 0.0 && (double)nv / wr->previous - 1.0 < wr->min_gain)) {
+            job->no_mesh = 1;          /* an intermediate pass: the next pass takes the arrays, no file needs them */
+            free(job->nrm); job->nrm = NULL;
+        }
+        if (wr != NULL) wr->queued_no_mesh = job->no_mesh;
+        if (out != NULL && job->no_mesh) {
+            out->m.verts = verts; out->m.uv64 = muv; out->m.faces = faces; out->m.nv = nv; out->m.nf = nf;
+            out->attr = oa; out->chart = oc;
+            verts = NULL; muv = NULL; faces = NULL; oa = NULL; oc = NULL;
+        } else if (out != NULL) {      /* the next pass takes the arrays; the writer, copies */
+            job->verts = (float *)malloc(nv * 3 * sizeof *verts); job->muv = (double *)malloc(nv * 2 * sizeof *muv);
+            job->faces = (int32_t *)malloc(nf * 3 * sizeof *faces); job->oa = (uint8_t *)malloc(nv);
+            job->oc = (int32_t *)malloc(nv * sizeof *oc);
+            if (!job->verts || !job->muv || !job->faces || !job->oa || !job->oc) { ic_write_job_free(job); goto out; }
+            memcpy(job->verts, verts, nv * 3 * sizeof *verts); memcpy(job->muv, muv, nv * 2 * sizeof *muv);
+            memcpy(job->faces, faces, nf * 3 * sizeof *faces); memcpy(job->oa, oa, nv); memcpy(job->oc, oc, nv * sizeof *oc);
+            out->m.verts = verts; out->m.uv64 = muv; out->m.faces = faces; out->m.nv = nv; out->m.nf = nf;
+            out->attr = oa; out->chart = oc;
+            verts = NULL; muv = NULL; faces = NULL; oa = NULL; oc = NULL;
+        } else {
+            job->verts = verts; job->muv = muv; job->faces = faces; job->oa = oa; job->oc = oc;
+            verts = NULL; muv = NULL; faces = NULL; oa = NULL; oc = NULL;
+        }
+        if (wr != NULL) {
+            if (ic_writer_start(wr, job) != 0) goto out;
+        } else {
+            int wrc = ic_write_job_run(job);
+            ic_write_job_free(job);
+            if (wrc != 0) goto out;
+        }
+    }
+    ic_lap(wr != NULL ? "queue the files" : "write", &tl);
     fprintf(stderr, "[ink_closeup] completion: %zu data / %zu fill (%zu rejected); residual p50 %.4f p99 %.4f vox; "
             "torn %zu stretched + %zu floating; UV shift %.0f; normals %d agree %.4f; %zu verts %zu faces (%.1fs)\n",
             fs.data_nodes, fs.fill_nodes, fs.fill_rejected, fs.resid_p50, fs.resid_p99, fs.torn_stretch,
@@ -1636,10 +2216,619 @@ static int ic_stage_complete_surface(const IcConfig *c)
 out:
     if (fp != NULL) fclose(fp);
     if (rc) fprintf(stderr, "ERROR: surface completion failed for %s\n", c->surface_source);
+    if (rc && out != NULL) ic_surface_mem_free(out);
+    for (q0 = 0; q0 < IC_WRITE_EXTRA; q0++) free(csv[q0].data);
+    free(report); free(inward_at);
     MeshBin_dispose(&m); CloseupObs_free(&obs); CloseupGrid_free(&g); Arena_dispose(&arena);
+    CloseupFitCache_free(&fitcache);
     free(attr); free(use); free(oa); free(chart); free(fc); free(faces); free(nodes); free(oc);
     free(inward); free(verts); free(nrm); free(uv); free(uvn); free(muv);
     return rc;
+}
+
+static int ic_stage_complete_surface(const IcConfig *c)
+{
+    return ic_complete_pass(c, NULL, NULL, NULL, NULL);
+}
+
+/* "1,234,567" (a pass's progress line, as closeup_fibers.py printed it) */
+static void ic_thousands(char *buf, size_t cap, size_t value)
+{
+    char digits[32];
+    size_t n = (size_t)snprintf(digits, sizeof digits, "%zu", value), i = 0, o = 0;
+    for (i = 0; i < n && o + 2 < cap; i++) {
+        if (i > 0 && (n - i) % 3 == 0) buf[o++] = ',';
+        buf[o++] = digits[i];
+    }
+    buf[o] = 0;
+}
+
+/* Whether two stems name one file set (separators and, on Windows, case aside). */
+static int ic_same_stem(const char *a, const char *b)
+{
+    for (; *a && *b; a++, b++) {
+        int x = (unsigned char)*a, y = (unsigned char)*b;
+        if (x == '\\') x = '/';
+        if (y == '\\') y = '/';
+#ifdef _WIN32
+        if (x >= 'A' && x <= 'Z') x += 'a' - 'A';
+        if (y >= 'A' && y <= 'Z') y += 'a' - 'A';
+#endif
+        if (x != y) return 0;
+    }
+    return *a == *b;
+}
+
+/* ---- the completion stage's own files (closeup_fibers.py wrote these before 2026-10-30): pass configs, summary */
+
+#ifdef _WIN32
+#define IC_SEP '\\'
+#else
+#define IC_SEP '/'
+#endif
+
+/* A JSON number the way Python's json writes one: the shortest text that reads back as the same double, with ".0" on
+ * an integral value written as a float (as_float); null when not finite. */
+static void ic_json_shortest(char *buf, size_t cap, double v, int as_float)
+{
+    int p = 0;
+    if (!isfinite(v)) { snprintf(buf, cap, "null"); return; }
+    for (p = 1; p <= 17; p++) {
+        double back = 0.0;
+        snprintf(buf, cap, "%.*g", p, v);
+        back = strtod(buf, NULL);
+        if (memcmp(&back, &v, sizeof v) == 0) break;
+    }
+    if (as_float && strpbrk(buf, ".eEn") == NULL && strlen(buf) + 3 <= cap) strcat(buf, ".0");
+}
+
+static void ic_json_put_str(FILE *f, const char *s)
+{
+    fputc('"', f);
+    for (; *s; s++) {
+        const unsigned ch = (unsigned char)*s;
+        if (ch == '"' || ch == '\\') { fputc('\\', f); fputc((int)ch, f); }
+        else if (ch == '\n') fputs("\\n", f);
+        else if (ch == '\r') fputs("\\r", f);
+        else if (ch == '\t') fputs("\\t", f);
+        else if (ch < 0x20) fprintf(f, "\\u%04x", ch);
+        else fputc((int)ch, f);
+    }
+    fputc('"', f);
+}
+
+/* v as Python's json.dump(..., indent=1) lays it out, on a line at depth d. */
+static void ic_json_put(FILE *f, const JsonValue *v, int d)
+{
+    char num[48];
+    size_t k = 0, n = 0;
+    switch (Json_type(v)) {
+    case JSON_BOOL: fputs(Json_as_bool(v, 0) ? "true" : "false", f); break;
+    case JSON_NUMBER: ic_json_shortest(num, sizeof num, Json_as_double(v, NAN), 0); fputs(num, f); break;
+    case JSON_STRING: ic_json_put_str(f, Json_as_string(v)); break;
+    case JSON_ARRAY:
+        n = Json_array_len(v);
+        if (n == 0) { fputs("[]", f); break; }
+        fputs("[\n", f);
+        for (k = 0; k < n; k++) {
+            fprintf(f, "%*s", d + 1, "");
+            ic_json_put(f, Json_array_get(v, k), d + 1);
+            fputs(k + 1 < n ? ",\n" : "\n", f);
+        }
+        fprintf(f, "%*s]", d, "");
+        break;
+    case JSON_OBJECT:
+        n = Json_object_len(v);
+        if (n == 0) { fputs("{}", f); break; }
+        fputs("{\n", f);
+        for (k = 0; k < n; k++) {
+            fprintf(f, "%*s", d + 1, "");
+            ic_json_put_str(f, Json_object_key(v, k));
+            fputs(": ", f);
+            ic_json_put(f, Json_object_value_at(v, k), d + 1);
+            fputs(k + 1 < n ? ",\n" : "\n", f);
+        }
+        fprintf(f, "%*s}", d, "");
+        break;
+    case JSON_NULL:
+    default: fputs("null", f); break;
+    }
+}
+
+/* The same double, bit for bit (a value written and read back must be this exactly). */
+static int ic_same_bits(double a, double b)
+{
+    return memcmp(&a, &b, sizeof a) == 0;
+}
+
+/* Two parsed values the same: types, numbers bit for bit, strings, members in order. */
+static int ic_json_same(const JsonValue *a, const JsonValue *b)
+{
+    size_t k = 0;
+    if (Json_type(a) != Json_type(b)) return 0;
+    switch (Json_type(a)) {
+    case JSON_BOOL: return Json_as_bool(a, 0) == Json_as_bool(b, 0);
+    case JSON_NUMBER: return ic_same_bits(Json_as_double(a, 0.0), Json_as_double(b, 0.0));
+    case JSON_STRING: return strcmp(Json_as_string(a), Json_as_string(b)) == 0;
+    case JSON_ARRAY:
+        if (Json_array_len(a) != Json_array_len(b)) return 0;
+        for (k = 0; k < Json_array_len(a); k++) if (!ic_json_same(Json_array_get(a, k), Json_array_get(b, k))) return 0;
+        return 1;
+    case JSON_OBJECT:
+        if (Json_object_len(a) != Json_object_len(b)) return 0;
+        for (k = 0; k < Json_object_len(a); k++)
+            if (strcmp(Json_object_key(a, k), Json_object_key(b, k)) != 0 ||
+                !ic_json_same(Json_object_value_at(a, k), Json_object_value_at(b, k))) return 0;
+        return 1;
+    default: return 1;
+    }
+}
+
+/* tmp takes path's place in one step: a reader sees the old file or the new one, never half of one. */
+static int ic_replace_file(const char *tmp, const char *path)
+{
+#ifdef _WIN32
+    return MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ? 0 : -1;
+#else
+    return rename(tmp, path) == 0 ? 0 : -1;
+#endif
+}
+
+static FILE *ic_open_tmp(const char *path, char *tmp, size_t cap)
+{
+    if (snprintf(tmp, cap, "%s.tmp", path) >= (int)cap || ves_ensure_parent_dir(path) != 0) return NULL;
+    return fopen(tmp, "wb");
+}
+
+static int ic_close_tmp(FILE *f, const char *tmp, const char *path)
+{
+    int ok = !ferror(f);
+    if (fclose(f) != 0) ok = 0;
+    if (!ok || ic_replace_file(tmp, path) != 0) {
+        remove(tmp);
+        fprintf(stderr, "ERROR: cannot write %s\n", path);
+        return -1;
+    }
+    return 0;
+}
+
+/* One pass's config as the per-pass stage wrote it: its id and folder, the request's pass settings, its source. */
+static int ic_chain_write_config(const char *path, const char *id, const char *out_dir, const JsonValue *settings,
+                                 const char *source)
+{
+    char tmp[2900];
+    FILE *f = ic_open_tmp(path, tmp, sizeof tmp);
+    size_t k = 0;
+    if (f == NULL) { fprintf(stderr, "ERROR: cannot write %s\n", path); return -1; }
+    fputs("{\n \"id\": ", f); ic_json_put_str(f, id);
+    fputs(",\n \"out_dir\": ", f); ic_json_put_str(f, out_dir);
+    for (k = 0; k < Json_object_len(settings); k++) {
+        fputs(",\n ", f);
+        ic_json_put_str(f, Json_object_key(settings, k));
+        fputs(": ", f);
+        ic_json_put(f, Json_object_value_at(settings, k), 1);
+    }
+    fputs(",\n \"surface_source\": ", f); ic_json_put_str(f, source);
+    fputs("\n}", f);
+    return ic_close_tmp(f, tmp, path);
+}
+
+/* A surface's vertex count as its report records it ("vertices", else surface.verts); 0 without one. */
+static double ic_report_vertices(const char *stem)
+{
+    char path[2800];
+    const char *err = NULL;
+    Arena_T a = NULL;
+    const JsonValue *r = NULL;
+    FILE *probe = NULL;
+    double v = 0.0;
+    if (snprintf(path, sizeof path, "%s_surface_report.json", stem) >= (int)sizeof path) return 0.0;
+    probe = fopen(path, "rb");
+    if (probe == NULL) return 0.0;
+    fclose(probe);
+    a = Arena_new();
+    r = Json_parse_file(a, path, &err);
+    if (r != NULL) {
+        v = Json_member_double(r, "vertices", 0.0);
+        if (!(v > 0.0)) v = Json_member_double(Json_object_get(r, "surface"), "verts", 0.0);
+    }
+    Arena_dispose(&a);
+    return isfinite(v) && v > 0.0 ? v : 0.0;
+}
+
+/* What the summary records of one pass: vertices and gain when it ends; adopted charts and seconds from its report. */
+typedef struct IcChainPass {
+    double verts, gain;            /* gain NAN: no vertex count before it */
+    double adopted, seconds;       /* NAN: not in the report */
+    int facts;                     /* adopted / seconds read */
+} IcChainPass;
+
+static int ic_chain_pass_facts(IcChainPass *p, const char *stem)
+{
+    char path[2800];
+    const char *err = NULL;
+    Arena_T a = NULL;
+    const JsonValue *r = NULL, *ad = NULL;
+    if (p->facts) return 0;
+    if (snprintf(path, sizeof path, "%s_surface_report.json", stem) >= (int)sizeof path) return -1;
+    a = Arena_new();
+    r = Json_parse_file(a, path, &err);
+    if (r == NULL) { fprintf(stderr, "ERROR: cannot read %s (%s)\n", path, err ? err : "?"); Arena_dispose(&a); return -1; }
+    ad = Json_object_get(Json_object_get(r, "adopt"), "charts");
+    p->adopted = Json_type(ad) == JSON_NUMBER ? Json_as_double(ad, NAN) : NAN;
+    p->seconds = Json_type(Json_object_get(r, "seconds")) == JSON_NUMBER ? Json_member_double(r, "seconds", NAN) : NAN;
+    p->facts = 1;
+    Arena_dispose(&a);
+    return 0;
+}
+
+/* The close-up summary closeup_fibers.py's finish() wrote: the final pass, every pass so far, why they ended. */
+static int ic_chain_write_summary(const JsonValue *sj, const char *final_dir, const char *final_stem,
+                                  const IcChainPass *p, size_t n, const char *stop)
+{
+    const char *path = Json_as_string(Json_object_get(sj, "path"));
+    char tmp[2900], num[48];
+    FILE *f = path != NULL ? ic_open_tmp(path, tmp, sizeof tmp) : NULL;
+    size_t k = 0;
+    if (f == NULL) { fprintf(stderr, "ERROR: cannot write the close-up summary %s\n", path ? path : "(none)"); return -1; }
+    fputs("{\n \"area\": ", f); ic_json_put_str(f, Json_as_string(Json_object_get(sj, "area")));
+    fputs(",\n \"operation\": ", f); ic_json_put_str(f, Json_as_string(Json_object_get(sj, "operation")));
+    fputs(",\n \"final_dir\": ", f); ic_json_put_str(f, final_dir);
+    fputs(",\n \"final_stem\": ", f); ic_json_put_str(f, final_stem);
+    fputs(",\n \"seed_box\": ", f); ic_json_put(f, Json_object_get(sj, "seed_box"), 1);
+    fputs(",\n \"passes\": ", f);
+    if (n == 0) fputs("[]", f);
+    else {
+        fputs("[\n", f);
+        for (k = 0; k < n; k++) {
+            fprintf(f, "  {\n   \"k\": %zu,\n   \"verts\": %.0f,\n   \"gain\": ", k + 1, p[k].verts);
+            ic_json_shortest(num, sizeof num, p[k].gain, 1); fputs(num, f);
+            fputs(",\n   \"adopted\": ", f);
+            if (isfinite(p[k].adopted)) fprintf(f, "%.0f", p[k].adopted); else fputs("null", f);
+            fputs(",\n   \"seconds\": ", f);
+            ic_json_shortest(num, sizeof num, p[k].seconds, 1); fputs(num, f);
+            fputs(k + 1 < n ? "\n  },\n" : "\n  }\n", f);
+        }
+        fputs(" ]", f);
+    }
+    fputs(",\n \"stop_reason\": ", f); ic_json_put_str(f, stop);
+    fputs("\n}", f);
+    return ic_close_tmp(f, tmp, path);
+}
+
+/* The stage job's shape; NULL when it is usable, else what is wrong with it. */
+static const char *ic_chain_job_problem(const JsonValue *j)
+{
+    const JsonValue *settings = Json_object_get(j, "pass_config"), *sj = Json_object_get(j, "summary");
+    const char *schema = Json_as_string(Json_object_get(j, "schema"));
+    const double np = Json_member_double(j, "passes", NAN), gain = Json_member_double(j, "min_gain", NAN);
+    static const char *const req[] = { "base", "stem", "source" };
+    static const char *const sreq[] = { "path", "area", "operation" };
+    static const char *const own[] = { "id", "out_dir", "surface_source" };
+    size_t k = 0;
+    if (schema == NULL || strcmp(schema, "ink-closeup-complete-chain-v2") != 0) return "schema is not ink-closeup-complete-chain-v2";
+    for (k = 0; k < 3; k++) {
+        const char *v = Json_as_string(Json_object_get(j, req[k]));
+        if (v == NULL || v[0] == 0) return "base, stem and source must be strings";
+        v = Json_as_string(Json_object_get(sj, sreq[k]));
+        if (v == NULL || v[0] == 0) return "summary needs path, area and operation";
+        if (Json_object_get(settings, own[k]) != NULL) return "pass_config may not name id, out_dir or surface_source";
+    }
+    if (!(np >= 1.0 && np <= 64.0) || floor(np) != np) return "passes must be a whole number from 1 to 64";
+    if (!isfinite(gain)) return "min_gain must be a number";
+    if (Json_type(settings) != JSON_OBJECT) return "pass_config must be an object";
+    if (Json_object_get(sj, "seed_box") == NULL) return "summary needs seed_box";
+    if (Json_object_get(j, "keep_pass_meshes") != NULL && Json_type(Json_object_get(j, "keep_pass_meshes")) != JSON_BOOL)
+        return "keep_pass_meshes must be true or false";
+    return NULL;
+}
+
+static int ic_file_exists(const char *stem, const char *suffix)
+{
+    char path[2900];
+    FILE *f = NULL;
+    if (snprintf(path, sizeof path, "%s%s", stem, suffix) >= (int)sizeof path) return 0;
+    f = fopen(path, "rb");
+    if (f == NULL) return 0;
+    fclose(f);
+    return 1;
+}
+
+/* Where a retry resumes: the passes recorded in order (their reports), up to the last of them whose mesh is on disk --
+ * the next pass's source.  A pass recorded after it has no mesh (an intermediate pass) and runs again. */
+static size_t ic_chain_resume_point(char (*stems)[2048], size_t np)
+{
+    size_t k = 0, upto = 0;
+    for (k = 0; k < np; k++) {
+        if (!ic_file_exists(stems[k], "_surface_report.json")) break;
+        if (ic_file_exists(stems[k], "_surface.vmesh")) upto = k + 1;
+    }
+    return upto;
+}
+
+/* closeup_fibers.py's fiber_complete stage in one process (2026-10-30; the user: the stage "took 30.2 minutes. Get that
+ * to 2 minutes", and "make sure that everything is C and not python").  job.json {"schema":
+ * "ink-closeup-complete-chain-v2", "base", "stem", "source", "passes" (1..64), "min_gain", "pass_config": the request's
+ * pass settings, "summary": {"path", "area", "operation", "seed_box"}}.  Pass k runs in <base>/grow<k> as
+ * <stem>_grow<k> on the pass before it (pass 1 on "source"), from a config written there as the per-pass stage wrote
+ * it.  A pass whose report exists is done (a retry resumes after it); otherwise it runs on the previous pass's surface
+ * in memory, the pool meshes read once, and its files are written behind the next pass.  The passes end where a pass
+ * gains less than min_gain of the vertices before it (pass 1: the source's report), else at the pass limit.  Progress:
+ * the stage's two status lines per pass.  Only the final pass's mesh is written unless "keep_pass_meshes" (the user,
+ * 2026-10-30: write only the final completion pass's mesh -- "yes"); every pass keeps its config, report and adoption
+ * CSVs.  A retry resumes after the last recorded pass whose mesh is on disk.  The close-up summary names a pass only
+ * once its files are complete and its mesh is on disk (at the latest, the final pass at the end), with every pass's
+ * vertices, gain, adopted charts and seconds, and why the passes ended. */
+static int ic_stage_complete_chain(const char *job_path)
+{
+    Arena_T arena = Arena_new();
+    const char *err = NULL, *problem = NULL, *base = NULL, *stem = NULL, *source0 = NULL;
+    const JsonValue *j = Json_parse_file(arena, job_path, &err), *settings = NULL, *sj = NULL;
+    IcPoolCache *pc = (IcPoolCache *)calloc(1, sizeof *pc);
+    IcConfig *c = (IcConfig *)calloc(1, sizeof *c);
+    IcChainPass *pass = (IcChainPass *)calloc(64, sizeof *pass);
+    IcSurfaceMem src;
+    IcWriter wr;
+    char prev_stem[2048] = "", report[2800], count[48], folder[2048], name[256], cfg[2400];
+    char (*stems)[2048] = (char (*)[2048])calloc(64, sizeof *stems);
+    double previous = 0.0, min_gain = 0.0, t0 = ves_clock_sec();
+    size_t np = 0, k = 0, ran = 0, landed = 0, reached = 0, resume = 0;
+    int have_src = 0, rc = 1;
+    const char *stop = "pass_limit";
+    memset(&src, 0, sizeof src); memset(&wr, 0, sizeof wr);
+    if (j == NULL || pc == NULL || c == NULL || pass == NULL || stems == NULL) {
+        fprintf(stderr, "ERROR: cannot read the completion job %s (%s)\n", job_path, err ? err : "no memory");
+        goto out;
+    }
+    if ((problem = ic_chain_job_problem(j)) != NULL) { fprintf(stderr, "ERROR: %s: %s\n", job_path, problem); goto out; }
+    base = Json_as_string(Json_object_get(j, "base"));
+    stem = Json_as_string(Json_object_get(j, "stem"));
+    source0 = Json_as_string(Json_object_get(j, "source"));
+    settings = Json_object_get(j, "pass_config");
+    sj = Json_object_get(j, "summary");
+    np = (size_t)Json_member_double(j, "passes", 1.0);
+    min_gain = Json_member_double(j, "min_gain", 0.01);
+    wr.keep_all = Json_as_bool(Json_object_get(j, "keep_pass_meshes"), 0);
+    wr.min_gain = min_gain;
+    previous = ic_report_vertices(source0);
+    for (k = 0; k < np; k++)
+        if (snprintf(folder, sizeof folder, "%s%cgrow%zu", base, IC_SEP, k + 1) >= (int)sizeof folder ||
+            snprintf(name, sizeof name, "%s_grow%zu", stem, k + 1) >= (int)sizeof name ||
+            snprintf(stems[k], sizeof stems[k], "%s%c%s", folder, IC_SEP, name) >= (int)sizeof stems[k]) {
+            fprintf(stderr, "ERROR: pass %zu: path too long under %s\n", k + 1, base);
+            goto out;
+        }
+    resume = ic_chain_resume_point(stems, np);
+    for (k = 0; k < np; k++) {
+        double verts = 0.0;
+        int ran_here = 0;
+        snprintf(folder, sizeof folder, "%s%cgrow%zu", base, IC_SEP, k + 1);
+        snprintf(name, sizeof name, "%s_grow%zu", stem, k + 1);
+        if (snprintf(cfg, sizeof cfg, "%s%c%s.json", folder, IC_SEP, name) >= (int)sizeof cfg) {
+            fprintf(stderr, "ERROR: pass %zu: path too long under %s\n", k + 1, base);
+            goto out;
+        }
+        if (ic_chain_write_config(cfg, name, folder, settings, k == 0 ? source0 : prev_stem) != 0) goto out;
+        free(c->chart_wrap);
+        if (ic_config(cfg, c) != 0) { fprintf(stderr, "ERROR: pass %zu: cannot read %s\n", k + 1, cfg); goto out; }
+        printf("[orch] status Close-up completion pass %zu of %zu\n", k + 1, np);
+        fflush(stdout);
+        snprintf(report, sizeof report, "%s_surface_report.json", stems[k]);
+        if (k < resume) {              /* done before (a retry): its files, not memory, are the next source */
+            verts = ic_report_vertices(stems[k]);
+            if (!(verts > 0.0)) { fprintf(stderr, "ERROR: %s holds no surface\n", report); goto out; }
+            if (have_src) { ic_surface_mem_free(&src); have_src = 0; }
+            if (ic_writer_wait(&wr) != 0) goto out;
+            fprintf(stderr, "[ink_closeup] chain: pass %zu was complete (%s)\n", k + 1, report);
+        } else {
+            IcSurfaceMem next;
+            const int mem = have_src && ic_same_stem(c->surface_source, prev_stem);
+            if (have_src && !mem) { ic_surface_mem_free(&src); have_src = 0; }
+            if (!mem && ic_writer_wait(&wr) != 0) goto out;      /* a source on disk must have landed */
+            wr.last = k + 1 == np;
+            wr.previous = previous;
+            if (ic_complete_pass(c, mem ? &src : NULL, &next, pc, &wr) != 0) goto out;
+            src = next; have_src = 1; ran++; ran_here = 1;
+            verts = (double)next.m.nv;
+        }
+        reached = k + 1;
+        memcpy(prev_stem, stems[k], strlen(stems[k]) + 1);
+        pass[k].verts = verts;
+        pass[k].gain = previous > 0.0 ? verts / previous - 1.0 : NAN;
+        pass[k].adopted = pass[k].seconds = NAN;
+        ic_thousands(count, sizeof count, (size_t)verts);
+        if (previous > 0.0) printf("[orch] status Close-up pass %zu: %s vertices; %+.1f%% change\n", k + 1, count,
+                                   pass[k].gain * 100.0);
+        else printf("[orch] status Close-up pass %zu: %s vertices; initial completion\n", k + 1, count);
+        fflush(stdout);
+        {   /* the passes whose files are complete: before this one when it was queued here, else this one too */
+            const size_t now = ran_here ? k : k + 1;
+            if (now > landed && ic_file_exists(stems[now - 1], "_surface.vmesh")) {
+                size_t q = 0;
+                for (q = 0; q < now; q++) if (ic_chain_pass_facts(&pass[q], stems[q]) != 0) goto out;
+                landed = now;
+                snprintf(folder, sizeof folder, "%s%cgrow%zu", base, IC_SEP, landed);
+                snprintf(name, sizeof name, "%s_grow%zu", stem, landed);
+                if (ic_chain_write_summary(sj, folder, name, pass, landed, "continuing") != 0) goto out;
+            }
+        }
+        if (previous > 0.0 && pass[k].gain < min_gain) {
+            stop = "min_gain";
+            if (ran_here && wr.queued_no_mesh) { fprintf(stderr, "ERROR: pass %zu ended the passes without its mesh\n", k + 1); goto out; }
+            break;
+        }
+        previous = verts;
+    }
+    if (ic_writer_wait(&wr) != 0) goto out;
+    if (reached == 0 || !ic_file_exists(stems[reached - 1], "_surface.vmesh")) {
+        fprintf(stderr, "ERROR: the final pass %zu has no mesh on disk\n", reached);
+        goto out;
+    }
+    for (k = 0; k < reached; k++) if (ic_chain_pass_facts(&pass[k], stems[k]) != 0) goto out;
+    snprintf(folder, sizeof folder, "%s%cgrow%zu", base, IC_SEP, reached);
+    snprintf(name, sizeof name, "%s_grow%zu", stem, reached);
+    if (ic_chain_write_summary(sj, folder, name, pass, reached, stop) != 0) goto out;
+    fprintf(stderr, "[ink_closeup] chain: %zu of %zu passes run here, ended by %s (%.1fs)\n", ran, np, stop,
+            ves_clock_sec() - t0);
+    rc = 0;
+out:
+    if (ic_writer_wait(&wr) != 0) rc = 1;
+    if (have_src) ic_surface_mem_free(&src);
+    if (pc != NULL) ic_pool_cache_free(pc);
+    if (c != NULL) free(c->chart_wrap);
+    free(pc); free(c); free(pass); free(stems);
+    Arena_dispose(&arena);
+    return rc;
+}
+
+/* The stage's files without a close-up: pass configs, report vertex counts, the summary, numbers, the job check. */
+static int ic_chain_selftest(void)
+{
+    char dir[600], path[800], stem[800], num[48];
+    const char *err = NULL;
+    int fails = 0;
+    size_t k = 0;
+    Arena_T a = Arena_new();
+    const char *settings_text =
+        "{\"layout\": \"D:\\\\vesuvius\\\\takein\\\\x\\\\closeup_context\", \"voxel_um\": 8.64, \"z_top_to_bottom\": true,"
+        " \"seed_box\": [15636359.760440797, 14.0, 1e-7, -3], \"grow_px\": 0, \"complete_gaps\": true,"
+        " \"adopt\": {\"rounds\": 3}, \"empty\": {}, \"none\": [], \"q\": \"a \\\"quoted\\\" \\\\ name\\n\", \"n\": null}";
+    const JsonValue *settings = Json_parse(a, settings_text, &err), *back = NULL;
+    static const double nums[] = { 0.1, 1.0 / 3.0, 1e-7, 262.57, 14.0, 1e300, 6800516.0, -0.0, 0.14372101917319613,
+                                   -0.02, 1e16, 123456.0, 5e-324 };
+    if (ves_selftest_dir(dir, sizeof dir, "ink_closeup_chain") != 0 || settings == NULL) { Arena_dispose(&a); return 1; }
+    for (k = 0; k < sizeof nums / sizeof nums[0]; k++) {   /* shortest text, read back bit for bit */
+        double v = 0.0;
+        ic_json_shortest(num, sizeof num, nums[k], 1);
+        v = strtod(num, NULL);
+        if (memcmp(&v, &nums[k], sizeof v) != 0) fails++;
+    }
+    ic_json_shortest(num, sizeof num, 14.0, 1); if (strcmp(num, "14.0") != 0) fails++;
+    ic_json_shortest(num, sizeof num, 14.0, 0); if (strcmp(num, "14") != 0) fails++;
+    ic_json_shortest(num, sizeof num, 1e-5, 1); if (strcmp(num, "1e-05") != 0) fails++;
+    ic_json_shortest(num, sizeof num, 0.1, 1); if (strcmp(num, "0.1") != 0) fails++;
+    ic_json_shortest(num, sizeof num, NAN, 1); if (strcmp(num, "null") != 0) fails++;
+    snprintf(path, sizeof path, "%s/grow1/x_grow1.json", dir);
+    if (ic_chain_write_config(path, "x_grow1", "D:\\out\\grow1", settings, "D:\\src \"stem\"") != 0) fails++;
+    else if ((back = Json_parse_file(a, path, &err)) == NULL) fails++;
+    else {
+        if (strcmp(Json_as_string(Json_object_get(back, "id")), "x_grow1") != 0 ||
+            strcmp(Json_as_string(Json_object_get(back, "out_dir")), "D:\\out\\grow1") != 0 ||
+            strcmp(Json_as_string(Json_object_get(back, "surface_source")), "D:\\src \"stem\"") != 0) fails++;
+        if (Json_object_len(back) != Json_object_len(settings) + 3) fails++;
+        for (k = 0; k < Json_object_len(settings); k++)
+            if (strcmp(Json_object_key(back, k + 2), Json_object_key(settings, k)) != 0 ||
+                !ic_json_same(Json_object_value_at(back, k + 2), Json_object_value_at(settings, k))) fails++;
+    }
+    {   /* report vertex counts: "vertices" first, then surface.verts, else none */
+        static const char *const reports[] = { "{\"vertices\": 5945957, \"surface\": {\"verts\": 1}}",
+                                               "{\"surface\": {\"verts\": 77}}", "{\"vertices\": 0, \"surface\": {\"verts\": 5}}",
+                                               "{}" };
+        static const double want[] = { 5945957.0, 77.0, 5.0, 0.0 };
+        for (k = 0; k < 4; k++) {
+            FILE *f = NULL;
+            snprintf(stem, sizeof stem, "%s/r%zu", dir, k);
+            snprintf(path, sizeof path, "%s_surface_report.json", stem);
+            f = fopen(path, "wb");
+            if (f == NULL) { fails++; continue; }
+            fputs(reports[k], f);
+            fclose(f);
+            if (!ic_same_bits(ic_report_vertices(stem), want[k])) fails++;
+        }
+        snprintf(stem, sizeof stem, "%s/absent", dir);
+        if (!ic_same_bits(ic_report_vertices(stem), 0.0)) fails++;
+    }
+    {   /* the summary: two passes, a null gain and a null adopted count, read back */
+        IcChainPass p[2];
+        char sjt[1200], bs[900], ps[900];
+        const JsonValue *sj = NULL, *sb = NULL, *pp = NULL;
+        FILE *f = NULL;
+        memset(p, 0, sizeof p);
+        p[0].verts = 6800516; p[0].gain = NAN; p[0].adopted = 300; p[0].seconds = 262.57;
+        p[1].verts = 7564718; p[1].gain = 0.11237411984619983; p[1].adopted = NAN; p[1].seconds = 262.0;
+        snprintf(path, sizeof path, "%s/cu_x_closeup_summary.json", dir);
+        ic_json_str(ps, sizeof ps, path);
+        snprintf(sjt, sizeof sjt, "{\"path\": %s, \"area\": \"cu_x\", \"operation\": \"align-closeup\", "
+                 "\"seed_box\": [15636359.760440797, 14.0, 15645124.760440797, 3594.0]}", ps);
+        sj = Json_parse(a, sjt, &err);
+        if (sj == NULL || ic_chain_write_summary(sj, "D:\\out\\grow2", "x_grow2", p, 2, "min_gain") != 0) fails++;
+        else if ((sb = Json_parse_file(a, path, &err)) == NULL) fails++;
+        else {
+            pp = Json_object_get(sb, "passes");
+            if (strcmp(Json_as_string(Json_object_get(sb, "area")), "cu_x") != 0 ||
+                strcmp(Json_as_string(Json_object_get(sb, "operation")), "align-closeup") != 0 ||
+                strcmp(Json_as_string(Json_object_get(sb, "final_dir")), "D:\\out\\grow2") != 0 ||
+                strcmp(Json_as_string(Json_object_get(sb, "final_stem")), "x_grow2") != 0 ||
+                strcmp(Json_as_string(Json_object_get(sb, "stop_reason")), "min_gain") != 0 ||
+                !ic_json_same(Json_object_get(sb, "seed_box"), Json_object_get(sj, "seed_box")) ||
+                Json_array_len(pp) != 2) fails++;
+            else {
+                const JsonValue *p0 = Json_array_get(pp, 0), *p1 = Json_array_get(pp, 1);
+                if (!ic_same_bits(Json_member_double(p0, "k", 0), 1.0) ||
+                    !ic_same_bits(Json_member_double(p0, "verts", 0), 6800516.0) ||
+                    Json_type(Json_object_get(p0, "gain")) != JSON_NULL ||
+                    !ic_same_bits(Json_member_double(p0, "adopted", 0), 300.0) ||
+                    !ic_same_bits(Json_member_double(p0, "seconds", 0), 262.57)) fails++;
+                if (!ic_same_bits(Json_member_double(p1, "k", 0), 2.0) ||
+                    !ic_same_bits(Json_member_double(p1, "gain", 0), 0.11237411984619983) ||
+                    Json_type(Json_object_get(p1, "adopted")) != JSON_NULL ||
+                    !ic_same_bits(Json_member_double(p1, "seconds", 0), 262.0)) fails++;
+            }
+        }
+        f = fopen(path, "rb");     /* no leftover temporary beside it */
+        if (f != NULL) fclose(f);
+        snprintf(bs, sizeof bs, "%s.tmp", path);
+        f = fopen(bs, "rb");
+        if (f != NULL) { fclose(f); fails++; }
+    }
+    {   /* the resume point: reports in order, up to the last pass with its mesh */
+        static char st[5][2048];
+        static const int has_report[5] = { 1, 1, 1, 1, 0 }, has_mesh[5] = { 0, 1, 0, 0, 1 };
+        size_t q = 0;
+        for (q = 0; q < 5; q++) {
+            FILE *f = NULL;
+            snprintf(st[q], sizeof st[q], "%s/rp%zu", dir, q);
+            snprintf(path, sizeof path, "%s_surface_report.json", st[q]);
+            if (has_report[q] && (f = fopen(path, "wb")) != NULL) { fputs("{}", f); fclose(f); }
+            snprintf(path, sizeof path, "%s_surface.vmesh", st[q]);
+            if (has_mesh[q] && (f = fopen(path, "wb")) != NULL) fclose(f);
+        }
+        if (ic_chain_resume_point(st, 5) != 2) fails++;           /* pass 2 has the last mesh; 3, 4 run again */
+        if (ic_chain_resume_point(st, 1) != 0) fails++;           /* pass 1: recorded, no mesh */
+        snprintf(path, sizeof path, "%s_surface.vmesh", st[3]);
+        { FILE *f = fopen(path, "wb"); if (f) fclose(f); }
+        if (ic_chain_resume_point(st, 5) != 4) fails++;           /* pass 5 has a mesh but no report: not recorded */
+    }
+    {   /* the job check */
+        static const char *const bad[] = {
+            "{\"schema\": \"ink-closeup-complete-chain-v1\"}",
+            "{\"schema\": \"ink-closeup-complete-chain-v2\", \"base\": \"b\", \"stem\": \"s\", \"source\": \"x\", \"passes\": 0,"
+            " \"min_gain\": 0.01, \"pass_config\": {}, \"summary\": {\"path\": \"p\", \"area\": \"a\", \"operation\": \"o\", \"seed_box\": []}}",
+            "{\"schema\": \"ink-closeup-complete-chain-v2\", \"base\": \"b\", \"stem\": \"s\", \"source\": \"x\", \"passes\": 2.5,"
+            " \"min_gain\": 0.01, \"pass_config\": {}, \"summary\": {\"path\": \"p\", \"area\": \"a\", \"operation\": \"o\", \"seed_box\": []}}",
+            "{\"schema\": \"ink-closeup-complete-chain-v2\", \"base\": \"b\", \"stem\": \"s\", \"source\": \"x\", \"passes\": 65,"
+            " \"min_gain\": 0.01, \"pass_config\": {}, \"summary\": {\"path\": \"p\", \"area\": \"a\", \"operation\": \"o\", \"seed_box\": []}}",
+            "{\"schema\": \"ink-closeup-complete-chain-v2\", \"base\": \"b\", \"stem\": \"s\", \"source\": \"x\", \"passes\": 6,"
+            " \"min_gain\": 0.01, \"pass_config\": {\"id\": \"no\"}, \"summary\": {\"path\": \"p\", \"area\": \"a\", \"operation\": \"o\", \"seed_box\": []}}",
+            "{\"schema\": \"ink-closeup-complete-chain-v2\", \"base\": \"b\", \"stem\": \"s\", \"source\": \"x\", \"passes\": 6,"
+            " \"min_gain\": 0.01, \"pass_config\": {}, \"summary\": {\"path\": \"p\", \"area\": \"a\", \"operation\": \"o\"}}",
+            "{\"schema\": \"ink-closeup-complete-chain-v2\", \"base\": \"b\", \"stem\": \"s\", \"source\": \"x\", \"passes\": 6,"
+            " \"min_gain\": 0.01, \"keep_pass_meshes\": 1, \"pass_config\": {}, \"summary\": {\"path\": \"p\", \"area\": \"a\","
+            " \"operation\": \"o\", \"seed_box\": []}}" };
+        const char *good = "{\"schema\": \"ink-closeup-complete-chain-v2\", \"base\": \"b\", \"stem\": \"s\", \"source\": \"x\","
+                           " \"passes\": 6, \"min_gain\": 0.01, \"pass_config\": {\"layout\": \"l\"}, \"summary\": {\"path\": \"p\","
+                           " \"area\": \"a\", \"operation\": \"o\", \"seed_box\": [1, 2, 3, 4]}}";
+        for (k = 0; k < sizeof bad / sizeof bad[0]; k++) {
+            const JsonValue *jb = Json_parse(a, bad[k], &err);
+            if (jb == NULL || ic_chain_job_problem(jb) == NULL) fails++;
+        }
+        if (ic_chain_job_problem(Json_parse(a, good, &err)) != NULL) fails++;
+    }
+    Arena_dispose(&a);
+    fprintf(stderr, "  completion stage files (pass configs, report vertices, summary, numbers, resume point, job check): %s\n",
+            fails ? "FAIL" : "ok");
+    if (!fails) (void)ves_selftest_clean(dir);
+    return fails;
 }
 
 /* ------------------------------------------------------------------ grow */
@@ -2182,7 +3371,7 @@ static int ic_stage_grow(const IcConfig *c)
             /* tiled: a chart with adopted tiles is read again for the rest, its adopted tiles marked done */
             if (ic_pool_load(c->pool[k].path, c->pool[k].surface, axis, all_lo, all_hi, nuse,
                              c->grow_tile_px > 0.0 ? NULL : adopted[k].on, c->grow_tile_px > 0.0 ? 0 : adopted[k].n,
-                             &pool) != 0) {
+                             0, &pool) != 0) {
                 ic_near_free(&nreg);
                 goto out;
             }
@@ -2211,7 +3400,7 @@ static int ic_stage_grow(const IcConfig *c)
                 CloseupPlacement *pl = NULL;
                 CloseupAdoptStats ast;
                 size_t npl = 0, p = 0;
-                if (ic_adopt_round(c, &g, &pool, done, k, (int)reads_done * 64 + round, &pl, &npl, &ast) != 0) {
+                if (ic_adopt_round(c, &g, &pool, done, k, (int)reads_done * 64 + round, &pl, &npl, &ast, NULL) != 0) {
                     free(puv); free(done); ic_pool_free(&pool); ic_near_free(&nreg);
                     goto out;
                 }
@@ -3910,6 +5099,7 @@ static int ic_selftest(void)
     int ct = CloseupCtTrack_selftest() || CloseupImport_selftest() || CloseupSeed_selftest();
     int ac = ic_selftest_adopt_config();
     int tiles = Rawtex_tiled_selftest();
+    int speed = KDTree_selftest() != 0 || MeshNormals_selftest() != 0;   /* the completion speed paths (2026-10-30) */
     /* A full-line selection includes small islands, regardless of a neighbour's area. */
     if (ic_seed_selected(500000,32000000,0) || !ic_seed_selected(500000,32000000,1) ||
         ic_seed_selected(0,32000000,1) || !ic_seed_selected(1,32000000,1) ||
@@ -3937,11 +5127,14 @@ static int ic_selftest(void)
             e ? "FAIL" : "ok");
     fprintf(stderr, "[ink_closeup] ct tracking selftest: %s; adopt config overrides: %s\n", ct ? "FAIL" : "ok",
             ac ? "FAIL" : "ok");
-    fprintf(stderr, "[ink_closeup] full-line render plan: %s\n", rp ? "FAIL" : "ok");
+    fprintf(stderr, "[ink_closeup] full-line render plan: %s; parallel kd-tree and pool normals: %s\n", rp ? "FAIL" : "ok",
+            speed ? "FAIL" : "ok");
+    if (speed) rp = 1;
     {
-        int mci = MeshChartIndex_selftest(), nrt = ic_near_selftest();
-        fprintf(stderr, "[ink_closeup] chart index: %s; pool near region: %s\n", mci ? "FAIL" : "ok", nrt ? "FAIL" : "ok");
-        if (mci || nrt) rp = 1;
+        int mci = MeshChartIndex_selftest(), nrt = ic_near_selftest(), chn = ic_chain_selftest();
+        fprintf(stderr, "[ink_closeup] chart index: %s; pool near region: %s; completion stage files: %s\n",
+                mci ? "FAIL" : "ok", nrt ? "FAIL" : "ok", chn ? "FAIL" : "ok");
+        if (mci || nrt || chn) rp = 1;
     }
     {
         int cp = ChartPool_selftest(), gr = ic_grow_selftest(0.0, 0), tl = ic_tile_selftest(), gt = ic_grow_selftest(48.0, 0);
@@ -3986,6 +5179,7 @@ int main(int argc, char **argv)
     const char *stop = "render";
     char probe[2600];
     int i = 0;
+    ves_prof_start_from_env();         /* VES_PROF_OUT=<file>: the sampling profiler (diagnostics only) */
     if (argc >= 2 && strcmp(argv[1], "--selftest") == 0) return ic_selftest();
     if (argc == 2 && strcmp(argv[1], "--reparameterize-selftest") == 0) return ic_reparameterize_selftest();
     if (argc == 2 && strcmp(argv[1], "--slim-selftest") == 0) return SlimRefine_selftest();
@@ -4026,12 +5220,14 @@ int main(int argc, char **argv)
                         "       ink_closeup <config.json> --ct-track-audit   (CT-only traces; no surface modification)\n"
                         "       ink_closeup <config.json> --reflatten <source id>_grid.cgrid   (a growth's last steps again)\n"
                         "       ink_closeup <config.json> --reuv <fiber_flatten out dir>   (the surface into the fibre frame)\n"
+                        "       ink_closeup <job.json> --complete-chain     (the fiber_complete stage: every pass in one process)\n"
                         "       ink_closeup --build-index <mesh.vmesh> <chart.i32>   (the <mesh>.chartidx pager)\n"
                         "       ink_closeup --import-surface <reading.vmesh> <chart.i32> <new output stem> [charts.csv]\n"
                         "       ink_closeup --pool-from-store <chart store dir> <out dir> [z0 z1 y0 y1 x0 x1]   (an adoption pool)\n"
                         "       ink_closeup --selftest\n");
         return 1;
     }
+    if (argc == 3 && strcmp(argv[2], "--complete-chain") == 0) return ic_stage_complete_chain(argv[1]) != 0;
     if (argc == 3 && strcmp(argv[2], "--ct-track-audit") == 0) {
         char stem[2600];
         if (ic_config(argv[1], &c) != 0 || !c.ct_track_configured || !c.surface_source[0]) return 1;

@@ -40,6 +40,9 @@ static int cs_obs_reserve(CloseupObs *o, size_t cap)
     float *uv = NULL, *p = NULL, *w = NULL;
     int32_t *c = NULL;
     if (cap <= o->cap) return 0;
+    /* Geometric growth: the completion adds one adopted chart at a time, and an exact-size realloc
+     * copied every observation once per chart (~40 s a completion pass, 2026-10-30). */
+    if (cap < o->cap + o->cap / 4) cap = o->cap + o->cap / 4;
     uv = (float *)realloc(o->uv, cap * 2 * sizeof *uv);
     if (uv == NULL) return -1;
     o->uv = uv;
@@ -618,27 +621,30 @@ static long cs_cell(const CloseupGrid *g, double u, double v)
 static int cs_bin(const CloseupGrid *g, const CloseupObs *o, CsBins *b)
 {
     size_t nn = g->ni * g->nj, k = 0, *fill = NULL;
+    int32_t *cell = NULL;
+    long lk = 0;
     memset(b, 0, sizeof *b);
-    if (o->n >= (size_t)UINT32_MAX) return -1;
+    if (o->n >= (size_t)UINT32_MAX || nn >= (size_t)INT32_MAX) return -1;
     b->off = (size_t *)calloc(nn + 1, sizeof *b->off);
     b->idx = (uint32_t *)malloc((o->n ? o->n : 1) * sizeof *b->idx);
     fill = (size_t *)malloc((nn + 1) * sizeof *fill);
-    if (b->off == NULL || b->idx == NULL || fill == NULL) {
-        free(b->off); free(b->idx); free(fill);
+    cell = (int32_t *)malloc((o->n ? o->n : 1) * sizeof *cell);
+    if (b->off == NULL || b->idx == NULL || fill == NULL || cell == NULL) {
+        free(b->off); free(b->idx); free(fill); free(cell);
         memset(b, 0, sizeof *b);
         return -1;
     }
-    for (k = 0; k < o->n; k++) {
-        long c = cs_cell(g, o->uv[k * 2], o->uv[k * 2 + 1]);
-        if (c >= 0) b->off[(size_t)c + 1]++;
-    }
+    /* each observation's cell in parallel; the counting sort stays one pass in observation order */
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+    for (lk = 0; lk < (long)o->n; lk++)
+        cell[lk] = (int32_t)cs_cell(g, o->uv[(size_t)lk * 2], o->uv[(size_t)lk * 2 + 1]);
+    for (k = 0; k < o->n; k++) if (cell[k] >= 0) b->off[(size_t)cell[k] + 1]++;
     for (k = 0; k < nn; k++) b->off[k + 1] += b->off[k];
     memcpy(fill, b->off, (nn + 1) * sizeof *fill);
-    for (k = 0; k < o->n; k++) {
-        long c = cs_cell(g, o->uv[k * 2], o->uv[k * 2 + 1]);
-        if (c >= 0) b->idx[fill[c]++] = (uint32_t)k;
-    }
-    free(fill);
+    for (k = 0; k < o->n; k++) if (cell[k] >= 0) b->idx[fill[cell[k]]++] = (uint32_t)k;
+    free(fill); free(cell);
     return 0;
 }
 
@@ -648,37 +654,429 @@ static void cs_bins_free(CsBins *b)
     memset(b, 0, sizeof *b);
 }
 
-/* One data fit at node n from the binned observations; 0 = fitted. */
-static int cs_fit_data_node(CloseupGrid *g, const CloseupObs *o, const CsBins *b, size_t i, size_t j,
-                            const CloseupFitOpts *opt, int record_nearest)
+/* The binned observations copied into bin order (CsBins.idx), so a node's fit reads its cells' observations
+ * contiguously instead of gathering them from the whole set; the weights follow each robust round. */
+typedef struct CsPacked {
+    float *uv, *p, *w;
+    int32_t *chart;
+    uint8_t *code;      /* the observation's quadrant of its cell (CsLattice), CS_OFF_LATTICE when it is off it */
+} CsPacked;
+
+#define CS_OFF_LATTICE 0x80u
+
+static void cs_packed_free(CsPacked *pk)
 {
-    const double R = opt->fit_px, inv = 1.0 / R, s2 = 2.0 * (0.5 * R) * (0.5 * R);
-    const long rc = (long)ceil(R / g->h) + 1;
+    free(pk->uv); free(pk->p); free(pk->w); free(pk->chart); free(pk->code);
+    memset(pk, 0, sizeof *pk);
+}
+
+static void cs_packed_weights(const CloseupObs *o, const CsBins *b, size_t nb, CsPacked *pk)
+{
+    long t = 0;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+    for (t = 0; t < (long)nb; t++) pk->w[t] = o->w[b->idx[t]];
+}
+
+/* The lattice the data fit's table assumes (CsLattice): cells of 2 px whose centres are exact integers, so an
+ * observation at a pixel centre sits exactly a half pixel off its cell's centre in each axis. */
+static int cs_lattice_grid(const CloseupGrid *g)
+{
+    return g->h == 2.0 && g->u0 == floor(g->u0) && g->v0 == floor(g->v0) && fabs(g->u0) < 1e9 && fabs(g->v0) < 1e9 &&
+           (double)g->ni < 1e8 && (double)g->nj < 1e8;
+}
+
+static int cs_pack(const CloseupGrid *g, const CloseupObs *o, const CsBins *b, size_t nn, CsPacked *pk)
+{
+    const size_t nb = b->off[nn];
+    const int lattice = cs_lattice_grid(g);
+    long t = 0, c = 0;
+    memset(pk, 0, sizeof *pk);
+    pk->uv = (float *)malloc((nb ? nb : 1) * 2 * sizeof *pk->uv);
+    pk->p = (float *)malloc((nb ? nb : 1) * 3 * sizeof *pk->p);
+    pk->w = (float *)malloc((nb ? nb : 1) * sizeof *pk->w);
+    pk->chart = (int32_t *)malloc((nb ? nb : 1) * sizeof *pk->chart);
+    pk->code = (uint8_t *)malloc(nb ? nb : 1);
+    if (pk->uv == NULL || pk->p == NULL || pk->w == NULL || pk->chart == NULL || pk->code == NULL) {
+        cs_packed_free(pk);
+        return -1;
+    }
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+    for (t = 0; t < (long)nb; t++) {
+        const size_t k = b->idx[t];
+        pk->uv[t * 2] = o->uv[k * 2]; pk->uv[t * 2 + 1] = o->uv[k * 2 + 1];
+        pk->p[t * 3] = o->p[k * 3]; pk->p[t * 3 + 1] = o->p[k * 3 + 1]; pk->p[t * 3 + 2] = o->p[k * 3 + 2];
+        pk->chart[t] = o->chart[k];
+    }
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static, 4096)
+#endif
+    for (c = 0; c < (long)nn; c++) {   /* each observation's quadrant of its cell, or off the lattice */
+        const double ccx = g->u0 + g->h * (double)((size_t)c % g->ni), ccy = g->v0 + g->h * (double)((size_t)c / g->ni);
+        size_t tt = 0;
+        for (tt = b->off[c]; tt < b->off[c + 1]; tt++) {
+            const double dx = (double)pk->uv[tt * 2] - ccx, dy = (double)pk->uv[tt * 2 + 1] - ccy;
+            unsigned code = CS_OFF_LATTICE;
+            if (lattice && (dx == 0.5 || dx == -0.5) && (dy == 0.5 || dy == -0.5))
+                code = (dx > 0.0 ? 1u : 0u) | (dy > 0.0 ? 2u : 0u);
+            pk->code[tt] = (uint8_t)code;
+        }
+    }
+    cs_packed_weights(o, b, nb, pk);
+    return 0;
+}
+
+/* The data fit's Gaussian exp(-r2 / s2) by table where it is exact: observations sit at pixel centres and a
+ * node's centre at an even number of pixels (CloseupGrid_alloc floors to the 2 px lattice), so r2 is a half
+ * integer; the table holds exp of that same double.  Any other r2 takes exp itself. */
+#define CS_GAUSS_TAB 1024
+typedef struct CsGauss {
+    double s2, tab[CS_GAUSS_TAB];
+    long n;
+} CsGauss;
+
+static void cs_gauss_init(CsGauss *ga, double R)
+{
+    long m = 0;
+    ga->s2 = 2.0 * (0.5 * R) * (0.5 * R);     /* cs_fit_data_node's own expression */
+    ga->n = R * R < (double)CS_GAUSS_TAB ? (long)floor(R * R) + 1 : CS_GAUSS_TAB;
+    if (!(ga->n > 0)) ga->n = 0;
+    if (ga->n > CS_GAUSS_TAB) ga->n = CS_GAUSS_TAB;
+    for (m = 0; m < ga->n; m++) {
+        const double r2 = (double)m + 0.5;
+        ga->tab[m] = exp(-r2 / ga->s2);
+    }
+}
+
+static double cs_gauss(const CsGauss *ga, double r2)
+{
+    if (r2 >= 0.5) {
+        const long m = (long)(r2 - 0.5);
+        if (m < ga->n && (double)m + 0.5 == r2) return ga->tab[m];
+    }
+    return exp(-r2 / ga->s2);
+}
+
+#if defined(_M_X64) || defined(_M_AMD64) || defined(__SSE2__)
+#include <emmintrin.h>
+#define CS_SSE2 1
+#endif
+
+/* The cells a node's fit can draw from: row offsets -rc..rc, and for each the column half-width whose cells come
+ * within R of the node centre (a cell spans +-h/2 around its node).  Cells beyond hold no observation inside R, so
+ * dropping them changes no sum. */
+typedef struct CsWindow {
+    long rc, half[256];
+} CsWindow;
+
+static int cs_window_init(CsWindow *wn, double R, double h)
+{
+    const double lim = R * R * (1.0 + 1e-9) + 1e-6;
+    long dj = 0, di = 0;
+    wn->rc = (long)ceil(R / h) + 1;
+    if (wn->rc < 0 || 2 * wn->rc + 1 > 256) return -1;
+    for (dj = -wn->rc; dj <= wn->rc; dj++) {
+        const double my = fmax(0.0, h * (double)labs(dj) - 0.5 * h);
+        long half = -1;
+        for (di = 0; di <= wn->rc; di++) {
+            const double mx = fmax(0.0, h * (double)di - 0.5 * h);
+            if (mx * mx + my * my <= lim) half = di;
+        }
+        wn->half[dj + wn->rc] = half;
+    }
+    return 0;
+}
+
+/* The data fit's per-observation terms on the lattice (cs_lattice_grid): seen from a node, an observation in the
+ * cell at offset (di, dj) sits at dx = 2 di +- 1/2, dy = 2 dj +- 1/2 exactly -- its quadrant code says which -- so
+ * r2, the disc test, the Gaussian and the quadric's basis are the values the fit computes from its coordinates,
+ * formed here once by the same expressions. */
+typedef struct CsLatticeTerm {
+    double ph0123[4];        /* (1, p1, p2, p1 p1): p1 = dx inv, p2 = dy inv */
+    double ph45[2];          /* (p1 p2, p2 p2) */
+    double r2, g;            /* dx dx + dy dy, cs_gauss(r2) */
+    int inside;              /* !(r2 > R R) */
+    int pad[3];
+} CsLatticeTerm;
+
+typedef struct CsLattice {
+    int on;
+    long rc, side;           /* offsets -rc..rc; side 2 rc + 1 */
+    CsLatticeTerm *t;        /* [((dj + rc) side + di + rc) 4 + code] */
+} CsLattice;
+
+static void cs_lattice_free(CsLattice *lt)
+{
+#if defined(_MSC_VER)
+    _aligned_free(lt->t);
+#else
+    free(lt->t);
+#endif
+    memset(lt, 0, sizeof *lt);
+}
+
+static int cs_lattice_init(CsLattice *lt, const CloseupGrid *g, const CloseupFitOpts *opt, const CsGauss *ga,
+                           const CsWindow *wn)
+{
+    const double R = opt->fit_px, inv = 1.0 / R;
+    long dj = 0, di = 0;
+    unsigned code = 0;
+    memset(lt, 0, sizeof *lt);
+    if (!cs_lattice_grid(g)) return 0;
+    lt->rc = wn->rc; lt->side = 2 * wn->rc + 1;
+#if defined(_MSC_VER)
+    lt->t = (CsLatticeTerm *)_aligned_malloc((size_t)(lt->side * lt->side * 4) * sizeof *lt->t, 64);
+#else
+    lt->t = (CsLatticeTerm *)malloc((size_t)(lt->side * lt->side * 4) * sizeof *lt->t);
+#endif
+    if (lt->t == NULL) return -1;
+    for (dj = -lt->rc; dj <= lt->rc; dj++)
+        for (di = -lt->rc; di <= lt->rc; di++)
+            for (code = 0; code < 4; code++) {
+                CsLatticeTerm *e = &lt->t[(size_t)(((dj + lt->rc) * lt->side + di + lt->rc) * 4) + code];
+                const double dx = g->h * (double)di + ((code & 1u) ? 0.5 : -0.5);
+                const double dy = g->h * (double)dj + ((code & 2u) ? 0.5 : -0.5);
+                const double r2 = dx * dx + dy * dy, p1 = dx * inv, p2 = dy * inv;
+                e->r2 = r2; e->inside = !(r2 > R * R); e->g = cs_gauss(ga, r2);
+                e->ph0123[0] = 1.0; e->ph0123[1] = p1; e->ph0123[2] = p2; e->ph0123[3] = p1 * p1;
+                e->ph45[0] = p1 * p2; e->ph45[1] = p2 * p2;
+            }
+    lt->on = 1;
+    return 0;
+}
+
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_AMD64))
+#include <immintrin.h>
+#include <intrin.h>
+#define CS_AVX2 1
+/* AVX2 present and enabled by the OS (YMM state saved); 0 forces the SSE2 kernel. */
+static int cs_avx2(void)
+{
+    static volatile int known = -1;
+    if (known < 0) {
+        int r[4] = { 0, 0, 0, 0 }, ok = 0;
+        __cpuid(r, 0);
+        if (r[0] >= 7) {
+            __cpuid(r, 1);
+            if ((r[2] & (1 << 27)) && (r[2] & (1 << 28)) && (_xgetbv(0) & 6) == 6) {
+                __cpuidex(r, 7, 0);
+                ok = (r[1] & (1 << 5)) != 0;
+            }
+        }
+        known = ok;
+    }
+    return known;
+}
+#endif
+
+/* The fit's terms of one observation: from the lattice table, or computed (off the lattice, or without a table).
+ * 0 when it lies outside the disc. */
+static int cs_obs_terms(const CsLattice *lt, const CsLatticeTerm *cell, const CsPacked *pk, size_t t, double cu, double cv,
+                        double inv, double R, const CsGauss *ga, double ph0123[4], double ph45[2], double *r2out,
+                        double *gout, const double **ph0123p, const double **ph45p)
+{
+    const unsigned code = pk->code[t];
+    if (lt->on && !(code & CS_OFF_LATTICE)) {
+        const CsLatticeTerm *e = &cell[code];
+        if (!e->inside) return 0;
+        *r2out = e->r2; *gout = e->g; *ph0123p = e->ph0123; *ph45p = e->ph45;
+        return 1;
+    }
+    {
+        const double dx = (double)pk->uv[t * 2] - cu, dy = (double)pk->uv[t * 2 + 1] - cv;
+        const double r2 = dx * dx + dy * dy, p1 = dx * inv, p2 = dy * inv;
+        if (r2 > R * R) return 0;
+        ph0123[0] = 1.0; ph0123[1] = p1; ph0123[2] = p2; ph0123[3] = p1 * p1;
+        ph45[0] = p1 * p2; ph45[1] = p2 * p2;
+        *r2out = r2; *gout = cs_gauss(ga, r2); *ph0123p = ph0123; *ph45p = ph45;
+        return 1;
+    }
+}
+
+#ifdef CS_AVX2
+/* cs_fit_data_node's sums in 256-bit lanes: row j of the lower triangle in r[j] (k = 0..3) and, for rows 4 and 5, its
+ * k = 4, 5 in 128 bits; the same products and sums entry by entry (multiply then add: no fused multiply-add). */
+static void cs_fit_sums_avx2(const CloseupGrid *g, const CsPacked *pk, const CsBins *b, size_t i, size_t j,
+                             const CloseupFitOpts *opt, const CsGauss *ga, const CsWindow *wn, const CsLattice *lt,
+                             CsQuad *q, double *best_out, int32_t *best_chart_out)
+{
+    const double R = opt->fit_px, inv = 1.0 / R;
+    const double cu = g->u0 + g->h * (double)i, cv = g->v0 + g->h * (double)j;
+    long ci = 0, cj = 0;
+    double best = 1e300;
+    int32_t best_chart = -1;
+    __m256d r0 = _mm256_setzero_pd(), r1 = r0, r2v = r0, r3 = r0, r4a = r0, r5a = r0, bx = r0, by = r0, bz = r0;
+    __m128d r4b = _mm_setzero_pd(), r5b = r4b, bxb = r4b, byb = r4b, bzb = r4b;
+    for (cj = (long)j - wn->rc; cj <= (long)j + wn->rc; cj++) {
+        const long half = wn->half[cj - (long)j + wn->rc];
+        long c0 = 0, c1 = 0;
+        if (cj < 0 || cj >= (long)g->nj || half < 0) continue;
+        c0 = (long)i - half; c1 = (long)i + half;
+        if (c0 < 0) c0 = 0;
+        if (c1 >= (long)g->ni) c1 = (long)g->ni - 1;
+        for (ci = c0; ci <= c1; ci++) {
+            const size_t c = (size_t)cj * g->ni + (size_t)ci;
+            const CsLatticeTerm *cell = lt->on ? &lt->t[(size_t)(((cj - (long)j + lt->rc) * lt->side + ci - (long)i + lt->rc) * 4)]
+                                              : NULL;
+            size_t t = 0;
+            for (t = b->off[c]; t < b->off[c + 1]; t++) {
+                double ph0123[4], ph45[2], r2 = 0.0, gw = 0.0, w = 0.0;
+                const double *p0123 = NULL, *p45 = NULL;
+                if (!cs_obs_terms(lt, cell, pk, t, cu, cv, inv, R, ga, ph0123, ph45, &r2, &gw, &p0123, &p45)) continue;
+                if (r2 < best) { best = r2; best_chart = pk->chart[t]; }
+                w = gw * (double)pk->w[t];
+                if (w < 1e-6) continue;
+                {
+                    const float *pp = &pk->p[t * 3];
+                    const __m256d ph = _mm256_loadu_pd(p0123), wv = _mm256_set1_pd(w);
+                    const __m128d ph2 = _mm_loadu_pd(p45);
+                    const __m256d wp = _mm256_mul_pd(wv, ph);
+                    const __m128d wp2 = _mm_mul_pd(_mm256_castpd256_pd128(wv), ph2);
+                    const __m256d w0 = _mm256_permute4x64_pd(wp, 0x00), w1 = _mm256_permute4x64_pd(wp, 0x55);
+                    const __m256d w2 = _mm256_permute4x64_pd(wp, 0xAA), w3 = _mm256_permute4x64_pd(wp, 0xFF);
+                    const __m256d w4 = _mm256_broadcastsd_pd(wp2);
+                    const __m256d w5 = _mm256_permute4x64_pd(_mm256_castpd128_pd256(wp2), 0x55);
+                    const __m256d x = _mm256_set1_pd((double)pp[0]), y = _mm256_set1_pd((double)pp[1]),
+                                  z = _mm256_set1_pd((double)pp[2]);
+                    r0 = _mm256_add_pd(r0, _mm256_mul_pd(w0, ph));
+                    r1 = _mm256_add_pd(r1, _mm256_mul_pd(w1, ph));
+                    r2v = _mm256_add_pd(r2v, _mm256_mul_pd(w2, ph));
+                    r3 = _mm256_add_pd(r3, _mm256_mul_pd(w3, ph));
+                    r4a = _mm256_add_pd(r4a, _mm256_mul_pd(w4, ph));
+                    r5a = _mm256_add_pd(r5a, _mm256_mul_pd(w5, ph));
+                    r4b = _mm_add_pd(r4b, _mm_mul_pd(_mm256_castpd256_pd128(w4), ph2));
+                    r5b = _mm_add_pd(r5b, _mm_mul_pd(_mm256_castpd256_pd128(w5), ph2));
+                    bx = _mm256_add_pd(bx, _mm256_mul_pd(wp, x)); bxb = _mm_add_pd(bxb, _mm_mul_pd(wp2, _mm256_castpd256_pd128(x)));
+                    by = _mm256_add_pd(by, _mm256_mul_pd(wp, y)); byb = _mm_add_pd(byb, _mm_mul_pd(wp2, _mm256_castpd256_pd128(y)));
+                    bz = _mm256_add_pd(bz, _mm256_mul_pd(wp, z)); bzb = _mm_add_pd(bzb, _mm_mul_pd(wp2, _mm256_castpd256_pd128(z)));
+                    q->wsum += w;
+                    q->n++;
+                }
+            }
+        }
+    }
+    /* row j lands in A[6j ..]: the lanes past the diagonal are upper-triangle slots cs_quad_solve overwrites */
+    _mm256_storeu_pd(&q->A[0], r0); _mm256_storeu_pd(&q->A[6], r1); _mm256_storeu_pd(&q->A[12], r2v);
+    _mm256_storeu_pd(&q->A[18], r3); _mm256_storeu_pd(&q->A[24], r4a); _mm_storeu_pd(&q->A[28], r4b);
+    _mm256_storeu_pd(&q->A[30], r5a); _mm_storeu_pd(&q->A[34], r5b);
+    _mm256_storeu_pd(&q->B[0], bx); _mm_storeu_pd(&q->B[4], bxb);
+    _mm256_storeu_pd(&q->B[6], by); _mm_storeu_pd(&q->B[10], byb);
+    _mm256_storeu_pd(&q->B[12], bz); _mm_storeu_pd(&q->B[16], bzb);
+    _mm256_zeroupper();
+    *best_out = best; *best_chart_out = best_chart;
+}
+#endif
+
+/* One data fit at node n from the packed observations; 0 = fitted.  The sums are cs_quad_add's, observation by
+ * observation in the same cell and bin order; the SSE2 / AVX2 lanes hold the same products and sums entry by entry.
+ * kernel: 0 SSE2 (or scalar), 1 AVX2 when the CPU has it. */
+static int cs_fit_data_node_k(CloseupGrid *g, const CsPacked *pk, const CsBins *b, size_t i, size_t j,
+                              const CloseupFitOpts *opt, int record_nearest, const CsGauss *ga, const CsWindow *wn,
+                              const CsLattice *lt, int kernel);
+
+static int cs_fit_data_node(CloseupGrid *g, const CsPacked *pk, const CsBins *b, size_t i, size_t j,
+                            const CloseupFitOpts *opt, int record_nearest, const CsGauss *ga, const CsWindow *wn)
+{
+    CsLattice none;
+    memset(&none, 0, sizeof none);
+    return cs_fit_data_node_k(g, pk, b, i, j, opt, record_nearest, ga, wn, &none, 0);
+}
+
+static int cs_fit_data_node_k(CloseupGrid *g, const CsPacked *pk, const CsBins *b, size_t i, size_t j,
+                              const CloseupFitOpts *opt, int record_nearest, const CsGauss *ga, const CsWindow *wn,
+                              const CsLattice *lt, int kernel)
+{
+    const double R = opt->fit_px, inv = 1.0 / R;
     const double cu = g->u0 + g->h * (double)i, cv = g->v0 + g->h * (double)j;
     size_t n = j * g->ni + i;
     long ci = 0, cj = 0;
     double best = 1e300;
     int32_t best_chart = -1;
     CsQuad q;
+#ifdef CS_SSE2
+    __m128d a0 = _mm_setzero_pd(), a1 = a0, a2 = a0, a3 = a0, a4 = a0, a5 = a0, a6 = a0, a7 = a0, a8 = a0,
+            a9 = a0, a10 = a0, a11 = a0, b0 = a0, b1 = a0, b2 = a0, b3 = a0, b4 = a0, b5 = a0, b6 = a0, b7 = a0, b8 = a0;
+#endif
     memset(&q, 0, sizeof q);
-    for (cj = (long)j - rc; cj <= (long)j + rc; cj++) {
-        if (cj < 0 || cj >= (long)g->nj) continue;
-        for (ci = (long)i - rc; ci <= (long)i + rc; ci++) {
-            size_t c = 0, t = 0;
-            if (ci < 0 || ci >= (long)g->ni) continue;
-            c = (size_t)cj * g->ni + (size_t)ci;
+#ifdef CS_AVX2
+    if (kernel == 1) {
+        cs_fit_sums_avx2(g, pk, b, i, j, opt, ga, wn, lt, &q, &best, &best_chart);
+        goto summed;
+    }
+#else
+    (void)kernel;
+#endif
+    for (cj = (long)j - wn->rc; cj <= (long)j + wn->rc; cj++) {
+        const long half = wn->half[cj - (long)j + wn->rc];
+        long c0 = 0, c1 = 0;
+        if (cj < 0 || cj >= (long)g->nj || half < 0) continue;
+        c0 = (long)i - half; c1 = (long)i + half;
+        if (c0 < 0) c0 = 0;
+        if (c1 >= (long)g->ni) c1 = (long)g->ni - 1;
+        for (ci = c0; ci <= c1; ci++) {
+            const size_t c = (size_t)cj * g->ni + (size_t)ci;
+            const CsLatticeTerm *cell = lt->on ? &lt->t[(size_t)(((cj - (long)j + lt->rc) * lt->side + ci - (long)i + lt->rc) * 4)]
+                                              : NULL;
+            size_t t = 0;
             for (t = b->off[c]; t < b->off[c + 1]; t++) {
-                size_t k = b->idx[t];
-                double dx = (double)o->uv[k * 2] - cu, dy = (double)o->uv[k * 2 + 1] - cv;
-                double r2 = dx * dx + dy * dy, w = 0.0;
-                if (r2 > R * R) continue;
-                if (r2 < best) { best = r2; best_chart = o->chart[k]; }
-                w = exp(-r2 / s2) * (double)o->w[k];
+                double ph0123[4], ph45v[2], r2 = 0.0, gw = 0.0, w = 0.0;
+                const double *p0123 = NULL, *p45 = NULL;
+                if (!cs_obs_terms(lt, cell, pk, t, cu, cv, inv, R, ga, ph0123, ph45v, &r2, &gw, &p0123, &p45)) continue;
+                if (r2 < best) { best = r2; best_chart = pk->chart[t]; }
+                w = gw * (double)pk->w[t];
                 if (w < 1e-6) continue;
-                cs_quad_add(&q, dx, dy, inv, w, &o->p[k * 3]);
+#ifdef CS_SSE2
+                {
+                    const __m128d ph01 = _mm_loadu_pd(&p0123[0]), ph23 = _mm_loadu_pd(&p0123[2]),
+                                  ph45 = _mm_loadu_pd(p45), wv = _mm_set1_pd(w);
+                    const __m128d wp01 = _mm_mul_pd(wv, ph01), wp23 = _mm_mul_pd(wv, ph23), wp45 = _mm_mul_pd(wv, ph45);
+                    const __m128d w0 = _mm_unpacklo_pd(wp01, wp01), w1 = _mm_unpackhi_pd(wp01, wp01);
+                    const __m128d w2 = _mm_unpacklo_pd(wp23, wp23), w3 = _mm_unpackhi_pd(wp23, wp23);
+                    const __m128d w4 = _mm_unpacklo_pd(wp45, wp45), w5 = _mm_unpackhi_pd(wp45, wp45);
+                    const float *pp = &pk->p[t * 3];
+                    const __m128d x = _mm_set1_pd((double)pp[0]), y = _mm_set1_pd((double)pp[1]),
+                                  z = _mm_set1_pd((double)pp[2]);
+                    a0 = _mm_add_pd(a0, _mm_mul_pd(w0, ph01));
+                    a1 = _mm_add_pd(a1, _mm_mul_pd(w1, ph01));
+                    a2 = _mm_add_pd(a2, _mm_mul_pd(w2, ph01)); a3 = _mm_add_pd(a3, _mm_mul_pd(w2, ph23));
+                    a4 = _mm_add_pd(a4, _mm_mul_pd(w3, ph01)); a5 = _mm_add_pd(a5, _mm_mul_pd(w3, ph23));
+                    a6 = _mm_add_pd(a6, _mm_mul_pd(w4, ph01)); a7 = _mm_add_pd(a7, _mm_mul_pd(w4, ph23));
+                    a8 = _mm_add_pd(a8, _mm_mul_pd(w4, ph45));
+                    a9 = _mm_add_pd(a9, _mm_mul_pd(w5, ph01)); a10 = _mm_add_pd(a10, _mm_mul_pd(w5, ph23));
+                    a11 = _mm_add_pd(a11, _mm_mul_pd(w5, ph45));
+                    b0 = _mm_add_pd(b0, _mm_mul_pd(wp01, x)); b1 = _mm_add_pd(b1, _mm_mul_pd(wp23, x));
+                    b2 = _mm_add_pd(b2, _mm_mul_pd(wp45, x));
+                    b3 = _mm_add_pd(b3, _mm_mul_pd(wp01, y)); b4 = _mm_add_pd(b4, _mm_mul_pd(wp23, y));
+                    b5 = _mm_add_pd(b5, _mm_mul_pd(wp45, y));
+                    b6 = _mm_add_pd(b6, _mm_mul_pd(wp01, z)); b7 = _mm_add_pd(b7, _mm_mul_pd(wp23, z));
+                    b8 = _mm_add_pd(b8, _mm_mul_pd(wp45, z));
+                    q.wsum += w;
+                    q.n++;
+                }
+#else
+                cs_quad_add(&q, (double)pk->uv[t * 2] - cu, (double)pk->uv[t * 2 + 1] - cv, inv, w, &pk->p[t * 3]);
+#endif
             }
         }
     }
+#ifdef CS_SSE2
+    /* row j of the lower triangle lands in A[6j .. 6j + j]; the odd lanes past the diagonal (A[1], A[15], A[29])
+     * are upper-triangle slots that cs_quad_solve overwrites from the lower triangle */
+    _mm_storeu_pd(&q.A[0], a0); _mm_storeu_pd(&q.A[6], a1);
+    _mm_storeu_pd(&q.A[12], a2); _mm_storeu_pd(&q.A[14], a3);
+    _mm_storeu_pd(&q.A[18], a4); _mm_storeu_pd(&q.A[20], a5);
+    _mm_storeu_pd(&q.A[24], a6); _mm_storeu_pd(&q.A[26], a7); _mm_storeu_pd(&q.A[28], a8);
+    _mm_storeu_pd(&q.A[30], a9); _mm_storeu_pd(&q.A[32], a10); _mm_storeu_pd(&q.A[34], a11);
+    _mm_storeu_pd(&q.B[0], b0); _mm_storeu_pd(&q.B[2], b1); _mm_storeu_pd(&q.B[4], b2);
+    _mm_storeu_pd(&q.B[6], b3); _mm_storeu_pd(&q.B[8], b4); _mm_storeu_pd(&q.B[10], b5);
+    _mm_storeu_pd(&q.B[12], b6); _mm_storeu_pd(&q.B[14], b7); _mm_storeu_pd(&q.B[16], b8);
+#endif
+#ifdef CS_AVX2
+summed:
+#endif
     if (record_nearest) {
         g->dist[n] = best < 1e300 ? (float)sqrt(best) : INFINITY;
         g->chart[n] = best_chart;
@@ -695,8 +1093,101 @@ static int cs_cmp_float(const void *a, const void *b)
     return x < y ? -1 : x > y ? 1 : 0;
 }
 
+/* The k-th smallest of a[0, n) (a reordered): the value a sort would put at k. */
+static float cs_select_float(float *a, size_t n, size_t k)
+{
+    size_t lo = 0, hi = n - 1;
+    while (hi > lo) {
+        const size_t mid = lo + (hi - lo) / 2;
+        float pivot = a[mid], t = 0.0f;
+        size_t i = lo, j = hi;
+        /* median of three for the pivot value; the partition is Hoare's */
+        if (a[lo] > a[hi]) { t = a[lo]; a[lo] = a[hi]; a[hi] = t; }
+        if (a[mid] < a[lo]) pivot = a[lo]; else if (a[mid] > a[hi]) pivot = a[hi]; else pivot = a[mid];
+        for (;;) {
+            while (a[i] < pivot) i++;
+            while (a[j] > pivot) j--;
+            if (i >= j) break;
+            t = a[i]; a[i] = a[j]; a[j] = t;
+            i++; j--;
+        }
+        if (k <= j) hi = j; else lo = j + 1;
+    }
+    return a[k];
+}
+
+/* The robust weights of one round: the Cauchy weight of every observation's residual against the surface at its
+ * nearest node, where that node is DATA (the others keep theirs).  With lvl (an incremental fit), only observations in
+ * cells dirty by this round (lvl[cell] <= round) and those appended since the cached fit (index >= nold) are measured;
+ * the rest take the cached fit's weights of this round, prev[k], which measuring them would reproduce. */
+static void cs_reweight_update(const CloseupGrid *g, CloseupObs *o, double tau, const uint8_t *lvl, int round,
+                               size_t nold, const float *prev)
+{
+    long k = 0;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+    for (k = 0; k < (long)o->n; k++) {
+        double u = o->uv[(size_t)k * 2], v = o->uv[(size_t)k * 2 + 1], p[3], r = 0.0;
+        long i = (long)floor((u - g->u0) / g->h + 0.5), j = (long)floor((v - g->v0) / g->h + 0.5);
+        size_t c = 0;
+        int q = 0;
+        if (i < 0 || j < 0 || (size_t)i >= g->ni || (size_t)j >= g->nj) continue;
+        c = (size_t)j * g->ni + (size_t)i;
+        if (lvl != NULL && (size_t)k < nold && lvl[c] > round) { o->w[k] = prev[k]; continue; }
+        if (g->state[c] != CLOSEUP_NODE_DATA) continue;
+        (void)CloseupGrid_taylor(g, (size_t)i, (size_t)j, u, v, p);
+        for (q = 0; q < 3; q++) { double d = p[q] - (double)o->p[(size_t)k * 3 + (size_t)q]; r += d * d; }
+        r = sqrt(r);
+        o->w[k] = (float)(1.0 / (1.0 + (r / tau) * (r / tau)));
+    }
+}
+
+/* The last round's statistics (cs_reweight's with update 0): residual percentiles over the subsample and the
+ * observations weighted below 0.5.  Earlier rounds' values were overwritten by these, so only the last is taken;
+ * the percentiles are order statistics, selected rather than sorted. */
+static void cs_reweight_stats(const CloseupGrid *g, const CloseupObs *o, CloseupFitStats *st)
+{
+    long k = 0;
+    size_t nsamp = 0, down = 0, stride = o->n > 2000000 ? o->n / 2000000 : 1, m = 0;
+    float *res = (float *)malloc((o->n / stride + 1) * sizeof *res);
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) reduction(+ : down)
+#endif
+    for (k = 0; k < (long)o->n; k++) {
+        double u = o->uv[(size_t)k * 2], v = o->uv[(size_t)k * 2 + 1], p[3], r = 0.0;
+        long i = (long)floor((u - g->u0) / g->h + 0.5), j = (long)floor((v - g->v0) / g->h + 0.5);
+        int q = 0;
+        if (i < 0 || j < 0 || (size_t)i >= g->ni || (size_t)j >= g->nj ||
+            g->state[(size_t)j * g->ni + (size_t)i] != CLOSEUP_NODE_DATA) {
+            if (res != NULL && (size_t)k % stride == 0) res[(size_t)k / stride] = -1.0f;
+            continue;
+        }
+        if (o->w[k] < 0.5f) down++;
+        if (res == NULL || (size_t)k % stride != 0) continue;
+        (void)CloseupGrid_taylor(g, (size_t)i, (size_t)j, u, v, p);
+        for (q = 0; q < 3; q++) { double d = p[q] - (double)o->p[(size_t)k * 3 + (size_t)q]; r += d * d; }
+        res[(size_t)k / stride] = (float)sqrt(r);
+    }
+    if (res != NULL) {
+        for (m = 0; m <= (o->n - 1) / stride && m < o->n / stride + 1; m++)
+            if (res[m] >= 0.0f) res[nsamp++] = res[m];
+        if (nsamp > 0) {
+            const size_t i99 = (size_t)(0.99 * (double)(nsamp - 1)), i90 = (size_t)(0.90 * (double)(nsamp - 1));
+            const size_t i50 = (size_t)(0.50 * (double)(nsamp - 1));
+            /* each selection leaves the smaller values below its index, so the next looks there only */
+            st->resid_p99 = cs_select_float(res, nsamp, i99);
+            st->resid_p90 = cs_select_float(res, i99 + 1, i90);
+            st->resid_p50 = cs_select_float(res, i90 + 1, i50);
+        }
+        free(res);
+    }
+    st->obs_downweighted = down;
+}
+
 /* Residuals of every observation against the surface (first-order at its nearest DATA node), Cauchy
- * weights; percentile stats over a subsample.  Observations with no DATA node keep their weight. */
+ * weights; percentile stats over a subsample.  Observations with no DATA node keep their weight.
+ * (2026-10-30: the reference of cs_reweight_update + cs_reweight_stats; the selftest compares them.) */
 static void cs_reweight(const CloseupGrid *g, CloseupObs *o, double tau, int update, CloseupFitStats *st)
 {
     long k = 0;
@@ -736,30 +1227,33 @@ static void cs_reweight(const CloseupGrid *g, CloseupObs *o, double tau, int upd
 }
 
 /* One fill fit at node n from the DATA nodes around it; gates against the nearest data node. */
-static int cs_fit_fill_node(CloseupGrid *g, size_t i, size_t j, double dist_px, size_t near_node,
-                            const CloseupFitOpts *opt, const int32_t *comp)
+/* The fill fit's samples into q: the DATA nodes (comp: the component of near_node) of the stride lattice within R
+ * around node (i, j).  The lattice is anchored at the global origin, so neighbouring fill nodes see the same samples:
+ * its rows and columns inside the grid, in the order a scan of every row and column meets them (reference != 0: that
+ * scan, the loop before 2026-10-30; the selftest compares the two). */
+static void cs_fill_samples(const CloseupGrid *g, size_t i, size_t j, double R, long rn, long st, size_t near_node,
+                            const int32_t *comp, int reference, CsQuad *q)
 {
-    double R = 1.5 * dist_px + opt->fill_fit_min_px, inv = 0.0, s2 = 0.0, d3 = 0.0, dotn = 0.0, lu = 0.0, lv = 0.0;
-    const double cu = g->u0 + g->h * (double)i, cv = g->v0 + g->h * (double)j;
-    long rn = 0, st = 1, ci = 0, cj = 0;
-    size_t n = j * g->ni + i;
-    double c[3], l = 0.0;
-    int k = 0;
-    CsQuad q;
-    if (R > opt->fill_fit_max_px) R = opt->fill_fit_max_px;
-    if (R < opt->fill_fit_min_px) R = opt->fill_fit_min_px;
-    inv = 1.0 / R; s2 = 2.0 * (0.5 * R) * (0.5 * R);
-    rn = (long)ceil(R / g->h);
-    st = (long)floor(R / (8.0 * g->h));
-    if (st < 1) st = 1;
-    memset(&q, 0, sizeof q);
-    /* the stride lattice is anchored at the global origin, so neighbouring fill nodes see the same samples */
-    for (cj = (long)j - rn; cj <= (long)j + rn; cj++) {
-        if (cj < 0 || cj >= (long)g->nj || cj % st) continue;
-        for (ci = (long)i - rn; ci <= (long)i + rn; ci++) {
+    const double inv = 1.0 / R, s2 = 2.0 * (0.5 * R) * (0.5 * R);
+    long cj = 0, ci = 0, rows0 = 0, rows1 = -1, cols0 = 0, cols1 = -1, step = st;
+    {
+        long cj0 = (long)j - rn, cj1 = (long)j + rn, ci0 = (long)i - rn, ci1 = (long)i + rn;
+        if (cj0 < 0) cj0 = 0;
+        if (ci0 < 0) ci0 = 0;
+        if (cj1 >= (long)g->nj) cj1 = (long)g->nj - 1;
+        if (ci1 >= (long)g->ni) ci1 = (long)g->ni - 1;
+        rows0 = cj0 + (st - cj0 % st) % st;
+        cols0 = ci0 + (st - ci0 % st) % st;
+        rows1 = cj1; cols1 = ci1;
+    }
+    if (reference) { rows0 = (long)j - rn; rows1 = (long)j + rn; cols0 = (long)i - rn; cols1 = (long)i + rn; step = 1; }
+    memset(q, 0, sizeof *q);
+    for (cj = rows0; cj <= rows1; cj += step) {
+        if (reference && (cj < 0 || cj >= (long)g->nj || cj % st)) continue;
+        for (ci = cols0; ci <= cols1; ci += step) {
             size_t m = 0;
             double dx = 0.0, dy = 0.0, r2 = 0.0;
-            if (ci < 0 || ci >= (long)g->ni || ci % st) continue;
+            if (reference && (ci < 0 || ci >= (long)g->ni || ci % st)) continue;
             m = (size_t)cj * g->ni + (size_t)ci;
             /* comp is the immutable DATA mask. Other workers publish FILL
              * into state[] during this loop; reading those bytes is a race. */
@@ -767,9 +1261,28 @@ static int cs_fit_fill_node(CloseupGrid *g, size_t i, size_t j, double dist_px, 
             dx = g->h * (double)(ci - (long)i); dy = g->h * (double)(cj - (long)j);
             r2 = dx * dx + dy * dy;
             if (r2 > R * R) continue;
-            cs_quad_add(&q, dx, dy, inv, exp(-r2 / s2), &g->pos[m * 3]);
+            cs_quad_add(q, dx, dy, inv, exp(-r2 / s2), &g->pos[m * 3]);
         }
     }
+}
+
+static int cs_fit_fill_node(CloseupGrid *g, size_t i, size_t j, double dist_px, size_t near_node,
+                            const CloseupFitOpts *opt, const int32_t *comp)
+{
+    double R = 1.5 * dist_px + opt->fill_fit_min_px, inv = 0.0, d3 = 0.0, dotn = 0.0, lu = 0.0, lv = 0.0;
+    const double cu = g->u0 + g->h * (double)i, cv = g->v0 + g->h * (double)j;
+    long rn = 0, st = 1;
+    size_t n = j * g->ni + i;
+    double c[3], l = 0.0;
+    int k = 0;
+    CsQuad q;
+    if (R > opt->fill_fit_max_px) R = opt->fill_fit_max_px;
+    if (R < opt->fill_fit_min_px) R = opt->fill_fit_min_px;
+    inv = 1.0 / R;
+    rn = (long)ceil(R / g->h);
+    st = (long)floor(R / (8.0 * g->h));
+    if (st < 1) st = 1;
+    cs_fill_samples(g, i, j, R, rn, st, near_node, comp, 0, &q);
     (void)cu; (void)cv;
     if (q.n < 12) return -1;
     if (cs_quad_solve(&q, inv, &g->pos[n * 3], &g->tu[n * 3], &g->tv[n * 3]) != 0) return -1;
@@ -1076,25 +1589,212 @@ static int cs_tear(CloseupGrid *g, const CloseupObs *o, const CsBins *b, const C
 
 #include "closeup_infill.inc"
 
+/* ------------------------------------------------------------ incremental refit */
+
+#define CS_CACHE_ROUNDS 4         /* robust_rounds + 1 the cache can hold (2 bits a round in one byte) */
+#define CS_DIRTY_NEVER 255
+
+struct CloseupFitCache {
+    int valid;
+    size_t ni, nj, nn, nobs, wcap;
+    double u0, v0, h;
+    double fit_px, data_reach_px, robust_vox;
+    long min_obs;
+    int robust_rounds;
+    uint64_t print;                /* fingerprint of observations [0, nobs) */
+    float *w[CS_CACHE_ROUNDS - 1]; /* the weights after each updating round */
+    uint8_t *code;                 /* per node, 2 bits a round: 0 skipped, 1 fitted, 2 failed (counted), 3 failed */
+    int8_t *last;                  /* the last round the node was DATA after; -1 never */
+    uint8_t *cand;                 /* a round-0 candidate (an observation within ~1.5 cells) */
+    float *pos, *tu, *tv, *support, *dist;
+    int32_t *chart;
+};
+
+CloseupFitCache *CloseupFitCache_new(void)
+{
+    return (CloseupFitCache *)calloc(1, sizeof(CloseupFitCache));
+}
+
+void CloseupFitCache_free(CloseupFitCache **cp)
+{
+    CloseupFitCache *c = cp != NULL ? *cp : NULL;
+    int r = 0;
+    if (c == NULL) return;
+    for (r = 0; r < CS_CACHE_ROUNDS - 1; r++) free(c->w[r]);
+    free(c->code); free(c->last); free(c->cand); free(c->pos); free(c->tu); free(c->tv); free(c->support);
+    free(c->dist); free(c->chart);
+    free(c);
+    *cp = NULL;
+}
+
+static uint64_t cs_obs_print(const CloseupObs *o, size_t n)
+{
+    uint64_t h = 1469598103934665603ull;
+    size_t step = n > 4096 ? n / 4096 : 1, k = 0;
+    for (k = 0; k < n; k += step) {
+        uint32_t x[7];
+        int q = 0;
+        memcpy(&x[0], &o->uv[k * 2], 2 * sizeof(float));
+        memcpy(&x[2], &o->p[k * 3], 3 * sizeof(float));
+        memcpy(&x[5], &o->chart[k], sizeof(int32_t));
+        x[6] = (uint32_t)k;
+        for (q = 0; q < 7; q++) { h ^= x[q]; h *= 1099511628211ull; }
+    }
+    if (n > 0) {
+        uint32_t x[5];
+        int q = 0;
+        memcpy(&x[0], &o->uv[(n - 1) * 2], 2 * sizeof(float));
+        memcpy(&x[2], &o->p[(n - 1) * 3], 3 * sizeof(float));
+        for (q = 0; q < 5; q++) { h ^= x[q]; h *= 1099511628211ull; }
+    }
+    return h ^ (uint64_t)n;
+}
+
+/* Whether the cache holds the data rounds of a fit of this grid, with these options, over a prefix of these
+ * observations (the caller only ever appends to them). */
+static int cs_cache_matches(const CloseupFitCache *c, const CloseupGrid *g, const CloseupFitOpts *o,
+                            const CloseupObs *obs)
+{
+    return c->valid && c->ni == g->ni && c->nj == g->nj && c->u0 == g->u0 && c->v0 == g->v0 && c->h == g->h &&
+           c->fit_px == o->fit_px && c->data_reach_px == o->data_reach_px && c->robust_vox == o->robust_vox &&
+           c->min_obs == (long)o->min_obs && c->robust_rounds == o->robust_rounds && obs->n >= c->nobs &&
+           cs_obs_print(obs, c->nobs) == c->print;
+}
+
+static int cs_cache_reserve(CloseupFitCache *c, size_t nn, size_t nobs, int rounds)
+{
+    int r = 0;
+    if (c->nn != nn) {
+        free(c->code); free(c->last); free(c->cand); free(c->pos); free(c->tu); free(c->tv); free(c->support);
+        free(c->dist); free(c->chart);
+        c->code = (uint8_t *)calloc(nn, 1); c->last = (int8_t *)malloc(nn); c->cand = (uint8_t *)calloc(nn, 1);
+        c->pos = (float *)malloc(nn * 3 * sizeof(float)); c->tu = (float *)malloc(nn * 3 * sizeof(float));
+        c->tv = (float *)malloc(nn * 3 * sizeof(float)); c->support = (float *)malloc(nn * sizeof(float));
+        c->dist = (float *)malloc(nn * sizeof(float)); c->chart = (int32_t *)malloc(nn * sizeof(int32_t));
+        c->nn = nn; c->valid = 0;
+        if (!c->code || !c->last || !c->cand || !c->pos || !c->tu || !c->tv || !c->support || !c->dist || !c->chart) {
+            c->nn = 0;
+            return -1;
+        }
+    }
+    if (nobs > c->wcap) {
+        size_t cap = nobs + nobs / 4;
+        for (r = 0; r < rounds && r < CS_CACHE_ROUNDS - 1; r++) {
+            float *w = (float *)realloc(c->w[r], (cap ? cap : 1) * sizeof(float));
+            if (w == NULL) { c->valid = 0; return -1; }
+            c->w[r] = w;
+        }
+        c->wcap = cap;
+    }
+    return 0;
+}
+
+/* out = in dilated by the (2r+1)^2 square: along rows (a running count), then the rows OR-ed together.  tmp: scratch
+ * of ni x nj.  The data fit's window lies inside the square (rows within ceil(R/h), cells within R + h/2). */
+static void cs_dilate_square(const uint8_t *in, uint8_t *out, uint8_t *tmp, size_t ni, size_t nj, long r)
+{
+    long j = 0;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+    for (j = 0; j < (long)nj; j++) {
+        const uint8_t *row = in + (size_t)j * ni;
+        uint8_t *t = tmp + (size_t)j * ni;
+        long i = 0, cnt = 0;
+        for (i = 0; i < r && i < (long)ni; i++) cnt += row[i] != 0;
+        for (i = 0; i < (long)ni; i++) {
+            if (i + r < (long)ni) cnt += row[i + r] != 0;
+            if (i - r - 1 >= 0) cnt -= row[i - r - 1] != 0;
+            t[i] = (uint8_t)(cnt > 0);
+        }
+    }
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+    for (j = 0; j < (long)nj; j++) {
+        uint8_t *o = out + (size_t)j * ni;
+        long dj = 0;
+        size_t i = 0;
+        memset(o, 0, ni);
+        for (dj = -r; dj <= r; dj++) {
+            const long jj = j + dj;
+            const uint8_t *t = tmp + (size_t)jj * ni;
+            if (jj < 0 || jj >= (long)nj) continue;
+            for (i = 0; i < ni; i++) o[i] |= t[i];
+        }
+    }
+}
+
+/* lvl[node]: the first data round whose fit or weights the observations appended since the cached fit can change
+ * (CS_DIRTY_NEVER: none can).  Round 0 changes where a node's window holds a cell with a new observation; each later
+ * round, where its window holds a cell (or the node) the round before changed. */
+static int cs_dirty_levels(const CloseupGrid *g, const CloseupObs *obs, size_t nold, long reach, int rounds,
+                           uint8_t *lvl, size_t *ndirty)
+{
+    const size_t nn = g->ni * g->nj;
+    uint8_t *a = (uint8_t *)calloc(nn, 1), *b = (uint8_t *)malloc(nn), *t = (uint8_t *)malloc(nn);
+    size_t k = 0, nd = 0;
+    int r = 0;
+    if (a == NULL || b == NULL || t == NULL) { free(a); free(b); free(t); return -1; }
+    for (k = nold; k < obs->n; k++) {
+        const long c = cs_cell(g, obs->uv[k * 2], obs->uv[k * 2 + 1]);
+        if (c >= 0) a[c] = 1;
+    }
+    memset(lvl, CS_DIRTY_NEVER, nn);
+    for (r = 0; r < rounds; r++) {
+        cs_dilate_square(a, b, t, g->ni, g->nj, reach);
+        for (k = 0; k < nn; k++) if (b[k] && lvl[k] == CS_DIRTY_NEVER) { lvl[k] = (uint8_t)r; nd++; }
+        { uint8_t *s = a; a = b; b = s; }
+    }
+    free(a); free(b); free(t);
+    if (ndirty != NULL) *ndirty = nd;
+    return 0;
+}
+
+static int cs_fit(CloseupGrid *g, CloseupObs *obs, const CloseupFitOpts *opt_in, CloseupFitStats *st,
+                  CloseupFitCache *cache);
+
 int CloseupSurface_fit(CloseupGrid *g, CloseupObs *obs, const CloseupFitOpts *opt_in, CloseupFitStats *st)
+{
+    return cs_fit(g, obs, opt_in, st, NULL);
+}
+
+int CloseupSurface_fit_cached(CloseupGrid *g, CloseupObs *obs, const CloseupFitOpts *opt, CloseupFitStats *st,
+                              CloseupFitCache *cache)
+{
+    return cs_fit(g, obs, opt, st, cache);
+}
+
+static int cs_fit(CloseupGrid *g, CloseupObs *obs, const CloseupFitOpts *opt_in, CloseupFitStats *st,
+                  CloseupFitCache *cache)
 {
     CloseupFitOpts opt;
     CloseupFitStats s0;
     CsBins b;
-    size_t nn = g->ni * g->nj, k = 0;
-    uint8_t *seed = NULL;
+    CsPacked pk;
+    CsGauss ga;
+    CsWindow wn;
+    CsLattice lat;
+    int kernel = 0;
+    size_t nn = g->ni * g->nj, k = 0, nold = 0, ndirty = 0;
+    uint8_t *seed = NULL, *lvl = NULL, *code = NULL;
     float *d2 = NULL;
     int32_t *near_node = NULL, *comp = NULL;
     double t0 = ves_clock_sec();
     long n = 0;
-    int round = 0, rc = -1;
+    int round = 0, rc = -1, inc = 0;
+    memset(&pk, 0, sizeof pk);
+    memset(&lat, 0, sizeof lat);
     if (opt_in == NULL) CloseupFitOpts_default(&opt); else opt = *opt_in;
     if (st == NULL) st = &s0;
     memset(st, 0, sizeof *st);
     st->nodes = nn;
     st->obs = obs->n;
     if (obs->n == 0 || nn == 0) return -1;
+    double tf = ves_clock_sec(), tbin = 0, tedt = 0, tdata[8] = {0}, trew[8] = {0}, tedt2 = 0, tcomp = 0, tbr = 0,
+           tfill = 0, ttear = 0, tnorm = 0, tholes = 0;
     if (cs_bin(g, obs, &b) != 0) return -1;
+    tbin = ves_clock_sec() - tf; tf = ves_clock_sec();
     seed = (uint8_t *)calloc(nn, 1);
     d2 = (float *)malloc(nn * sizeof *d2);
     near_node = (int32_t *)malloc(nn * sizeof *near_node);
@@ -1102,11 +1802,44 @@ int CloseupSurface_fit(CloseupGrid *g, CloseupObs *obs, const CloseupFitOpts *op
     /* candidates: nodes with an observation in their own cell or a neighbour's (exact distance below) */
     for (k = 0; k < nn; k++) seed[k] = b.off[k + 1] > b.off[k];
     if (cs_edt2d(seed, g->ni, g->nj, d2, near_node) != 0) goto done;
+    tedt = ves_clock_sec() - tf; tf = ves_clock_sec();
     for (k = 0; k < nn; k++) {
         g->state[k] = CLOSEUP_NODE_NONE;
         g->dist[k] = d2[k] < CS_INF ? (float)(sqrt((double)d2[k]) * g->h) : INFINITY;
     }
     for (k = 0; k < obs->n; k++) obs->w[k] = 1.0f;
+    if (cs_pack(g, obs, &b, nn, &pk) != 0 || cs_window_init(&wn, opt.fit_px, g->h) != 0) goto done;
+    cs_gauss_init(&ga, opt.fit_px);
+    if (cs_lattice_init(&lat, g, &opt, &ga, &wn) != 0) goto done;
+#ifdef CS_AVX2
+    kernel = cs_avx2();
+#endif
+    /* The cache (CloseupSurface_fit_cached): a fit records its data rounds; the next fit of the same grid, after
+     * observations were appended, refits only the nodes those can reach (cs_dirty_levels) and takes every other
+     * node's rounds from the record -- the values its own rounds would compute again. */
+    if (cache != NULL && (opt.robust_rounds < 0 || opt.robust_rounds >= CS_CACHE_ROUNDS)) cache = NULL;
+    if (cache != NULL) {
+        inc = cs_cache_matches(cache, g, &opt, obs);
+        if (cs_cache_reserve(cache, nn, obs->n, opt.robust_rounds) != 0) { cache->valid = 0; cache = NULL; inc = 0; }
+    }
+    if (cache != NULL) {
+        code = cache->code;
+        if (inc) {
+            long reach = 0, q = 0;
+            for (q = -wn.rc; q <= wn.rc; q++) {          /* the window's extent: its widest row, its farthest row */
+                if (wn.half[q + wn.rc] < 0) continue;
+                if (wn.half[q + wn.rc] > reach) reach = wn.half[q + wn.rc];
+                if (labs(q) > reach) reach = labs(q);
+            }
+            nold = cache->nobs;
+            lvl = (uint8_t *)malloc(nn);
+            if (lvl == NULL || cs_dirty_levels(g, obs, nold, reach, opt.robust_rounds + 1, lvl, &ndirty) != 0) {
+                free(lvl); lvl = NULL; inc = 0;
+            }
+        }
+        if (!inc) memset(code, 0, nn);
+        cache->valid = 0;                  /* until this fit's record is complete */
+    }
     for (round = 0; round <= opt.robust_rounds; round++) {
         size_t nd = 0, nfail = 0;
 #ifdef _OPENMP
@@ -1114,35 +1847,107 @@ int CloseupSurface_fit(CloseupGrid *g, CloseupObs *obs, const CloseupFitOpts *op
 #endif
         for (n = 0; n < (long)nn; n++) {
             size_t i = (size_t)n % g->ni, j = (size_t)n / g->ni;
+            unsigned oc = 0;                   /* this round's outcome (CloseupFitCache.code) */
+            if (inc) {
+                if (lvl[n] > round) continue;  /* its rounds are the record's (restored below) */
+                if (lvl[n] == round) {         /* dirty from this round: its state after the round before, recorded */
+                    code[n] &= (uint8_t)((1u << (2 * round)) - 1u);
+                    if (round > 0) {
+                        g->state[n] = cache->last[n] >= round - 1 ? CLOSEUP_NODE_DATA : CLOSEUP_NODE_NONE;
+                        if (cache->cand[n]) { g->dist[n] = cache->dist[n]; g->chart[n] = cache->chart[n]; }
+                    }
+                }
+            }
             if (round == 0) {
                 if (d2[n] > 2.0f) continue;    /* no observation within ~1.5 cells */
-                if (cs_fit_data_node(g, obs, &b, i, j, &opt, 1) != 0 || g->dist[n] > (float)opt.data_reach_px) {
-                    if (g->dist[n] <= (float)opt.data_reach_px) nfail++;
-                    continue;
+                if (cs_fit_data_node_k(g, &pk, &b, i, j, &opt, 1, &ga, &wn, &lat, kernel) != 0 ||
+                    g->dist[n] > (float)opt.data_reach_px) {
+                    if (g->dist[n] <= (float)opt.data_reach_px) { nfail++; oc = 2; } else oc = 3;
+                } else {
+                    g->state[n] = CLOSEUP_NODE_DATA;
+                    nd++; oc = 1;
                 }
-                g->state[n] = CLOSEUP_NODE_DATA;
-                nd++;
             } else {
                 if (g->state[n] != CLOSEUP_NODE_DATA) continue;
-                if (cs_fit_data_node(g, obs, &b, i, j, &opt, 0) != 0) {
+                if (cs_fit_data_node_k(g, &pk, &b, i, j, &opt, 0, &ga, &wn, &lat, kernel) != 0) {
                     g->state[n] = CLOSEUP_NODE_NONE;
-                    nfail++;
-                    continue;
+                    nfail++; oc = 2;
+                } else {
+                    nd++; oc = 1;
                 }
-                nd++;
             }
+            if (code != NULL) code[n] |= (uint8_t)(oc << (2 * round));
         }
         st->data_nodes = nd;
         st->data_failed += nfail;
-        cs_reweight(g, obs, opt.robust_vox, round < opt.robust_rounds, st);
+        if (round < 8) tdata[round] = ves_clock_sec() - tf;
+        tf = ves_clock_sec();
+        if (round < opt.robust_rounds) {
+            cs_reweight_update(g, obs, opt.robust_vox, inc ? lvl : NULL, round, nold, inc ? cache->w[round] : NULL);
+            if (cache != NULL) memcpy(cache->w[round], obs->w, obs->n * sizeof *obs->w);
+            cs_packed_weights(obs, &b, b.off[nn], &pk);
+        }
+        if (round < 8) trew[round] = ves_clock_sec() - tf;
+        tf = ves_clock_sec();
     }
+    if (inc) {   /* the nodes no new observation reaches: their rounds, as recorded */
+        const int R = opt.robust_rounds;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+        for (n = 0; n < (long)nn; n++) {
+            if (lvl[n] != CS_DIRTY_NEVER) continue;
+            g->state[n] = cache->last[n] >= R ? CLOSEUP_NODE_DATA : CLOSEUP_NODE_NONE;
+            if (cache->cand[n]) { g->dist[n] = cache->dist[n]; g->chart[n] = cache->chart[n]; }
+            if (cache->last[n] >= R) {
+                memcpy(&g->pos[(size_t)n * 3], &cache->pos[(size_t)n * 3], 3 * sizeof *g->pos);
+                memcpy(&g->tu[(size_t)n * 3], &cache->tu[(size_t)n * 3], 3 * sizeof *g->tu);
+                memcpy(&g->tv[(size_t)n * 3], &cache->tv[(size_t)n * 3], 3 * sizeof *g->tv);
+                g->support[n] = cache->support[n];
+            }
+        }
+    }
+    if (cache != NULL) {   /* the record of these rounds, and the counts over every node */
+        const int R = opt.robust_rounds;
+        size_t nd = 0, nfail = 0;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) reduction(+ : nd, nfail)
+#endif
+        for (n = 0; n < (long)nn; n++) {
+            int r = 0, last = -1;
+            for (r = 0; r <= R; r++) nfail += ((code[n] >> (2 * r)) & 3u) == 2u;
+            nd += ((code[n] >> (2 * R)) & 3u) == 1u;
+            if (inc && lvl[n] == CS_DIRTY_NEVER) continue;
+            for (r = 0; r <= R && ((code[n] >> (2 * r)) & 3u) == 1u; r++) last = r;
+            cache->last[n] = (int8_t)last;
+            cache->cand[n] = (uint8_t)(d2[n] <= 2.0f);
+            if (cache->cand[n]) { cache->dist[n] = g->dist[n]; cache->chart[n] = g->chart[n]; }
+            if (last >= R) {
+                memcpy(&cache->pos[(size_t)n * 3], &g->pos[(size_t)n * 3], 3 * sizeof *g->pos);
+                memcpy(&cache->tu[(size_t)n * 3], &g->tu[(size_t)n * 3], 3 * sizeof *g->tu);
+                memcpy(&cache->tv[(size_t)n * 3], &g->tv[(size_t)n * 3], 3 * sizeof *g->tv);
+                cache->support[n] = g->support[n];
+            }
+        }
+        st->data_nodes = nd;
+        st->data_failed = nfail;
+        cache->ni = g->ni; cache->nj = g->nj; cache->u0 = g->u0; cache->v0 = g->v0; cache->h = g->h;
+        cache->fit_px = opt.fit_px; cache->data_reach_px = opt.data_reach_px; cache->robust_vox = opt.robust_vox;
+        cache->min_obs = (long)opt.min_obs; cache->robust_rounds = opt.robust_rounds;
+        cache->nobs = obs->n; cache->print = cs_obs_print(obs, obs->n);
+        cache->valid = 1;
+    }
+    cs_reweight_stats(g, obs, st);
     /* fill: distance to the nearest DATA node; quadric of the data nodes of its component around */
     for (k = 0; k < nn; k++) seed[k] = g->state[k] == CLOSEUP_NODE_DATA;
     if (cs_edt2d(seed, g->ni, g->nj, d2, near_node) != 0) goto done;
+    tedt2 = ves_clock_sec() - tf; tf = ves_clock_sec();
     comp = (int32_t *)malloc(nn * sizeof *comp);
     if (comp == NULL) goto done;
     cs_components(seed, g->ni, g->nj, comp);
+    tcomp = ves_clock_sec() - tf; tf = ves_clock_sec();
     cs_bridge_groups(g, comp, seed, &opt, st);
+    tbr = ves_clock_sec() - tf; tf = ves_clock_sec();
     {
         size_t nfill = 0, nrej = 0;
 #ifdef _OPENMP
@@ -1168,7 +1973,9 @@ int CloseupSurface_fit(CloseupGrid *g, CloseupObs *obs, const CloseupFitOpts *op
         st->fill_nodes = nfill;
         st->fill_rejected = nrej;
     }
+    tfill = ves_clock_sec() - tf; tf = ves_clock_sec();
     if (cs_tear(g, obs, &b, &opt, st) != 0) goto done;
+    ttear = ves_clock_sec() - tf; tf = ves_clock_sec();
     for (k = 0; k < nn; k++) {
         if (g->state[k] == CLOSEUP_NODE_NONE) {
             size_t q = 0;
@@ -1179,12 +1986,22 @@ int CloseupSurface_fit(CloseupGrid *g, CloseupObs *obs, const CloseupFitOpts *op
         g->component[k] = g->state[k] == CLOSEUP_NODE_DATA ? comp[k] : comp[near_node[k]];
         cs_set_normal(g, k);
     }
+    tnorm = ves_clock_sec() - tf; tf = ves_clock_sec();
     if (opt.variational_holes && CloseupSurface_fill_holes(g, opt.fill_px, st) != 0) goto done;
+    tholes = ves_clock_sec() - tf; tf = ves_clock_sec();
     rc = 0;
 done:
+    if (rc != 0 && cache != NULL) cache->valid = 0;
     cs_bins_free(&b);
-    free(seed); free(d2); free(near_node); free(comp);
+    cs_packed_free(&pk);
+    cs_lattice_free(&lat);
+    free(seed); free(d2); free(near_node); free(comp); free(lvl);
     st->seconds = ves_clock_sec() - t0;
+    fprintf(stderr, "  [fit-timing] %s dirty %zu nodes %zu obs %zu data %zu fill %zu: bin %.2f edt %.2f data %.2f/%.2f/%.2f/%.2f "
+            "reweight %.2f/%.2f/%.2f/%.2f edt2 %.2f comp %.2f bridge %.2f fill %.2f tear %.2f normals %.2f holes %.2f "
+            "total %.2f s\n", inc ? "incremental" : cache != NULL ? "recorded" : "full", ndirty,
+            nn, obs->n, st->data_nodes, st->fill_nodes, tbin, tedt, tdata[0], tdata[1], tdata[2], tdata[3],
+            trew[0], trew[1], trew[2], trew[3], tedt2, tcomp, tbr, tfill, ttear, tnorm, tholes, st->seconds);
     return rc;
 }
 
@@ -1366,6 +2183,43 @@ static uint64_t cs_cell_key(long cz, long cy, long cx)
     return ((uint64_t)(cz + off) << 42) | ((uint64_t)(cy + off) << 21) | (uint64_t)(cx + off);
 }
 
+/* qsort(a, n, cs_keyed_cmp) on all threads: the order is total (key, then node), so sorted runs merged in pairs give
+ * the one sorted array (2026-10-30: one qsort of the ~8 M surface nodes was 1.6 s of every completion pass). */
+static int cs_keyed_sort(CsKeyed *a, size_t n)
+{
+#ifdef _OPENMP
+    enum { RUNS = 32 };
+    size_t bound[RUNS + 1], width = 1;
+    CsKeyed *tmp = NULL, *src = a, *dst = NULL;
+    long r = 0;
+    if (n < ((size_t)1 << 16) || omp_in_parallel()) { qsort(a, n, sizeof *a, cs_keyed_cmp); return 0; }
+    tmp = (CsKeyed *)malloc(n * sizeof *tmp);
+    if (tmp == NULL) { qsort(a, n, sizeof *a, cs_keyed_cmp); return 0; }
+    for (r = 0; r <= RUNS; r++) bound[r] = n * (size_t)r / RUNS;
+#pragma omp parallel for schedule(dynamic, 1)
+    for (r = 0; r < RUNS; r++) qsort(a + bound[r], bound[r + 1] - bound[r], sizeof *a, cs_keyed_cmp);
+    dst = tmp;
+    for (width = 1; width < RUNS; width *= 2) {
+#pragma omp parallel for schedule(dynamic, 1)
+        for (r = 0; r < RUNS; r += (long)(2 * width)) {
+            const size_t lo = bound[r], mid = bound[(size_t)r + width < RUNS ? (size_t)r + width : RUNS];
+            const size_t hi = bound[(size_t)r + 2 * width < RUNS ? (size_t)r + 2 * width : RUNS];
+            size_t i = lo, j = mid, o = lo;
+            while (i < mid && j < hi) dst[o++] = cs_keyed_cmp(&src[j], &src[i]) < 0 ? src[j++] : src[i++];
+            while (i < mid) dst[o++] = src[i++];
+            while (j < hi) dst[o++] = src[j++];
+        }
+        { CsKeyed *t = src; src = dst; dst = t; }
+    }
+    if (src != a) memcpy(a, src, n * sizeof *a);
+    free(tmp);
+    return 0;
+#else
+    qsort(a, n, sizeof *a, cs_keyed_cmp);
+    return 0;
+#endif
+}
+
 /* The first index in sorted[0, n) whose key is >= key. */
 static size_t cs_lower_bound(const CsKeyed *sorted, size_t n, uint64_t key)
 {
@@ -1402,7 +2256,7 @@ int CloseupSurface_dedup_fill(CloseupGrid *g, double r_vox, double frame_px, dou
         ks[nv].node = (int32_t)k;
         nv++;
     }
-    qsort(ks, nv, sizeof *ks, cs_keyed_cmp);
+    (void)cs_keyed_sort(ks, nv);
     {
         long q = 0;
 #ifdef _OPENMP
@@ -1414,12 +2268,16 @@ int CloseupSurface_dedup_fill(CloseupGrid *g, double r_vox, double frame_px, dou
             const long cz = (long)floor(p[0] / r_vox), cy = (long)floor(p[1] / r_vox), cx = (long)floor(p[2] / r_vox);
             const double fu = g->h * (double)(n % g->ni), fv = g->h * (double)(n / g->ni);
             long dz = 0, dy = 0, dx = 0;
+            /* The three cells cx - 1 .. cx + 1 of a (dz, dy) row are three consecutive keys, so one search finds them
+             * all, in the order of the per-cell searches (away from the key field's ends, where those run apart). */
+            const int row_run = cx + (1L << 20) >= 1 && cx + (1L << 20) + 1 < (1L << 21);
             for (dz = -1; dz <= 1; dz++)
                 for (dy = -1; dy <= 1; dy++)
-                    for (dx = -1; dx <= 1; dx++) {
+                    for (dx = -1; dx <= (row_run ? -1 : 1); dx++) {
                         const uint64_t key = cs_cell_key(cz + dz, cy + dy, cx + dx);
+                        const uint64_t last = row_run ? key + 2 : key;
                         size_t e = cs_lower_bound(ks, nv, key);
-                        for (; e < nv && ks[e].key == key; e++) {
+                        for (; e < nv && ks[e].key <= last; e++) {
                             const size_t m = (size_t)ks[e].node;
                             const float *pm = &g->pos[m * 3], *nm = &g->nrm[m * 3];
                             double d2 = 0.0, du = 0.0, dv = 0.0, c = 0.0;
@@ -3039,9 +3897,279 @@ static int cs_selftest_frame(void)
     return rc;
 }
 
+/* The data fit as it was before the packed, tabulated, SSE2 path (2026-10-30): the reference the fast path must
+ * reproduce bit for bit. */
+static int cs_fit_data_node_reference(CloseupGrid *g, const CloseupObs *o, const CsBins *b, size_t i, size_t j,
+                                      const CloseupFitOpts *opt, int record_nearest)
+{
+    const double R = opt->fit_px, inv = 1.0 / R, s2 = 2.0 * (0.5 * R) * (0.5 * R);
+    const long rc = (long)ceil(R / g->h) + 1;
+    const double cu = g->u0 + g->h * (double)i, cv = g->v0 + g->h * (double)j;
+    size_t n = j * g->ni + i;
+    long ci = 0, cj = 0;
+    double best = 1e300;
+    int32_t best_chart = -1;
+    CsQuad q;
+    memset(&q, 0, sizeof q);
+    for (cj = (long)j - rc; cj <= (long)j + rc; cj++) {
+        if (cj < 0 || cj >= (long)g->nj) continue;
+        for (ci = (long)i - rc; ci <= (long)i + rc; ci++) {
+            size_t c = 0, t = 0;
+            if (ci < 0 || ci >= (long)g->ni) continue;
+            c = (size_t)cj * g->ni + (size_t)ci;
+            for (t = b->off[c]; t < b->off[c + 1]; t++) {
+                size_t k = b->idx[t];
+                double dx = (double)o->uv[k * 2] - cu, dy = (double)o->uv[k * 2 + 1] - cv;
+                double r2 = dx * dx + dy * dy, w = 0.0;
+                if (r2 > R * R) continue;
+                if (r2 < best) { best = r2; best_chart = o->chart[k]; }
+                w = exp(-r2 / s2) * (double)o->w[k];
+                if (w < 1e-6) continue;
+                cs_quad_add(&q, dx, dy, inv, w, &o->p[k * 3]);
+            }
+        }
+    }
+    if (record_nearest) {
+        g->dist[n] = best < 1e300 ? (float)sqrt(best) : INFINITY;
+        g->chart[n] = best_chart;
+    }
+    if ((long)q.n < opt->min_obs) return -1;
+    if (cs_quad_solve(&q, inv, &g->pos[n * 3], &g->tu[n * 3], &g->tv[n * 3]) != 0) return -1;
+    g->support[n] = (float)q.wsum;
+    return 0;
+}
+
+/* The packed / tabulated / SSE2 data fit against the reference on observations at pixel centres (the exact table)
+ * and off them (exp), with uneven robust weights, several layers and empty patches: every node's result must be
+ * the same bits.  And the parallel keyed sort against qsort. */
+static int cs_selftest_fast_fit(void)
+{
+    CloseupGrid g, r;
+    CloseupObs o;
+    CloseupFitOpts opt;
+    CsBins b;
+    CsPacked pk;
+    CsGauss ga;
+    CsWindow wn;
+    uint32_t rng = 0x2a6bu;
+    size_t n = 0, k = 0, bad = 0, fitted = 0;
+    int fails = 0, layer = 0;
+    memset(&o, 0, sizeof o); memset(&b, 0, sizeof b); memset(&pk, 0, sizeof pk);
+    CloseupFitOpts_default(&opt);
+    if (CloseupGrid_alloc(&g, 0, 120, 0, 90, CLOSEUP_GRID_PX) != 0) return 1;
+    if (CloseupGrid_alloc(&r, 0, 120, 0, 90, CLOSEUP_GRID_PX) != 0) { CloseupGrid_free(&g); return 1; }
+    if (cs_obs_reserve(&o, 40000) != 0) { CloseupGrid_free(&g); CloseupGrid_free(&r); return 1; }
+    for (layer = 0; layer < 2; layer++) {
+        long x = 0, y = 0;
+        for (y = 0; y < 90; y++)
+            for (x = 0; x < 120; x++) {
+                double u = (double)x + 0.5, v = (double)y + 0.5;
+                if (layer == 1 && (x < 30 || x > 80)) continue;          /* a second layer over part of it */
+                if (((unsigned)(x / 17 + y / 13)) % 7 == 3) continue;       /* empty patches */
+                rng = rng * 1664525u + 1013904223u;
+                if (layer == 1 && (rng >> 28) == 5) { u += 0.37; v -= 0.11; }  /* off the pixel lattice: exp itself */
+                o.uv[o.n * 2] = (float)u; o.uv[o.n * 2 + 1] = (float)v;
+                o.p[o.n * 3] = (float)(3000.0 + 0.9 * u + 0.002 * u * v);
+                o.p[o.n * 3 + 1] = (float)(5000.0 + 0.4 * v + 7.0 * layer);
+                o.p[o.n * 3 + 2] = (float)(800.0 + 0.3 * u - 0.6 * v + 0.01 * (double)(rng >> 24));
+                o.w[o.n] = (float)(0.05 + (double)(rng >> 8) / 16777216.0);
+                o.chart[o.n] = (int32_t)(layer * 100 + (x / 40));
+                o.n++;
+            }
+    }
+    if (cs_bin(&g, &o, &b) != 0 || cs_pack(&g, &o, &b, g.ni * g.nj, &pk) != 0 || cs_window_init(&wn, opt.fit_px, g.h) != 0) {
+        fails++;
+    } else {
+        CsLattice lat;
+        int mode = 0, kernels = 1, lattice_codes = 0;
+        size_t t = 0;
+#ifdef CS_AVX2
+        kernels = cs_avx2() ? 2 : 1;
+#endif
+        cs_gauss_init(&ga, opt.fit_px);
+        for (t = 0; t < b.off[g.ni * g.nj]; t++) lattice_codes += !(pk.code[t] & CS_OFF_LATTICE);
+        if (cs_lattice_init(&lat, &g, &opt, &ga, &wn) != 0 || !lat.on || lattice_codes == 0) fails++;
+        for (mode = 0; mode < 2 * kernels; mode++) {   /* (kernel, table on/off) */
+            const int kernel = mode / 2, table = mode % 2;
+            CsLattice none;
+            memset(&none, 0, sizeof none);
+            for (n = 0; n < g.ni * g.nj; n++) {
+                const size_t i = n % g.ni, j = n / g.ni;
+                int a = cs_fit_data_node_k(&g, &pk, &b, i, j, &opt, 1, &ga, &wn, table ? &lat : &none, kernel);
+                int c = cs_fit_data_node_reference(&r, &o, &b, i, j, &opt, 1);
+                if (a != c) { bad++; continue; }
+                fitted += a == 0 && mode == 0;
+                if (memcmp(&g.dist[n], &r.dist[n], sizeof g.dist[n]) || g.chart[n] != r.chart[n]) bad++;
+                if (a == 0 && (memcmp(&g.pos[n * 3], &r.pos[n * 3], 3 * sizeof *g.pos) ||
+                               memcmp(&g.tu[n * 3], &r.tu[n * 3], 3 * sizeof *g.tu) ||
+                               memcmp(&g.tv[n * 3], &r.tv[n * 3], 3 * sizeof *g.tv) ||
+                               memcmp(&g.support[n], &r.support[n], sizeof *g.support))) bad++;
+            }
+        }
+        cs_lattice_free(&lat);
+        if (bad || fitted < 1000) fails++;
+        fprintf(stderr, "  fast data fit vs reference: %zu nodes fitted, %d kernel(s) x table off/on, %d of %zu observations on "
+                "the lattice, %zu differ: %s\n", fitted, kernels, lattice_codes, (size_t)b.off[g.ni * g.nj], bad,
+                bad || fitted < 1000 ? "FAIL" : "ok");
+    }
+    {   /* the fill fit's lattice samples against the scan of every row and column, both masks, many radii */
+        size_t tried = 0, differ = 0, n2 = 0;
+        int32_t *cm = (int32_t *)malloc(g.ni * g.nj * sizeof *cm);
+        if (cm == NULL) fails++;
+        else {
+            for (n2 = 0; n2 < g.ni * g.nj; n2++) {
+                g.state[n2] = (n2 % g.ni) < g.ni / 2 && (n2 / g.ni) % 9 != 4 ? CLOSEUP_NODE_DATA : CLOSEUP_NODE_NONE;
+                if (g.state[n2] == CLOSEUP_NODE_DATA && !isfinite(g.pos[n2 * 3])) {
+                    g.pos[n2 * 3] = (float)n2; g.pos[n2 * 3 + 1] = 1.0f; g.pos[n2 * 3 + 2] = 2.0f;
+                }
+                cm[n2] = g.state[n2] == CLOSEUP_NODE_DATA ? (int32_t)((n2 / g.ni) / 20) : -1;
+            }
+            for (n2 = 0; n2 < g.ni * g.nj; n2 += 7) {
+                const size_t i2 = n2 % g.ni, j2 = n2 / g.ni, nearn = j2 * g.ni + g.ni / 2 - 1;
+                int pass = 0;
+                for (pass = 0; pass < 6; pass++) {
+                    const double R = 12.0 + 61.0 * pass;
+                    const long rn = (long)ceil(R / g.h);
+                    const long st = (long)floor(R / (8.0 * g.h)) < 1 ? 1 : (long)floor(R / (8.0 * g.h));
+                    CsQuad qa, qb;
+                    cs_fill_samples(&g, i2, j2, R, rn, st, nearn, pass % 2 ? cm : NULL, 1, &qa);
+                    cs_fill_samples(&g, i2, j2, R, rn, st, nearn, pass % 2 ? cm : NULL, 0, &qb);
+                    tried++;
+                    if (memcmp(&qa, &qb, sizeof qa) != 0) differ++;
+                }
+            }
+            free(cm);
+        }
+        fprintf(stderr, "  fill samples vs reference scan: %zu tried, %zu differ: %s\n", tried, differ, differ ? "FAIL" : "ok");
+        if (differ) fails++;
+    }
+    {   /* the keyed sort */
+        const size_t nk = 300001;
+        CsKeyed *a = (CsKeyed *)malloc(nk * sizeof *a), *c = (CsKeyed *)malloc(nk * sizeof *c);
+        if (a == NULL || c == NULL) fails++;
+        else {
+            for (k = 0; k < nk; k++) {
+                rng = rng * 1664525u + 1013904223u;
+                a[k].key = (uint64_t)(rng >> 20);          /* many equal keys: the node breaks them */
+                a[k].node = (int32_t)(nk - k);
+            }
+            memcpy(c, a, nk * sizeof *a);
+            qsort(c, nk, sizeof *c, cs_keyed_cmp);
+            (void)cs_keyed_sort(a, nk);
+            if (memcmp(a, c, nk * sizeof *a) != 0) { fails++; fprintf(stderr, "  keyed sort vs qsort: FAIL\n"); }
+            else fprintf(stderr, "  keyed sort vs qsort: ok\n");
+        }
+        free(a); free(c);
+    }
+    cs_bins_free(&b); cs_packed_free(&pk); CloseupObs_free(&o); CloseupGrid_free(&g); CloseupGrid_free(&r);
+    return fails;
+}
+
+/* A sheet observed at pixel centres over [0, 160) x [0, 120) with a hole, then patches appended (an adopted chart's
+ * continuation, an overlap inside the old ground): obs after `stage` appends. */
+static void cs_selftest_inc_obs(CloseupObs *o, int stage, uint32_t *rng)
+{
+    long x = 0, y = 0;
+    for (y = 0; y < 140; y++)
+        for (x = 0; x < 240; x++) {
+            double u = (double)x + 0.5, v = (double)y + 0.5, z = 0.0;
+            int in0 = x < 160 && y < 120 && !(x > 60 && x < 75 && y > 40 && y < 52);
+            int in1 = x >= 160 && x < 215 && y >= 20 && y < 90;            /* the continuation */
+            int in2 = x >= 40 && x < 58 && y >= 70 && y < 86;              /* an overlap of old ground */
+            int in3 = x >= 100 && x < 150 && y >= 118 && y < 136;          /* another, at the old edge */
+            if (!(stage == 0 ? in0 : stage == 1 ? in1 || in2 : in3)) continue;
+            *rng = *rng * 1664525u + 1013904223u;
+            z = 0.002 * (u - 80.0) * (u - 80.0) + 0.001 * u * v + (double)(*rng >> 24) / 512.0;
+            if ((*rng >> 20) % 97 == 0) z += 9.0;                          /* outliers for the robust rounds */
+            o->uv[o->n * 2] = (float)u; o->uv[o->n * 2 + 1] = (float)v;
+            o->p[o->n * 3] = (float)(4000.0 + 0.6 * u + 0.8 * z);
+            o->p[o->n * 3 + 1] = (float)(6000.0 + v);
+            o->p[o->n * 3 + 2] = (float)(2000.0 + 0.8 * u - 0.6 * z + (in2 ? 0.05 : 0.0));
+            o->w[o->n] = 1.0f;
+            o->chart[o->n] = in0 ? 3 : in1 ? 11 : in2 ? 12 : 13;
+            o->n++;
+        }
+}
+
+static int cs_selftest_incremental(void)
+{
+    CloseupGrid ga, gb;
+    CloseupObs o;
+    CloseupFitOpts opt;
+    CloseupFitStats sa, sb;
+    CloseupFitCache *cache = CloseupFitCache_new();
+    uint32_t rng = 0x51ed27u;
+    int fails = 0, stage = 0;
+    memset(&o, 0, sizeof o);
+    CloseupFitOpts_complete(&opt);
+    if (cache == NULL || cs_obs_reserve(&o, 60000) != 0) { CloseupFitCache_free(&cache); return 1; }
+    if (CloseupGrid_alloc(&ga, -40, 260, -40, 160, CLOSEUP_GRID_PX) != 0) { CloseupFitCache_free(&cache); CloseupObs_free(&o); return 1; }
+    if (CloseupGrid_alloc(&gb, -40, 260, -40, 160, CLOSEUP_GRID_PX) != 0) {
+        CloseupGrid_free(&ga); CloseupFitCache_free(&cache); CloseupObs_free(&o); return 1;
+    }
+    {   /* the split reweight against cs_reweight: weights of an update round, statistics of the last */
+        CloseupObs a, c;
+        CloseupFitStats s1, s2;
+        size_t k = 0, bad = 0;
+        memset(&a, 0, sizeof a); memset(&c, 0, sizeof c); memset(&s1, 0, sizeof s1); memset(&s2, 0, sizeof s2);
+        cs_selftest_inc_obs(&o, 0, &rng);
+        if (CloseupSurface_fit(&ga, &o, &opt, NULL) != 0 || cs_obs_reserve(&a, o.n) != 0 || cs_obs_reserve(&c, o.n) != 0) fails++;
+        else {
+            for (k = 0; k < o.n; k++) o.w[k] = (float)(0.25 + 0.5 * (double)(k % 7) / 7.0);
+            a.n = c.n = o.n;
+            memcpy(a.uv, o.uv, o.n * 2 * sizeof *o.uv); memcpy(c.uv, o.uv, o.n * 2 * sizeof *o.uv);
+            memcpy(a.p, o.p, o.n * 3 * sizeof *o.p); memcpy(c.p, o.p, o.n * 3 * sizeof *o.p);
+            memcpy(a.w, o.w, o.n * sizeof *o.w); memcpy(c.w, o.w, o.n * sizeof *o.w);
+            cs_reweight(&ga, &a, opt.robust_vox, 1, &s1);
+            cs_reweight_update(&ga, &c, opt.robust_vox, NULL, 0, 0, NULL);
+            if (memcmp(a.w, c.w, o.n * sizeof *o.w) != 0) bad++;
+            cs_reweight(&ga, &a, opt.robust_vox, 0, &s1);
+            cs_reweight_stats(&ga, &c, &s2);
+            if (s1.resid_p50 != s2.resid_p50 || s1.resid_p90 != s2.resid_p90 || s1.resid_p99 != s2.resid_p99 ||
+                s1.obs_downweighted != s2.obs_downweighted) bad++;
+        }
+        fprintf(stderr, "  split reweight vs cs_reweight: %s\n", bad ? "FAIL" : "ok");
+        fails += bad != 0;
+        CloseupObs_free(&a); CloseupObs_free(&c);
+        o.n = 0;
+        CloseupGrid_free(&ga);
+        if (CloseupGrid_alloc(&ga, -40, 260, -40, 160, CLOSEUP_GRID_PX) != 0) fails++;
+    }
+    for (stage = 0; stage < 3 && !fails; stage++) {
+        size_t k = 0, nn = ga.ni * ga.nj, bad = 0;
+        cs_selftest_inc_obs(&o, stage, &rng);
+        if (CloseupSurface_fit_cached(&ga, &o, &opt, &sa, cache) != 0 || CloseupSurface_fit(&gb, &o, &opt, &sb) != 0) {
+            fails++;
+            break;
+        }
+        for (k = 0; k < nn; k++) {
+            if (ga.state[k] != gb.state[k] || memcmp(&ga.dist[k], &gb.dist[k], sizeof ga.dist[k])) { bad++; continue; }
+            if (ga.state[k] == CLOSEUP_NODE_NONE) continue;
+            if (memcmp(&ga.pos[k * 3], &gb.pos[k * 3], 3 * sizeof *ga.pos) ||
+                memcmp(&ga.tu[k * 3], &gb.tu[k * 3], 3 * sizeof *ga.tu) ||
+                memcmp(&ga.tv[k * 3], &gb.tv[k * 3], 3 * sizeof *ga.tv) ||
+                memcmp(&ga.nrm[k * 3], &gb.nrm[k * 3], 3 * sizeof *ga.nrm) ||
+                memcmp(&ga.support[k], &gb.support[k], sizeof *ga.support) ||
+                ga.chart[k] != gb.chart[k] || ga.component[k] != gb.component[k]) bad++;
+        }
+        if (sa.data_nodes != sb.data_nodes || sa.data_failed != sb.data_failed || sa.fill_nodes != sb.fill_nodes ||
+            sa.fill_rejected != sb.fill_rejected || sa.obs_downweighted != sb.obs_downweighted ||
+            sa.resid_p50 != sb.resid_p50 || sa.resid_p99 != sb.resid_p99 || sa.torn_stretch != sb.torn_stretch ||
+            sa.torn_float != sb.torn_float || sa.variational_filled != sb.variational_filled ||
+            sa.variational_refused != sb.variational_refused) bad++;
+        fprintf(stderr, "  incremental refit, fit %d (%zu observations, %zu data nodes): %zu differences from a full fit: %s\n",
+                stage, o.n, sa.data_nodes, bad, bad ? "FAIL" : "ok");
+        if (bad || sa.data_nodes < 2000) fails++;
+    }
+    CloseupGrid_free(&ga); CloseupGrid_free(&gb); CloseupObs_free(&o); CloseupFitCache_free(&cache);
+    return fails;
+}
+
 int CloseupSurface_selftest(void)
 {
     int f = 0;
+    f += cs_selftest_fast_fit();
+    f += cs_selftest_incremental();
     f += cs_selftest_raster();
     f += cs_selftest_infill();
     f += cs_selftest_bridge(0);

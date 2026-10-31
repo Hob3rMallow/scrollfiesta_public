@@ -50,6 +50,13 @@ typedef struct CloseupPool {
     const int32_t *faces;     /* [nf*3] */
     const size_t  *vofs;      /* [nch+1] chart k owns vertices vofs[k] .. vofs[k+1]-1 */
     const size_t  *fofs;      /* [nch+1] ... and faces fofs[k] .. fofs[k+1]-1 */
+    /* Optional: per-chart fields on first use.  With chart_fill set, chart_fill(chart_ctx, k) fills chart k's
+     * slices of nrm and inward the first time a round evaluates the chart, and chart_ready[k] is set: a round's
+     * worker threads each fill their own charts, so the callback must be safe to run concurrently on disjoint
+     * charts (its buffers are the ones nrm and inward point to). */
+    void         (*chart_fill)(const void *ctx, size_t chart);
+    const void    *chart_ctx;
+    uint8_t       *chart_ready;    /* [nch] */
 } CloseupPool;
 
 typedef struct CloseupAdoptOpts {

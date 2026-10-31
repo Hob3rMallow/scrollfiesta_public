@@ -403,29 +403,58 @@ void MeshChartIndex_free(MeshChartIndex *ix)
 /* Read one file section at a time. Adjacent selected ranges share a read; never read omitted charts. The old
  * chart-at-a-time reader sought from vertices to UVs to faces and back for every chart (minutes on a cold disk).
  * Face runs need not follow vertex order: only truly adjacent offsets are joined, preserving the compact order. */
+/* Selected runs this close in the file are read through rather than sought past: on a mechanical disk one long read
+ * beats a seek per run (a close-up pool's ~640,000 runs were ~70,000 seeks, minutes cold; 2026-10-30).  The gaps'
+ * bytes go to scratch and are dropped, so the output holds exactly the selected runs. */
+#define MCI_GAP_BYTES ((uint64_t)1 << 20)
+#define MCI_SPAN_BYTES ((uint64_t)64 << 20)
+
 static int mci_read_ranges(FILE *f, const MeshChartIndex *ix, const size_t *sel, size_t nsel,
                            int faces, uint64_t offset, size_t es, void *out)
 {
-    size_t s = 0, at = 0;
-    while (s < nsel) {
+    size_t s = 0, at = 0, scap = 0;
+    unsigned char *scratch = NULL;
+    int rc = 0;
+    while (s < nsel && rc == 0) {
         const MeshChartRec *r = &ix->rec[sel[s]];
         uint64_t lo = faces ? r->f0 : r->v0, hi = faces ? r->f1 : r->v1;
-        size_t end = s + 1, bytes = 0;
+        size_t end = s + 1, bytes = 0, k = 0;
+        int gaps = 0;
         if (lo == hi) { s++; continue; }
         while (end < nsel) {
             const MeshChartRec *next = &ix->rec[sel[end]];
             uint64_t nlo = faces ? next->f0 : next->v0, nhi = faces ? next->f1 : next->v1;
             if (nlo == nhi) { end++; continue; }
-            if (nlo != hi) break;
+            if (nlo < hi || (nlo - hi) * es > MCI_GAP_BYTES || (nhi - lo) * es > MCI_SPAN_BYTES) break;
+            gaps |= nlo != hi;
             hi = nhi;
             end++;
         }
         bytes = (size_t)(hi - lo) * es;
-        if (mci_seek(f, offset + lo * es) != 0 || mci_read(f, (unsigned char *)out + at, bytes) != 0) return -1;
-        at += bytes;
+        if (!gaps) {                   /* one contiguous span: straight into the output */
+            if (mci_seek(f, offset + lo * es) != 0 || mci_read(f, (unsigned char *)out + at, bytes) != 0) rc = -1;
+            at += bytes;
+            s = end;
+            continue;
+        }
+        if (bytes > scap) {
+            unsigned char *grown = (unsigned char *)realloc(scratch, bytes);
+            if (grown == NULL) { rc = -1; break; }
+            scratch = grown; scap = bytes;
+        }
+        if (mci_seek(f, offset + lo * es) != 0 || mci_read(f, scratch, bytes) != 0) { rc = -1; break; }
+        for (k = s; k < end; k++) {    /* the selected runs out of the span, in order */
+            const MeshChartRec *q = &ix->rec[sel[k]];
+            uint64_t qlo = faces ? q->f0 : q->v0, qhi = faces ? q->f1 : q->v1;
+            size_t n = (size_t)(qhi - qlo) * es;
+            if (n == 0) continue;
+            memcpy((unsigned char *)out + at, scratch + (size_t)(qlo - lo) * es, n);
+            at += n;
+        }
         s = end;
     }
-    return 0;
+    free(scratch);
+    return rc;
 }
 
 int MeshChartIndex_read(const MeshChartIndex *ix, const char *vmesh, const size_t *sel, size_t nsel,
