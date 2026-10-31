@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include "blaswrap.h"
 #include "f2c.h"
 
