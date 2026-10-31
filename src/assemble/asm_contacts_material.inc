@@ -192,6 +192,7 @@ typedef struct AcMaterialGather {
     const double *uv;
     size_t count;
     int complete;
+    size_t cap;   /* segments holds cap segments (ACB_SEGMENTS, or a grown gather) */
 } AcMaterialGather;
 
 static void acm_gather_edge(const AcMaterial *m,size_t edge,AcMaterialGather *g)
@@ -201,7 +202,7 @@ static void acm_gather_edge(const AcMaterial *m,size_t edge,AcMaterialGather *g)
         xy[d]=g->uv[2*(size_t)e->a+d]-g->origin[d];xy[2+d]=g->uv[2*(size_t)e->b+d]-g->origin[d];
         if(ac_min(xy[d],xy[2+d])>g->box[2+d] || ac_max(xy[d],xy[2+d])<g->box[d])return;
     }
-    if(g->count==ACB_SEGMENTS){g->complete=0;return;}
+    if(g->count==g->cap){g->complete=0;return;}
     memcpy(g->segments+4*g->count++,xy,sizeof xy);
 }
 
@@ -228,7 +229,7 @@ static int acm_selftest(void)
     AcMaterial *m=acm_new(arena,8,faces,4,uv,NULL);
     if(!m || m->components!=2 || m->edges!=8 || m->strict[0] || m->strict[1])failures++;
     if(m){
-        double segments[4*ACB_SEGMENTS];AcMaterialGather g={segments,{13,5,21,15},{0,0},uv,0,1};
+        double segments[4*ACB_SEGMENTS];AcMaterialGather g={segments,{13,5,21,15},{0,0},uv,0,1,ACB_SEGMENTS};
         acm_gather(m,0,uv,&g);acm_gather(m,2,uv,&g);
         if(!g.complete || g.count!=2)failures++;
         uint8_t moving[4]={0,0,1,1};for(int i=4;i<8;i++)uv[2*i]+=10;

@@ -11,11 +11,21 @@
 #define ACB_SEGMENTS 512   /* 128 until 2026-10-23: one self pair of PHerc1218 chart 63586 (a chart laid over itself) gathered more original boundary edges in its 4-vox box and its audit died; an overflow is now an UNMEASURED pair */
 #define ACB_POINTS (2*ACB_SEGMENTS)
 #define ACB_CANDIDATES 65536u
+/* (2026-10-29) a gather past ACB_SEGMENTS is gathered again into storage eight times larger, up to this many
+ * segments (ac_material_contact_grown): a full buffer is a storage limit, not a verdict. */
+#define AC_MATERIAL_SEGMENTS_MAX (64*(size_t)ACB_SEGMENTS)
+
+/* (2026-10-29) why a band test gave up, for the UNMEASURED diagnostics */
+enum { ACB_WHY_NONE, ACB_WHY_CLIP, ACB_WHY_PIECES, ACB_WHY_ENDPOINTS, ACB_WHY_CANDIDATES, ACB_WHY_ROUNDED, ACB_WHY_INPUT };
 
 typedef struct AcBandPoly { double xy[2*ACB_VERTICES]; int n; } AcBandPoly;
 typedef struct AcBandWork {
     AcBandPoly first[ACB_PIECES],second[ACB_PIECES],temp[3];
     double point[2*ACB_POINTS];
+    double *pt;size_t pt_cap;   /* the endpoint store of the current test: point[], or a larger one (acb_contact_store) */
+    int why;   /* why the last acb_contact_store gave up: ACB_WHY_* */
+    int pieces_cap;size_t cand_cap;   /* the current test's budgets: ACB_PIECES / ACB_CANDIDATES, or grown ones */
+    int grew;   /* the growth steps the last acb_contact_grown took (0 = the fixed budgets sufficed) */
     size_t candidates;
 } AcBandWork;
 
@@ -77,12 +87,12 @@ static int acb_inside(const AcBandPoly *p,const double at[2],double roundoff)
 static int acb_witness(AcBandWork *work,const AcBandPoly *poly,const double p[2],int points,
                        const double *segments,size_t count,double radius2,double roundoff,double witness[2])
 {
-    if(++work->candidates>ACB_CANDIDATES)return -1;
+    if(++work->candidates>work->cand_cap)return -1;
     if(!isfinite(p[0]) || !isfinite(p[1]))return -1;
     if(!acb_inside(poly,p,roundoff))return 0;
     double nearest=DBL_MAX;
     for(int i=0;i<points;i++){
-        double x=p[0]-work->point[2*i],y=p[1]-work->point[2*i+1];nearest=ac_min(nearest,x*x+y*y);
+        double x=p[0]-work->pt[2*i],y=p[1]-work->pt[2*i+1];nearest=ac_min(nearest,x*x+y*y);
     }
     if(nearest<=radius2)return 0;
     if(acb_uncovered(p,segments,count,radius2)){if(witness)memcpy(witness,p,2*sizeof(double));return 1;}
@@ -110,18 +120,18 @@ static int acb_disk_complement(AcBandWork *work,const AcBandPoly *poly,int point
     for(int i=0;i<poly->n;i++){
         int found=acb_witness(work,poly,poly->xy+2*i,points,segments,count,radius2,roundoff,witness);
         if(found>0)return found;
-        if(found<0){incomplete=1;if(work->candidates>ACB_CANDIDATES)return -1;}
+        if(found<0){incomplete=1;if(work->candidates>work->cand_cap)return -1;}
     }
     /* One disk containing every vertex contains this complete convex piece. */
     for(int i=0;i<points;i++){
-        int inside=1;const double *p=work->point+2*i;
+        int inside=1;const double *p=work->pt+2*i;
         for(int j=0;j<poly->n && inside;j++){
             double x=poly->xy[2*j]-p[0],y=poly->xy[2*j+1]-p[1];inside=x*x+y*y<=radius2;
         }
         if(inside)return 0;
     }
     for(int i=0;i<points;i++)for(int j=i+1;j<points;j++){
-        const double *a=work->point+2*i,*b=work->point+2*j;
+        const double *a=work->pt+2*i,*b=work->pt+2*j;
         double nx=b[0]-a[0],ny=b[1]-a[1],height=.5*(nx*nx+ny*ny);
         if(!(height>0))continue;
         for(int k=0;k<poly->n;k++){
@@ -133,17 +143,17 @@ static int acb_disk_complement(AcBandWork *work,const AcBandPoly *poly,int point
             double p[2]={start[0]+t*(end[0]-start[0]),start[1]+t*(end[1]-start[1])};
             int found=acb_witness(work,poly,p,points,segments,count,radius2,roundoff,witness);
             if(found>0)return found;
-            if(found<0){incomplete=1;if(work->candidates>ACB_CANDIDATES)return -1;}
+            if(found<0){incomplete=1;if(work->candidates>work->cand_cap)return -1;}
         }
         for(int k=j+1;k<points;k++){
-            const double *c=work->point+2*k;
+            const double *c=work->pt+2*k;
             double x=c[0]-a[0],y=c[1]-a[1],denominator=2*ac_cross(nx,ny,x,y);
             if(denominator==0)continue;
             double ab=nx*nx+ny*ny,ac=x*x+y*y;
             double p[2]={a[0]+(ab*y-ac*ny)/denominator,a[1]+(ac*nx-ab*x)/denominator};
             int found=acb_witness(work,poly,p,points,segments,count,radius2,roundoff,witness);
             if(found>0)return found;
-            if(found<0){incomplete=1;if(work->candidates>ACB_CANDIDATES)return -1;}
+            if(found<0){incomplete=1;if(work->candidates>work->cand_cap)return -1;}
         }
     }
     /* A rounded boundary candidate is not a clear result and cannot hide a
@@ -152,16 +162,21 @@ static int acb_disk_complement(AcBandWork *work,const AcBandPoly *poly,int point
 }
 
 /* polygon and segments are recentered in the same frame. The caller supplies
- * a scale-aware floating-point allowance, not a new physical tolerance. */
-static int acb_contact(AcBandWork *work,const double *polygon,int vertices,
-                       const double *segments,size_t count,double tolerance,double roundoff,double witness[2])
+ * a scale-aware floating-point allowance, not a new physical tolerance.
+ * store holds store_points segment endpoints (two doubles each); 2*count is
+ * always enough (2026-10-29: a gather past ACB_SEGMENTS is measured with a
+ * larger store instead of being left unmeasured). */
+static int acb_contact_store(AcBandWork *work,double *store,size_t store_points,AcBandPoly *pieces_a,AcBandPoly *pieces_b,
+                             int pieces_cap,size_t cand_cap,const double *polygon,int vertices,
+                             const double *segments,size_t count,double tolerance,double roundoff,double witness[2])
 {
-    if(!work || !polygon || vertices<3 || vertices>ACB_VERTICES || (count && !segments) || count>ACB_SEGMENTS ||
-       !isfinite(tolerance) || tolerance<0 || !isfinite(roundoff) || roundoff<0)return -1;
-    work->candidates=0;AcBandPoly *a=work->first,*b=work->second;
+    if(!work || !store || !pieces_a || !pieces_b || pieces_cap<1 || !polygon || vertices<3 || vertices>ACB_VERTICES ||
+       (count && !segments) || !isfinite(tolerance) || tolerance<0 || !isfinite(roundoff) || roundoff<0)return -1;
+    work->pt=store;work->pt_cap=store_points;work->why=ACB_WHY_NONE;work->pieces_cap=pieces_cap;work->cand_cap=cand_cap;
+    work->candidates=0;AcBandPoly *a=pieces_a,*b=pieces_b;
     a[0].n=vertices;memcpy(a[0].xy,polygon,2*(size_t)vertices*sizeof(double));
-    for(int k=0;k<2*vertices;k++)if(!isfinite(polygon[k]))return -1;
-    for(size_t k=0;k<4*count;k++)if(!isfinite(segments[k]))return -1;
+    for(int k=0;k<2*vertices;k++)if(!isfinite(polygon[k])){work->why=ACB_WHY_INPUT;return -1;}
+    for(size_t k=0;k<4*count;k++)if(!isfinite(segments[k])){work->why=ACB_WHY_INPUT;return -1;}
     if(!(acb_area(a)>0))return 0;
     double radius=.5*tolerance+roundoff,radius2=radius*radius,center[2]={0};
     if(!isfinite(radius2))return -1;
@@ -185,8 +200,8 @@ static int acb_contact(AcBandWork *work,const double *polygon,int vertices,
             AcBandPoly *current=work->temp,*inside=work->temp+1,*outside=work->temp+2;*current=a[j];
             for(int k=0;k<4 && current->n>=3;k++){
                 const double *h=planes+3*k;
-                if(!acb_clip(current,-h[0],-h[1],-h[2],outside) || !acb_clip(current,h[0],h[1],h[2],inside))return -1;
-                if(outside->n>=3 && acb_area(outside)>0){if(next==ACB_PIECES)return -1;b[next++]=*outside;}
+                if(!acb_clip(current,-h[0],-h[1],-h[2],outside) || !acb_clip(current,h[0],h[1],h[2],inside)){work->why=ACB_WHY_CLIP;return -1;}
+                if(outside->n>=3 && acb_area(outside)>0){if(next==work->pieces_cap){work->why=ACB_WHY_PIECES;return -1;}b[next++]=*outside;}
                 *current=*inside;
             }
         }
@@ -200,16 +215,48 @@ static int acb_contact(AcBandWork *work,const double *polygon,int vertices,
         const double *p=segments+4*i+2*end;int exists=0;
         double dx=ac_max(0,ac_max(lo[0]-p[0],p[0]-hi[0])),dy=ac_max(0,ac_max(lo[1]-p[1],p[1]-hi[1]));
         if(dx*dx+dy*dy>radius2)continue;
-        for(int j=0;j<points;j++)if(work->point[2*j]==p[0] && work->point[2*j+1]==p[1]){exists=1;break;}
-        if(!exists){if(points==ACB_POINTS)return -1;memcpy(work->point+2*points++,p,2*sizeof(double));}
+        for(int j=0;j<points;j++)if(work->pt[2*j]==p[0] && work->pt[2*j+1]==p[1]){exists=1;break;}
+        if(!exists){if((size_t)points==work->pt_cap){work->why=ACB_WHY_ENDPOINTS;return -1;}memcpy(work->pt+2*points++,p,2*sizeof(double));}
     }
     int incomplete=0;
     for(int i=0;i<pieces;i++){
         int found=acb_disk_complement(work,a+i,points,segments,count,radius2,roundoff,witness);
         if(found>0)return found;
-        if(found<0){incomplete=1;if(work->candidates>ACB_CANDIDATES)return -1;}
+        if(found<0){incomplete=1;if(work->candidates>work->cand_cap){work->why=ACB_WHY_CANDIDATES;return -1;}}
     }
+    if(incomplete)work->why=ACB_WHY_ROUNDED;
     return incomplete?-1:0;
+}
+
+/* The fixed store: at most ACB_SEGMENTS segments. */
+static int acb_contact(AcBandWork *work,const double *polygon,int vertices,
+                       const double *segments,size_t count,double tolerance,double roundoff,double witness[2])
+{
+    if(!work || count>ACB_SEGMENTS)return -1;
+    return acb_contact_store(work,work->point,ACB_POINTS,work->first,work->second,ACB_PIECES,ACB_CANDIDATES,
+                             polygon,vertices,segments,count,tolerance,roundoff,witness);
+}
+
+/* (2026-10-29) The band test with grown budgets: when the pieces or witness-candidate budget stops it, again with eight
+ * then sixty-four times the pieces and sixteen then 256 times the candidates (heap pieces, freed per try).  A budget
+ * is a work limit, not a verdict.  store holds store_points >= 2*count endpoints. */
+static int acb_contact_grown(AcBandWork *work,double *store,size_t store_points,const double *polygon,int vertices,
+                             const double *segments,size_t count,double tolerance,double roundoff,double witness[2])
+{
+    if(!work)return -1;
+    work->grew=0;
+    int result=acb_contact_store(work,store,store_points,work->first,work->second,ACB_PIECES,ACB_CANDIDATES,
+                                 polygon,vertices,segments,count,tolerance,roundoff,witness);
+    for(int grow=1;grow<=2 && result<0 && (work->why==ACB_WHY_PIECES || work->why==ACB_WHY_CANDIDATES);grow++){
+        int pieces=ACB_PIECES*(grow==1?8:64);size_t candidates=(size_t)ACB_CANDIDATES*(grow==1?16u:256u);
+        AcBandPoly *pa=malloc((size_t)pieces*sizeof *pa),*pb=malloc((size_t)pieces*sizeof *pb);
+        int stored=pa && pb;work->grew=grow;
+        if(stored)result=acb_contact_store(work,store,store_points,pa,pb,pieces,candidates,polygon,vertices,segments,count,
+                                           tolerance,roundoff,witness);
+        free(pa);free(pb);
+        if(!stored)break;
+    }
+    return result;
 }
 
 static int acb_selftest(void)
@@ -279,6 +326,40 @@ static int acb_selftest(void)
         double small[8]={-.8,-.8,.8,-.8,.8,.8,-.8,.8},disk[4]={0,0,0,0};
         if(acb_contact(work,small,4,disk,1,4,1e-10,NULL)!=0)failures++;
         if(acb_contact(work,small,4,NULL,0,4,1e-10,NULL)!=1 || acb_contact(work,small,4,disk,ACB_SEGMENTS+1,4,0,NULL)!=-1)failures++;
+    }
+    {
+        /* (2026-10-29) more boundary segments than the fixed store holds: 700 far
+         * ones and one covering a unit square, measured with a larger store, are a
+         * clear result; without the covering one the square is a contact; the
+         * fixed store still refuses the count. */
+        enum { MANY=700 };
+        double *many=ARENA_ALLOC(arena,4*(MANY+1)*sizeof *many),*store=ARENA_ALLOC(arena,4*(MANY+1)*sizeof *store);
+        for(int i=0;i<MANY;i++){many[4*i]=many[4*i+2]=10+i;many[4*i+1]=10;many[4*i+3]=11;}
+        many[4*MANY]=-1;many[4*MANY+1]=.5;many[4*MANY+2]=2;many[4*MANY+3]=.5;
+        const double square[8]={0,0,1,0,1,1,0,1};
+        int covered=acb_contact_store(work,store,2*(MANY+1),work->first,work->second,ACB_PIECES,ACB_CANDIDATES,square,4,many,MANY+1,4,1e-10,NULL);
+        int open=acb_contact_store(work,store,2*(MANY+1),work->first,work->second,ACB_PIECES,ACB_CANDIDATES,square,4,many,MANY,4,1e-10,NULL);
+        int fixed=acb_contact(work,square,4,many,MANY+1,4,1e-10,NULL);
+        int okay=covered==0 && open==1 && fixed==-1;
+        failures+=!okay;
+        fprintf(stderr,"  a boundary gather past %d segments measured with a larger store: %s\n",(int)ACB_SEGMENTS,okay?"ok":"FAIL");
+    }
+    {
+        /* (2026-10-29) thirteen horizontal and thirteen vertical boundary lines 4.5 apart (bands 4 wide) leave 0.5-wide
+         * gaps that split a 54-square into 144 uncovered pieces: the fixed budget gives up on its pieces, the grown
+         * one finds the contact inside a gap. */
+        enum { LINES=13 };
+        double grid[4*2*LINES],*store=ARENA_ALLOC(arena,4*2*LINES*sizeof *store),witness[2];
+        for(int k=0;k<LINES;k++){
+            double at=4.5*k,*h=grid+4*k,*v=grid+4*(LINES+k);
+            h[0]=-10;h[1]=at;h[2]=64;h[3]=at;v[0]=at;v[1]=-10;v[2]=at;v[3]=64;
+        }
+        const double square[8]={0,0,54,0,54,54,0,54};
+        int fixed=acb_contact(work,square,4,grid,2*LINES,4,1e-10,NULL),why=work->why;
+        int grown=acb_contact_grown(work,store,4*LINES,square,4,grid,2*LINES,4,1e-10,witness);
+        int okay=fixed==-1 && why==ACB_WHY_PIECES && grown==1 && acb_uncovered(witness,grid,2*LINES,4.0);
+        failures+=!okay;
+        fprintf(stderr,"  the band test's pieces budget grows before a pair is left unmeasured: %s\n",okay?"ok":"FAIL");
     }
     fprintf(stderr,"  original-boundary material band: %s (%d failures)\n",failures?"FAIL":"ok",failures);
     Arena_dispose(&arena);return failures;

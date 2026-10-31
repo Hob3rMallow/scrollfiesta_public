@@ -632,7 +632,8 @@ static void ac_commit(AsmContacts *q, size_t a, size_t b, double area,double raw
 }
 
 /* A pair whose material-boundary test could not finish (its gather overflowed
- * ACB_SEGMENTS): a certificate walk counts it UNMEASURED and goes on, so the
+ * AC_MATERIAL_SEGMENTS_MAX since 2026-10-29, ACB_SEGMENTS before; or the band
+ * test ran out of work): a certificate walk counts it UNMEASURED and goes on, so the
  * audit completes and says so (2026-10-23: PHerc1218 chart 63586, laid over
  * itself, killed its audit with no message); an objective walk fails as before. */
 static void ac_unmeasured(AsmContacts *q, size_t count, size_t a, size_t b)
@@ -1058,8 +1059,8 @@ static int ac_measure(AsmContacts *q,const double *uv,double *gradient,
     if (gradient) for (size_t i = 0; i < 2*q->nv; i++) if (!isfinite(gradient[i])) return -1;
     if(q->failed || !isfinite(out->area) || !isfinite(q->objective_area))return -1;
     if(q->stats.unmeasured)
-        fprintf(stderr,"[contacts] %zu pair(s) UNMEASURED: the material-boundary gather overflowed its %d segments (first pair: faces %zu, %zu); the walk went on, its overlaps are a lower bound\n",
-                q->stats.unmeasured,(int)ACB_SEGMENTS,q->unmeasured_ab[0],q->unmeasured_ab[1]);
+        fprintf(stderr,"[contacts] %zu pair(s) UNMEASURED: the material-boundary test could not finish (a gather past %zu segments, or its work bound) (first pair: faces %zu, %zu); the walk went on, its overlaps are a lower bound\n",
+                q->stats.unmeasured,(size_t)AC_MATERIAL_SEGMENTS_MAX,q->unmeasured_ab[0],q->unmeasured_ab[1]);
     if(memo && fresh && !q->stats.unmeasured)ac_memo_store(q,memo,uv);
     if(raw_area)*raw_area=q->objective_area;return 0;
 }
