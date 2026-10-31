@@ -77,6 +77,13 @@ The default stage sequence is:
 | `4` | CT surface snap. |
 | `5` | Final light relaxation. |
 
+Stage 4 defaults to the conservative dark-region repair only. The optional
+global recto-boundary objective targets the outward dark-to-bright CT edge,
+which is physically different from the CT intensity ridge; enable the prior
+four-iteration behaviour explicitly with `--snap-recto-iters 4`. A frozen
+PHerc0139 75/25-cube A/B and the target distinction are documented in
+[`SNAP_RIDGE_ABLATION.md`](SNAP_RIDGE_ABLATION.md).
+
 For each retained stage, the unroll directory can contain:
 
 | Pattern | Meaning |

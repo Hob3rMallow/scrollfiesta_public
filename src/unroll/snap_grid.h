@@ -48,7 +48,9 @@ typedef struct SnapGridOpts {
     double alpha, w_anchor;
     int    cg_max_iter;
     double cg_tol, max_disp;
-    /* pass-2 oriented recto refinement; recto_iters=0 disables it */
+    /* Optional pass-2 oriented recto-boundary refinement. This targets a
+     * different physical quantity from the CT ridge, so it is opt-in:
+     * recto_iters=0 (default) disables it; 4 restores the prior behaviour. */
     int    recto_iters, recto_inner_iters;
     double recto_range, recto_max_total;
     /* scale */
