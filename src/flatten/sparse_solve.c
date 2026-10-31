@@ -9,6 +9,24 @@
 
 #include "taucs.h"
 
+/* (2026-10-28) Every allocation of this file from the calling thread's private heap, as TAUCS's own blocks
+ * (taucs_malloc.c under SPARSE_TAUCS_THREAD_SAFE; the C library's functions elsewhere).  On the process heap, a
+ * 32-thread assembly's workers spent 57% of their samples queued on its lock in these temporaries (the CCS build, the
+ * dense path, AMD's workspace: SuiteSparse_config.c).  Allocation only: no value changes.  taucs.h
+ * prototypes the stubs only for TAUCS's own sources (TAUCS_CORE): without these an implicit int return truncates them. */
+void *taucs_malloc_stub(size_t size);
+void *taucs_calloc_stub(size_t nmemb, size_t size);
+void *taucs_realloc_stub(void *ptr, size_t size);
+void  taucs_free_stub(void *ptr);
+#undef malloc
+#undef calloc
+#undef realloc
+#undef free
+#define malloc(n) taucs_malloc_stub(n)
+#define calloc(n, s) taucs_calloc_stub((n), (s))
+#define realloc(p, n) taucs_realloc_stub((p), (n))
+#define free(p) taucs_free_stub(p)
+
 /* taucs.h does not prototype these high-level entry points; declare them. */
 extern taucs_ccs_matrix *taucs_ccs_create(int m, int n, int nnz, int flags);
 extern void              taucs_ccs_free(taucs_ccs_matrix *m);
@@ -920,8 +938,38 @@ static int sp_concurrency_selftest(void)
 }
 #endif
 
+/* (2026-10-28) this file's blocks come from the calling thread's private heap (Windows, SPARSE_TAUCS_THREAD_SAFE): two
+ * threads' blocks name two different heaps and each is freed by the other thread; elsewhere they are the C library's */
+static int sp_heap_selftest(void)
+{
+    void *blk[2] = {NULL, NULL}; int team = 0, bad = 0;
+#pragma omp parallel num_threads(2)
+    {
+        int t = omp_get_thread_num();
+        if (t == 0) team = omp_get_num_threads();
+        if (t < 2) { blk[t] = malloc(4096); if (blk[t]) memset(blk[t], t+1, 4096); }
+    }
+    if (!blk[0] || (team > 1 && !blk[1])) bad = 1;
+#if defined(_WIN32) && defined(SPARSE_TAUCS_THREAD_SAFE) && !defined(TAUCS_PROCESS_HEAP)
+    if (!bad && team > 1) {
+        void *h0 = *(void **)((char *)blk[0]-16), *h1 = *(void **)((char *)blk[1]-16);
+        if (!h0 || !h1 || h0 == h1) bad = 1;
+    }
+#endif
+#pragma omp parallel num_threads(2)
+    {
+        int t = omp_get_thread_num(), n = omp_get_num_threads();
+        if (n > 1) { if (t < 2 && blk[1-t]) free(blk[1-t]); }   /* each thread frees the other's block */
+        else { free(blk[0]); free(blk[1]); }
+    }
+    fprintf(stderr, "sparse selftest: blocks from per-thread private heaps, freed across threads (%d threads): %s\n", team,
+            bad ? "FAIL" : "ok");
+    return bad;
+}
+
 int Sparse_selftest(void)
 {
+    if (sp_heap_selftest()) return -1;   /* (2026-10-28) */
     if(sp_ordering_selftest()){
         fprintf(stderr,"sparse selftest: dense degree ordering failed\n");return -1;
     }

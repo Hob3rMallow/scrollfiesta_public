@@ -177,12 +177,42 @@ static size_t roundup(size_t nbytes)
     return nbytes;
 }
 
+/* (2026-10-28) Chunks from the calling thread's private heap on Windows (MSVC, not under ASan): a 16-byte header
+ * names the block's heap, so any thread frees it.  On the process heap, a 32-thread assembly's workers queued on its
+ * lock creating and disposing arenas (6% of their samples).  Allocation only: a chunk is as a malloc'd one was. */
+#if defined(_MSC_VER) && !defined(__SANITIZE_ADDRESS__)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#define ARENA_HEAP_HEADER 16
+static __declspec(thread) HANDLE arena_thread_heap;
+static void *arena_block_alloc(size_t bytes)
+{
+    if (!arena_thread_heap) arena_thread_heap = HeapCreate(0, 0, 0);
+    if (!arena_thread_heap || bytes > (size_t)-1 - ARENA_HEAP_HEADER) return NULL;
+    char *p = (char *)HeapAlloc(arena_thread_heap, 0, bytes + ARENA_HEAP_HEADER);
+    if (!p) return NULL;
+    *(HANDLE *)p = arena_thread_heap;
+    return p + ARENA_HEAP_HEADER;
+}
+static void arena_block_free(void *ptr)
+{
+    if (!ptr) return;
+    char *p = (char *)ptr - ARENA_HEAP_HEADER;
+    HeapFree(*(HANDLE *)p, 0, p);
+}
+#else
+static void *arena_block_alloc(size_t bytes) { return malloc(bytes); }
+static void arena_block_free(void *ptr) { free(ptr); }
+#endif
+
 static struct Arena_chunk *chunk_new(size_t min_bytes, size_t chunk_size)
 {
     size_t header_size = roundup(sizeof(struct Arena_chunk));
     size_t data_size = min_bytes > chunk_size ? min_bytes : chunk_size;
     size_t total = header_size + data_size;
-    struct Arena_chunk *c = malloc(total);
+    struct Arena_chunk *c = arena_block_alloc(total);
     if (c == NULL) {
         return NULL;
     }
@@ -206,7 +236,7 @@ static void chunk_reset(struct Arena_chunk *c)
 static void chunk_free(struct Arena_chunk *c)
 {
     arena_unpoison(c, (size_t)(c->limit - (char *)c));
-    free(c);
+    arena_block_free(c);
 }
 
 /* Carve `nbytes` (already rounded, red zone included) from chunk c; only the

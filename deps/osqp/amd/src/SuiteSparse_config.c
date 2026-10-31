@@ -54,10 +54,25 @@
     SuiteSparse will not use printf.
  */
 
+#if defined(SPARSE_TAUCS_THREAD_SAFE)
+/* ScrollFiesta (2026-10-28): AMD's workspace from the calling thread's private heap, as TAUCS's blocks (taucs_malloc.c):
+ * sheet_assemble's worker threads queued on the process heap's lock in amd_order.  Only amd_order allocates here and only
+ * through these pointers (SuiteSparse_malloc / SuiteSparse_free). */
+extern void *taucs_malloc_stub(size_t size);
+extern void *taucs_realloc_stub(void *ptr, size_t size);
+extern void  taucs_free_stub(void *ptr);
+#define VES_SS_MALLOC  taucs_malloc_stub
+#define VES_SS_REALLOC taucs_realloc_stub
+#define VES_SS_FREE    taucs_free_stub
+#else
+#define VES_SS_MALLOC  c_malloc
+#define VES_SS_REALLOC c_realloc
+#define VES_SS_FREE    c_free
+#endif
 struct SuiteSparse_config_struct SuiteSparse_config =
 {
-    // Memory allocation from glob_opts.h in OSQP
-    c_malloc, c_realloc, c_free,
+    // Memory allocation from glob_opts.h in OSQP (ScrollFiesta: or the private heaps above)
+    VES_SS_MALLOC, VES_SS_REALLOC, VES_SS_FREE,
     // Ignore printing
     NULL,
     SuiteSparse_hypot,
