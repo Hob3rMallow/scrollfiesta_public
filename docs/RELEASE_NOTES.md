@@ -34,14 +34,24 @@ Seven new tools come from the development tree's close-up chain:
   does not reproduce. On the demo close-up, its 21 layers are voxel-identical
   to `vc_render_tifxyz`'s, in 0.3 s against 6 s. It loads the CUDA driver and
   NVRTC at run time, so building it needs no CUDA toolkit.
+- **Completion in one process.** `ink_closeup <job.json> --complete-chain`
+  runs a close-up's completion passes in one process. It reads the pools
+  once, keeps each pass's surface in memory and writes only the final pass's
+  mesh. Exact speedups come with it: the surface fit's data sums, incremental
+  refits, parallel hole solves, KD-tree builds and normals. On the
+  development tree's six-pass completion of a PHerc0306B close-up, the stage
+  went from 1,794 s at 16 threads to 147 s at 32, and every output stayed
+  byte-identical.
 - **Back into the strip.** `sheet_strip --closeup-window` places a close-up
   back into its reading strip at native scale, clear of stationary fragments.
   `sheet_strip` also reads its blocks from a list file (`@blocks.txt`), turns
   pieces, and can bound each line's pixels.
-- **The development tree's engines.** On its engine of record's hard
-  qualification replay, `ink_closeup` reproduces all eight outputs byte for
-  byte. `vcr_gpu`'s output is byte-identical to the development tree's. All
-  130 recorded close-up window jobs plan identically to the record engine's.
+- **The development tree's engines.** `ink_closeup` is its engine of record
+  of 30 October. It reproduces all eight outputs of the record's hard
+  qualification replay byte for byte, and all 36 files of its six-pass
+  completion run. `vcr_gpu`'s output is byte-identical to the development
+  tree's. All 130 recorded close-up window jobs plan identically to the record
+  engine's.
 - `vmesh_tifxyz --canvas --native-grid` exports a close-up as one tifxyz at one
   sample per voxel. `meta.json` now records `uv_origin`, which the re-UV reads.
 
@@ -92,6 +102,29 @@ now match the development tree, with this repository's own fixes kept.
   Unresolved seams go from 1,314 to 1,324. Repeated runs are byte-identical.
 - The exception stack is thread-local, so a `RAISE` on an OpenMP worker can no
   longer jump into another thread's frame.
+- **Contact tests finish instead of giving up.** A material-boundary test
+  whose gather overflowed its 512 segments, or whose band test ran out of
+  pieces or witness candidates, used to leave its pair unmeasured. A
+  certificate walk then reported its overlaps as a lower bound, and an
+  objective walk failed. Now the test is retried with up to 64 times the
+  storage and 256 times the work budget, and measured. A pair that still
+  cannot finish says which limit stopped it.
+- **Off the Windows heap lock.** In MSVC builds, arena chunks, the sparse
+  solver's temporaries and AMD's workspace come from each thread's own heap,
+  as TAUCS's blocks already did. In the development tree, 57% of a 32-thread
+  assembly's thread samples were waiting on the process heap's lock in
+  exactly these places. Only allocation changes.
+- **`AsmRelation` has no implicit padding.** GCC 16 at `-O3` copied relations
+  member by member and left stack bytes in the two padding holes, which
+  `AsmStore` and the resume files then wrote. The holes are named, zeroed
+  members now, and a compile-time check keeps new padding out. The layout and
+  file formats are unchanged.
+- The vendored CLAPACK, the CMake build's last-resort LAPACK, compiles with
+  GCC 14 and later.
+- These last four changes and the completion stage leave the 4×5×5 outputs
+  as they were with the new mesher: the 1,201 meshes, the weld log and a full
+  `sheet_assemble` run through audit are byte-identical, reports apart from
+  timings.
 
 ### Tests
 

@@ -159,7 +159,7 @@ toolchain and is what CI exercises.
 | `vmesh_tifxyz` | Export flattened pieces as VC3D tifxyz segments. |
 | `scroll_axis_track` | Derive the scroll axis (umbilicus) table from a mesh pile. |
 | `swirl_slim` | Cut radius-gated bridges in a marbled VMESH region and SLIM-refine each freed piece. |
-| `ink_closeup` | Rebuild one region of a sheet as a continuous close-up; grow it, fibre-align it, render its surface volume (October 2026). |
+| `ink_closeup` | Rebuild one region of a sheet as a continuous close-up; grow and complete it, fibre-align it, render its surface volume (October 2026). |
 | `fiber_flatten` | Re-flatten a tifxyz canvas along a 3-D fibre field. |
 | `closeup_strip_turn` | Turn a close-up rigidly onto its strip piece's frame. |
 | `vmesh_fiber_rigid` | Rotate a whole sheet onto its measured fibre axes. |

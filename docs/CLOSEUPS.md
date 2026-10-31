@@ -11,7 +11,7 @@ These tools come from the development tree's October 2026 close-up chain:
 
 | Executable | Purpose |
 |---|---|
-| `ink_closeup` | Build, grow, re-flatten, fibre-align and render a close-up. |
+| `ink_closeup` | Build, grow, complete, re-flatten, fibre-align and render a close-up. |
 | `closeup_repair` | Remove duplicate fill, wrong-side fill and flaps from a close-up surface. |
 | `tifxyz_snap` | Snap a tifxyz segment onto the papyrus recto edge in the RAW CT. |
 | `vcr_gpu` | Render villa's `vc_render_tifxyz` surface volume on an NVIDIA GPU. |
@@ -24,6 +24,7 @@ These tools come from the development tree's October 2026 close-up chain:
 grid_pipeline ──> sheet_assemble ──> sheet_assemble --review ──> ink_closeup ──> surface volume
                    (chart store)                                  │               (any ink model)
                                                                   ├─ grow: pool + F0 bridge
+                                                                  ├─ complete: --complete-chain
                                                                   └─ fibres: --measure-fibers,
                                                                      --reparameterize, fiber_flatten
                                                                      + --reuv, vmesh_fiber_rigid
@@ -139,6 +140,64 @@ started from. Duplicate-layer and ambiguity guards stop it at merged bands.
 `grow` also accepts `margin_vox`, `rounds`, `max_reads`, `reflatten`,
 `f0_depth_px`, `f0_rings` and `f0_passes`.
 
+## Completion passes
+
+A grown close-up is finished in completion passes. Each pass refits the
+previous pass's surface and adopts the pool charts that continue it, over
+`adopt.rounds` rounds. Only faces whose three corners were observed support
+the fit, so old fill never becomes an observation. The UV frame moves by an
+integer translation at most, so passes compare pixel for pixel. The passes end
+when one gains less than `min_gain` of the vertices before it, or after
+`passes`.
+
+`ink_closeup <job.json> --complete-chain` runs every pass in one process. It
+reads the pools once, keeps each pass's surface in memory for the next, and
+writes a pass's files while the next one runs:
+
+```json
+{
+  "schema": "ink-closeup-complete-chain-v2",
+  "base": "output/closeups/r65c",
+  "stem": "r65",
+  "source": "output/closeups/r65g/r65g",
+  "passes": 6,
+  "min_gain": 0.01,
+  "pass_config": {
+    "layout": "output/sheet",
+    "raw": "PHerc0139-4x5x5/cubes_RAW",
+    "axis": "configs/axis.csv",
+    "voxel_um": 9.362,
+    "seed_box": [-3600, -100, -3200, 250],
+    "complete_gaps": true,
+    "pool": ["output/closeups/pool"],
+    "adopt": {"rounds": 3}
+  },
+  "summary": {
+    "path": "output/closeups/r65c/r65_summary.json",
+    "area": "r65",
+    "operation": "complete",
+    "seed_box": [-3600, -100, -3200, 250]
+  }
+}
+```
+
+- `source` is the stem of the surface to complete: here, the grown close-up.
+- Pass `k` runs in `<base>/grow<k>` as `<stem>_grow<k>`. Its configuration is
+  written there: `pass_config` plus its own `id`, `out_dir` and
+  `surface_source`, which `pass_config` may not set. `pass_config` takes the
+  keys of an ordinary close-up configuration. `candidate_sources` can name a
+  JSON file whose `sources` list (`{"layout": dir}` or `{"surface": stem}`)
+  adds to `pool`.
+- Only the final pass writes its mesh, unless `"keep_pass_meshes": true`.
+  Every pass keeps its configuration, report and adoption CSVs. A rerun
+  resumes after the last pass whose mesh is on disk.
+- `summary` sets where the close-up summary goes, and the `area`,
+  `operation` and `seed_box` it records. The summary names the final pass and
+  records every pass's vertices, gain, adopted charts and seconds, and why the
+  passes ended.
+- To render the result, run `ink_closeup` on the final pass's configuration,
+  `<base>/grow<k>/<stem>_grow<k>.json`.
+
 ## Fibre alignment
 
 Readable pages need the fibres along the page axes. Close-ups measure fibres
@@ -236,18 +295,20 @@ provenance. The development tree produces fields with villa's 3-D fibre model
 From the 100-cube reference assembly (`sheet_assemble` with
 `configs/default.json`, run through `audit`), with the configurations above:
 
-| | Close-up | Grown |
-|---|---|---|
-| Surface | 32,809 vertices, 62,197 faces | 61,499 vertices, 121,990 faces |
-| Render | 702 × 686 px: 57,526 observed, 67,379 filled | 857 × 710 px: 55,835 observed, 184,728 adopted |
-| Work | 9 s | 6 reads, 16 charts adopted, 42,220 nodes on the F0 ridge, 38 s |
+| | Close-up | Grown | Completed |
+|---|---|---|---|
+| Surface | 32,809 vertices, 62,197 faces | 61,499 vertices, 121,990 faces | 73,799 vertices, 145,934 faces |
+| Render | 702 × 686 px: 57,526 observed, 67,379 filled | 857 × 710 px: 55,835 observed, 184,728 adopted | 1450 × 1302 px: 259,278 observed, 33,136 filled |
+| Work | 9 s | 6 reads, 16 charts adopted, 42,220 nodes on the F0 ridge, 38 s | 3 passes, 30 charts adopted, 1.8 s on 4 threads |
 
 ![PHerc0139 4×5×5 close-up](figures/closeup_4x5x5.png)
 
 ![The same close-up after growth](figures/closeup_4x5x5_grown.png)
 
 The growth stopped when a read placed nothing more. Its data nodes rose from
-15,092 to 59,391 (5.4% of the 3× target box).
+15,092 to 59,391 (5.4% of the 3× target box). The completion job above,
+started from the grown close-up, gained 12.3%, then 6.6%, then 0.3% of its
+vertices, so the third pass ended it.
 
 ## Verification
 
@@ -256,13 +317,20 @@ The growth stopped when a read placed nothing more. Its data nodes rose from
   rigid turns, material contacts and the fibre measurements.
   `ink_closeup --material-contact-selftest` checks the contact walk.
 - `ink_closeup` here is the development tree's engine of record
-  (`ink_closeup_20261028_main_cebf7654`). On the record's hard qualification
+  (`ink_closeup_20261030_main_6547bd3f`). On the record's hard qualification
   replay (a 9,608-vertex PHerc0358 close-up, `--reparameterize` against an
   inferred fibre field, one thread), all eight output files are byte-identical
   to the record's: the mesh, fibre arms, normals, labels, charts, material
   identities, inference identity and component log. The report matches apart
   from timings and paths. The fibre RMS is 10.124408°, which is still above
   the 10° target, as the record's is, so both exit 1.
+- On the record's completion run (six passes over a 12.3 M-node PHerc0306B
+  close-up grid, 32 threads), `--complete-chain` here reproduces all 36 of
+  the record's files: the final mesh, normals, labels and charts, every
+  pass's adoption CSVs, reports and configuration, and the summary. Reports
+  and summary match apart from seconds and paths. The record takes 147 s at
+  32 threads. Before these speedups, one process per pass took 1,794 s at 16
+  threads for the same passes.
 - `vcr_gpu`'s output on the demo close-up is byte-identical to the development
   tree's `vcr_gpu`, and its decoded voxels equal `vc_render_tifxyz`'s (6,362,874
   voxels; villa compresses its chunks, `vcr_gpu` does not).
