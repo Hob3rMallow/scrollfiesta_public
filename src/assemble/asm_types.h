@@ -122,10 +122,19 @@ enum {
 
 /* A seam relation: chart b's frame expressed in chart a's frame,
  *     p_a = R(theta) * p_b + (tx, ty),
- * measured on ordered boundary correspondences across one cube seam. */
+ * measured on ordered boundary correspondences across one cube seam.
+ *
+ * No implicit padding: the rows are stored (AsmStore, resume files) and
+ * compared byte for byte, so their bytes must be a function of the fields.
+ * The two 4-byte holes are named members, always 0. Implicit padding is not
+ * copied by a member-wise struct copy: GCC 16 at -O3 copied relations
+ * through locals with stack bytes in the holes, and the same relations
+ * compared and hashed differently (2026-10-25). Zero-initialize every new
+ * relation ({0}, memset or calloc); a struct copy then carries the zeros. */
 typedef struct AsmRelation {
     int32_t  a, b;
     uint32_t flags;         /* ASM_REL_* */
+    uint32_t pad0;          /* always 0 (no implicit padding, above) */
     double   theta, tx, ty;
     double   w_xy;          /* information weight of the translation, 1/vox^2 */
     double   w_theta;       /* information weight of the rotation, 1/rad^2 */
@@ -140,8 +149,11 @@ typedef struct AsmRelation {
     double   residual;      /* normalized residual after the pose solve */
     double   flag_mass;     /* accumulated contradiction witness mass */
     uint32_t continuity;    /* runtime source/geometry certificate, independent of flags */
+    uint32_t pad1;          /* always 0 (no implicit padding, above) */
     double   continuity_rms;
 } AsmRelation;
+/* compile-time check that AsmRelation has no implicit padding: a new member must keep the sum of the member sizes */
+typedef char AsmRelation_has_no_padding[sizeof(AsmRelation) == 8*sizeof(int32_t) + 13*sizeof(double) + sizeof(size_t) ? 1 : -1];
 
 /* Original source-face coordinates of a physical tangent displacement.
  * The inverse maps an orthonormal vertex-frame gap onto the two source
