@@ -2616,6 +2616,34 @@ static int hf_ear_angles(const float *verts,int32_t a,int32_t b,int32_t c,
     return 1;
 }
 
+/* Distinct source IDs can occupy the same point after pinch splitting.
+ * Topological boundary certificates cannot see an opposite-wound geometric
+ * duplicate. Compare exact coordinates: nearby sheets must remain distinct. */
+static int hf_same_triangle(const float *v, const int32_t a[3],
+                            const int32_t b[3])
+{
+    unsigned used=0;
+    for(int i=0;i<3;i++){
+        int found=0;
+        for(int j=0;j<3;j++)if(!(used&(1u<<j))){
+            const float *p=v+(size_t)a[i]*3,*q=v+(size_t)b[j]*3;
+            if(p[0]==q[0]&&p[1]==q[1]&&p[2]==q[2]){
+                used|=1u<<j;found=1;break;
+            }
+        }
+        if(!found)return 0;
+    }
+    return 1;
+}
+
+static int hf_triangle_emitted(const float *v,const int32_t t[3],
+                               const int32_t *faces,size_t nf)
+{
+    for(size_t f=0;f<nf;f++)
+        if(hf_same_triangle(v,t,faces+f*3))return 1;
+    return 0;
+}
+
 static int fill_chart_cycle_3d(Arena_T arena,
                                const float *mesh_verts,
                                const HFEdgeIndex *eidx,
@@ -2665,6 +2693,11 @@ static int fill_chart_cycle_3d(Arena_T arena,
     }
 
     remaining = n_loop;
+    int repeated_position=0;
+    for(size_t i=0;i<n_loop;i++)for(size_t j=0;j<i;j++){
+        const float *a=fill_verts+i*3,*b=fill_verts+j*3;
+        if(a[0]==b[0]&&a[1]==b[1]&&a[2]==b[2])repeated_position=1;
+    }
     while (remaining > 3) {
         int32_t best = -1;
         double best_score = DBL_MAX;
@@ -2748,6 +2781,17 @@ static int fill_chart_cycle_3d(Arena_T arena,
     if (ntri != n_loop-2 ||
         !fill_boundary_is_exact(fill_faces,ntri,n_loop)) {
         Arena_restore(arena, mark); return -2;
+    }
+    /* Keep the original ear choices. Rerouting a blocked ear is not a 3-D
+     * intersection certificate and can turn an otherwise safe fill into a
+     * crossing. Reject only this atomic proposal; source faces and other
+     * accepted holes remain untouched. With unique positions, a simple
+     * combinatorial triangulation cannot have coincident triangles. */
+    if(repeated_position)for(size_t f=0;f<ntri;f++){
+        if(hf_triangle_emitted(fill_verts,fill_faces+f*3,fill_faces,f)){
+            HFLOG("    [chart-cycle] geometric duplicate in fill; retaining open source cycle\n");
+            Arena_restore(arena,mark);return -2;
+        }
     }
     orient_fill(fill_faces,ntri,eidx,bmap,n_loop);
     result->verts=fill_verts;
